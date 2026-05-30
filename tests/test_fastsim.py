@@ -389,6 +389,30 @@ def test_leverage_cap_matches_engine():
     assert expected.trades[0].size == pytest.approx(2.0 * 10_000.0 / entry_price, rel=0.05)
 
 
+def test_leverage_flip_matches_engine():
+    # long then flip to a short that exceeds the leverage cap -> both engines must cap identically
+    n = 8
+    closes = [100.0] * n
+    opens = [100.0] * n
+    highs = [c + 1 for c in closes]
+    lows = [c - 1 for c in closes]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i in (1, 4) for i in range(n)]   # enter long at 1, flip at 4
+    exits = [i == 4 for i in range(n)]           # bar 4: exit long + enter short (a flip)
+    size = [1000.0] * n                           # huge target -> must be capped both times
+    side = [1, 1, 1, 1, -1, -1, -1, -1]           # short side from bar 4
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        leverage=2.0)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.size == pytest.approx(e.size, rel=1e-9)
+
+
 def test_liquidation_matches_engine():
     # rising open then a deep crash low on bar 4 to trigger a long liquidation
     closes = [100.0, 100.0, 100.0, 100.0, 60.0, 60.0, 60.0]

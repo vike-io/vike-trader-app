@@ -83,19 +83,30 @@ class BacktestEngine:
             self._pending.append(_Order("market", side_sign, size))
 
     def _cap_to_leverage(self, side_sign: int, size: float) -> float:
-        """Shrink a market order so the resulting position notional <= leverage * equity."""
+        """Shrink a market order so the resulting position notional <= leverage * equity.
+
+        Accounts for already-pending market orders (so a flip's pending close brings the
+        projected position to flat before the new entry is capped — matching the kernel,
+        which caps each entry as if opened from flat). Reducing/closing orders are never shrunk.
+        """
         if self.leverage is None:
             return size
         eq = self.equity_now()
         if eq <= 0.0:
             return 0.0
-        max_notional = self.leverage * eq
-        resulting = abs(self.position.size + side_sign * size)
-        if resulting * self._price * self.multiplier <= max_notional:
-            return size
-        max_pos = max_notional / (self._price * self.multiplier)
-        room = max_pos - abs(self.position.size)   # additional shares allowed up to the cap
-        return room if room > 0.0 else 0.0
+        max_pos = (self.leverage * eq) / (self._price * self.multiplier)
+        pending = 0.0
+        for o in self._pending:
+            if o.kind == "market":
+                pending += o.side * o.size
+        projected = self.position.size + pending
+        if (projected >= 0.0) == (side_sign > 0):
+            room = max_pos - abs(projected)          # extending the same side (or from flat)
+        else:
+            room = abs(projected) + max_pos          # reducing or crossing through zero
+        if room <= 0.0:
+            return 0.0
+        return size if size <= room else room
 
     def submit_limit(self, side_sign: int, size: float, price: float) -> None:
         self._pending.append(_Order("limit", side_sign, size, price=price))
