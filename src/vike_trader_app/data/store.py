@@ -10,6 +10,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..core.model import Bar
+
 DEFAULT_PATH = "storage/db/vike_trader_app.sqlite"
 
 _SCHEMA = """
@@ -31,6 +33,32 @@ CREATE TABLE IF NOT EXISTS runs (
     sharpe        REAL    NOT NULL,
     params        TEXT    NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS forward_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_ts  INTEGER NOT NULL,
+    symbol      TEXT    NOT NULL,
+    interval    TEXT    NOT NULL,
+    strategy    TEXT    NOT NULL,
+    cash        REAL    NOT NULL,
+    fee_rate    REAL    NOT NULL,
+    params      TEXT    NOT NULL,
+    status      TEXT    NOT NULL DEFAULT 'running'
+);
+
+-- Each closed live bar received by a forward run, so the run can be replayed
+-- (re-seed + re-apply) after the app is closed and reopened.
+CREATE TABLE IF NOT EXISTS forward_bars (
+    run_id  INTEGER NOT NULL,
+    ts      INTEGER NOT NULL,
+    open    REAL    NOT NULL,
+    high    REAL    NOT NULL,
+    low     REAL    NOT NULL,
+    close   REAL    NOT NULL,
+    volume  REAL    NOT NULL,
+    funding REAL,
+    PRIMARY KEY (run_id, ts)
+);
 """
 
 # scalar columns, in insert order (params handled separately as JSON)
@@ -50,6 +78,21 @@ _COLS = [
     "max_drawdown",
     "sharpe",
 ]
+
+
+@dataclass
+class ForwardRunRecord:
+    """A paper forward-test run: its config + lifecycle status (bars stored separately)."""
+
+    created_ts: int
+    symbol: str
+    interval: str
+    strategy: str
+    cash: float
+    fee_rate: float
+    params: dict = field(default_factory=dict)
+    status: str = "running"
+    id: int | None = None
 
 
 @dataclass
@@ -109,6 +152,57 @@ class Store:
     def clear(self) -> None:
         self.conn.execute("DELETE FROM runs")
         self.conn.commit()
+
+    # --- forward (paper) runs ---
+    def create_forward_run(
+        self, *, symbol, interval, strategy, cash, fee_rate, params, created_ts
+    ) -> int:
+        cur = self.conn.execute(
+            "INSERT INTO forward_runs "
+            "(created_ts, symbol, interval, strategy, cash, fee_rate, params, status) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'running')",
+            (created_ts, symbol, interval, strategy, cash, fee_rate, json.dumps(params)),
+        )
+        self.conn.commit()
+        return cur.lastrowid
+
+    def append_forward_bar(self, run_id: int, bar: Bar) -> None:
+        """Persist one received closed bar (idempotent: re-appending a ts replaces it)."""
+        self.conn.execute(
+            "INSERT OR REPLACE INTO forward_bars "
+            "(run_id, ts, open, high, low, close, volume, funding) VALUES (?,?,?,?,?,?,?,?)",
+            (run_id, bar.ts, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.funding),
+        )
+        self.conn.commit()
+
+    def forward_bars(self, run_id: int) -> list[Bar]:
+        rows = self.conn.execute(
+            "SELECT ts, open, high, low, close, volume, funding "
+            "FROM forward_bars WHERE run_id = ? ORDER BY ts ASC",
+            (run_id,),
+        ).fetchall()
+        return [
+            Bar(ts=r["ts"], open=r["open"], high=r["high"], low=r["low"],
+                close=r["close"], volume=r["volume"], funding=r["funding"])
+            for r in rows
+        ]
+
+    def set_forward_status(self, run_id: int, status: str) -> None:
+        self.conn.execute("UPDATE forward_runs SET status = ? WHERE id = ?", (status, run_id))
+        self.conn.commit()
+
+    def list_forward_runs(self, limit: int = 200) -> list[ForwardRunRecord]:
+        rows = self.conn.execute(
+            "SELECT * FROM forward_runs ORDER BY created_ts DESC, id DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [
+            ForwardRunRecord(
+                id=r["id"], created_ts=r["created_ts"], symbol=r["symbol"],
+                interval=r["interval"], strategy=r["strategy"], cash=r["cash"],
+                fee_rate=r["fee_rate"], params=json.loads(r["params"]), status=r["status"],
+            )
+            for r in rows
+        ]
 
     def close(self) -> None:
         self.conn.close()

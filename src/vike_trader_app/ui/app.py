@@ -13,8 +13,11 @@ from PySide6 import QtCore, QtWidgets
 
 from ..analysis import metrics
 from ..core.engine import BacktestEngine
+from ..core.forward import ForwardTester, pump
 from ..core.strategy_loader import load_strategy_from_file
+from ..data.binance_source import interval_ms
 from ..data.cache import get_bars
+from ..data.polling_feed import PollingBarFeed, make_vike_fetch_latest
 from ..data.store import RunRecord, Store
 from . import theme
 from .chart import EquityChart, PriceChart
@@ -33,6 +36,32 @@ _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
 _WATCHLIST_DAYS = 7  # history pulled when clicking a watchlist symbol
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
+_FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
+_FORWARD_FEE = 0.001
+_FORWARD_CASH = 10_000.0
+
+
+class _LiveFeedWorker(QtCore.QThread):
+    """Runs a LiveBarFeed's async loop off the UI thread; marshals bars back via a signal."""
+
+    barReceived = QtCore.Signal(object)  # Bar
+    failed = QtCore.Signal(str)
+
+    def __init__(self, feed):
+        super().__init__()
+        self._feed = feed
+        self._stop = False
+
+    def run(self):
+        import asyncio
+
+        try:
+            asyncio.run(self._feed.run_forever(self.barReceived.emit, stop=lambda: self._stop))
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI thread
+            self.failed.emit(str(exc))
+
+    def stop(self):
+        self._stop = True
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -54,6 +83,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._symbol = "BTCUSDT"
         self._interval = "1m"
 
+        # forward (paper) mode state
+        self._forward = None      # ForwardTester while live, else None
+        self._feed = None         # PollingBarFeed (poll fallback)
+        self._fwd_worker = None   # _LiveFeedWorker (push, preferred)
+        self._fwd_bars = []       # live bars received this run (charted)
+
         # widgets
         self.price = PriceChart()
         self.equity = EquityChart()
@@ -72,6 +107,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.strategy.show_strategy(self._strategy_factory)
         self.history.update_runs(self.store.list_runs())
+
+        self._fwd_timer = QtCore.QTimer(self)
+        self._fwd_timer.timeout.connect(self._forward_poll_tick)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(60)
@@ -155,6 +193,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_play.setObjectName("play")
         self.btn_fwd = QtWidgets.QPushButton("▶|")
         self.btn_full = QtWidgets.QPushButton("⤒ End")
+        self.btn_forward = QtWidgets.QPushButton("● Forward (paper)")
+        self.btn_forward.setObjectName("forward")
+        self.btn_forward.setToolTip("Paper-trade the current strategy on live bars (no real orders)")
         self.btn_load.clicked.connect(self._open_load_dialog)
         self.btn_strategy.clicked.connect(self._load_strategy)
         self.btn_validate.clicked.connect(self._validate)
@@ -163,6 +204,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btn_play.clicked.connect(self._toggle_play)
         self.btn_fwd.clicked.connect(self._step_fwd)
         self.btn_full.clicked.connect(self._jump_end)
+        self.btn_forward.clicked.connect(self._toggle_forward)
 
         self.speed = QtWidgets.QComboBox()
         for s in _SPEEDS:
@@ -184,6 +226,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_play,
             self.btn_fwd,
             self.btn_full,
+            self._sep(),
+            self.btn_forward,
             self._sep(),
         ]
         for w in widgets:
@@ -427,6 +471,129 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_slider(self, value):
         self._replay.seek(value)
         self._render_frame()
+
+    # --- forward (paper) mode ---
+    def _toggle_forward(self):
+        if self._forward is not None:
+            self._stop_forward()
+        else:
+            self._start_forward()
+
+    def _start_forward(self):
+        """Seed warm-up history, then stream live closed bars into a paper ForwardTester."""
+        symbol, interval = self._symbol, self._interval
+        self.crumb.setText(f"Forward: seeding {symbol} {interval}…")
+        QtWidgets.QApplication.processEvents()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            from ..data.vike_source import fetch_bars_range as vike_fetch
+
+            now = int(time.time() * 1000)
+            start = now - _FORWARD_SEED_BARS * interval_ms(interval)
+            seed = vike_fetch(symbol, interval, start, now)
+        except Exception as exc:  # noqa: BLE001 - network/seed failure
+            QtWidgets.QMessageBox.warning(self, "Forward failed", f"Could not seed {symbol}: {exc}")
+            self.crumb.setText("No data loaded")
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
+        self._forward = ForwardTester(
+            symbol=symbol, interval=interval, strategy=self._strategy_factory(),
+            cash=_FORWARD_CASH, fee_rate=_FORWARD_FEE, seed_bars=seed,
+            store=self.store, on_step=None, created_ts=int(time.time() * 1000),
+        )
+        self._fwd_bars = []
+        self._set_backtest_controls_enabled(False)
+        self.btn_forward.setText("■ Stop forward")
+
+        # Prefer the push WebSocket feed (lower latency); fall back to REST polling.
+        if not self._start_live_worker(symbol, interval):
+            self._feed = PollingBarFeed(
+                symbol, interval, fetch_latest=make_vike_fetch_latest(symbol, interval)
+            )
+            self._fwd_timer.start(int(self._feed.poll_seconds * 1000))
+        self.crumb.setText(f"● FORWARD (paper) · {symbol} · {interval} · waiting for bars…")
+
+    def _start_live_worker(self, symbol, interval) -> bool:
+        """Start a LiveBarFeed in a QThread. Returns False if [live]/websockets is unavailable."""
+        try:
+            from ..data.vike_live import make_live_feed
+
+            import websockets  # noqa: F401 - probe the optional [live] dep before threading
+        except Exception:  # noqa: BLE001 - websockets not installed -> caller polls instead
+            return False
+        worker = self._fwd_worker = _LiveFeedWorker(make_live_feed(symbol, interval))
+        worker.barReceived.connect(self._on_forward_bar)
+        worker.failed.connect(self._on_forward_failed)
+        worker.start()
+        return True
+
+    def _forward_poll_tick(self):
+        """REST-polling fallback: drain newly-closed bars into the tester, then repaint."""
+        if self._forward is None or self._feed is None:
+            return
+        if pump(self._feed, self._forward):
+            self._render_forward()
+
+    def _on_forward_bar(self, bar):
+        """Slot for a bar pushed from the LiveBarFeed worker thread."""
+        if self._forward is None:
+            return
+        self._forward.on_bar_live(bar)
+        self._render_forward()
+
+    def _on_forward_failed(self, message):
+        QtWidgets.QMessageBox.warning(self, "Forward feed error", message)
+        self._stop_forward()
+
+    def _render_forward(self):
+        """Repaint charts/panels from the live tester state (live bars only)."""
+        if self._forward is None:
+            return
+        self._fwd_bars = list(self._forward.engine.bars[-len(self._forward.equity_curve):]) \
+            if self._forward.equity_curve else []
+        res = self._forward.result()
+        self.price.set_data(self._fwd_bars, res.trades)
+        self.price.set_overlays(
+            self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
+        )
+        self.equity.set_data(res.equity_curve)
+        self.price.show_upto(len(self._fwd_bars) - 1)
+        self.equity.show_upto(len(res.equity_curve) - 1)
+        self.report.update_stats(res)
+        self.trades.update_trades(res.trades)
+        if self._fwd_bars:
+            last = self._fwd_bars[-1].close
+            self.crumb.setText(
+                f"● FORWARD (paper) · {self._symbol} · {self._interval} · "
+                f"{last:,.2f} · {len(self._fwd_bars)} live bars · eq {res.final_equity:,.0f}"
+            )
+
+    def _stop_forward(self):
+        self._fwd_timer.stop()
+        if self._fwd_worker is not None:
+            self._fwd_worker.stop()
+            self._fwd_worker.wait(2000)
+            self._fwd_worker = None
+        if self._forward is not None:
+            self._forward.stop()
+        self._forward = None
+        self._feed = None
+        self.btn_forward.setText("● Forward (paper)")
+        self._set_backtest_controls_enabled(True)
+
+    def _set_backtest_controls_enabled(self, on: bool):
+        """Lock backtest/replay controls while forward mode owns the charts (and vice-versa)."""
+        for w in (
+            self.btn_load, self.btn_strategy, self.btn_validate, self.btn_optimize,
+            self.btn_back, self.btn_play, self.btn_fwd, self.btn_full, self.slider, self.speed,
+        ):
+            w.setEnabled(on)
+
+    def closeEvent(self, event):  # noqa: N802 - Qt override
+        self._stop_forward()  # never leave a feed thread running
+        super().closeEvent(event)
 
     def _tick_clock(self):
         self.clock.setText(QtCore.QTime.currentTime().toString("HH:mm:ss"))

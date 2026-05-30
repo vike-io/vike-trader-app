@@ -121,18 +121,36 @@ class BacktestEngine:
 
     # --- run loop ---
     def run(self) -> Result:
-        equity_curve: list[float] = []
-        for i, bar in enumerate(self.bars):
-            self._fill_pending(bar)  # fills before decisions => next-open semantics
-            self.strategy.index = i
-            self._now = bar.ts
-            self._price = bar.close
-            if bar.funding is not None and self.position.size != 0:
-                self.cash -= self.position.size * bar.close * bar.funding  # longs pay +funding
-            self._peak = max(self._peak, self.equity_now())
-            self.strategy.on_bar(bar)
-            equity_curve.append(self.equity_now())
+        equity_curve = [self.step(bar, i) for i, bar in enumerate(self.bars)]
         return Result(self.trades, equity_curve, self.equity_now())
+
+    def add_live_bar(self, bar: Bar) -> None:
+        """Append a live bar to history and refresh higher-TF aggregates (forward mode).
+
+        Call this *before* ``step`` so the strategy's ``bars(tf)``/``forming(tf)`` see the
+        same data a backtest would at this bar. Re-resampling each live bar is O(n) but the
+        forward cadence is one bar per interval, so it's negligible.
+        """
+        self.bars.append(bar)
+        for tf, (ms, _) in list(self._tf.items()):
+            self._tf[tf] = (ms, resample(self.bars, ms))
+
+    def step(self, bar: Bar, i: int) -> float:
+        """Advance the engine by exactly one bar; return equity after it.
+
+        Identical to one iteration of ``run`` — the shared primitive the forward
+        (paper) loop drives live, so strategies behave the same backtest↔forward.
+        Pending orders fill at this bar's open *before* the strategy runs (next-open).
+        """
+        self._fill_pending(bar)  # fills before decisions => next-open semantics
+        self.strategy.index = i
+        self._now = bar.ts
+        self._price = bar.close
+        if bar.funding is not None and self.position.size != 0:
+            self.cash -= self.position.size * bar.close * bar.funding  # longs pay +funding
+        self._peak = max(self._peak, self.equity_now())
+        self.strategy.on_bar(bar)
+        return self.equity_now()
 
     def _fill_pending(self, bar: Bar) -> None:
         still: list[_Order] = []
