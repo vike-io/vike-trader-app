@@ -390,17 +390,19 @@ def test_leverage_cap_matches_engine():
 
 
 def test_leverage_flip_matches_engine():
-    # long then flip to a short that exceeds the leverage cap -> both engines must cap identically
-    n = 8
-    closes = [100.0] * n
-    opens = [100.0] * n
+    # long, flip to a short that exceeds the cap, price drops, then exit the short.
+    # Without the pending-aware leverage cap, the engine fails to open the short -> diverges
+    # in both the realized short trade and the equity curve.
+    n = 9
+    closes = [100.0, 100.0, 100.0, 100.0, 100.0, 90.0, 90.0, 90.0, 90.0]
+    opens =  [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0, 90.0, 90.0]
     highs = [c + 1 for c in closes]
     lows = [c - 1 for c in closes]
     ts = list(range(0, n * 60_000, 60_000))
-    entries = [i in (1, 4) for i in range(n)]   # enter long at 1, flip at 4
-    exits = [i == 4 for i in range(n)]           # bar 4: exit long + enter short (a flip)
-    size = [1000.0] * n                           # huge target -> must be capped both times
-    side = [1, 1, 1, 1, -1, -1, -1, -1]           # short side from bar 4
+    entries = [i in (1, 4) for i in range(n)]   # long @1, flip @4
+    exits = [i in (4, 7) for i in range(n)]      # bar 4: close long + open short; bar 7: exit short
+    size = [1000.0] * n                           # huge target -> capped both times
+    side = [1, 1, 1, 1, -1, -1, -1, -1, -1]       # short from bar 4
 
     bars = _bars(opens, highs, lows, closes, ts)
     eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
@@ -409,8 +411,10 @@ def test_leverage_flip_matches_engine():
                         leverage=2.0)
     assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
     assert got["n_trades"] == len(expected.trades)
+    assert got["n_trades"] == 2   # long round-trip + short round-trip
     for g, e in zip(got["trades"], expected.trades):
         assert g.size == pytest.approx(e.size, rel=1e-9)
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)
 
 
 def test_liquidation_matches_engine():
