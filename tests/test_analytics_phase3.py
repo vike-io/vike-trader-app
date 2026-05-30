@@ -5,6 +5,7 @@ import math
 import pytest
 
 from vike_trader_app.analysis.metrics import sortino, calmar, omega
+from vike_trader_app.analysis.excursions import mae_mfe, edge_ratio, expanding_trade_metrics
 from vike_trader_app.core.model import Bar, Trade
 
 
@@ -52,3 +53,37 @@ def test_omega_inf_when_no_losses():
 
 def test_omega_zero_when_no_gains():
     assert omega([100.0, 90.0, 81.0], threshold=0.0) == 0.0
+
+
+def _window_bars(low_at_2, high_at_2):
+    # 4 bars at ts 0,100,200,300; bar index 2 carries the extreme low/high
+    return [
+        Bar(ts=0, open=100.0, high=101.0, low=99.0, close=100.0),
+        Bar(ts=100, open=100.0, high=102.0, low=98.0, close=101.0),
+        Bar(ts=200, open=101.0, high=high_at_2, low=low_at_2, close=100.0),
+        Bar(ts=300, open=100.0, high=101.0, low=99.0, close=100.0),
+    ]
+
+
+def test_mae_mfe_long():
+    # long: entry 100, exit 110, profit on a rise -> direction +1
+    trade = Trade(entry_price=100.0, exit_price=110.0, size=1.0, pnl=10.0, entry_ts=0, exit_ts=300)
+    bars = _window_bars(low_at_2=95.0, high_at_2=115.0)
+    mae, mfe = mae_mfe(trade, bars)
+    assert mae == pytest.approx(0.05)   # (100-95)/100
+    assert mfe == pytest.approx(0.15)   # (115-100)/100
+
+
+def test_mae_mfe_short():
+    # short: entry 100, exit 90, profit on a fall -> direction -1
+    trade = Trade(entry_price=100.0, exit_price=90.0, size=1.0, pnl=10.0, entry_ts=0, exit_ts=300)
+    bars = _window_bars(low_at_2=85.0, high_at_2=105.0)
+    mae, mfe = mae_mfe(trade, bars)
+    assert mae == pytest.approx(0.05)   # adverse = high: (105-100)/100
+    assert mfe == pytest.approx(0.15)   # favorable = low: (100-85)/100
+
+
+def test_mae_mfe_no_window_bars_is_zero():
+    trade = Trade(entry_price=100.0, exit_price=110.0, size=1.0, pnl=10.0, entry_ts=1000, exit_ts=2000)
+    bars = _window_bars(low_at_2=95.0, high_at_2=115.0)  # all ts < 1000
+    assert mae_mfe(trade, bars) == (0.0, 0.0)
