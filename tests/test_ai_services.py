@@ -44,69 +44,46 @@ def test_fetch_ohlcv_uses_injected_fetcher_and_summarizes():
     assert out["closes"] == [b.close for b in bars]
 
 
-# ---------------------------------------------------------------------------
-# Task 2: run_sma_backtest
-# ---------------------------------------------------------------------------
-
-def test_run_sma_backtest_returns_expected_keys():
-    bars = _synth_bars(60)
-    result = run_sma_backtest(bars, fast=5, slow=20)
-    expected_keys = {
-        "fast", "slow", "n_trades", "total_return", "win_rate",
-        "max_drawdown", "profit_factor", "sharpe", "sortino", "calmar", "omega",
-    }
-    assert set(result) == expected_keys
-    assert result["fast"] == 5
-    assert result["slow"] == 20
+def test_run_sma_backtest_returns_full_metrics():
+    closes = [b.close for b in _synth_bars(80)]
+    out = run_sma_backtest(closes, fast=5, slow=20, fee_rate=0.0)
+    for key in ("total_return", "sharpe", "sortino", "calmar", "max_drawdown",
+                "win_rate", "profit_factor", "n_trades", "final_equity"):
+        assert key in out
+    assert isinstance(out["n_trades"], int)
+    assert isinstance(out["final_equity"], float)
+    assert out["params"] == {"fast": 5, "slow": 20}
 
 
-def test_run_sma_backtest_flat_series_no_trades():
-    """Constant closes must produce zero trades — no crossover ever fires."""
-    bars = [Bar(ts=i * 3_600_000, open=100.0, high=100.0, low=100.0, close=100.0, volume=1.0)
-            for i in range(60)]
-    result = run_sma_backtest(bars, fast=5, slow=20)
-    assert result["n_trades"] == 0
+def test_run_sma_backtest_no_trades_on_flat_series():
+    closes = [100.0] * 50
+    out = run_sma_backtest(closes, fast=5, slow=20)
+    assert out["n_trades"] == 0
+    assert out["total_return"] == pytest.approx(0.0)
 
 
-# ---------------------------------------------------------------------------
-# Task 3: optimize_sma
-# ---------------------------------------------------------------------------
-
-def test_optimize_sma_returns_ranked_results():
-    bars = _synth_bars(60)
-    result = optimize_sma(bars, fasts=[3, 5, 10], slows=[15, 20, 30])
-    assert "best" in result
-    assert "top" in result
-    assert "n_combos" in result
-    # All valid combos have fast < slow
-    assert result["n_combos"] > 0
-    for entry in result["top"]:
-        assert entry["params"]["fast"] < entry["params"]["slow"]
-    # top is ranked best-first (descending total_return)
-    returns = [r["total_return"] for r in result["top"]]
-    assert returns == sorted(returns, reverse=True)
+def test_optimize_sma_ranks_and_limits():
+    closes = [b.close for b in _synth_bars(120)]
+    out = optimize_sma(closes, fasts=[5, 10], slows=[20, 40], fee_rate=0.0, top_n=3)
+    assert out["n_combos"] == 4
+    assert len(out["top"]) == 3
+    rets = [r["total_return"] for r in out["top"]]
+    assert rets == sorted(rets, reverse=True)
+    assert set(out["top"][0]["params"]) == {"fast", "slow"}
 
 
-# ---------------------------------------------------------------------------
-# Task 4: overfit_check
-# ---------------------------------------------------------------------------
-
-def test_overfit_check_returns_expected_keys_and_ranges():
-    # Build synthetic trial results: 9 trials with varying sharpe
-    trial_results = [{"sharpe": 0.1 * i} for i in range(1, 10)]
-    result = overfit_check(trial_results, n_obs=60)
-    assert set(result) >= {"deflated_sr", "pbo", "verdict_level", "verdict_reasons"}
-    assert 0.0 <= result["deflated_sr"] <= 1.0
-    assert 0.0 <= result["pbo"] <= 1.0
-    assert result["verdict_level"] in ("Low", "Medium", "High")
-    assert isinstance(result["verdict_reasons"], list)
+def test_overfit_check_returns_verdict():
+    out = overfit_check(observed_sr=1.5, trial_sharpes=[1.4, 1.45, 1.55, 1.3, 1.2], n_obs=500)
+    assert 0.0 <= out["deflated_sharpe"] <= 1.0
+    assert out["verdict"]["level"] in {"Low", "Medium", "High"}
+    assert isinstance(out["verdict"]["reasons"], list)
+    assert out["pbo"] == 0.0  # no matrix supplied -> no fabricated PBO
 
 
-def test_overfit_check_high_trial_count_yields_lower_dsr():
-    """More trials should reduce the deflated Sharpe (harder to be significant)."""
-    few_trials = [{"sharpe": 1.5}] * 2
-    many_trials = [{"sharpe": s} for s in [1.5] + [0.1 * i for i in range(20)]]
-    result_few = overfit_check(few_trials, n_obs=100)
-    result_many = overfit_check(many_trials, n_obs=100)
-    # With many more trials, deflated SR should be lower (more competition)
-    assert result_few["deflated_sr"] >= result_many["deflated_sr"]
+def test_overfit_check_with_pbo_matrix():
+    matrix = [[0.1, 0.2, -0.1], [0.0, 0.1, 0.05], [-0.1, 0.0, 0.1], [0.2, -0.1, 0.0],
+              [0.1, 0.1, 0.1], [-0.2, 0.0, 0.1], [0.05, 0.2, -0.05], [0.1, -0.1, 0.2]]
+    out = overfit_check(observed_sr=1.0, trial_sharpes=[0.9, 1.0, 1.1],
+                        n_obs=8, pbo_matrix=matrix, n_splits=4)
+    assert 0.0 <= out["pbo"] <= 1.0
+    assert out["verdict"]["level"] in {"Low", "Medium", "High"}
