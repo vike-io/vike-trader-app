@@ -180,3 +180,25 @@ def test_numba_and_numpy_paths_agree():
                     kw["entries"], kw["exits"], kw["size"], kw["side"], 0.001, 0.0005, 10_000.0)
     assert res[0].tolist() == pytest.approx(compiled["equity_curve"], rel=1e-9, abs=1e-9)
     assert int(res[1]) == compiled["n_trades"]
+
+
+def test_build_trades_false_skips_trade_objects():
+    n = 30
+    rng = np.random.default_rng(5)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 6 == 0 for i in range(n)]
+    exits = [i % 6 == 3 for i in range(n)]
+    size = [1.0] * n
+    side = [1] * n
+    kw = _arrays(opens, highs, lows, closes, ts, entries, exits, size, side)
+    full = fast_backtest(**kw, taker_fee=0.001)
+    lean = fast_backtest(**kw, taker_fee=0.001, build_trades=False)
+    assert lean["equity_curve"] == pytest.approx(full["equity_curve"], rel=1e-12, abs=1e-12)
+    assert lean["final_equity"] == pytest.approx(full["final_equity"])
+    assert lean["n_trades"] == full["n_trades"]
+    assert lean["trades"] == []
+    assert len(full["trades"]) == full["n_trades"]

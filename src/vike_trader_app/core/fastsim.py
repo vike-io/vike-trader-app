@@ -129,12 +129,17 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
 
 def fast_backtest(opens, highs, lows, closes, funding, ts,
                   entries, exits, size, side,
-                  *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0):
+                  *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0,
+                  build_trades=True):
     """Run a signal-array backtest through the compiled kernel.
 
     Signals are market-style (taker). ``maker_fee`` is accepted for API symmetry but
     unused in v1 (no resting orders). ``highs``/``lows`` are accepted (full OHLC) but
     unused in v1 — reserved for intrabar limit/stop fills in a later phase.
+
+    Pass ``build_trades=False`` to skip per-trade ``Trade`` object construction (much
+    faster for large parameter sweeps that only need ``equity_curve``/``n_trades``);
+    ``trades`` is then an empty list.
 
     Returns a dict with keys ``trades`` (list[Trade]), ``equity_curve`` (list[float]),
     ``final_equity`` (float), and ``n_trades`` (int).
@@ -154,12 +159,15 @@ def fast_backtest(opens, highs, lows, closes, funding, ts,
         opens, highs, lows, closes, funding, ts, entries, exits, size, side,
         float(taker_fee), float(slippage), float(init_cash),
     )
-    trades = [
-        Trade(entry_price=float(e_p[k]), exit_price=float(x_p[k]), size=float(sz[k]),
-              pnl=float(pnl[k]), fees=float(fees[k]),
-              entry_ts=int(e_ts[k]), exit_ts=int(x_ts[k]))
-        for k in range(nt)
-    ]
+    if build_trades:
+        trades = [
+            Trade(entry_price=float(e_p[k]), exit_price=float(x_p[k]), size=float(sz[k]),
+                  pnl=float(pnl[k]), fees=float(fees[k]),
+                  entry_ts=int(e_ts[k]), exit_ts=int(x_ts[k]))
+            for k in range(nt)
+        ]
+    else:
+        trades = []
     return {
         "trades": trades,
         "equity_curve": equity.tolist(),
