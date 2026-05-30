@@ -122,7 +122,11 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
         equity[i] = cash + pos * closes[i] * multiplier
 
         # 6) entry share count from size[i] honoring size_type + leverage cap
-        ent_sh = size[i]  # [Task 3 inserts size_type conversion; Task 4 inserts leverage cap]
+        ent_sh = size[i]
+        if size_type == 1:        # value: target notional in cash terms
+            ent_sh = size[i] / (closes[i] * multiplier)
+        elif size_type == 2:      # percent: fraction of current equity as notional
+            ent_sh = size[i] * equity[i] / (closes[i] * multiplier)
 
         # 7) decide next-bar orders
         do_exit = exits[i] and pos != 0.0

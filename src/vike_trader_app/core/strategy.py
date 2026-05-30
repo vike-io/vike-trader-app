@@ -83,6 +83,18 @@ class Strategy:
         """Cancel all resting (and not-yet-filled) orders."""
         self._engine.cancel_all()
 
+    def order_target_shares(self, target: float) -> None:
+        """Submit a market order to reach a signed target position of ``target`` shares."""
+        self._engine.order_target(target)
+
+    def order_target_value(self, value: float) -> None:
+        """Target a position worth ``value`` in cash terms (signed)."""
+        self._engine.order_target_value(value)
+
+    def order_target_percent(self, pct: float) -> None:
+        """Target a position worth ``pct`` of current equity (signed)."""
+        self._engine.order_target_percent(pct)
+
     @property
     def drawdown(self) -> float:
         """Current drawdown from the equity peak (0.2 == 20% below peak) — for protections."""

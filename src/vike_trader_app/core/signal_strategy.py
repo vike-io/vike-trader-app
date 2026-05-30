@@ -19,13 +19,17 @@ class SignalStrategy:
         """
         raise NotImplementedError
 
-    def run(self, data, *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0, build_trades=True):
+    def run(self, data, *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0,
+            build_trades=True, multiplier=1.0, leverage=None, maint_margin=0.0,
+            size_type="shares", cashflow=None):
         """Generate signals from ``data`` and backtest them. ``data`` maps the keys
-        ``open, high, low, close, ts, funding`` to aligned sequences."""
+        ``open, high, low, close, ts, funding`` to aligned sequences. ``size_type`` is
+        "shares" | "value" | "percent" (interpreting the ``size`` array from ``signals``)."""
         entries, exits, size, side = self.signals(data)
         return fast_backtest(
             data["open"], data["high"], data["low"], data["close"],
             data["funding"], data["ts"], entries, exits, size, side,
             maker_fee=maker_fee, taker_fee=taker_fee, slippage=slippage, init_cash=init_cash,
-            build_trades=build_trades,
+            build_trades=build_trades, multiplier=multiplier, leverage=leverage,
+            maint_margin=maint_margin, size_type=size_type, cashflow=cashflow,
         )

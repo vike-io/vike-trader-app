@@ -97,6 +97,20 @@ class BacktestEngine:
             side = -1 if self.position.size > 0 else 1
             self._pending.append(_Order("market", side, abs(self.position.size)))
 
+    def order_target(self, target_size: float) -> None:
+        """Market order to move the position to ``target_size`` signed shares."""
+        delta = target_size - self.position.size
+        if delta > 0:
+            self.submit(+1, delta)
+        elif delta < 0:
+            self.submit(-1, -delta)
+
+    def order_target_value(self, value: float) -> None:
+        self.order_target(value / (self._price * self.multiplier))
+
+    def order_target_percent(self, pct: float) -> None:
+        self.order_target(pct * self.equity_now() / (self._price * self.multiplier))
+
     def equity_now(self) -> float:
         return self.cash + self.position.size * self._price * self.multiplier
 
