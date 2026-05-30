@@ -1,0 +1,65 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
+dist/
+*.so
+.Python
+pip-wheel-metadata/
+
+# ---- Virtual environments ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Packaging artifacts (PyInstaller / Nuitka) ----
+*.spec
+*.build/
+*.dist/
+*.onefile-build/
+
+# ---- Local data & caches (actual price files / DBs are artifacts, not source) ----
+# storage/ folder structure is kept via .gitkeep; the data files themselves are ignored by extension below
+*.parquet
+*.duckdb
+*.db
+*.sqlite
+*.sqlite3
+
+# ---- Test / coverage ----
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Secrets / env ----
+.env
+*.key
+
+# ---- Dev artifacts (offscreen screenshots, scratch) ----
+# All scratch PNGs/outputs go under tmp/ (kept as a dir via .gitkeep)
+tmp/*
+!tmp/.gitkeep
+.playwright-mcp/
+_shot_*.png
+_pytest.txt
+_val.txt
+
+# ---- OS ----
+.DS_Store
+Thumbs.db
+
+# ---- IDE ----
+.idea/
+*.swp
+
+# ---- Claude Code (local tooling config, not shared) ----
+.claude/
+
+# ---- Private notes / design docs (NOT shared publicly) ----
+docs/

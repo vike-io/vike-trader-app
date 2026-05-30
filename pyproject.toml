@@ -1,0 +1,40 @@
+[project]
+name = "vike-trader-app"
+version = "0.0.0"
+description = "Python-native, crypto-first backtesting & forward-testing platform (visual desktop + headless CLI)."
+requires-python = ">=3.12"
+license = { text = "MIT" }
+dependencies = [
+    "polars>=1.0",
+    "pyarrow>=16",
+    "numpy>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+ui = ["pyside6>=6.7", "pyqtgraph>=0.13"]
+cli = ["typer>=0.12"]
+analysis = ["skfolio>=0.6", "scikit-learn>=1.5"]
+fast = ["numba>=0.63"]  # compiled sweep fast-path (core/vectorized.py); numpy fallback when absent
+opt = ["optuna>=3"]     # TPE/CMA-ES optimizer backend (analysis/search.py); GA fallback when absent
+viz = ["plotly>=5"]     # interactive HTML tearsheet (analysis/interactive.py); static SVG otherwise
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+vike-trader-app = "vike_trader_app.cli.main:app"      # CLI — implemented in Phase 2
+vike-trader-app-gui = "vike_trader_app.ui.app:main"   # visual backtester (desktop)
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vike_trader_app"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
