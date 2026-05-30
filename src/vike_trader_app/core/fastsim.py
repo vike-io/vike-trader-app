@@ -36,6 +36,7 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
     immediately after an exit (a flip = two orders, close then open). Orders
     submitted at bar i fill at ``open[i+1]`` (next-open). No pyramiding.
     """
+    # highs/lows are reserved for future intrabar limit/stop fills; unused in v1.
     n = closes.shape[0]
     equity = np.empty(n, dtype=np.float64)
     tr_entry_p = np.empty(n, dtype=np.float64)
@@ -107,7 +108,7 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
 
         # 4) decide next-bar orders from signals (orders on the last bar never fill)
         do_exit = exits[i] and pos != 0.0
-        do_entry = entries[i] and (pos == 0.0 or exits[i])
+        do_entry = entries[i] and (pos == 0.0 or do_exit)
         if do_exit:
             p_side0 = -1 if pos > 0.0 else 1
             p_size0 = abs(pos)
@@ -132,8 +133,11 @@ def fast_backtest(opens, highs, lows, closes, funding, ts,
     """Run a signal-array backtest through the compiled kernel.
 
     Signals are market-style (taker). ``maker_fee`` is accepted for API symmetry but
-    unused in v1 (no resting orders). Returns a dict shaped like ``engine.Result``:
-    ``trades`` (list[Trade]), ``equity_curve`` (list[float]), ``final_equity``, ``n_trades``.
+    unused in v1 (no resting orders). ``highs``/``lows`` are accepted (full OHLC) but
+    unused in v1 — reserved for intrabar limit/stop fills in a later phase.
+
+    Returns a dict with keys ``trades`` (list[Trade]), ``equity_curve`` (list[float]),
+    ``final_equity`` (float), and ``n_trades`` (int).
     """
     opens = np.asarray(opens, np.float64)
     highs = np.asarray(highs, np.float64)
