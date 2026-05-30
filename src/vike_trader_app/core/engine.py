@@ -78,7 +78,24 @@ class BacktestEngine:
 
     # --- order intake (called from the strategy) ---
     def submit(self, side_sign: int, size: float) -> None:
-        self._pending.append(_Order("market", side_sign, size))
+        size = self._cap_to_leverage(side_sign, size)
+        if size > 0.0:
+            self._pending.append(_Order("market", side_sign, size))
+
+    def _cap_to_leverage(self, side_sign: int, size: float) -> float:
+        """Shrink a market order so the resulting position notional <= leverage * equity."""
+        if self.leverage is None:
+            return size
+        eq = self.equity_now()
+        if eq <= 0.0:
+            return 0.0
+        max_notional = self.leverage * eq
+        resulting = abs(self.position.size + side_sign * size)
+        if resulting * self._price * self.multiplier <= max_notional:
+            return size
+        max_pos = max_notional / (self._price * self.multiplier)
+        room = max_pos - abs(self.position.size)   # additional shares allowed up to the cap
+        return room if room > 0.0 else 0.0
 
     def submit_limit(self, side_sign: int, size: float, price: float) -> None:
         self._pending.append(_Order("limit", side_sign, size, price=price))

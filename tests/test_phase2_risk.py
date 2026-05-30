@@ -36,3 +36,16 @@ def test_order_target_value_reaches_shares():
     eng.run()
     # 2500 / (100 * 1.0) = 25 shares; fills at bar 1 open=100
     assert eng.position.size == pytest.approx(25.0)
+
+
+def test_leverage_cap_limits_position():
+    class S(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(1000.0)   # way over the cap
+
+    prices = [100.0, 100.0, 100.0]
+    eng = BacktestEngine(_flat_bars(prices), S(), cash=10_000.0, leverage=3.0)
+    eng.run()
+    # max notional = 3 * 10_000 = 30_000 at price 100 -> 300 shares cap
+    assert eng.position.size == pytest.approx(300.0)

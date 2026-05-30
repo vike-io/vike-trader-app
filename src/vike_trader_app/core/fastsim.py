@@ -128,6 +128,14 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
         elif size_type == 2:      # percent: fraction of current equity as notional
             ent_sh = size[i] * equity[i] / (closes[i] * multiplier)
 
+        if leverage > 0.0:        # cap order notional at decision-time equity
+            if equity[i] <= 0.0:
+                ent_sh = 0.0
+            else:
+                max_notional = leverage * equity[i]
+                if ent_sh * closes[i] * multiplier > max_notional:
+                    ent_sh = max_notional / (closes[i] * multiplier)
+
         # 7) decide next-bar orders
         do_exit = exits[i] and pos != 0.0
         do_entry = entries[i] and (pos == 0.0 or do_exit)

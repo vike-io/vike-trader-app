@@ -359,3 +359,31 @@ def test_size_type_value_matches_engine():
                         taker_fee=0.001, size_type="value")
     assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
     assert got["n_trades"] == len(expected.trades)
+
+
+def test_leverage_cap_matches_engine():
+    n = 20
+    rng = np.random.default_rng(51)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i == 1 for i in range(n)]
+    exits = [i == 18 for i in range(n)]
+    size = [1000.0] * n   # huge target; must be capped by leverage
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        leverage=2.0)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.size == pytest.approx(e.size, rel=1e-9)  # both capped to the same share count
+
+    # leverage 2.0 on ~10_000 equity at price ~closes[1] -> capped notional 2*equity
+    entry_price = opens[2]  # the bar-1 entry fills at bar-2 open
+    assert expected.trades[0].size == pytest.approx(2.0 * 10_000.0 / entry_price, rel=0.05)
