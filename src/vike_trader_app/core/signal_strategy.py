@@ -15,11 +15,11 @@ class SignalStrategy:
     def signals(self, data):
         """Override: return ``(entries, exits, size, side)`` arrays aligned to ``data['close']``.
 
-        ``entries``/``exits`` are boolean; ``size`` is float shares; ``side`` is +1 long / -1 short.
+        ``entries``/``exits`` are boolean; ``size`` is float shares; ``side`` is +1 long / -1 short (any value <= 0 is treated as short).
         """
         raise NotImplementedError
 
-    def run(self, data, *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0):
+    def run(self, data, *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0, build_trades=True):
         """Generate signals from ``data`` and backtest them. ``data`` maps the keys
         ``open, high, low, close, ts, funding`` to aligned sequences."""
         entries, exits, size, side = self.signals(data)
@@ -27,4 +27,5 @@ class SignalStrategy:
             data["open"], data["high"], data["low"], data["close"],
             data["funding"], data["ts"], entries, exits, size, side,
             maker_fee=maker_fee, taker_fee=taker_fee, slippage=slippage, init_cash=init_cash,
+            build_trades=build_trades,
         )
