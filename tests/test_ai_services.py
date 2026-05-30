@@ -42,3 +42,27 @@ def test_fetch_ohlcv_uses_injected_fetcher_and_summarizes():
     assert out["first_ts"] == bars[0].ts
     assert out["last_ts"] == bars[-1].ts
     assert out["closes"] == [b.close for b in bars]
+
+
+# ---------------------------------------------------------------------------
+# Task 2: run_sma_backtest
+# ---------------------------------------------------------------------------
+
+def test_run_sma_backtest_returns_expected_keys():
+    bars = _synth_bars(60)
+    result = run_sma_backtest(bars, fast=5, slow=20)
+    expected_keys = {
+        "fast", "slow", "n_trades", "total_return", "win_rate",
+        "max_drawdown", "profit_factor", "sharpe", "sortino", "calmar", "omega",
+    }
+    assert set(result) == expected_keys
+    assert result["fast"] == 5
+    assert result["slow"] == 20
+
+
+def test_run_sma_backtest_flat_series_no_trades():
+    """Constant closes must produce zero trades — no crossover ever fires."""
+    bars = [Bar(ts=i * 3_600_000, open=100.0, high=100.0, low=100.0, close=100.0, volume=1.0)
+            for i in range(60)]
+    result = run_sma_backtest(bars, fast=5, slow=20)
+    assert result["n_trades"] == 0
