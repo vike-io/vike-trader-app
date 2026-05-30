@@ -318,3 +318,44 @@ def test_size_type_percent_matches_engine():
                         taker_fee=0.001, size_type="percent")
     assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
     assert got["n_trades"] == len(expected.trades)
+
+
+class _ValueEntryStrategy(Strategy):
+    """Oracle for size_type='value': on entry, target a fixed cash notional at decision close."""
+
+    def __init__(self, entries, exits, value, side, mult):
+        super().__init__()
+        self.entries, self.exits, self.value, self.side, self.mult = entries, exits, value, side, mult
+
+    def on_bar(self, bar):  # noqa: ARG002
+        i = self.index
+        pos = self.position.size
+        did_exit = False
+        if self.exits[i] and pos != 0.0:
+            self.close()
+            did_exit = True
+        if self.entries[i] and (pos == 0.0 or did_exit):
+            shares = self.value[i] / (bar.close * self.mult)
+            (self.buy if self.side[i] > 0 else self.sell)(shares)
+
+
+def test_size_type_value_matches_engine():
+    n = 24
+    rng = np.random.default_rng(42)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 6 == 0 for i in range(n)]
+    exits = [i % 6 == 3 for i in range(n)]
+    value = [3000.0] * n      # target $3000 notional per entry
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ValueEntryStrategy(entries, exits, value, side, 1.0), taker_fee=0.001)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, value, side),
+                        taker_fee=0.001, size_type="value")
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)

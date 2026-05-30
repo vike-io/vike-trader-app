@@ -23,3 +23,16 @@ def test_order_target_percent_reaches_notional():
     eng.run()
     # decision at bar 0 (equity 10_000, price 100) -> target 50 shares; fills at bar 1 open=100
     assert eng.position.size == pytest.approx(50.0)
+
+
+def test_order_target_value_reaches_shares():
+    class S(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.order_target_value(2500.0)
+
+    prices = [100.0, 100.0, 100.0]
+    eng = BacktestEngine(_flat_bars(prices), S(), cash=10_000.0)
+    eng.run()
+    # 2500 / (100 * 1.0) = 25 shares; fills at bar 1 open=100
+    assert eng.position.size == pytest.approx(25.0)
