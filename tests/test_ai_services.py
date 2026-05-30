@@ -85,3 +85,28 @@ def test_optimize_sma_returns_ranked_results():
     # top is ranked best-first (descending total_return)
     returns = [r["total_return"] for r in result["top"]]
     assert returns == sorted(returns, reverse=True)
+
+
+# ---------------------------------------------------------------------------
+# Task 4: overfit_check
+# ---------------------------------------------------------------------------
+
+def test_overfit_check_returns_expected_keys_and_ranges():
+    # Build synthetic trial results: 9 trials with varying sharpe
+    trial_results = [{"sharpe": 0.1 * i} for i in range(1, 10)]
+    result = overfit_check(trial_results, n_obs=60)
+    assert set(result) >= {"deflated_sr", "pbo", "verdict_level", "verdict_reasons"}
+    assert 0.0 <= result["deflated_sr"] <= 1.0
+    assert 0.0 <= result["pbo"] <= 1.0
+    assert result["verdict_level"] in ("Low", "Medium", "High")
+    assert isinstance(result["verdict_reasons"], list)
+
+
+def test_overfit_check_high_trial_count_yields_lower_dsr():
+    """More trials should reduce the deflated Sharpe (harder to be significant)."""
+    few_trials = [{"sharpe": 1.5}] * 2
+    many_trials = [{"sharpe": s} for s in [1.5] + [0.1 * i for i in range(20)]]
+    result_few = overfit_check(few_trials, n_obs=100)
+    result_many = overfit_check(many_trials, n_obs=100)
+    # With many more trials, deflated SR should be lower (more competition)
+    assert result_few["deflated_sr"] >= result_many["deflated_sr"]
