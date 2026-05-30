@@ -116,7 +116,30 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
         # 3) cashflow (deposits/withdrawals); zeros by default
         cash += cashflow[i]
 
-        # 4) liquidation check  [Task 5 inserts here]
+        # 4) liquidation: force-close at the bar's adverse extreme if equity there is below maint margin
+        if maint_margin > 0.0 and pos != 0.0:
+            adverse = lows[i] if pos > 0.0 else highs[i]
+            eq_ex = cash + pos * adverse * multiplier
+            notional_ex = abs(pos) * adverse * multiplier
+            if eq_ex <= maint_margin * notional_ex:
+                liq_side = -1 if pos > 0.0 else 1
+                price = adverse * (1.0 + liq_side * slippage)
+                fee = abs(pos) * price * taker_fee * multiplier
+                cash -= fee
+                closed = pos
+                cash -= (liq_side * abs(pos)) * price * multiplier
+                tr_entry_p[nt] = avg
+                tr_exit_p[nt] = price
+                tr_size[nt] = abs(closed)
+                tr_pnl[nt] = (price - avg) * closed * multiplier
+                tr_fees[nt] = entry_fee + fee
+                tr_entry_ts[nt] = entry_ts
+                tr_exit_ts[nt] = ts[i]
+                nt += 1
+                pos = 0.0
+                avg = 0.0
+                entry_fee = 0.0
+                entry_ts = 0
 
         # 5) mark-to-market equity
         equity[i] = cash + pos * closes[i] * multiplier

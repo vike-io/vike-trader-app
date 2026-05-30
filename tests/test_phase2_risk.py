@@ -49,3 +49,22 @@ def test_leverage_cap_limits_position():
     eng.run()
     # max notional = 3 * 10_000 = 30_000 at price 100 -> 300 shares cap
     assert eng.position.size == pytest.approx(300.0)
+
+
+def test_liquidation_force_closes_on_crash():
+    class S(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(50.0)   # 50 @100 = 5000 notional on 1000 cash
+
+    bars = [
+        Bar(ts=0, open=100.0, high=101.0, low=100.0, close=100.0),
+        Bar(ts=60_000, open=100.0, high=101.0, low=100.0, close=100.0),  # entry fills here
+        Bar(ts=120_000, open=100.0, high=101.0, low=50.0, close=55.0),   # crash low -> liquidation
+        Bar(ts=180_000, open=55.0, high=56.0, low=54.0, close=55.0),
+    ]
+    eng = BacktestEngine(bars, S(), cash=1_000.0, leverage=10.0, maint_margin=0.05)
+    eng.run()
+    assert eng.position.size == 0.0        # liquidated
+    assert len(eng.trades) == 1
+    assert eng.trades[0].exit_price < 100.0  # closed at the crash extreme (with slippage)

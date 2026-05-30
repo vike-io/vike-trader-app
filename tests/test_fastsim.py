@@ -387,3 +387,30 @@ def test_leverage_cap_matches_engine():
     # leverage 2.0 on ~10_000 equity at price ~closes[1] -> capped notional 2*equity
     entry_price = opens[2]  # the bar-1 entry fills at bar-2 open
     assert expected.trades[0].size == pytest.approx(2.0 * 10_000.0 / entry_price, rel=0.05)
+
+
+def test_liquidation_matches_engine():
+    # rising open then a deep crash low on bar 4 to trigger a long liquidation
+    closes = [100.0, 100.0, 100.0, 100.0, 60.0, 60.0, 60.0]
+    opens = [100.0, 100.0, 100.0, 100.0, 95.0, 60.0, 60.0]
+    highs = [c + 1 for c in closes]
+    lows = [100.0, 100.0, 100.0, 100.0, 55.0, 59.0, 59.0]   # bar 4 low=55 forces liquidation
+    n = len(closes)
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i == 1 for i in range(n)]
+    exits = [False] * n
+    size = [50.0] * n   # 50 shares @100 = 5000 notional on 1000 cash -> 5x
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side),
+                         cash=1_000.0, leverage=10.0, maint_margin=0.05)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        init_cash=1_000.0, leverage=10.0, maint_margin=0.05)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    assert got["n_trades"] == 1   # the forced liquidation is the only round-trip
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.exit_price == pytest.approx(e.exit_price, rel=1e-9)
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)

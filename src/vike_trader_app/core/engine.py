@@ -189,6 +189,7 @@ class BacktestEngine:
             self.cash -= self.position.size * bar.close * bar.funding * self.multiplier  # longs pay +funding
         if self._cashflows is not None:
             self.cash += self._cashflows[i]
+        self._check_liquidation(bar)
         self._peak = max(self._peak, self.equity_now())
         self.strategy.on_bar(bar)
         return self.equity_now()
@@ -269,3 +270,15 @@ class BacktestEngine:
             pos.avg_price = 0.0
             self._entry_fee = 0.0
             self._entry_ts = 0
+
+    def _check_liquidation(self, bar: Bar) -> None:
+        """Force-close the position at the bar's adverse extreme if equity there is below maint margin."""
+        pos = self.position
+        if self.maint_margin <= 0.0 or pos.size == 0:
+            return
+        adverse = bar.low if pos.size > 0 else bar.high
+        eq_ex = self.cash + pos.size * adverse * self.multiplier
+        notional_ex = abs(pos.size) * adverse * self.multiplier
+        if eq_ex <= self.maint_margin * notional_ex:
+            side = -1 if pos.size > 0 else 1
+            self._apply_fill(side, abs(pos.size), adverse, bar.ts, is_maker=False)
