@@ -254,3 +254,26 @@ def test_multiplier_matches_engine():
     for g, e in zip(got["trades"], expected.trades):
         assert g.pnl == pytest.approx(e.pnl, rel=1e-9)
         assert g.fees == pytest.approx(e.fees, rel=1e-9)
+
+
+def test_cashflow_matches_engine():
+    n = 25
+    rng = np.random.default_rng(31)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i == 1 for i in range(n)]
+    exits = [i == 20 for i in range(n)]
+    size = [1.0] * n
+    side = [1] * n
+    cashflow = [500.0 if i == 5 else (-200.0 if i == 12 else 0.0) for i in range(n)]
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), cashflows=cashflow)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        cashflow=cashflow)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["final_equity"] == pytest.approx(expected.final_equity, rel=1e-9, abs=1e-9)

@@ -47,6 +47,7 @@ class BacktestEngine:
         multiplier: float = 1.0,
         leverage: float | None = None,
         maint_margin: float = 0.0,
+        cashflows=None,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -58,6 +59,7 @@ class BacktestEngine:
         self.multiplier = multiplier
         self.leverage = leverage
         self.maint_margin = maint_margin
+        self._cashflows = cashflows
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
@@ -154,6 +156,8 @@ class BacktestEngine:
         self._price = bar.close
         if bar.funding is not None and self.position.size != 0:
             self.cash -= self.position.size * bar.close * bar.funding * self.multiplier  # longs pay +funding
+        if self._cashflows is not None:
+            self.cash += self._cashflows[i]
         self._peak = max(self._peak, self.equity_now())
         self.strategy.on_bar(bar)
         return self.equity_now()

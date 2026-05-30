@@ -113,7 +113,8 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
         if pos != 0.0 and funding[i] != 0.0:
             cash -= pos * closes[i] * funding[i] * multiplier
 
-        # 3) cashflow (deposits/withdrawals); zeros by default  [Task 2 inserts here]
+        # 3) cashflow (deposits/withdrawals); zeros by default
+        cash += cashflow[i]
 
         # 4) liquidation check  [Task 5 inserts here]
 
