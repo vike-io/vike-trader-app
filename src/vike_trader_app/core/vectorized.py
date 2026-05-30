@@ -26,7 +26,7 @@ except ImportError:  # pragma: no cover - exercised only without the extra
         def _decorator(fn):
             return fn
 
-        return _decorator if (args and callable(args[0])) is False else args[0]
+        return _decorator if not (args and callable(args[0])) else args[0]
 
 
 def _ffill_position(entries: np.ndarray, exits: np.ndarray) -> np.ndarray:
