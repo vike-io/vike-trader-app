@@ -106,3 +106,26 @@ def test_edge_ratio_inf_when_no_adverse():
             Bar(ts=100, open=110.0, high=130.0, low=105.0, close=120.0)]
     t = Trade(entry_price=100.0, exit_price=120.0, size=1.0, pnl=20.0, entry_ts=0, exit_ts=100)
     assert edge_ratio([t], bars) == float("inf")
+
+
+def test_expanding_trade_metrics_running_series():
+    trades = [
+        Trade(entry_price=100.0, exit_price=110.0, size=1.0, pnl=10.0),
+        Trade(entry_price=100.0, exit_price=95.0, size=1.0, pnl=-5.0),
+        Trade(entry_price=100.0, exit_price=120.0, size=1.0, pnl=20.0),
+    ]
+    out = expanding_trade_metrics(trades)
+    assert [r["n"] for r in out] == [1, 2, 3]
+    assert out[0]["win_rate"] == pytest.approx(1.0)
+    assert out[0]["profit_factor"] == float("inf")     # no losses yet
+    assert out[0]["avg_pnl"] == pytest.approx(10.0)
+    assert out[1]["win_rate"] == pytest.approx(0.5)
+    assert out[1]["profit_factor"] == pytest.approx(10.0 / 5.0)
+    assert out[1]["avg_pnl"] == pytest.approx(2.5)
+    assert out[2]["win_rate"] == pytest.approx(2 / 3)
+    assert out[2]["profit_factor"] == pytest.approx(30.0 / 5.0)
+    assert out[2]["avg_pnl"] == pytest.approx(25.0 / 3)
+
+
+def test_expanding_trade_metrics_empty():
+    assert expanding_trade_metrics([]) == []
