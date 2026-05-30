@@ -84,3 +84,26 @@ def test_long_only_matches_engine():
         assert g.exit_price == pytest.approx(e.exit_price, rel=1e-9)
         assert g.pnl == pytest.approx(e.pnl, rel=1e-9)
         assert g.fees == pytest.approx(e.fees, rel=1e-9)
+
+
+def test_short_side_matches_engine():
+    n = 40
+    rng = np.random.default_rng(7)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 8 == 0 for i in range(n)]
+    exits = [i % 8 == 4 for i in range(n)]
+    size = [2.0] * n
+    side = [-1] * n                                # short entries
+
+    expected = _engine_result(opens, highs, lows, closes, ts, entries, exits, size, side,
+                              taker_fee=0.001)
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        taker_fee=0.001)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)   # shorts profit when price falls
