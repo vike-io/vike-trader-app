@@ -55,3 +55,19 @@ def test_query_ranks_lexical_and_dense_match_first():
 def test_query_returns_empty_for_empty_kb():
     kb = KnowledgeBase.build([], _StubEmbedder())
     assert kb.query("anything", k=5, embedder=_StubEmbedder()) == []
+
+
+def test_build_from_paths_and_save_load(tmp_path):
+    from vike_trader_app.ai.knowledge import build_from_paths
+
+    (tmp_path / "m.py").write_text("\n".join(f"def f{i}(): return {i}" for i in range(60)))
+    (tmp_path / "notes.md").write_text("# Title\nalpha engine sharpe notes\n" * 5)
+    kb = build_from_paths([tmp_path], _StubEmbedder(), patterns=(".py", ".md"))
+    assert len(kb.chunks) >= 2
+
+    out = tmp_path / "index"
+    kb.save(out)
+    loaded = KnowledgeBase.load(out)
+    assert len(loaded.chunks) == len(kb.chunks)
+    hits = loaded.query("alpha engine sharpe", k=1, embedder=_StubEmbedder())
+    assert hits and hits[0]["source"].endswith("notes.md")
