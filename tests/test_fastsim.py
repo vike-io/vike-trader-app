@@ -107,3 +107,24 @@ def test_short_side_matches_engine():
     assert got["n_trades"] == len(expected.trades)
     for g, e in zip(got["trades"], expected.trades):
         assert g.pnl == pytest.approx(e.pnl, rel=1e-9)   # shorts profit when price falls
+
+
+def test_flip_long_to_short_matches_engine():
+    n = 12
+    closes = [100, 102, 104, 103, 101, 99, 100, 101, 102, 103, 104, 105]
+    opens = [closes[0]] + closes[:-1]
+    highs = [c + 1 for c in closes]
+    lows = [c - 1 for c in closes]
+    ts = list(range(0, n * 60_000, 60_000))
+    # bar 1: go long. bar 5: flip (exit long + enter short). bar 9: flip back to long.
+    entries = [False, True, False, False, False, True, False, False, False, True, False, False]
+    exits = [False, False, False, False, False, True, False, False, False, True, False, False]
+    size = [1.0] * n
+    side = [1, 1, 1, 1, 1, -1, -1, -1, -1, 1, 1, 1]
+
+    expected = _engine_result(opens, highs, lows, closes, ts, entries, exits, size, side,
+                              taker_fee=0.002, slippage=0.001)
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        taker_fee=0.002, slippage=0.001)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
