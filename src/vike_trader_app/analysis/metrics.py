@@ -84,7 +84,22 @@ def calmar(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -
 
 
 def omega(equity_curve: list[float], threshold: float = 0.0) -> float:
-    raise NotImplementedError
+    """Omega ratio of per-bar returns: total gains above ``threshold`` / total losses below it.
+
+    ``inf`` when there are gains and no losses; 0.0 when there are no gains.
+    """
+    if len(equity_curve) < 2:
+        return 0.0
+    returns = [
+        equity_curve[i] / equity_curve[i - 1] - 1.0
+        for i in range(1, len(equity_curve))
+        if equity_curve[i - 1] != 0
+    ]
+    gains = sum(r - threshold for r in returns if r > threshold)
+    losses = sum(threshold - r for r in returns if r < threshold)
+    if losses == 0:
+        return float("inf") if gains > 0 else 0.0
+    return gains / losses
 
 
 def sharpe(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -> float:

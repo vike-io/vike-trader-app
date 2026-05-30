@@ -39,3 +39,16 @@ def test_calmar_inf_when_no_drawdown():
 
 def test_calmar_zero_for_short_curve():
     assert calmar([100.0], periods_per_year=1) == 0.0
+
+
+def test_omega_gain_loss_ratio():
+    # returns [+0.1,-0.1,+0.1], threshold 0: gains=0.2, losses=0.1 -> 2.0
+    assert omega(EQUITY, threshold=0.0) == pytest.approx(2.0, rel=1e-9)
+
+
+def test_omega_inf_when_no_losses():
+    assert omega([100.0, 110.0, 121.0], threshold=0.0) == float("inf")
+
+
+def test_omega_zero_when_no_gains():
+    assert omega([100.0, 90.0, 81.0], threshold=0.0) == 0.0
