@@ -66,3 +66,22 @@ def test_run_sma_backtest_flat_series_no_trades():
             for i in range(60)]
     result = run_sma_backtest(bars, fast=5, slow=20)
     assert result["n_trades"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 3: optimize_sma
+# ---------------------------------------------------------------------------
+
+def test_optimize_sma_returns_ranked_results():
+    bars = _synth_bars(60)
+    result = optimize_sma(bars, fasts=[3, 5, 10], slows=[15, 20, 30])
+    assert "best" in result
+    assert "top" in result
+    assert "n_combos" in result
+    # All valid combos have fast < slow
+    assert result["n_combos"] > 0
+    for entry in result["top"]:
+        assert entry["params"]["fast"] < entry["params"]["slow"]
+    # top is ranked best-first (descending total_return)
+    returns = [r["total_return"] for r in result["top"]]
+    assert returns == sorted(returns, reverse=True)
