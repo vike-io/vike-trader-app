@@ -128,3 +128,28 @@ def test_flip_long_to_short_matches_engine():
                         taker_fee=0.002, slippage=0.001)
     assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
     assert got["n_trades"] == len(expected.trades)
+
+
+def test_funding_matches_engine():
+    n = 30
+    rng = np.random.default_rng(3)
+    closes = (100 + np.cumsum(rng.normal(0, 0.8, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    funding = [0.0001 if i % 3 == 0 else 0.0 for i in range(n)]
+    entries = [i == 2 for i in range(n)]
+    exits = [i == 25 for i in range(n)]
+    size = [3.0] * n
+    side = [1] * n
+
+    # funding-aware engine oracle (Bars carry the funding rate)
+    bars = _bars(opens, highs, lows, closes, ts, funding=funding)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), fee_rate=0.0)
+    expected = eng.run()
+
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side,
+                                  funding=funding))
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["final_equity"] == pytest.approx(expected.final_equity, rel=1e-9, abs=1e-9)
