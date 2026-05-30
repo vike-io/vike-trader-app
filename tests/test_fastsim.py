@@ -153,3 +153,30 @@ def test_funding_matches_engine():
                                   funding=funding))
     assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
     assert got["final_equity"] == pytest.approx(expected.final_equity, rel=1e-9, abs=1e-9)
+
+
+def test_numba_and_numpy_paths_agree():
+    pytest.importorskip("numba")
+    import vike_trader_app.core.fastsim as fs
+
+    n = 200
+    rng = np.random.default_rng(11)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 9 == 0 for i in range(n)]
+    exits = [i % 9 == 4 for i in range(n)]
+    size = [1.5] * n
+    side = [1 if (i // 9) % 2 == 0 else -1 for i in range(n)]
+    kw = _arrays(opens, highs, lows, closes, ts, entries, exits, size, side)
+
+    compiled = fast_backtest(**kw, taker_fee=0.001, slippage=0.0005)
+
+    # force the pure-python path by calling the kernel's undecorated __wrapped__
+    py_kernel = fs._sim_kernel.py_func if hasattr(fs._sim_kernel, "py_func") else fs._sim_kernel
+    res = py_kernel(kw["opens"], kw["highs"], kw["lows"], kw["closes"], kw["funding"], kw["ts"],
+                    kw["entries"], kw["exits"], kw["size"], kw["side"], 0.001, 0.0005, 10_000.0)
+    assert res[0].tolist() == pytest.approx(compiled["equity_curve"], rel=1e-9, abs=1e-9)
+    assert int(res[1]) == compiled["n_trades"]
