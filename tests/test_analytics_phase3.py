@@ -87,3 +87,22 @@ def test_mae_mfe_no_window_bars_is_zero():
     trade = Trade(entry_price=100.0, exit_price=110.0, size=1.0, pnl=10.0, entry_ts=1000, exit_ts=2000)
     bars = _window_bars(low_at_2=95.0, high_at_2=115.0)  # all ts < 1000
     assert mae_mfe(trade, bars) == (0.0, 0.0)
+
+
+def test_edge_ratio_mean_mfe_over_mean_mae():
+    # two identical long trades, each MAE 0.05 / MFE 0.15 -> edge 3.0
+    bars = _window_bars(low_at_2=95.0, high_at_2=115.0)
+    t = Trade(entry_price=100.0, exit_price=110.0, size=1.0, pnl=10.0, entry_ts=0, exit_ts=300)
+    assert edge_ratio([t, t], bars) == pytest.approx(3.0, rel=1e-9)
+
+
+def test_edge_ratio_empty_is_zero():
+    assert edge_ratio([], []) == 0.0
+
+
+def test_edge_ratio_inf_when_no_adverse():
+    # a trade whose window never goes below entry -> mean MAE 0 -> inf
+    bars = [Bar(ts=0, open=100.0, high=120.0, low=100.0, close=110.0),
+            Bar(ts=100, open=110.0, high=130.0, low=105.0, close=120.0)]
+    t = Trade(entry_price=100.0, exit_price=120.0, size=1.0, pnl=20.0, entry_ts=0, exit_ts=100)
+    assert edge_ratio([t], bars) == float("inf")
