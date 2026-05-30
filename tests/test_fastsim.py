@@ -128,6 +128,9 @@ def test_flip_long_to_short_matches_engine():
                         taker_fee=0.002, slippage=0.001)
     assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
     assert got["n_trades"] == len(expected.trades)
+    for gtr, etr in zip(got["trades"], expected.trades):
+        assert gtr.pnl == pytest.approx(etr.pnl, rel=1e-9)
+        assert gtr.fees == pytest.approx(etr.fees, rel=1e-9)
 
 
 def test_funding_matches_engine():
@@ -202,3 +205,19 @@ def test_build_trades_false_skips_trade_objects():
     assert lean["n_trades"] == full["n_trades"]
     assert lean["trades"] == []
     assert len(full["trades"]) == full["n_trades"]
+
+
+def test_noop_njit_shim_supports_both_decorator_forms():
+    # Guards the numba-absent fallback path: bare @njit and @njit(cache=True) must both work.
+    from vike_trader_app.core.fastsim import _noop_njit
+
+    @_noop_njit
+    def f(x):
+        return x + 1
+
+    @_noop_njit(cache=True)
+    def g(x):
+        return x * 2
+
+    assert f(1) == 2
+    assert g(3) == 6

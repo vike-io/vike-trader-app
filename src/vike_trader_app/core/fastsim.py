@@ -11,18 +11,28 @@ import numpy as np
 
 from .model import Trade
 
-try:  # optional accelerator (vike_trader_app[fast]); falls back to numpy when absent
+def _noop_njit(*args, **kwargs):
+    """Fallback for ``numba.njit`` when the optional ``[fast]`` extra is absent.
+
+    Returns the wrapped function unchanged. Supports both the bare ``@_noop_njit``
+    form and the parametrized ``@_noop_njit(cache=True)`` form.
+    """
+    if args and callable(args[0]):        # bare @_noop_njit applied directly to a function
+        return args[0]
+
+    def _decorator(fn):                    # parametrized @_noop_njit(...) -> returns a decorator
+        return fn
+
+    return _decorator
+
+
+try:  # optional accelerator (vike_trader_app[fast]); falls back to a no-op when absent
     from numba import njit
 
     _HAS_NUMBA = True
 except ImportError:  # pragma: no cover - exercised only without the extra
     _HAS_NUMBA = False
-
-    def njit(*args, **kwargs):
-        def _decorator(fn):
-            return fn
-
-        return _decorator if (args and callable(args[0])) is False else args[0]
+    njit = _noop_njit
 
 
 @njit(cache=True)
