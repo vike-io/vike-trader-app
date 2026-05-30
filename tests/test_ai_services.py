@@ -1,0 +1,44 @@
+"""AI service layer: pure JSON-friendly wrappers over the engine/optimizer/overfit code."""
+
+import pytest
+
+from vike_trader_app.ai.services import (
+    bars_to_data, fetch_ohlcv, run_sma_backtest, optimize_sma, overfit_check,
+)
+from vike_trader_app.core.model import Bar
+
+
+def _synth_bars(n=60):
+    bars = []
+    price = 100.0
+    for i in range(n):
+        price = price + 1.0 + (1.5 if i % 5 == 0 else -0.5)
+        bars.append(Bar(ts=i * 3_600_000, open=price - 0.5, high=price + 1.0,
+                        low=price - 1.0, close=price, volume=1.0))
+    return bars
+
+
+def test_bars_to_data_shapes():
+    bars = _synth_bars(5)
+    d = bars_to_data(bars)
+    assert set(d) == {"open", "high", "low", "close", "ts", "funding"}
+    assert d["close"] == [b.close for b in bars]
+    assert d["funding"] == [0.0] * 5
+
+
+def test_fetch_ohlcv_uses_injected_fetcher_and_summarizes():
+    bars = _synth_bars(10)
+    called = {}
+
+    def fake_fetcher(symbol, interval, start_ms, end_ms, progress=None):
+        called["args"] = (symbol, interval, start_ms, end_ms)
+        return bars
+
+    out = fetch_ohlcv("BTCUSDT", "1h", 0, 10 * 3_600_000, source="binance", fetcher=fake_fetcher)
+    assert called["args"][0] == "BTCUSDT"
+    assert out["symbol"] == "BTCUSDT"
+    assert out["interval"] == "1h"
+    assert out["n_bars"] == 10
+    assert out["first_ts"] == bars[0].ts
+    assert out["last_ts"] == bars[-1].ts
+    assert out["closes"] == [b.close for b in bars]
