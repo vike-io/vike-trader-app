@@ -19,3 +19,39 @@ def test_chunk_text_windows_with_metadata():
 def test_chunk_text_skips_blank_only_windows():
     chunks = chunk_text("\n\n\n\n", source="x.py", window=2, overlap=0)
     assert chunks == []
+
+
+class _StubEmbedder:
+    """Deterministic bag-of-words embedder over a fixed vocab — no model, fully reproducible."""
+
+    VOCAB = ["alpha", "beta", "gamma", "delta", "engine", "sharpe"]
+
+    def embed(self, texts):
+        import re as _re
+        out = []
+        for t in texts:
+            toks = _re.findall(r"[a-z0-9_]+", t.lower())
+            out.append([float(toks.count(w)) for w in self.VOCAB])
+        return out
+
+
+def _kb():
+    chunks = [
+        Chunk(text="alpha alpha engine", source="a.py", start_line=1),
+        Chunk(text="beta gamma sharpe", source="b.py", start_line=1),
+        Chunk(text="delta delta delta", source="c.py", start_line=1),
+    ]
+    return KnowledgeBase.build(chunks, _StubEmbedder()), _StubEmbedder()
+
+
+def test_query_ranks_lexical_and_dense_match_first():
+    kb, emb = _kb()
+    hits = kb.query("alpha engine", k=2, embedder=emb)
+    assert hits[0]["source"] == "a.py"
+    assert len(hits) == 2
+    assert "score" in hits[0] and "text" in hits[0] and "start_line" in hits[0]
+
+
+def test_query_returns_empty_for_empty_kb():
+    kb = KnowledgeBase.build([], _StubEmbedder())
+    assert kb.query("anything", k=5, embedder=_StubEmbedder()) == []
