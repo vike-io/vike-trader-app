@@ -179,8 +179,13 @@ def test_numba_and_numpy_paths_agree():
 
     # force the pure-python path by calling the kernel's undecorated __wrapped__
     py_kernel = fs._sim_kernel.py_func if hasattr(fs._sim_kernel, "py_func") else fs._sim_kernel
-    res = py_kernel(kw["opens"], kw["highs"], kw["lows"], kw["closes"], kw["funding"], kw["ts"],
-                    kw["entries"], kw["exits"], kw["size"], kw["side"], 0.001, 0.0005, 10_000.0)
+    n_bars = kw["closes"].shape[0]
+    cashflow_zeros = np.zeros(n_bars, np.float64)
+    res = py_kernel(kw["opens"], kw["highs"], kw["lows"], kw["closes"], kw["funding"],
+                    cashflow_zeros, kw["ts"],
+                    kw["entries"], kw["exits"], kw["size"], kw["side"],
+                    0.001, 0.0005, 10_000.0,
+                    1.0, 0.0, 0.0, 0)
     assert res[0].tolist() == pytest.approx(compiled["equity_curve"], rel=1e-9, abs=1e-9)
     assert int(res[1]) == compiled["n_trades"]
 
@@ -221,3 +226,31 @@ def test_noop_njit_shim_supports_both_decorator_forms():
 
     assert f(1) == 2
     assert g(3) == 6
+
+
+def test_multiplier_matches_engine():
+    n = 30
+    rng = np.random.default_rng(21)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 7 == 0 for i in range(n)]
+    exits = [i % 7 == 3 for i in range(n)]
+    size = [2.0] * n
+    side = [1] * n
+    mult = 5.0
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side),
+                         fee_rate=0.001, slippage=0.0005, multiplier=mult)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        taker_fee=0.001, slippage=0.0005, multiplier=mult)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["final_equity"] == pytest.approx(expected.final_equity, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)
+        assert g.fees == pytest.approx(e.fees, rel=1e-9)

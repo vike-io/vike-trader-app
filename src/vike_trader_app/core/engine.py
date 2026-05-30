@@ -44,6 +44,9 @@ class BacktestEngine:
         slippage: float = 0.0,
         maker_fee: float | None = None,
         taker_fee: float | None = None,
+        multiplier: float = 1.0,
+        leverage: float | None = None,
+        maint_margin: float = 0.0,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -52,6 +55,9 @@ class BacktestEngine:
         self.maker_fee = maker_fee if maker_fee is not None else fee_rate
         self.taker_fee = taker_fee if taker_fee is not None else fee_rate
         self.slippage = slippage
+        self.multiplier = multiplier
+        self.leverage = leverage
+        self.maint_margin = maint_margin
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
@@ -90,7 +96,7 @@ class BacktestEngine:
             self._pending.append(_Order("market", side, abs(self.position.size)))
 
     def equity_now(self) -> float:
-        return self.cash + self.position.size * self._price
+        return self.cash + self.position.size * self._price * self.multiplier
 
     def drawdown_now(self) -> float:
         """Current drawdown from the running equity peak (0.2 == 20% below peak)."""
@@ -147,7 +153,7 @@ class BacktestEngine:
         self._now = bar.ts
         self._price = bar.close
         if bar.funding is not None and self.position.size != 0:
-            self.cash -= self.position.size * bar.close * bar.funding  # longs pay +funding
+            self.cash -= self.position.size * bar.close * bar.funding * self.multiplier  # longs pay +funding
         self._peak = max(self._peak, self.equity_now())
         self.strategy.on_bar(bar)
         return self.equity_now()
@@ -194,31 +200,31 @@ class BacktestEngine:
 
     def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> None:
         price = price * (1 + side_sign * self.slippage)  # adverse fill: buys up, sells down
-        fee = size * price * (self.maker_fee if is_maker else self.taker_fee)
+        fee = size * price * (self.maker_fee if is_maker else self.taker_fee) * self.multiplier
         self.cash -= fee
         delta = side_sign * size
         pos = self.position
         if pos.size == 0:  # open
             pos.size = delta
             pos.avg_price = price
-            self.cash -= delta * price
+            self.cash -= delta * price * self.multiplier
             self._entry_fee = fee
             self._entry_ts = ts
         elif (pos.size > 0) == (delta > 0):  # add in the same direction
             new_size = pos.size + delta
             pos.avg_price = (pos.avg_price * abs(pos.size) + price * abs(delta)) / abs(new_size)
             pos.size = new_size
-            self.cash -= delta * price
+            self.cash -= delta * price * self.multiplier
             self._entry_fee += fee
         else:  # close (full)
             closed = pos.size
-            self.cash -= delta * price
+            self.cash -= delta * price * self.multiplier
             self.trades.append(
                 Trade(
                     entry_price=pos.avg_price,
                     exit_price=price,
                     size=abs(closed),
-                    pnl=(price - pos.avg_price) * closed,
+                    pnl=(price - pos.avg_price) * closed * self.multiplier,
                     fees=self._entry_fee + fee,
                     entry_ts=self._entry_ts,
                     exit_ts=ts,
