@@ -25,3 +25,17 @@ def test_sortino_zero_when_no_downside():
 
 def test_sortino_short_curve_is_zero():
     assert sortino([100.0], periods_per_year=1) == 0.0
+
+
+def test_calmar_is_cagr_over_max_drawdown():
+    # periods_per_year = 3 = number of returns -> annualization exponent 1 -> CAGR = total return
+    # total return = 108.9/100 - 1 = 0.089; max_drawdown = (110-99)/110 = 0.1
+    assert calmar(EQUITY, periods_per_year=3) == pytest.approx(0.089 / 0.1, rel=1e-9)
+
+
+def test_calmar_inf_when_no_drawdown():
+    assert calmar([100.0, 110.0, 120.0], periods_per_year=2) == float("inf")
+
+
+def test_calmar_zero_for_short_curve():
+    assert calmar([100.0], periods_per_year=1) == 0.0

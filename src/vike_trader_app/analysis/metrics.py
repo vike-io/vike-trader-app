@@ -67,7 +67,20 @@ def sortino(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) 
 
 
 def calmar(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -> float:
-    raise NotImplementedError
+    """Annualized return (CAGR) divided by max drawdown.
+
+    ``inf`` when there is positive growth and zero drawdown; 0.0 for a flat/short curve or
+    non-positive growth with zero drawdown.
+    """
+    if len(equity_curve) < 2 or equity_curve[0] <= 0:
+        return 0.0
+    n_periods = len(equity_curve) - 1
+    growth = equity_curve[-1] / equity_curve[0]
+    cagr = growth ** (periods_per_year / n_periods) - 1.0
+    mdd = max_drawdown(equity_curve)
+    if mdd == 0:
+        return float("inf") if cagr > 0 else 0.0
+    return cagr / mdd
 
 
 def omega(equity_curve: list[float], threshold: float = 0.0) -> float:
