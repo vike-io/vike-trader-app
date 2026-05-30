@@ -31,7 +31,12 @@ def overfit_check(observed_sr: float, trial_sharpes: list[float], n_obs: int,
     return services.overfit_check(observed_sr, trial_sharpes, n_obs, n_splits=n_splits)
 
 
-_TOOLS = [run_sma_backtest, optimize_sma, fetch_ohlcv, overfit_check]
+def query_kb(query: str, k: int = 5) -> dict:
+    """Search the vike-trader codebase/knowledge base; return the top-k passages."""
+    return services.query_kb(query, k=k)
+
+
+_TOOLS = [run_sma_backtest, optimize_sma, fetch_ohlcv, overfit_check, query_kb]
 
 
 def build_server():

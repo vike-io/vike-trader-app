@@ -10,7 +10,7 @@ def test_server_builds_and_registers_tools():
 
     server = mcp_server.build_server()
     names = mcp_server.tool_names(server)
-    assert {"run_sma_backtest", "optimize_sma", "fetch_ohlcv", "overfit_check"} <= set(names)
+    assert {"run_sma_backtest", "optimize_sma", "fetch_ohlcv", "overfit_check", "query_kb"} <= set(names)
 
 
 def test_tool_wrappers_delegate_to_services():

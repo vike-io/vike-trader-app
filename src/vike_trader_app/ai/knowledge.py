@@ -160,3 +160,14 @@ def build_from_paths(roots, embedder, patterns=(".py", ".md"),
             chunks.extend(chunk_text(path.read_text(encoding="utf-8", errors="ignore"),
                                      source=str(path), window=window, overlap=overlap))
     return KnowledgeBase.build(chunks, embedder)
+
+
+def default_knowledge_base(embedder, cache_dir=None) -> "KnowledgeBase":
+    """Load a cached index, or build one over the installed package source and cache it."""
+    pkg_root = Path(__file__).resolve().parents[1]  # src/vike_trader_app
+    cache = Path(cache_dir) if cache_dir else pkg_root / ".kb_index"
+    if (cache / "chunks.json").exists():
+        return KnowledgeBase.load(cache)
+    kb = build_from_paths([pkg_root], embedder, patterns=(".py",))
+    kb.save(cache)
+    return kb

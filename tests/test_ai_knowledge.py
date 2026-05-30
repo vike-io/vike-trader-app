@@ -71,3 +71,13 @@ def test_build_from_paths_and_save_load(tmp_path):
     assert len(loaded.chunks) == len(kb.chunks)
     hits = loaded.query("alpha engine sharpe", k=1, embedder=_StubEmbedder())
     assert hits and hits[0]["source"].endswith("notes.md")
+
+
+def test_query_kb_service_with_injected_kb():
+    from vike_trader_app.ai.services import query_kb
+
+    kb, emb = _kb()
+    out = query_kb("alpha engine", k=2, kb=kb, embedder=emb)
+    assert out["n"] == 2
+    assert out["hits"][0]["source"] == "a.py"
+    assert {"source", "start_line", "text", "score"} <= set(out["hits"][0])

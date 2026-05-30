@@ -157,3 +157,19 @@ def overfit_check(observed_sr: float, trial_sharpes, n_obs: int, *,
         "pbo": float(pbo),
         "verdict": {"level": verdict.level, "reasons": list(verdict.reasons)},
     }
+
+
+def query_kb(query: str, k: int = 5, *, kb=None, embedder=None) -> dict:
+    """Search the project knowledge base; return the top-k passages.
+
+    ``kb``/``embedder`` are injectable (tests pass a stub). By default a ``FastEmbedEmbedder`` and
+    the package's prebuilt/lazily-built index are used (requires the ``[ai]`` extra).
+    """
+    from .knowledge import FastEmbedEmbedder, default_knowledge_base
+
+    if embedder is None:
+        embedder = FastEmbedEmbedder()
+    if kb is None:
+        kb = default_knowledge_base(embedder)
+    hits = kb.query(query, k=k, embedder=embedder)
+    return {"n": len(hits), "hits": hits}
