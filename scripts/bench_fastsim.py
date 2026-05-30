@@ -44,14 +44,25 @@ def main(n=1_000_000):
     size = np.ones(n)
     side = np.ones(n, np.int64)
     funding = np.zeros(n)
+    # warm up JIT (compile) before timing
     fast_backtest(opens, closes + 1, closes - 1, closes, funding, ts,
-                  entries, exits, size, side)  # warm up JIT (compile)
+                  entries, exits, size, side, build_trades=False)
+
+    # engine-throughput comparison: kernel + equity, no Trade-object materialization
+    # (mirrors how vectorbt reports raw order throughput, and how sweeps use the engine)
+    t0 = time.perf_counter()
+    fast_backtest(opens, closes + 1, closes - 1, closes, funding, ts,
+                  entries, exits, size, side, build_trades=False)
+    fast = time.perf_counter() - t0
+
+    # full wrapper (also builds ~500k Trade objects) for reference
     t0 = time.perf_counter()
     fast_backtest(opens, closes + 1, closes - 1, closes, funding, ts,
                   entries, exits, size, side)
-    fast = time.perf_counter() - t0
+    fast_full = time.perf_counter() - t0
 
-    print(f"n={n:,}  python={py:.3f}s  fast={fast:.4f}s  speedup={py / fast:.0f}x")
+    print(f"n={n:,}  python={py:.3f}s  fast={fast:.4f}s  speedup={py / fast:.0f}x"
+          f"  (full-with-trades={fast_full:.3f}s)")
 
 
 if __name__ == "__main__":
