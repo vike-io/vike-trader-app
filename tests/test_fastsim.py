@@ -179,8 +179,13 @@ def test_numba_and_numpy_paths_agree():
 
     # force the pure-python path by calling the kernel's undecorated __wrapped__
     py_kernel = fs._sim_kernel.py_func if hasattr(fs._sim_kernel, "py_func") else fs._sim_kernel
-    res = py_kernel(kw["opens"], kw["highs"], kw["lows"], kw["closes"], kw["funding"], kw["ts"],
-                    kw["entries"], kw["exits"], kw["size"], kw["side"], 0.001, 0.0005, 10_000.0)
+    n_bars = kw["closes"].shape[0]
+    cashflow_zeros = np.zeros(n_bars, np.float64)
+    res = py_kernel(kw["opens"], kw["highs"], kw["lows"], kw["closes"], kw["funding"],
+                    cashflow_zeros, kw["ts"],
+                    kw["entries"], kw["exits"], kw["size"], kw["side"],
+                    0.001, 0.0005, 10_000.0,
+                    1.0, 0.0, 0.0, 0)
     assert res[0].tolist() == pytest.approx(compiled["equity_curve"], rel=1e-9, abs=1e-9)
     assert int(res[1]) == compiled["n_trades"]
 
@@ -221,3 +226,219 @@ def test_noop_njit_shim_supports_both_decorator_forms():
 
     assert f(1) == 2
     assert g(3) == 6
+
+
+def test_multiplier_matches_engine():
+    n = 30
+    rng = np.random.default_rng(21)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 7 == 0 for i in range(n)]
+    exits = [i % 7 == 3 for i in range(n)]
+    size = [2.0] * n
+    side = [1] * n
+    mult = 5.0
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side),
+                         fee_rate=0.001, slippage=0.0005, multiplier=mult)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        taker_fee=0.001, slippage=0.0005, multiplier=mult)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["final_equity"] == pytest.approx(expected.final_equity, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)
+        assert g.fees == pytest.approx(e.fees, rel=1e-9)
+
+
+def test_cashflow_matches_engine():
+    n = 25
+    rng = np.random.default_rng(31)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i == 1 for i in range(n)]
+    exits = [i == 20 for i in range(n)]
+    size = [1.0] * n
+    side = [1] * n
+    cashflow = [500.0 if i == 5 else (-200.0 if i == 12 else 0.0) for i in range(n)]
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), cashflows=cashflow)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        cashflow=cashflow)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["final_equity"] == pytest.approx(expected.final_equity, rel=1e-9, abs=1e-9)
+
+
+class _PercentEntryStrategy(Strategy):
+    """Oracle for size_type='percent': on entry, target `pct*equity` notional at decision close."""
+
+    def __init__(self, entries, exits, pct, side, mult):
+        super().__init__()
+        self.entries, self.exits, self.pct, self.side, self.mult = entries, exits, pct, side, mult
+
+    def on_bar(self, bar):  # noqa: ARG002
+        i = self.index
+        pos = self.position.size
+        did_exit = False
+        if self.exits[i] and pos != 0.0:
+            self.close()
+            did_exit = True
+        if self.entries[i] and (pos == 0.0 or did_exit):
+            shares = self.pct[i] * self.equity / (bar.close * self.mult)
+            (self.buy if self.side[i] > 0 else self.sell)(shares)
+
+
+def test_size_type_percent_matches_engine():
+    n = 24
+    rng = np.random.default_rng(41)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 6 == 0 for i in range(n)]
+    exits = [i % 6 == 3 for i in range(n)]
+    pct = [0.5] * n          # target 50% of equity notional per entry
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _PercentEntryStrategy(entries, exits, pct, side, 1.0), taker_fee=0.001)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, pct, side),
+                        taker_fee=0.001, size_type="percent")
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+
+
+class _ValueEntryStrategy(Strategy):
+    """Oracle for size_type='value': on entry, target a fixed cash notional at decision close."""
+
+    def __init__(self, entries, exits, value, side, mult):
+        super().__init__()
+        self.entries, self.exits, self.value, self.side, self.mult = entries, exits, value, side, mult
+
+    def on_bar(self, bar):  # noqa: ARG002
+        i = self.index
+        pos = self.position.size
+        did_exit = False
+        if self.exits[i] and pos != 0.0:
+            self.close()
+            did_exit = True
+        if self.entries[i] and (pos == 0.0 or did_exit):
+            shares = self.value[i] / (bar.close * self.mult)
+            (self.buy if self.side[i] > 0 else self.sell)(shares)
+
+
+def test_size_type_value_matches_engine():
+    n = 24
+    rng = np.random.default_rng(42)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i % 6 == 0 for i in range(n)]
+    exits = [i % 6 == 3 for i in range(n)]
+    value = [3000.0] * n      # target $3000 notional per entry
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ValueEntryStrategy(entries, exits, value, side, 1.0), taker_fee=0.001)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, value, side),
+                        taker_fee=0.001, size_type="value")
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+
+
+def test_leverage_cap_matches_engine():
+    n = 20
+    rng = np.random.default_rng(51)
+    closes = (100 + np.cumsum(rng.normal(0, 1, n))).tolist()
+    opens = [closes[0]] + closes[:-1]
+    highs = [max(o, c) + 0.5 for o, c in zip(opens, closes)]
+    lows = [min(o, c) - 0.5 for o, c in zip(opens, closes)]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i == 1 for i in range(n)]
+    exits = [i == 18 for i in range(n)]
+    size = [1000.0] * n   # huge target; must be capped by leverage
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        leverage=2.0)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.size == pytest.approx(e.size, rel=1e-9)  # both capped to the same share count
+
+    # leverage 2.0 on ~10_000 equity at price ~closes[1] -> capped notional 2*equity
+    entry_price = opens[2]  # the bar-1 entry fills at bar-2 open
+    assert expected.trades[0].size == pytest.approx(2.0 * 10_000.0 / entry_price, rel=0.05)
+
+
+def test_leverage_flip_matches_engine():
+    # long, flip to a short that exceeds the cap, price drops, then exit the short.
+    # Without the pending-aware leverage cap, the engine fails to open the short -> diverges
+    # in both the realized short trade and the equity curve.
+    n = 9
+    closes = [100.0, 100.0, 100.0, 100.0, 100.0, 90.0, 90.0, 90.0, 90.0]
+    opens =  [100.0, 100.0, 100.0, 100.0, 100.0, 100.0, 90.0, 90.0, 90.0]
+    highs = [c + 1 for c in closes]
+    lows = [c - 1 for c in closes]
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i in (1, 4) for i in range(n)]   # long @1, flip @4
+    exits = [i in (4, 7) for i in range(n)]      # bar 4: close long + open short; bar 7: exit short
+    size = [1000.0] * n                           # huge target -> capped both times
+    side = [1, 1, 1, 1, -1, -1, -1, -1, -1]       # short from bar 4
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        leverage=2.0)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    assert got["n_trades"] == 2   # long round-trip + short round-trip
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.size == pytest.approx(e.size, rel=1e-9)
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)
+
+
+def test_liquidation_matches_engine():
+    # rising open then a deep crash low on bar 4 to trigger a long liquidation
+    closes = [100.0, 100.0, 100.0, 100.0, 60.0, 60.0, 60.0]
+    opens = [100.0, 100.0, 100.0, 100.0, 95.0, 60.0, 60.0]
+    highs = [c + 1 for c in closes]
+    lows = [100.0, 100.0, 100.0, 100.0, 55.0, 59.0, 59.0]   # bar 4 low=55 forces liquidation
+    n = len(closes)
+    ts = list(range(0, n * 60_000, 60_000))
+    entries = [i == 1 for i in range(n)]
+    exits = [False] * n
+    size = [50.0] * n   # 50 shares @100 = 5000 notional on 1000 cash -> 5x
+    side = [1] * n
+
+    bars = _bars(opens, highs, lows, closes, ts)
+    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side),
+                         cash=1_000.0, leverage=10.0, maint_margin=0.05)
+    expected = eng.run()
+    got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
+                        init_cash=1_000.0, leverage=10.0, maint_margin=0.05)
+    assert got["equity_curve"] == pytest.approx(expected.equity_curve, rel=1e-9, abs=1e-9)
+    assert got["n_trades"] == len(expected.trades)
+    assert got["n_trades"] == 1   # the forced liquidation is the only round-trip
+    for g, e in zip(got["trades"], expected.trades):
+        assert g.exit_price == pytest.approx(e.exit_price, rel=1e-9)
+        assert g.pnl == pytest.approx(e.pnl, rel=1e-9)

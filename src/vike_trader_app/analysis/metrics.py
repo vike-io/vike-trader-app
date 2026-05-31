@@ -43,6 +43,65 @@ def profit_factor(trades) -> float:
     return gross_profit / gross_loss
 
 
+def sortino(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -> float:
+    """Annualized Sortino ratio of per-bar returns (target = 0, risk-free = 0).
+
+    Like ``sharpe`` but the denominator is the downside deviation — the sample std of the
+    *negative* return deviations only. 0.0 if there is no downside or fewer than 2 returns.
+    """
+    if len(equity_curve) < 2:
+        return 0.0
+    returns = [
+        equity_curve[i] / equity_curve[i - 1] - 1.0
+        for i in range(1, len(equity_curve))
+        if equity_curve[i - 1] != 0
+    ]
+    if len(returns) < 2:
+        return 0.0
+    mean = sum(returns) / len(returns)
+    downside_var = sum(min(0.0, r) ** 2 for r in returns) / (len(returns) - 1)
+    downside_dev = math.sqrt(downside_var)
+    if downside_dev == 0:
+        return 0.0
+    return (mean / downside_dev) * math.sqrt(periods_per_year)
+
+
+def calmar(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -> float:
+    """Annualized return (CAGR) divided by max drawdown.
+
+    ``inf`` when there is positive growth and zero drawdown; 0.0 for a flat/short curve or
+    non-positive growth with zero drawdown.
+    """
+    if len(equity_curve) < 2 or equity_curve[0] <= 0:
+        return 0.0
+    n_periods = len(equity_curve) - 1
+    growth = equity_curve[-1] / equity_curve[0]
+    cagr = growth ** (periods_per_year / n_periods) - 1.0
+    mdd = max_drawdown(equity_curve)
+    if mdd == 0:
+        return float("inf") if cagr > 0 else 0.0
+    return cagr / mdd
+
+
+def omega(equity_curve: list[float], threshold: float = 0.0) -> float:
+    """Omega ratio of per-bar returns: total gains above ``threshold`` / total losses below it.
+
+    ``inf`` when there are gains and no losses; 0.0 when there are no gains.
+    """
+    if len(equity_curve) < 2:
+        return 0.0
+    returns = [
+        equity_curve[i] / equity_curve[i - 1] - 1.0
+        for i in range(1, len(equity_curve))
+        if equity_curve[i - 1] != 0
+    ]
+    gains = sum(r - threshold for r in returns if r > threshold)
+    losses = sum(threshold - r for r in returns if r < threshold)
+    if losses == 0:
+        return float("inf") if gains > 0 else 0.0
+    return gains / losses
+
+
 def sharpe(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -> float:
     """Annualized Sharpe of per-bar returns (risk-free = 0). 0.0 if variance is 0.
 

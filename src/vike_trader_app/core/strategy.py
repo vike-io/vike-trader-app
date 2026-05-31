@@ -19,6 +19,10 @@ class Strategy:
     #: Optional optimizable parameters, e.g. ``{"fast": [5, 10], "slow": [20, 30]}``.
     PARAM_GRID: dict = {}
 
+    #: Bars to skip before ``on_bar`` fires — set to your longest indicator lookback
+    #: so it never acts on NaN.
+    WARMUP: int = 0
+
     def __init__(self) -> None:
         self._engine = None  # set by the engine in run()
         self.index = 0  # current bar index
@@ -82,6 +86,18 @@ class Strategy:
     def cancel_all(self) -> None:
         """Cancel all resting (and not-yet-filled) orders."""
         self._engine.cancel_all()
+
+    def order_target_shares(self, target: float) -> None:
+        """Submit a market order to reach a signed target position of ``target`` shares."""
+        self._engine.order_target(target)
+
+    def order_target_value(self, value: float) -> None:
+        """Target a position worth ``value`` in cash terms (signed)."""
+        self._engine.order_target_value(value)
+
+    def order_target_percent(self, pct: float) -> None:
+        """Target a position worth ``pct`` of current equity (signed)."""
+        self._engine.order_target_percent(pct)
 
     @property
     def drawdown(self) -> float:

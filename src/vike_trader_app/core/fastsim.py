@@ -36,26 +36,27 @@ except ImportError:  # pragma: no cover - exercised only without the extra
 
 
 @njit(cache=True)
-def _sim_kernel(opens, highs, lows, closes, funding, ts,
+def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
                 entries, exits, size, side,
-                taker_fee, slippage, init_cash):  # pragma: no cover - compiled
-    """One-pass simulation. Returns (equity_curve, n_trades, trade-component arrays).
+                taker_fee, slippage, init_cash,
+                multiplier, leverage, maint_margin, size_type):  # pragma: no cover - compiled
+    """One-pass simulation mirroring engine.py. Returns (equity_curve, n_trades, trade arrays).
 
-    Decision rule at bar i (after this bar's pending fills + funding) mirrors
-    ``_ArrayStrategy.on_bar``: exit -> close to flat; entry -> open when flat or
-    immediately after an exit (a flip = two orders, close then open). Orders
-    submitted at bar i fill at ``open[i+1]`` (next-open). No pyramiding.
+    Per-bar order: fill pending (next-open) -> funding -> cashflow -> liquidation ->
+    equity mark -> decide next-bar orders. ``multiplier`` scales every notional term.
+    ``leverage<=0`` means unlimited; ``maint_margin<=0`` disables liquidation;
+    ``size_type`` 0=shares/1=value/2=percent reinterprets ``size`` at decision time.
     """
-    # highs/lows are reserved for future intrabar limit/stop fills; unused in v1.
     n = closes.shape[0]
     equity = np.empty(n, dtype=np.float64)
-    tr_entry_p = np.empty(n, dtype=np.float64)
-    tr_exit_p = np.empty(n, dtype=np.float64)
-    tr_size = np.empty(n, dtype=np.float64)
-    tr_pnl = np.empty(n, dtype=np.float64)
-    tr_fees = np.empty(n, dtype=np.float64)
-    tr_entry_ts = np.empty(n, dtype=np.int64)
-    tr_exit_ts = np.empty(n, dtype=np.int64)
+    cap = 2 * n  # a bar can close a pending position AND liquidate -> up to 2 trades/bar
+    tr_entry_p = np.empty(cap, dtype=np.float64)
+    tr_exit_p = np.empty(cap, dtype=np.float64)
+    tr_size = np.empty(cap, dtype=np.float64)
+    tr_pnl = np.empty(cap, dtype=np.float64)
+    tr_fees = np.empty(cap, dtype=np.float64)
+    tr_entry_ts = np.empty(cap, dtype=np.int64)
+    tr_exit_ts = np.empty(cap, dtype=np.int64)
     nt = 0
 
     cash = init_cash
@@ -64,7 +65,6 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
     entry_fee = 0.0
     entry_ts = 0
 
-    # pending order slots for next-bar fill (max 2: close then open)
     p_cnt = 0
     p_side0 = 0
     p_size0 = 0.0
@@ -76,29 +76,29 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
         for k in range(p_cnt):
             o_side = p_side0 if k == 0 else p_side1
             o_size = p_size0 if k == 0 else p_size1
-            price = opens[i] * (1.0 + o_side * slippage)   # adverse: buys up, sells down
-            fee = o_size * price * taker_fee
+            price = opens[i] * (1.0 + o_side * slippage)
+            fee = o_size * price * taker_fee * multiplier
             cash -= fee
             delta = o_side * o_size
-            if pos == 0.0:                                  # open
+            if pos == 0.0:
                 pos = delta
                 avg = price
-                cash -= delta * price
+                cash -= delta * price * multiplier
                 entry_fee = fee
                 entry_ts = ts[i]
-            elif (pos > 0.0) == (delta > 0.0):              # add same direction
+            elif (pos > 0.0) == (delta > 0.0):
                 new = pos + delta
                 avg = (avg * abs(pos) + price * abs(delta)) / abs(new)
                 pos = new
-                cash -= delta * price
+                cash -= delta * price * multiplier
                 entry_fee += fee
-            else:                                           # close (full)
+            else:
                 closed = pos
-                cash -= delta * price
+                cash -= delta * price * multiplier
                 tr_entry_p[nt] = avg
                 tr_exit_p[nt] = price
                 tr_size[nt] = abs(closed)
-                tr_pnl[nt] = (price - avg) * closed
+                tr_pnl[nt] = (price - avg) * closed * multiplier
                 tr_fees[nt] = entry_fee + fee
                 tr_entry_ts[nt] = entry_ts
                 tr_exit_ts[nt] = ts[i]
@@ -109,14 +109,57 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
                 entry_ts = 0
         p_cnt = 0
 
-        # 2) perp funding on the held position (funding[i] == 0.0 when absent)
+        # 2) perp funding on the held position
         if pos != 0.0 and funding[i] != 0.0:
-            cash -= pos * closes[i] * funding[i]
+            cash -= pos * closes[i] * funding[i] * multiplier
 
-        # 3) mark-to-market equity
-        equity[i] = cash + pos * closes[i]
+        # 3) cashflow (deposits/withdrawals); zeros by default
+        cash += cashflow[i]
 
-        # 4) decide next-bar orders from signals (orders on the last bar never fill)
+        # 4) liquidation: force-close at the bar's adverse extreme if equity there is below maint margin
+        if maint_margin > 0.0 and pos != 0.0:
+            adverse = lows[i] if pos > 0.0 else highs[i]
+            eq_ex = cash + pos * adverse * multiplier
+            notional_ex = abs(pos) * adverse * multiplier
+            if eq_ex <= maint_margin * notional_ex:
+                liq_side = -1 if pos > 0.0 else 1
+                price = adverse * (1.0 + liq_side * slippage)
+                fee = abs(pos) * price * taker_fee * multiplier
+                cash -= fee
+                closed = pos
+                cash -= (liq_side * abs(pos)) * price * multiplier
+                tr_entry_p[nt] = avg
+                tr_exit_p[nt] = price
+                tr_size[nt] = abs(closed)
+                tr_pnl[nt] = (price - avg) * closed * multiplier
+                tr_fees[nt] = entry_fee + fee
+                tr_entry_ts[nt] = entry_ts
+                tr_exit_ts[nt] = ts[i]
+                nt += 1
+                pos = 0.0
+                avg = 0.0
+                entry_fee = 0.0
+                entry_ts = 0
+
+        # 5) mark-to-market equity
+        equity[i] = cash + pos * closes[i] * multiplier
+
+        # 6) entry share count from size[i] honoring size_type + leverage cap
+        ent_sh = size[i]
+        if size_type == 1:        # value: target notional in cash terms
+            ent_sh = size[i] / (closes[i] * multiplier)
+        elif size_type == 2:      # percent: fraction of current equity as notional
+            ent_sh = size[i] * equity[i] / (closes[i] * multiplier)
+
+        if leverage > 0.0:        # cap order notional at decision-time equity
+            if equity[i] <= 0.0:
+                ent_sh = 0.0
+            else:
+                max_notional = leverage * equity[i]
+                if ent_sh * closes[i] * multiplier > max_notional:
+                    ent_sh = max_notional / (closes[i] * multiplier)
+
+        # 7) decide next-bar orders
         do_exit = exits[i] and pos != 0.0
         do_entry = entries[i] and (pos == 0.0 or do_exit)
         if do_exit:
@@ -124,13 +167,13 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
             p_size0 = abs(pos)
             if do_entry:
                 p_side1 = 1 if side[i] > 0 else -1
-                p_size1 = size[i]
+                p_size1 = ent_sh
                 p_cnt = 2
             else:
                 p_cnt = 1
         elif do_entry:
             p_side0 = 1 if side[i] > 0 else -1
-            p_size0 = size[i]
+            p_size0 = ent_sh
             p_cnt = 1
 
     return (equity, nt, tr_entry_p, tr_exit_p, tr_size, tr_pnl, tr_fees,
@@ -140,16 +183,15 @@ def _sim_kernel(opens, highs, lows, closes, funding, ts,
 def fast_backtest(opens, highs, lows, closes, funding, ts,
                   entries, exits, size, side,
                   *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0,
-                  build_trades=True):
+                  build_trades=True, multiplier=1.0, leverage=None, maint_margin=0.0,
+                  size_type="shares", cashflow=None):
     """Run a signal-array backtest through the compiled kernel.
 
-    Signals are market-style (taker). ``maker_fee`` is accepted for API symmetry but
-    unused in v1 (no resting orders). ``highs``/``lows`` are accepted (full OHLC) but
-    unused in v1 — reserved for intrabar limit/stop fills in a later phase.
-
-    Pass ``build_trades=False`` to skip per-trade ``Trade`` object construction (much
-    faster for large parameter sweeps that only need ``equity_curve``/``n_trades``);
-    ``trades`` is then an empty list.
+    Signals are market-style (taker). ``maker_fee`` is accepted for API symmetry but unused.
+    ``multiplier`` scales every notional term. ``leverage`` (None=unlimited) caps order notional
+    at decision time; ``maint_margin`` (>0) enables intrabar liquidation at the bar's adverse
+    extreme. ``size_type`` is "shares" | "value" | "percent". ``cashflow`` is an optional per-bar
+    deposit/withdrawal sequence. Pass ``build_trades=False`` to skip ``Trade`` construction.
 
     Returns a dict with keys ``trades`` (list[Trade]), ``equity_curve`` (list[float]),
     ``final_equity`` (float), and ``n_trades`` (int).
@@ -164,10 +206,15 @@ def fast_backtest(opens, highs, lows, closes, funding, ts,
     exits = np.asarray(exits, np.bool_)
     size = np.asarray(size, np.float64)
     side = np.asarray(side, np.int64)
+    n = closes.shape[0]
+    cashflow = np.zeros(n, np.float64) if cashflow is None else np.asarray(cashflow, np.float64)
+    lev = 0.0 if leverage is None else float(leverage)
+    st = {"shares": 0, "value": 1, "percent": 2}[size_type]
 
     (equity, nt, e_p, x_p, sz, pnl, fees, e_ts, x_ts) = _sim_kernel(
-        opens, highs, lows, closes, funding, ts, entries, exits, size, side,
+        opens, highs, lows, closes, funding, cashflow, ts, entries, exits, size, side,
         float(taker_fee), float(slippage), float(init_cash),
+        float(multiplier), lev, float(maint_margin), st,
     )
     if build_trades:
         trades = [

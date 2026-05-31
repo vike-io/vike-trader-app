@@ -44,6 +44,10 @@ class BacktestEngine:
         slippage: float = 0.0,
         maker_fee: float | None = None,
         taker_fee: float | None = None,
+        multiplier: float = 1.0,
+        leverage: float | None = None,
+        maint_margin: float = 0.0,
+        cashflows=None,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -52,6 +56,10 @@ class BacktestEngine:
         self.maker_fee = maker_fee if maker_fee is not None else fee_rate
         self.taker_fee = taker_fee if taker_fee is not None else fee_rate
         self.slippage = slippage
+        self.multiplier = multiplier
+        self.leverage = leverage
+        self.maint_margin = maint_margin
+        self._cashflows = cashflows
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
@@ -70,7 +78,35 @@ class BacktestEngine:
 
     # --- order intake (called from the strategy) ---
     def submit(self, side_sign: int, size: float) -> None:
-        self._pending.append(_Order("market", side_sign, size))
+        size = self._cap_to_leverage(side_sign, size)
+        if size > 0.0:
+            self._pending.append(_Order("market", side_sign, size))
+
+    def _cap_to_leverage(self, side_sign: int, size: float) -> float:
+        """Shrink a market order so the resulting position notional <= leverage * equity.
+
+        Accounts for already-pending market orders (so a flip's pending close brings the
+        projected position to flat before the new entry is capped — matching the kernel,
+        which caps each entry as if opened from flat). Reducing/closing orders are never shrunk.
+        """
+        if self.leverage is None:
+            return size
+        eq = self.equity_now()
+        if eq <= 0.0:
+            return 0.0
+        max_pos = (self.leverage * eq) / (self._price * self.multiplier)
+        pending = 0.0
+        for o in self._pending:
+            if o.kind == "market":
+                pending += o.side * o.size
+        projected = self.position.size + pending
+        if (projected >= 0.0) == (side_sign > 0):
+            room = max_pos - abs(projected)          # extending the same side (or from flat)
+        else:
+            room = abs(projected) + max_pos          # reducing or crossing through zero
+        if room <= 0.0:
+            return 0.0
+        return size if size <= room else room
 
     def submit_limit(self, side_sign: int, size: float, price: float) -> None:
         self._pending.append(_Order("limit", side_sign, size, price=price))
@@ -89,8 +125,22 @@ class BacktestEngine:
             side = -1 if self.position.size > 0 else 1
             self._pending.append(_Order("market", side, abs(self.position.size)))
 
+    def order_target(self, target_size: float) -> None:
+        """Market order to move the position to ``target_size`` signed shares."""
+        delta = target_size - self.position.size
+        if delta > 0:
+            self.submit(+1, delta)
+        elif delta < 0:
+            self.submit(-1, -delta)
+
+    def order_target_value(self, value: float) -> None:
+        self.order_target(value / (self._price * self.multiplier))
+
+    def order_target_percent(self, pct: float) -> None:
+        self.order_target(pct * self.equity_now() / (self._price * self.multiplier))
+
     def equity_now(self) -> float:
-        return self.cash + self.position.size * self._price
+        return self.cash + self.position.size * self._price * self.multiplier
 
     def drawdown_now(self) -> float:
         """Current drawdown from the running equity peak (0.2 == 20% below peak)."""
@@ -141,15 +191,20 @@ class BacktestEngine:
         Identical to one iteration of ``run`` — the shared primitive the forward
         (paper) loop drives live, so strategies behave the same backtest↔forward.
         Pending orders fill at this bar's open *before* the strategy runs (next-open).
+        The strategy is gated until ``i >= strategy.WARMUP`` (never act on NaN).
         """
         self._fill_pending(bar)  # fills before decisions => next-open semantics
         self.strategy.index = i
         self._now = bar.ts
         self._price = bar.close
         if bar.funding is not None and self.position.size != 0:
-            self.cash -= self.position.size * bar.close * bar.funding  # longs pay +funding
+            self.cash -= self.position.size * bar.close * bar.funding * self.multiplier  # longs pay +funding
+        if self._cashflows is not None:
+            self.cash += self._cashflows[i]
+        self._check_liquidation(bar)
         self._peak = max(self._peak, self.equity_now())
-        self.strategy.on_bar(bar)
+        if i >= self.strategy.WARMUP:  # warm-up gate: skip until indicators have history
+            self.strategy.on_bar(bar)
         return self.equity_now()
 
     def _fill_pending(self, bar: Bar) -> None:
@@ -194,31 +249,31 @@ class BacktestEngine:
 
     def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> None:
         price = price * (1 + side_sign * self.slippage)  # adverse fill: buys up, sells down
-        fee = size * price * (self.maker_fee if is_maker else self.taker_fee)
+        fee = size * price * (self.maker_fee if is_maker else self.taker_fee) * self.multiplier
         self.cash -= fee
         delta = side_sign * size
         pos = self.position
         if pos.size == 0:  # open
             pos.size = delta
             pos.avg_price = price
-            self.cash -= delta * price
+            self.cash -= delta * price * self.multiplier
             self._entry_fee = fee
             self._entry_ts = ts
         elif (pos.size > 0) == (delta > 0):  # add in the same direction
             new_size = pos.size + delta
             pos.avg_price = (pos.avg_price * abs(pos.size) + price * abs(delta)) / abs(new_size)
             pos.size = new_size
-            self.cash -= delta * price
+            self.cash -= delta * price * self.multiplier
             self._entry_fee += fee
         else:  # close (full)
             closed = pos.size
-            self.cash -= delta * price
+            self.cash -= delta * price * self.multiplier
             self.trades.append(
                 Trade(
                     entry_price=pos.avg_price,
                     exit_price=price,
                     size=abs(closed),
-                    pnl=(price - pos.avg_price) * closed,
+                    pnl=(price - pos.avg_price) * closed * self.multiplier,
                     fees=self._entry_fee + fee,
                     entry_ts=self._entry_ts,
                     exit_ts=ts,
@@ -228,3 +283,15 @@ class BacktestEngine:
             pos.avg_price = 0.0
             self._entry_fee = 0.0
             self._entry_ts = 0
+
+    def _check_liquidation(self, bar: Bar) -> None:
+        """Force-close the position at the bar's adverse extreme if equity there is below maint margin."""
+        pos = self.position
+        if self.maint_margin <= 0.0 or pos.size == 0:
+            return
+        adverse = bar.low if pos.size > 0 else bar.high
+        eq_ex = self.cash + pos.size * adverse * self.multiplier
+        notional_ex = abs(pos.size) * adverse * self.multiplier
+        if eq_ex <= self.maint_margin * notional_ex:
+            side = -1 if pos.size > 0 else 1
+            self._apply_fill(side, abs(pos.size), adverse, bar.ts, is_maker=False)

@@ -1,17 +1,24 @@
 """core — the headless engine. ZERO GUI imports (no PySide6, no pyqtgraph).
 
-Modules (created during implementation, test-first):
-    model.py        Bar, Order, Trade, Position (domain model)
-    engine.py       BacktestEngine — the bar event loop
-    strategy.py     Strategy base class + StrategyContext (the stable API)
-    broker_sim.py   simulated fills: fees, funding, intrabar rules, look-ahead guards
-    forwardtest.py  forward-test runner (Phase 3)
-    indicators/     technical-analysis library
+Modules:
+    model.py           Bar, Position, Trade (domain model)
+    engine.py          BacktestEngine — the bar event loop
+    strategy.py        Strategy base class (the stable API)
+    strategy_loader.py load user Strategy subclasses
+    portfolio.py       multi-symbol / cross-sectional helpers
+    timeframe.py       timeframe parsing + resampling to higher TFs
+    vectorized.py      fast vectorized backtest path (grid builder / parity oracle)
+    fastsim.py         compiled (numba) fast_backtest kernel — parity with engine.py
+    signal_strategy.py SignalStrategy front door over the compiled kernel
+    forward.py         forward (paper) runner — drive the engine live, bar-at-a-time
+    indicators/        technical-analysis library (self-describing @indicator registry)
 
-Engine rules (validated against MT5 / Jesse / Backtrader / backtesting.py source):
+Engine rules (implemented):
   - broker processes pending orders BEFORE the strategy runs each bar (look-ahead guard)
   - market orders fill at the NEXT bar's open
+  - warm-up gating: the strategy is skipped until ``i >= Strategy.WARMUP`` (never act on NaN)
+
+Planned (design spec, not yet implemented):
   - intrabar SL/TP: pessimistic default + count-and-flag when both fall in one bar
   - normalize gap-opens toward prior close before fills
-  - gate the strategy on an indicator warm-up count (never act on NaN)
 """

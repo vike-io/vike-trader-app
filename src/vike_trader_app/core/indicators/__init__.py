@@ -7,6 +7,7 @@ Pure functions over a list of values, returning a list of the SAME length with
 from .ta import (
     adx,
     atr,
+    avgprice,
     bollinger,
     cci,
     donchian,
@@ -15,19 +16,22 @@ from .ta import (
     from_talib,
     keltner,
     macd,
+    medprice,
     obv,
     roc,
     rsi,
     sma,
     stochastic,
     true_range,
+    typprice,
     vwap,
+    wclprice,
     williams_r,
     wma,
 )
 
 __all__ = [
-    "adx", "atr", "bollinger", "cci", "donchian", "ema", "expand", "from_talib",
-    "keltner", "macd", "obv", "roc", "rsi", "sma", "stochastic", "true_range",
-    "vwap", "williams_r", "wma",
+    "adx", "atr", "avgprice", "bollinger", "cci", "donchian", "ema", "expand", "from_talib",
+    "keltner", "macd", "medprice", "obv", "roc", "rsi", "sma", "stochastic", "true_range",
+    "typprice", "vwap", "wclprice", "williams_r", "wma",
 ]
