@@ -19,6 +19,10 @@ class Strategy:
     #: Optional optimizable parameters, e.g. ``{"fast": [5, 10], "slow": [20, 30]}``.
     PARAM_GRID: dict = {}
 
+    #: Bars to skip before ``on_bar`` fires — set to your longest indicator lookback
+    #: so it never acts on NaN.
+    WARMUP: int = 0
+
     def __init__(self) -> None:
         self._engine = None  # set by the engine in run()
         self.index = 0  # current bar index

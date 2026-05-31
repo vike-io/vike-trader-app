@@ -191,6 +191,7 @@ class BacktestEngine:
         Identical to one iteration of ``run`` — the shared primitive the forward
         (paper) loop drives live, so strategies behave the same backtest↔forward.
         Pending orders fill at this bar's open *before* the strategy runs (next-open).
+        The strategy is gated until ``i >= strategy.WARMUP`` (never act on NaN).
         """
         self._fill_pending(bar)  # fills before decisions => next-open semantics
         self.strategy.index = i
@@ -202,7 +203,8 @@ class BacktestEngine:
             self.cash += self._cashflows[i]
         self._check_liquidation(bar)
         self._peak = max(self._peak, self.equity_now())
-        self.strategy.on_bar(bar)
+        if i >= self.strategy.WARMUP:  # warm-up gate: skip until indicators have history
+            self.strategy.on_bar(bar)
         return self.equity_now()
 
     def _fill_pending(self, bar: Bar) -> None:
