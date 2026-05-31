@@ -1,4 +1,11 @@
-"""Studio tab: ChatPanel | CodeEditor | ResultsPanel with Run wiring and ChatWorker thread."""
+"""Studio tab: ChatPanel | CodeEditor | ResultsPanel with Run wiring and ChatWorker thread.
+
+The ResultsPanel mirrors TradingView/TradeLocker (validated by the UI/UX research +
+the 66-frame video teardown): a Chart tab (candles + entry/exit markers over an equity
+curve with drawdown shading), a Performance tab (KPI hero tiles pairing % with $, plus a
+detail grid), a Trades tab (round-trips, click-to-focus-chart), and a Runs tab (the
+iterate-and-compare history table). The overfit-risk verdict banner sits above the tabs.
+"""
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -6,38 +13,40 @@ from . import theme
 from .chart import EquityChart, PriceChart
 from .editor import CodeEditor
 
+_YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
+
 
 # ---------------------------------------------------------------------------
 # ResultsPanel
 # ---------------------------------------------------------------------------
 
 class ResultsPanel(QtWidgets.QWidget):
-    """Tabbed results — Chart | Performance | Trades — mirroring TradingView/TradeLocker.
+    """Tabbed results — Chart | Performance | Trades | Runs."""
 
-    The price chart (candles + entry/exit markers) over an equity curve is the
-    default view; the metric grid and the trade list are tabs. The overfit-verdict
-    banner sits ABOVE the tabs so the honesty signal is always visible.
-    """
-
-    _METRIC_DEFS = [
-        ("n_trades",        "Trades"),
-        ("total_return",    "Total return"),
-        ("net_profit",      "Net profit"),
+    # hero tiles (caption); values + $ sub-lines are computed in show_report
+    _HERO = [
+        ("roi",            "ROI"),
+        ("annualized",     "Annualized ROI"),
+        ("win_ratio",      "Win Ratio"),
+        ("max_drawdown",   "Max Drawdown"),
+        ("time_in_market", "Time in Market"),
+        ("profit_factor",  "Profit Factor"),
+    ]
+    # detail grid (plain TesterReport attributes)
+    _DETAIL = [
         ("sharpe",          "Sharpe"),
         ("sortino",         "Sortino"),
-        ("max_drawdown",    "Max drawdown"),
-        ("profit_factor",   "Profit factor"),
-        ("win_rate",        "Win rate"),
+        ("net_profit",      "Net profit"),
         ("expected_payoff", "Expected payoff"),
         ("recovery_factor", "Recovery factor"),
         ("avg_win",         "Avg win"),
         ("avg_loss",        "Avg loss"),
+        ("total_fees",      "Total fees"),
     ]
-    # metrics where >0 is good (green) / <0 is bad (red)
-    _SIGNED = {"total_return", "net_profit", "expected_payoff", "avg_win"}
-    _PCT = {"total_return", "max_drawdown", "win_rate"}
+    _SIGNED = {"net_profit", "expected_payoff", "avg_win"}
 
     _TRADE_COLS = ["#", "Side", "Entry", "Exit", "Size", "PnL", "Return"]
+    _RUN_COLS = ["#", "Return", "Max DD", "Trades", "Sharpe"]
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -45,14 +54,14 @@ class ResultsPanel(QtWidgets.QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
-        # verdict banner (above the tabs — always visible)
+        # verdict banner (above the tabs — always visible when set)
         self._banner = QtWidgets.QLabel()
         self._banner.setVisible(False)
         self._banner.setWordWrap(True)
         self._banner.setContentsMargins(8, 0, 8, 0)
         root.addWidget(self._banner)
 
-        # status label (errors / info)
+        # status / toast line (errors red, success green)
         self._status = QtWidgets.QLabel()
         self._status.setWordWrap(True)
         self._status.setVisible(False)
@@ -62,85 +71,165 @@ class ResultsPanel(QtWidgets.QWidget):
         self._tabs = QtWidgets.QTabWidget()
         root.addWidget(self._tabs, 1)
 
-        # --- Chart tab: candles + trade markers over an equity curve ---
+        self._build_chart_tab()
+        self._build_performance_tab()
+        self._build_trades_tab()
+        self._build_runs_tab()
+
+        self.last_report: object = None
+        self._report_trades: list = []           # row -> Trade, for the chart-focus linkage
+        self._runs: list = []                     # stored runs: {report, bars, overlays}
+
+    # --- tab builders ---
+
+    def _build_chart_tab(self) -> None:
         self._price = PriceChart()
         self._equity = EquityChart()
-        chart_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        chart_split.addWidget(self._price)
-        chart_split.addWidget(self._equity)
-        chart_split.setStretchFactor(0, 3)
-        chart_split.setStretchFactor(1, 1)
-        self._tabs.addTab(chart_split, "Chart")
+        split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        split.addWidget(self._price)
+        split.addWidget(self._equity)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        self._tabs.addTab(split, "Chart")
 
-        # --- Performance tab: metric cards in a 2-col grid ---
-        perf = QtWidgets.QWidget()
-        pgrid = QtWidgets.QGridLayout(perf)
-        pgrid.setContentsMargins(12, 12, 12, 12)
-        pgrid.setHorizontalSpacing(16)
-        pgrid.setVerticalSpacing(10)
+    def _make_tile(self, caption: str):
+        cell = QtWidgets.QWidget()
+        cv = QtWidgets.QVBoxLayout(cell)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
+        cap = QtWidgets.QLabel(caption.upper())
+        cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:1px;")
+        val = QtWidgets.QLabel("—")
+        val.setStyleSheet(f"color:{theme.TEXT};font-weight:700;font-size:17px;")
+        sub = QtWidgets.QLabel("")
+        sub.setStyleSheet(f"color:{theme.TEXT2};font-size:10px;")
+        cv.addWidget(cap)
+        cv.addWidget(val)
+        cv.addWidget(sub)
+        return cell, val, sub
+
+    def _build_performance_tab(self) -> None:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        body = QtWidgets.QWidget()
+        outer = QtWidgets.QVBoxLayout(body)
+        outer.setContentsMargins(12, 12, 12, 12)
+        outer.setSpacing(14)
+
+        # hero KPI tiles (2 columns)
+        hero = QtWidgets.QGridLayout()
+        hero.setHorizontalSpacing(18)
+        hero.setVerticalSpacing(12)
+        self._hero_val: dict[str, QtWidgets.QLabel] = {}
+        self._hero_sub: dict[str, QtWidgets.QLabel] = {}
+        for i, (key, label) in enumerate(self._HERO):
+            cell, val, sub = self._make_tile(label)
+            self._hero_val[key] = val
+            self._hero_sub[key] = sub
+            hero.addWidget(cell, i // 2, i % 2)
+        outer.addLayout(hero)
+
+        line = QtWidgets.QFrame()
+        line.setFrameShape(QtWidgets.QFrame.HLine)
+        line.setStyleSheet(f"color:{theme.BORDER};")
+        outer.addWidget(line)
+
+        # detail grid (smaller)
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(8)
         self._value_labels: dict[str, QtWidgets.QLabel] = {}
-        ncols = 2
-        for i, (key, label) in enumerate(self._METRIC_DEFS):
-            r, c = divmod(i, ncols)
-            cell = QtWidgets.QWidget()
-            cv = QtWidgets.QVBoxLayout(cell)
-            cv.setContentsMargins(0, 0, 0, 0)
-            cv.setSpacing(1)
+        for i, (key, label) in enumerate(self._DETAIL):
             cap = QtWidgets.QLabel(label.upper())
             cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:1px;")
             val = QtWidgets.QLabel("—")
             val.setStyleSheet(self._metric_style("", None))
-            cv.addWidget(cap)
-            cv.addWidget(val)
             self._value_labels[key] = val
-            pgrid.addWidget(cell, r, c)
-        pgrid.setRowStretch((len(self._METRIC_DEFS) + ncols - 1) // ncols, 1)
-        self._tabs.addTab(perf, "Performance")
+            r, c = divmod(i, 2)
+            holder = QtWidgets.QWidget()
+            hv = QtWidgets.QVBoxLayout(holder)
+            hv.setContentsMargins(0, 0, 0, 0)
+            hv.setSpacing(0)
+            hv.addWidget(cap)
+            hv.addWidget(val)
+            grid.addWidget(holder, r, c)
+        outer.addLayout(grid)
+        outer.addStretch(1)
 
-        # --- Trades tab ---
+        scroll.setWidget(body)
+        self._tabs.addTab(scroll, "Performance")
+
+    def _build_trades_tab(self) -> None:
         self._trades = QtWidgets.QTableWidget(0, len(self._TRADE_COLS))
         self._trades.setHorizontalHeaderLabels(self._TRADE_COLS)
         self._trades.verticalHeader().setVisible(False)
         self._trades.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._trades.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._trades.setAlternatingRowColors(True)
-        _hdr = self._trades.horizontalHeader()
-        _hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)  # share width, no h-scroll
-        _hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)  # "#" snug
+        hdr = self._trades.horizontalHeader()
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         self._trades.cellClicked.connect(self._on_trade_clicked)
         self._tabs.addTab(self._trades, "Trades")
 
-        self.last_report: object = None
-        self._report_trades: list = []  # row index -> Trade, for the chart-focus linkage
+    def _build_runs_tab(self) -> None:
+        self._runs_table = QtWidgets.QTableWidget(0, len(self._RUN_COLS))
+        self._runs_table.setHorizontalHeaderLabels(self._RUN_COLS)
+        self._runs_table.verticalHeader().setVisible(False)
+        self._runs_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._runs_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._runs_table.setAlternatingRowColors(True)
+        self._runs_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self._runs_table.cellClicked.connect(self._on_run_clicked)
+        self._tabs.addTab(self._runs_table, "Runs")
 
     # --- formatting helpers ---
+
+    @staticmethod
+    def _pct(v) -> str:
+        return "—" if v is None else f"{v * 100:.2f}%"
+
+    @staticmethod
+    def _money(v) -> str:
+        if v is None:
+            return ""
+        sign = "+" if v > 0 else "−" if v < 0 else ""
+        return f"{sign}${abs(v):,.2f}"
 
     def _fmt(self, key: str, raw) -> str:
         if raw is None:
             return "—"
-        if isinstance(raw, int) and key not in self._PCT:
+        if isinstance(raw, int):
             return str(raw)
         if raw == float("inf"):
             return "∞"
         if raw == float("-inf"):
             return "−∞"
-        if key in self._PCT:
-            return f"{raw * 100:.2f}%"
         return f"{raw:,.2f}"
 
     def _metric_style(self, key: str, raw) -> str:
-        base = "font-weight:700;font-size:15px;"
+        base = "font-weight:700;font-size:13px;"
         color = theme.TEXT
         if isinstance(raw, (int, float)) and raw == raw:  # exclude NaN
             if key in self._SIGNED:
                 color = theme.UP if raw > 0 else theme.DOWN if raw < 0 else theme.TEXT
-            elif key == "max_drawdown":
-                color = theme.DOWN if raw > 0 else theme.TEXT
-            elif key == "profit_factor":
-                color = theme.UP if raw >= 1 else theme.DOWN
-            elif key == "win_rate":
-                color = theme.UP if raw >= 0.5 else theme.TEXT
+            elif key == "avg_loss":
+                color = theme.DOWN if raw < 0 else theme.TEXT
         return f"color:{color};{base}"
+
+    def _hero_color(self, key: str, raw) -> str:
+        good = theme.TEXT
+        if isinstance(raw, (int, float)) and raw == raw:
+            if key in ("roi", "annualized"):
+                good = theme.UP if raw > 0 else theme.DOWN if raw < 0 else theme.TEXT
+            elif key == "max_drawdown":
+                good = theme.DOWN if raw > 0 else theme.TEXT
+            elif key == "profit_factor":
+                good = theme.UP if raw >= 1 else theme.DOWN
+            elif key == "win_ratio":
+                good = theme.UP if raw >= 0.5 else theme.TEXT
+        return f"color:{good};font-weight:700;font-size:17px;"
 
     def _set_banner(self, verdict) -> None:
         if verdict is None:
@@ -155,6 +244,46 @@ class ResultsPanel(QtWidgets.QWidget):
             f"color:{color};background:rgba(0,0,0,0.25);border:1px solid {color};"
         )
         self._banner.setVisible(True)
+
+    # --- derived $/annualized/time-in-market (computed from report + bars) ---
+
+    @staticmethod
+    def _derive(report, bars):
+        eq = report.equity_curve or []
+        initial = eq[0] if eq else None
+        roi_dollars = (report.final_equity - initial) if initial is not None else None
+        # exact $ drawdown from the equity curve (peak-to-trough)
+        dd_dollars, peak = None, float("-inf")
+        if eq:
+            worst = 0.0
+            for v in eq:
+                peak = v if v > peak else peak
+                worst = max(worst, peak - v)
+            dd_dollars = worst
+        # annualized ROI from the real bar time-span
+        annualized = None
+        years = None
+        if bars and len(bars) > 1:
+            span_ms = bars[-1].ts - bars[0].ts
+            years = span_ms / _YEAR_MS if span_ms > 0 else None
+            if years and initial and initial > 0 and report.final_equity > 0:
+                annualized = (report.final_equity / initial) ** (1.0 / years) - 1.0
+        # time in market: fraction of the span spent holding a position
+        time_in_market = None
+        if bars and len(bars) > 1:
+            span_ms = bars[-1].ts - bars[0].ts
+            if span_ms > 0:
+                held = sum(max(0, t.exit_ts - t.entry_ts) for t in report.trades)
+                time_in_market = min(1.0, held / span_ms)
+        wins = sum(1 for t in report.trades if t.pnl > 0)
+        return {
+            "roi_dollars": roi_dollars,
+            "dd_dollars": dd_dollars,
+            "annualized": annualized,
+            "time_in_market": time_in_market,
+            "wins": wins,
+            "n": len(report.trades),
+        }
 
     def _fill_trades(self, trades) -> None:
         self._report_trades = list(trades)
@@ -184,22 +313,50 @@ class ResultsPanel(QtWidgets.QWidget):
     def _on_trade_clicked(self, row: int, _col: int) -> None:
         """Trade-row click -> jump to the Chart tab and zoom to that trade (TradingView UX)."""
         if 0 <= row < len(self._report_trades):
-            self._tabs.setCurrentIndex(0)  # Chart
+            self._tabs.setCurrentIndex(0)
             self._price.focus_ts(self._report_trades[row].entry_ts)
+
+    def _on_run_clicked(self, row: int, _col: int) -> None:
+        """Run-row click -> re-display that stored run (iterate-and-compare loop)."""
+        if 0 <= row < len(self._runs):
+            r = self._runs[row]
+            self.show_report(r["report"], r["bars"], r["overlays"])
 
     # --- public ---
 
     def show_report(self, report, bars=None, overlays=None) -> None:
-        """Populate metrics + chart + trade list from a TesterReport.
-
-        ``bars`` (the price series) is needed to draw candles + trade markers; pass it
-        from the Run path. ``overlays`` is ``{label: series}`` for indicator lines.
-        """
+        """Display a TesterReport: hero KPIs + detail grid + chart + trades."""
         self.last_report = report
         self._status.setVisible(False)
         self._status.setText("")
 
-        for key, _ in self._METRIC_DEFS:
+        d = self._derive(report, bars)
+
+        # hero tiles
+        self._hero_val["roi"].setText(self._pct(report.total_return))
+        self._hero_sub["roi"].setText(self._money(d["roi_dollars"]))
+        self._hero_val["annualized"].setText(self._pct(d["annualized"]))
+        self._hero_sub["annualized"].setText("")
+        self._hero_val["win_ratio"].setText(self._pct(report.win_rate))
+        self._hero_sub["win_ratio"].setText(f"{d['wins']} of {d['n']}")
+        self._hero_val["max_drawdown"].setText(self._pct(report.max_drawdown))
+        self._hero_sub["max_drawdown"].setText(
+            self._money(-d["dd_dollars"]) if d["dd_dollars"] is not None else ""
+        )
+        self._hero_val["time_in_market"].setText(self._pct(d["time_in_market"]))
+        self._hero_sub["time_in_market"].setText("")
+        pf = report.profit_factor
+        self._hero_val["profit_factor"].setText(self._fmt("profit_factor", pf))
+        self._hero_sub["profit_factor"].setText("")
+        for key, val in (
+            ("roi", report.total_return), ("annualized", d["annualized"]),
+            ("win_ratio", report.win_rate), ("max_drawdown", report.max_drawdown),
+            ("profit_factor", pf),
+        ):
+            self._hero_val[key].setStyleSheet(self._hero_color(key, val))
+
+        # detail grid
+        for key, _ in self._DETAIL:
             raw = getattr(report, key, None)
             self._value_labels[key].setText(self._fmt(key, raw))
             self._value_labels[key].setStyleSheet(self._metric_style(key, raw))
@@ -221,29 +378,70 @@ class ResultsPanel(QtWidgets.QWidget):
         self._fill_trades(report.trades)
         self._tabs.setCurrentIndex(0)  # land on the chart — the headline view
 
+    def add_run(self, report, bars=None, overlays=None) -> None:
+        """Record a run in the history table (versioned) and display it."""
+        self._runs.append({"report": report, "bars": bars, "overlays": overlays})
+        n = len(self._runs)
+        row = n - 1
+        self._runs_table.insertRow(row)
+        cells = [
+            str(n),
+            self._pct(report.total_return),
+            self._pct(report.max_drawdown),
+            str(report.n_trades),
+            self._fmt("sharpe", report.sharpe),
+        ]
+        for c, text in enumerate(cells):
+            item = QtWidgets.QTableWidgetItem(text)
+            if c == 1:
+                item.setForeground(QtGui.QColor(theme.UP if report.total_return >= 0 else theme.DOWN))
+            elif c == 2:
+                item.setForeground(QtGui.QColor(theme.DOWN if report.max_drawdown > 0 else theme.TEXT))
+            if c >= 1:
+                item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            self._runs_table.setItem(row, c, item)
+        self.show_report(report, bars, overlays)
+        self.toast(f"✓ Backtest complete · run {n}")
+
+    def toast(self, msg: str) -> None:
+        """Transient success line (green)."""
+        self._status.setText(msg)
+        self._status.setStyleSheet(f"color:{theme.UP};font-size:11px;padding:4px 8px;")
+        self._status.setVisible(True)
+
     def show_error(self, msg: str) -> None:
         """Display an error message; clear any previous report."""
         self.last_report = None
         self._report_trades = []
         self._banner.setVisible(False)
         self._status.setText(msg)
-        self._status.setStyleSheet(f"color:{theme.DOWN};font-size:11px;padding:6px 8px;")
+        self._status.setStyleSheet(f"color:{theme.DOWN};font-size:11px;padding:4px 8px;")
         self._status.setVisible(True)
         for lbl in self._value_labels.values():
             lbl.setText("—")
             lbl.setStyleSheet(self._metric_style("", None))
+        for lbl in self._hero_val.values():
+            lbl.setText("—")
+        for lbl in self._hero_sub.values():
+            lbl.setText("")
         self._trades.setRowCount(0)
 
     def clear(self) -> None:
-        """Reset to blank state."""
+        """Reset to blank state (including run history)."""
         self.last_report = None
         self._report_trades = []
+        self._runs = []
         self._banner.setVisible(False)
         self._status.setVisible(False)
         for lbl in self._value_labels.values():
             lbl.setText("—")
             lbl.setStyleSheet(self._metric_style("", None))
+        for lbl in self._hero_val.values():
+            lbl.setText("—")
+        for lbl in self._hero_sub.values():
+            lbl.setText("")
         self._trades.setRowCount(0)
+        self._runs_table.setRowCount(0)
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +622,7 @@ class StudioTab(QtWidgets.QWidget):
     # --- run ---
 
     def run_code(self) -> None:
-        """Load the strategy from the editor and run a single backtest."""
+        """Load the strategy from the editor and run a single backtest, recording it."""
         from vike_trader_app.core.strategy_loader import load_strategy_from_string
         from vike_trader_app.tester import StrategyTester, TesterConfig
 
@@ -438,7 +636,7 @@ class StudioTab(QtWidgets.QWidget):
                 overlays = cls().chart_overlays([b.close for b in self._bars]) or {}
             except Exception:  # noqa: BLE001 - overlays are optional, never block the run
                 overlays = {}
-            self.results.show_report(report, self._bars, overlays)
+            self.results.add_run(report, self._bars, overlays)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"{type(exc).__name__}: {exc}")
 
