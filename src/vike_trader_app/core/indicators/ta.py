@@ -8,6 +8,7 @@ hosts the small ``expand`` helper and the optional ``from_talib`` bridge.
 
 from .momentum import adx, cci, macd, roc, rsi, stochastic, williams_r
 from .overlap import ema, sma, wma
+from .pairs import ratio, spread, spread_zscore  # registers pairs indicators
 from .price import avgprice, medprice, typprice, wclprice  # registers price transforms
 from .statistics import (  # registers statistics indicators
     linearreg,
@@ -23,6 +24,12 @@ from .statistics import (  # registers statistics indicators
     kurtosis,
     mad,
 )
+from .structure import (  # registers structure indicators
+    zigzag,
+    williams_fractal,
+    pivot_points,
+    volume_profile_poc,
+)
 from .volatility import atr, bollinger, donchian, keltner, true_range
 from .volume import obv, vwap
 
@@ -32,6 +39,8 @@ __all__ = [
     "avgprice", "medprice", "typprice", "wclprice",
     "linearreg", "linearreg_slope", "linearreg_angle", "linearreg_intercept",
     "tsf", "var", "beta", "correl", "zscore", "skew", "kurtosis", "mad",
+    "ratio", "spread", "spread_zscore",
+    "zigzag", "williams_fractal", "pivot_points", "volume_profile_poc",
     "expand", "from_talib",
 ]
 
