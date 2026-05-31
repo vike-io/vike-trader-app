@@ -467,3 +467,383 @@ def doji_star(opens, highs, lows, closes):
         elif _is_black(po, pc) and h < pc:
             out[i] = -100
     return out
+
+
+# ---------------------------------------------------------------------------
+# Task 3: Two-bar patterns (16)
+# ---------------------------------------------------------------------------
+
+
+def _is_marubozu(o, h, l, c):
+    """True if both shadows are ≤5% of range (open/close-side near extremes)."""
+    rng = _range(h, l)
+    if rng <= 0:
+        return False
+    return _upper(o, h, c) <= 0.05 * rng and _lower(o, l, c) <= 0.05 * rng
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["harami"])
+def harami(opens, highs, lows, closes):
+    """Current body inside prev body, opposite colour.
+    Prev black / curr white → +100 (bullish reversal).
+    Prev white / curr black → -100 (bearish reversal).
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, pc = opens[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        prev_hi = max(po, pc)
+        prev_lo = min(po, pc)
+        curr_hi = max(o, c)
+        curr_lo = min(o, c)
+        # current body must be strictly inside prev body
+        if curr_hi >= prev_hi or curr_lo <= prev_lo:
+            continue
+        if _is_black(po, pc) and _is_white(o, c):
+            out[i] = 100
+        elif _is_white(po, pc) and _is_black(o, c):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["harami_cross"])
+def harami_cross(opens, highs, lows, closes):
+    """Harami where the current bar is a doji → ±100 by prior colour."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(1, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        po, pc = opens[i - 1], closes[i - 1]
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        # current bar must be a doji (tiny body)
+        if _body(o, c) > 0.1 * a:
+            continue
+        prev_hi = max(po, pc)
+        prev_lo = min(po, pc)
+        # doji open/close within prev body
+        doji_mid = (o + c) / 2
+        if doji_mid >= prev_hi or doji_mid <= prev_lo:
+            continue
+        if _is_black(po, pc):
+            out[i] = 100
+        elif _is_white(po, pc):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["piercing"])
+def piercing(opens, highs, lows, closes):
+    """Prev black, curr white opens below prev low, closes above prev midpoint
+    (but below prev open) → +100.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_black(po, pc):
+            continue
+        if not _is_white(o, c):
+            continue
+        midpoint = (po + pc) / 2
+        # curr opens below prev low, closes above midpoint but below prev open
+        if o < pl and c > midpoint and c < po:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["dark_cloud_cover"])
+def dark_cloud_cover(opens, highs, lows, closes):
+    """Prev white, curr black opens above prev high, closes below prev midpoint
+    (but above prev open) → -100.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_white(po, pc):
+            continue
+        if not _is_black(o, c):
+            continue
+        midpoint = (po + pc) / 2
+        # curr opens above prev high, closes below midpoint but above prev open
+        if o > ph and c < midpoint and c > po:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["counterattack"])
+def counterattack(opens, highs, lows, closes):
+    """Opposite-colour bodies that close at approximately the same price.
+    Curr white (prev black) → +100; curr black (prev white) → -100.
+    Tolerance: |curr_close - prev_close| ≤ 3% of avg body.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(1, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        po, pc = opens[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if abs(c - pc) > 0.03 * a + 1e-9:
+            continue
+        # both must have meaningful bodies
+        if _body(po, pc) < 0.3 * a or _body(o, c) < 0.3 * a:
+            continue
+        if _is_black(po, pc) and _is_white(o, c):
+            out[i] = 100
+        elif _is_white(po, pc) and _is_black(o, c):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["meeting_lines"])
+def meeting_lines(opens, highs, lows, closes):
+    """Like counterattack: opposite-colour candles whose closes meet at ≈same price → ±100.
+    Slightly tighter tolerance (≤2% of avg body) than counterattack.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(1, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        po, pc = opens[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if abs(c - pc) > 0.02 * a + 1e-9:
+            continue
+        if _body(po, pc) < 0.3 * a or _body(o, c) < 0.3 * a:
+            continue
+        if _is_black(po, pc) and _is_white(o, c):
+            out[i] = 100
+        elif _is_white(po, pc) and _is_black(o, c):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["separating_lines"])
+def separating_lines(opens, highs, lows, closes):
+    """Same colour as prior, current opens at prior open continuing trend.
+    Two whites with same open → +100; two blacks with same open → -100.
+    Tolerance: |curr_open - prev_open| ≤ 1% of avg body.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(1, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        po, pc = opens[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if abs(o - po) > 0.01 * a + 1e-9:
+            continue
+        if _is_white(po, pc) and _is_white(o, c):
+            out[i] = 100
+        elif _is_black(po, pc) and _is_black(o, c):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["matching_low"])
+def matching_low(opens, highs, lows, closes):
+    """Two black candles with equal closes → +100 (bullish reversal at support).
+    Tolerance: |curr_close - prev_close| ≤ 1% of avg body.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(1, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        po, pc = opens[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_black(po, pc) or not _is_black(o, c):
+            continue
+        if abs(c - pc) <= 0.01 * a + 1e-9:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["on_neck"])
+def on_neck(opens, highs, lows, closes):
+    """Prev black (downtrend), curr white opens below prev low, closes at ≈prev low → -100 (continuation).
+    Tolerance: |curr_close - prev_low| ≤ 3% of prev body.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_black(po, pc) or not _is_white(o, c):
+            continue
+        prev_body = _body(po, pc)
+        if prev_body <= 0:
+            continue
+        # curr opens below prev low, closes near prev low
+        if o < pl and abs(c - pl) <= 0.03 * prev_body:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["in_neck"])
+def in_neck(opens, highs, lows, closes):
+    """Prev black, curr white opens below prev low, closes slightly into prev body (near prev close) → -100.
+    Close is just above prev close (small penetration ≤ 15% of prev body).
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_black(po, pc) or not _is_white(o, c):
+            continue
+        prev_body = _body(po, pc)
+        if prev_body <= 0:
+            continue
+        # curr opens below prev low, closes slightly into prev body (just above prev close)
+        if o < pl and c > pc and (c - pc) <= 0.15 * prev_body:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["thrusting"])
+def thrusting(opens, highs, lows, closes):
+    """Prev black, curr white opens below prev low, closes into prev body but below midpoint → -100."""
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_black(po, pc) or not _is_white(o, c):
+            continue
+        prev_body = _body(po, pc)
+        if prev_body <= 0:
+            continue
+        midpoint = (po + pc) / 2
+        # opens below prev low, closes into body (above prev close) but below midpoint
+        if o < pl and c > pc and c < midpoint:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["kicking"])
+def kicking(opens, highs, lows, closes):
+    """Two marubozu of opposite colour with a gap between them.
+    White after black with gap up → +100; black after white with gap down → -100.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        if not _is_marubozu(po, ph, pl, pc) or not _is_marubozu(o, h, l, c):
+            continue
+        if _is_black(po, pc) and _is_white(o, c) and o > pc:
+            out[i] = 100
+        elif _is_white(po, pc) and _is_black(o, c) and o < pc:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["kicking_by_length"])
+def kicking_by_length(opens, highs, lows, closes):
+    """Kicking pattern, signal determined by the longer marubozu's colour."""
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        if not _is_marubozu(po, ph, pl, pc) or not _is_marubozu(o, h, l, c):
+            continue
+        # must be a kicking pattern (opposite colours, gap between them)
+        is_gap_up = _is_black(po, pc) and _is_white(o, c) and o > pc
+        is_gap_down = _is_white(po, pc) and _is_black(o, c) and o < pc
+        if not (is_gap_up or is_gap_down):
+            continue
+        prev_body = _body(po, pc)
+        curr_body = _body(o, c)
+        if curr_body >= prev_body:
+            # longer is curr
+            out[i] = 100 if _is_white(o, c) else -100
+        else:
+            # longer is prev
+            out[i] = 100 if _is_white(po, pc) else -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["homing_pigeon"])
+def homing_pigeon(opens, highs, lows, closes):
+    """Two black candles, second is harami-inside the first → +100 (bullish reversal)."""
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, pc = opens[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if not _is_black(po, pc) or not _is_black(o, c):
+            continue
+        # second (curr) body must be inside first (prev) body
+        prev_hi = max(po, pc)
+        prev_lo = min(po, pc)
+        curr_hi = max(o, c)
+        curr_lo = min(o, c)
+        if curr_hi < prev_hi and curr_lo > prev_lo:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["gap_side_side_white"])
+def gap_side_side_white(opens, highs, lows, closes):
+    """Two white candles of similar size gapping the same direction → continuation +100.
+    Curr white candle gaps above prev white close; body sizes within 50% of each other.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(1, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, h, l, c = opens[i], highs[i], lows[i], closes[i]
+        if not _is_white(po, pc) or not _is_white(o, c):
+            continue
+        prev_body = _body(po, pc)
+        curr_body = _body(o, c)
+        if prev_body <= 0 or curr_body <= 0:
+            continue
+        # gap up: curr entirely above prev close
+        if o > pc and abs(curr_body - prev_body) <= 0.5 * max(prev_body, curr_body):
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["tasuki_gap"])
+def tasuki_gap(opens, highs, lows, closes):
+    """Gap then an opposite-colour candle that stays within the gap → continuation ±100.
+    Bullish (+100): prev white, curr black opens within prev body and closes above prev open.
+    Bearish (-100): prev black, curr white opens within prev body and closes below prev open.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(1, n):
+        po, ph, pl, pc = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o, c = opens[i], closes[i]
+        if _is_white(po, pc) and _is_black(o, c):
+            # upside tasuki: curr black opens within prev body, closes above prev open
+            if min(po, pc) < o < max(po, pc) and c > po:
+                out[i] = 100
+        elif _is_black(po, pc) and _is_white(o, c):
+            # downside tasuki: curr white opens within prev body, closes below prev open
+            if min(po, pc) < o < max(po, pc) and c < po:
+                out[i] = -100
+    return out
