@@ -122,3 +122,79 @@ def sharpe(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -
     if std == 0:
         return 0.0
     return (mean / std) * math.sqrt(periods_per_year)
+
+
+def net_profit(trades) -> float:
+    """Sum of gross trade PnL (matches the win_rate/profit_factor convention: uses t.pnl)."""
+    return sum(t.pnl for t in trades)
+
+
+def gross_profit(trades) -> float:
+    """Sum of PnL over winning trades."""
+    return sum(t.pnl for t in trades if t.pnl > 0)
+
+
+def gross_loss(trades) -> float:
+    """Absolute value of summed PnL over losing trades (>= 0)."""
+    return -sum(t.pnl for t in trades if t.pnl < 0)
+
+
+def total_fees(trades) -> float:
+    """Sum of round-trip fees across trades."""
+    return sum(t.fees for t in trades)
+
+
+def expected_payoff(trades) -> float:
+    """Average gross PnL per trade (0.0 if there are no trades)."""
+    return net_profit(trades) / len(trades) if trades else 0.0
+
+
+def recovery_factor(equity_curve: list[float]) -> float:
+    """Total return divided by max drawdown (both fractions). ``inf`` when there's no drawdown."""
+    dd = max_drawdown(equity_curve)
+    if dd == 0:
+        return float("inf") if total_return(equity_curve) > 0 else 0.0
+    return total_return(equity_curve) / dd
+
+
+def _max_run(trades, win: bool) -> int:
+    best = run = 0
+    for t in trades:
+        hit = t.pnl > 0 if win else t.pnl < 0
+        run = run + 1 if hit else 0
+        best = max(best, run)
+    return best
+
+
+def consecutive_wins(trades) -> int:
+    """Longest run of consecutive winning trades."""
+    return _max_run(trades, win=True)
+
+
+def consecutive_losses(trades) -> int:
+    """Longest run of consecutive losing trades."""
+    return _max_run(trades, win=False)
+
+
+def largest_win(trades) -> float:
+    """Largest single-trade PnL (0.0 if no winners)."""
+    wins = [t.pnl for t in trades if t.pnl > 0]
+    return max(wins) if wins else 0.0
+
+
+def largest_loss(trades) -> float:
+    """Most negative single-trade PnL (0.0 if no losers)."""
+    losses = [t.pnl for t in trades if t.pnl < 0]
+    return min(losses) if losses else 0.0
+
+
+def avg_win(trades) -> float:
+    """Mean PnL of winning trades (0.0 if none)."""
+    wins = [t.pnl for t in trades if t.pnl > 0]
+    return sum(wins) / len(wins) if wins else 0.0
+
+
+def avg_loss(trades) -> float:
+    """Mean PnL of losing trades (0.0 if none)."""
+    losses = [t.pnl for t in trades if t.pnl < 0]
+    return sum(losses) / len(losses) if losses else 0.0
