@@ -549,6 +549,63 @@ class ChatWorker(QtCore.QThread):
 
 
 # ---------------------------------------------------------------------------
+# BacktestConfigDialog
+# ---------------------------------------------------------------------------
+
+class BacktestConfigDialog(QtWidgets.QDialog):
+    """Per-run config — starting capital + date range over the loaded bars.
+
+    Mirrors TradeLocker's "Backtest" modal. Instrument/resolution come from the data
+    already loaded into the Studio, so the modal only collects capital + a date sub-range.
+    """
+
+    def __init__(self, bars, capital: float = 10_000.0, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Backtest configuration")
+        self.setModal(True)
+        form = QtWidgets.QFormLayout(self)
+
+        self.capital = QtWidgets.QDoubleSpinBox()
+        self.capital.setRange(1.0, 1e9)
+        self.capital.setDecimals(2)
+        self.capital.setPrefix("$ ")
+        self.capital.setGroupSeparatorShown(True)
+        self.capital.setValue(float(capital))
+        form.addRow("Starting capital", self.capital)
+
+        self.start = QtWidgets.QDateEdit()
+        self.end = QtWidgets.QDateEdit()
+        for w in (self.start, self.end):
+            w.setCalendarPopup(True)
+        if bars:
+            d0 = QtCore.QDateTime.fromMSecsSinceEpoch(int(bars[0].ts)).date()
+            d1 = QtCore.QDateTime.fromMSecsSinceEpoch(int(bars[-1].ts)).date()
+            for w in (self.start, self.end):
+                w.setDateRange(d0, d1)
+            self.start.setDate(d0)
+            self.end.setDate(d1)
+            note = QtWidgets.QLabel(f"{len(bars):,} bars loaded")
+            note.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;")
+            form.addRow(note)
+        form.addRow("Start date", self.start)
+        form.addRow("End date", self.end)
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Cancel)
+        run = btns.addButton("Run", QtWidgets.QDialogButtonBox.AcceptRole)
+        run.setObjectName("play")
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        form.addRow(btns)
+
+    def values(self):
+        """(capital, start_ts, end_ts) — start/end span the selected dates inclusive (epoch ms)."""
+        cap = self.capital.value()
+        start_ts = QtCore.QDateTime(self.start.date(), QtCore.QTime(0, 0, 0)).toMSecsSinceEpoch()
+        end_ts = QtCore.QDateTime(self.end.date(), QtCore.QTime(23, 59, 59)).toMSecsSinceEpoch()
+        return cap, start_ts, end_ts
+
+
+# ---------------------------------------------------------------------------
 # StudioTab
 # ---------------------------------------------------------------------------
 
@@ -562,6 +619,8 @@ class StudioTab(QtWidgets.QWidget):
         self._config = None          # set to TesterConfig() on first use
         self._agent_client = None
         self._worker: ChatWorker | None = None  # keep a reference so GC doesn't collect it
+        self._run_capital = None     # None -> use config.cash
+        self._run_range = None       # None -> full bars, else (start_ts, end_ts)
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -573,6 +632,9 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_run.setObjectName("play")
         self._btn_run.clicked.connect(self.run_code)
         toolbar.addWidget(self._btn_run)
+        self._btn_config = QtWidgets.QPushButton("⚙ Settings")
+        self._btn_config.clicked.connect(self._open_config)
+        toolbar.addWidget(self._btn_config)
         toolbar.addStretch(1)
         root.addLayout(toolbar)
 
@@ -622,23 +684,52 @@ class StudioTab(QtWidgets.QWidget):
     # --- run ---
 
     def run_code(self) -> None:
-        """Load the strategy from the editor and run a single backtest, recording it."""
+        """Load the strategy from the editor and run a single backtest, recording it.
+
+        Honors the per-run config (starting capital + date-range slice) set via the
+        Settings modal; falls back to the full bars + the tab's TesterConfig otherwise.
+        """
+        from dataclasses import replace
+
         from vike_trader_app.core.strategy_loader import load_strategy_from_string
         from vike_trader_app.tester import StrategyTester, TesterConfig
 
         code = self.editor.text()
         config = self._config if self._config is not None else TesterConfig()
+        if self._run_capital is not None:
+            config = replace(config, cash=self._run_capital)
+        bars = self._bars
+        if self._run_range is not None:
+            s, e = self._run_range
+            bars = [b for b in self._bars if s <= b.ts <= e] or self._bars
         try:
             cls = load_strategy_from_string(code, validate=True)
-            report = StrategyTester(cls(), self._bars, config).run()
+            report = StrategyTester(cls(), bars, config).run()
             overlays = {}
             try:
-                overlays = cls().chart_overlays([b.close for b in self._bars]) or {}
+                overlays = cls().chart_overlays([b.close for b in bars]) or {}
             except Exception:  # noqa: BLE001 - overlays are optional, never block the run
                 overlays = {}
-            self.results.add_run(report, self._bars, overlays)
+            self.results.add_run(report, bars, overlays)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"{type(exc).__name__}: {exc}")
+
+    def _open_config(self) -> None:
+        """Open the per-run backtest-config modal (capital + date range)."""
+        from vike_trader_app.tester import TesterConfig
+
+        if not self._bars:
+            QtWidgets.QMessageBox.information(self, "Backtest settings", "Load data first.")
+            return
+        cap = self._run_capital
+        if cap is None:
+            cap = (self._config.cash if self._config is not None else TesterConfig().cash)
+        dlg = BacktestConfigDialog(self._bars, capital=cap, parent=self)
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
+            cap, start_ts, end_ts = dlg.values()
+            self._run_capital = cap
+            self._run_range = (start_ts, end_ts)
+            self.results.toast(f"Settings · capital ${cap:,.0f} · range set — press Run")
 
     # --- chat ---
 

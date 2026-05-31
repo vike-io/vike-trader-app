@@ -99,3 +99,34 @@ def test_trade_click_jumps_to_chart(app):
     tab.results._on_trade_clicked(0, 0)         # click the first trade
     assert tab.results._tabs.currentIndex() == 0  # jumped to the Chart tab
     assert tab.results._price._follow is False    # chart focused on that trade
+
+
+def test_runs_history_records_and_reopens(app):
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    tab.run_code()
+    tab.run_code()
+    assert len(tab.results._runs) == 2
+    assert tab.results._runs_table.rowCount() == 2
+    tab.results._on_run_clicked(0, 0)            # reopening a past run must not raise
+    assert tab.results.last_report is not None
+
+
+def test_backtest_config_dialog_values(app):
+    from vike_trader_app.ui.studio import BacktestConfigDialog
+    dlg = BacktestConfigDialog(_bars(), capital=5000.0)
+    cap, start_ts, end_ts = dlg.values()
+    assert cap == 5000.0
+    assert start_ts <= end_ts
+
+
+def test_run_respects_capital_override(app):
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    tab._run_capital = 5000.0                     # as the Settings modal would set
+    tab.run_code()
+    assert abs(tab.results.last_report.equity_curve[0] - 5000.0) < 1.0
