@@ -2,7 +2,7 @@
 
 Lower-latency alternative to ``PollingBarFeed``: instead of polling REST, it holds a
 websocket and reacts to pushed ``bar`` frames. It emits the same **closed** ``Bar`` objects
-to the same ``on_bar`` callback, so it drops into ``ForwardTester`` unchanged — only the
+to the same ``on_bar`` callback, so it drops into ``PaperTester`` unchanged — only the
 transport differs.
 
 The pure frame-handling core (``bar_from_frame`` / ``handle_frame``) is fully unit-tested

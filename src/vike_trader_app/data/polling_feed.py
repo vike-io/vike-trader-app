@@ -6,7 +6,7 @@ still-forming current candle is never emitted (look-ahead-safe). Latency is up t
 interval; that's the trade-off for needing zero work on the vike.io side.
 
 Exposes the same shape a websocket feed would (``poll_once`` / ``run(on_bar)``), so
-``ForwardTester`` is identical whichever backend drives it. The clock and sleep are injected,
+``PaperTester`` is identical whichever backend drives it. The clock and sleep are injected,
 so the loop is fully deterministic in tests; only ``make_vike_fetch_latest`` does network I/O.
 """
 
