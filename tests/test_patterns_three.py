@@ -259,25 +259,25 @@ def test_three_outside_no_pattern():
 # ---------------------------------------------------------------------------
 
 def test_three_line_strike_bullish_fires():
-    # 3 white soldiers then long black engulfing all 3
-    b1 = (9.0,  10.5, 8.9, 10.4)
-    b2 = (9.8,  11.5, 9.7, 11.4)
-    b3 = (10.8, 12.5, 10.7, 12.4)
-    b4 = (12.5, 12.6, 8.8,  9.0)   # black, opens above b3 close, closes below b1 open
-    o, h, l, c = _series(_CTX + [b1, b2, b3, b4])
-    out = three_line_strike(o, h, l, c)
-    assert out[-1] == 100, f"three_line_strike bull should be +100 (reversal up expected), got {out[-1]}"
-
-
-def test_three_line_strike_bearish_fires():
-    # 3 black crows then long white engulfing all 3
+    # 3 black crows then long white engulfing all 3 → +100 (bullish reversal)
     b1 = (12.0, 12.1, 10.5, 10.6)
     b2 = (11.2, 11.3,  9.7,  9.8)
     b3 = (10.2, 10.3,  8.7,  8.8)
     b4 = (8.7,  8.8,  12.2, 12.0)  # white, opens below b3 close, closes above b1 open
     o, h, l, c = _series(_CTX + [b1, b2, b3, b4])
     out = three_line_strike(o, h, l, c)
-    assert out[-1] == -100, f"three_line_strike bear should be -100 (reversal down expected), got {out[-1]}"
+    assert out[-1] == 100, f"three_line_strike bull should be +100 (bullish reversal), got {out[-1]}"
+
+
+def test_three_line_strike_bearish_fires():
+    # 3 white soldiers then long black engulfing all 3 → -100 (bearish reversal)
+    b1 = (9.0,  10.5, 8.9, 10.4)
+    b2 = (9.8,  11.5, 9.7, 11.4)
+    b3 = (10.8, 12.5, 10.7, 12.4)
+    b4 = (12.5, 12.6, 8.8,  9.0)   # black, opens above b3 close, closes below b1 open
+    o, h, l, c = _series(_CTX + [b1, b2, b3, b4])
+    out = three_line_strike(o, h, l, c)
+    assert out[-1] == -100, f"three_line_strike bear should be -100 (bearish reversal), got {out[-1]}"
 
 
 def test_three_line_strike_no_pattern():

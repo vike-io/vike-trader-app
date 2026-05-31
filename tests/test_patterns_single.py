@@ -330,25 +330,27 @@ def test_belt_hold_black_fires():
 
 # ---------------------------------------------------------------------------
 # doji_star — doji that gaps away from a prior long body:
-#             gap up after white → +100; gap down after black → -100
+#             gap down after black → +100 (bullish morning-doji-star setup)
+#             gap up after white → -100 (bearish evening-doji-star setup)
 # ---------------------------------------------------------------------------
 
 def test_doji_star_bullish_fires():
-    # Prior bar: long white (body 2.0), then doji gaps up above its close
+    # Prior bar: long black (body 2.0), then doji gaps DOWN below its close → +100
     ctx = [(10.0, 11.0, 9.0, 10.5)] * 10
-    prev = (9.0, 12.5, 8.9, 11.0)   # long white body: open=9, close=11, body=2
-    # doji: open=close=12.0, high=12.5, low=11.5; all above prev close(11) → gap up
-    star = (12.0, 12.5, 11.5, 12.0)
+    prev = (11.0, 11.1, 8.5, 9.0)   # long black body: open=11, close=9, body=2
+    # doji: open=close=8.0, high=8.4, low=7.6; entire bar below prev close(9) → gap down
+    star = (8.0, 8.4, 7.6, 8.0)
     o, h, l, c = _series(ctx + [prev, star])
     out = doji_star(o, h, l, c)
     assert out[-1] == 100, f"expected +100, got {out[-1]}"
 
 
 def test_doji_star_bearish_fires():
+    # Prior bar: long white (body 2.0), then doji gaps UP above its close → -100
     ctx = [(10.0, 11.0, 9.0, 10.5)] * 10
-    prev = (11.0, 11.1, 8.5, 9.0)   # long black body: open=11, close=9, body=2
-    # doji: open=close=8.0, high=8.4, low=7.6; all below prev close(9) → gap down
-    star = (8.0, 8.4, 7.6, 8.0)
+    prev = (9.0, 12.5, 8.9, 11.0)   # long white body: open=9, close=11, body=2
+    # doji: open=close=12.0, high=12.5, low=11.5; entire bar above prev close(11) → gap up
+    star = (12.0, 12.5, 11.5, 12.0)
     o, h, l, c = _series(ctx + [prev, star])
     out = doji_star(o, h, l, c)
     assert out[-1] == -100, f"expected -100, got {out[-1]}"
