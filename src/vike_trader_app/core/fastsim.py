@@ -39,7 +39,7 @@ except ImportError:  # pragma: no cover - exercised only without the extra
 def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
                 entries, exits, size, side,
                 taker_fee, slippage, init_cash,
-                multiplier, leverage, maint_margin, size_type):  # pragma: no cover - compiled
+                multiplier, leverage, maint_margin, size_type, warm_up):  # pragma: no cover - compiled
     """One-pass simulation mirroring engine.py. Returns (equity_curve, n_trades, trade arrays).
 
     Per-bar order: fill pending (next-open) -> funding -> cashflow -> liquidation ->
@@ -159,9 +159,9 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
                 if ent_sh * closes[i] * multiplier > max_notional:
                     ent_sh = max_notional / (closes[i] * multiplier)
 
-        # 7) decide next-bar orders
-        do_exit = exits[i] and pos != 0.0
-        do_entry = entries[i] and (pos == 0.0 or do_exit)
+        # 7) decide next-bar orders (gated until warm-up has elapsed — mirrors Strategy.WARMUP)
+        do_exit = (i >= warm_up) and exits[i] and pos != 0.0
+        do_entry = (i >= warm_up) and entries[i] and (pos == 0.0 or do_exit)
         if do_exit:
             p_side0 = -1 if pos > 0.0 else 1
             p_size0 = abs(pos)
@@ -184,7 +184,7 @@ def fast_backtest(opens, highs, lows, closes, funding, ts,
                   entries, exits, size, side,
                   *, maker_fee=0.0, taker_fee=0.0, slippage=0.0, init_cash=10_000.0,
                   build_trades=True, multiplier=1.0, leverage=None, maint_margin=0.0,
-                  size_type="shares", cashflow=None):
+                  size_type="shares", cashflow=None, warm_up=0):
     """Run a signal-array backtest through the compiled kernel.
 
     Signals are market-style (taker). ``maker_fee`` is accepted for API symmetry but unused.
@@ -192,6 +192,7 @@ def fast_backtest(opens, highs, lows, closes, funding, ts,
     at decision time; ``maint_margin`` (>0) enables intrabar liquidation at the bar's adverse
     extreme. ``size_type`` is "shares" | "value" | "percent". ``cashflow`` is an optional per-bar
     deposit/withdrawal sequence. Pass ``build_trades=False`` to skip ``Trade`` construction.
+    ``warm_up`` skips signal-driven entries/exits while ``i < warm_up`` (mirrors ``Strategy.WARMUP``).
 
     Returns a dict with keys ``trades`` (list[Trade]), ``equity_curve`` (list[float]),
     ``final_equity`` (float), and ``n_trades`` (int).
@@ -214,7 +215,7 @@ def fast_backtest(opens, highs, lows, closes, funding, ts,
     (equity, nt, e_p, x_p, sz, pnl, fees, e_ts, x_ts) = _sim_kernel(
         opens, highs, lows, closes, funding, cashflow, ts, entries, exits, size, side,
         float(taker_fee), float(slippage), float(init_cash),
-        float(multiplier), lev, float(maint_margin), st,
+        float(multiplier), lev, float(maint_margin), st, int(warm_up),
     )
     if build_trades:
         trades = [

@@ -185,7 +185,7 @@ def test_numba_and_numpy_paths_agree():
                     cashflow_zeros, kw["ts"],
                     kw["entries"], kw["exits"], kw["size"], kw["side"],
                     0.001, 0.0005, 10_000.0,
-                    1.0, 0.0, 0.0, 0)
+                    1.0, 0.0, 0.0, 0, 0)
     assert res[0].tolist() == pytest.approx(compiled["equity_curve"], rel=1e-9, abs=1e-9)
     assert int(res[1]) == compiled["n_trades"]
 
