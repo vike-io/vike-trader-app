@@ -78,11 +78,19 @@ def test_forward_locks_backtest_controls(app):
     win.close()
 
 
-def test_main_window_has_studio_tab(app):
+def test_main_window_has_studio_and_tools_tabs(app):
     win = MainWindow()
     assert isinstance(win.centralWidget(), QtWidgets.QTabWidget)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert "Backtester" in titles and "Studio" in titles
+    assert titles[:3] == ["Backtester", "Studio", "Tools"]
+    win.close()
+
+
+def test_tools_tab_also_hides_backtester_docks(app):
+    win = MainWindow()
+    tools_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.tools)
+    win.tabs.setCurrentIndex(tools_idx)
+    assert all(d.isHidden() for d in win._docks)   # docks show only on the Backtester tab
     win.close()
 
 

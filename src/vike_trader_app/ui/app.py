@@ -33,6 +33,7 @@ from .panels import (
 )
 from .replay import Replay
 from .studio import StudioTab
+from .tools import ToolsTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -178,11 +179,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # The Backtester (charts + replay) and the Studio (AI strategy dev) are sibling
         # tabs of one window — the Studio reuses the same charts/tester under the hood.
+        self._backtester = container
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(container, "Backtester")
         self.studio = StudioTab()
         self._wire_studio_agent()
         self.tabs.addTab(self.studio, "Studio")
+        self.tools = ToolsTab()
+        self.tabs.addTab(self.tools, "Tools")
         self.setCentralWidget(self.tabs)
 
     def _build_controls(self) -> QtWidgets.QWidget:
@@ -287,8 +291,8 @@ class MainWindow(QtWidgets.QMainWindow):
         return sc
 
     def _on_tab_changed(self, _index: int) -> None:
-        """Hide the Backtester docks while the Studio tab is active (clean 3-pane workspace)."""
-        on_backtester = self.tabs.currentWidget() is not self.studio
+        """Show the Backtester docks only on the Backtester tab (Studio/Tools are full-width)."""
+        on_backtester = self.tabs.currentWidget() is self._backtester
         for d in self._docks:
             d.setVisible(on_backtester)
 
