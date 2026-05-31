@@ -3,6 +3,7 @@
 Modules:
     model.py           Bar, Position, Trade (domain model)
     engine.py          BacktestEngine — the bar event loop
+    broker_sim.py      canonical cost model — fills/fees/funding (engine + kernel share it)
     strategy.py        Strategy base class (the stable API)
     strategy_loader.py load user Strategy subclasses
     portfolio.py       multi-symbol / cross-sectional helpers
@@ -10,7 +11,8 @@ Modules:
     vectorized.py      fast vectorized backtest path (grid builder / parity oracle)
     fastsim.py         compiled (numba) fast_backtest kernel — parity with engine.py
     signal_strategy.py SignalStrategy front door over the compiled kernel
-    forward.py         forward (paper) runner — drive the engine live, bar-at-a-time
+    paper.py           paper (forward) runner — drive the engine live, bar-at-a-time
+    forward.py         back-compat shim (deprecated ForwardTester alias -> PaperTester)
     indicators/        technical-analysis library (self-describing @indicator registry)
 
 Engine rules (implemented):
