@@ -147,3 +147,45 @@ def overfit_verdict(pbo: float, deflated_sr: float, wf_consistency: float | None
     if not reasons:
         reasons = ["No major overfitting flags."]
     return Verdict(level=level, reasons=reasons)
+
+
+def _pearson(a, b) -> float:
+    n = min(len(a), len(b))
+    if n < 2:
+        return 0.0
+    a, b = a[:n], b[:n]
+    ma, mb = sum(a) / n, sum(b) / n
+    cov = sum((a[i] - ma) * (b[i] - mb) for i in range(n))
+    va = sum((x - ma) ** 2 for x in a)
+    vb = sum((x - mb) ** 2 for x in b)
+    if va <= 0 or vb <= 0:
+        return 0.0
+    return cov / math.sqrt(va * vb)
+
+
+def effective_n_trials(return_series) -> float:
+    """Correlation-aware effective trial count: N / (1 + (N-1)*max(mean_corr, 0)), clamped [1, N].
+
+    Perfectly-correlated trials collapse to ~1; uncorrelated/anti-correlated stay ~N. 0.0 if empty.
+    """
+    n = len(return_series)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return 1.0
+    corrs = [_pearson(return_series[i], return_series[j]) for i in range(n) for j in range(i + 1, n)]
+    avg = sum(corrs) / len(corrs) if corrs else 0.0
+    r = max(avg, 0.0)
+    eff = n / (1.0 + (n - 1) * r)
+    return min(max(eff, 1.0), float(n))
+
+
+def deflated_sharpe_with_effective_n(
+    observed_sr: float, trial_sharpes, trial_return_series, n_obs: int,
+    skew: float = 0.0, kurt: float = 3.0,
+) -> float:
+    """DSR benchmarked against expected-max-Sharpe computed with the EFFECTIVE (correlation-corrected) trial count."""
+    eff = max(int(round(effective_n_trials(trial_return_series))), 1)
+    var_trials = variance(trial_sharpes) if len(trial_sharpes) > 1 else 0.0
+    sr_star = expected_max_sharpe(var_trials, eff)
+    return probabilistic_sharpe_ratio(observed_sr, n_obs, sr_star, skew, kurt)
