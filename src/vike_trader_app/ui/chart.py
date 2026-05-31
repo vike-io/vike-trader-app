@@ -176,7 +176,17 @@ class EquityChart(pg.PlotWidget):
         self.getAxis("left").setTextPen(theme.TEXT3)
         self.getAxis("bottom").setTextPen(theme.TEXT3)
         self._equity = []
+        self._peak = []
         self._curve = self.plot([], [], pen=pg.mkPen(theme.UP, width=2))
+        # running-peak line (transparent pen so the path still generates for the fill) + a
+        # translucent red fill between it and the equity curve = an "underwater"/drawdown
+        # shade. TradingView surfaces this; TradeLocker doesn't.
+        self._peak_curve = self.plot([], [], pen=pg.mkPen(0, 0, 0, 0))
+        self._dd_fill = pg.FillBetweenItem(
+            self._curve, self._peak_curve, brush=pg.mkBrush(248, 81, 73, 55)
+        )
+        self._dd_fill.setZValue(-1)
+        self.addItem(self._dd_fill)
         self._baseline = pg.InfiniteLine(
             angle=0, pen=pg.mkPen(theme.TEXT3, width=1, style=QtCore.Qt.DashLine)
         )
@@ -185,6 +195,11 @@ class EquityChart(pg.PlotWidget):
 
     def set_data(self, equity_curve):
         self._equity = list(equity_curve)
+        peak, m = [], float("-inf")
+        for v in self._equity:
+            m = v if v > m else m
+            peak.append(m)
+        self._peak = peak
         if self._equity:
             self.setXRange(0, len(self._equity), padding=0.02)
             lo, hi = min(self._equity), max(self._equity)
@@ -200,4 +215,6 @@ class EquityChart(pg.PlotWidget):
         if not self._equity:
             return
         n = index + 1
-        self._curve.setData(list(range(n)), self._equity[:n])
+        xs = list(range(n))
+        self._curve.setData(xs, self._equity[:n])
+        self._peak_curve.setData(xs, self._peak[:n])  # drives the drawdown shade
