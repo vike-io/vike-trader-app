@@ -180,6 +180,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(container, "Backtester")
         self.studio = StudioTab()
+        self._wire_studio_agent()
         self.tabs.addTab(self.studio, "Studio")
         self.setCentralWidget(self.tabs)
 
@@ -289,6 +290,23 @@ class MainWindow(QtWidgets.QMainWindow):
         on_backtester = self.tabs.currentWidget() is not self.studio
         for d in self._docks:
             d.setVisible(on_backtester)
+
+    def _wire_studio_agent(self) -> None:
+        """Give the Studio a live Claude client iff an API key + the [ai] extra are present.
+
+        No key -> the Studio's AI chat stays in the graceful 'No AI client configured' mode
+        (and we avoid importing anthropic on every launch).
+        """
+        import os
+
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return
+        try:
+            from ..ai.llm import ClaudeClient
+
+            self.studio.set_agent_client(ClaudeClient())
+        except Exception:  # noqa: BLE001 - missing [ai] extra / bad key -> stay in no-AI mode
+            pass
 
     # --- data / strategy loading ---
     def load_bars(self, bars, strategy_factory=None, *, record=True):

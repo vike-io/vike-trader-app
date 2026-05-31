@@ -86,6 +86,13 @@ def test_main_window_has_studio_tab(app):
     win.close()
 
 
+def test_studio_agent_unconfigured_without_key(app, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    win = MainWindow()
+    assert win.studio._agent_client is None  # graceful no-AI default when no key
+    win.close()
+
+
 def test_studio_tab_hides_backtester_docks(app):
     win = MainWindow()
     studio_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.studio)
