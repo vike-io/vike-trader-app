@@ -10,12 +10,15 @@ File format (one UTC hour per file): LZMA-compressed records of 20 bytes, big-en
 ``>3i2f`` = (ms-offset-into-hour, ask_points, bid_points, ask_volume, bid_volume). Prices are
 integers in "points"; divide by 10**digits (5 for most pairs, 3 for JPY-quoted).
 
-The pure parts (`point_divisor`, `decompress`, `decode_ticks`, `ticks_to_bars`) are
-unit-tested; only `_fetch_hour` performs network I/O.
+The pure parts (`point_divisor`, `decompress`, `decode_ticks`, `ticks_to_bars`, `_retry`)
+are unit-tested; only `_fetch_hour` performs network I/O. ``_fetch_hour`` retries transient
+CDN failures (429/5xx, connection resets, timeouts) so a long deep-history pull survives the
+occasional hiccup instead of aborting the whole run.
 """
 
 import lzma
 import struct
+import time
 import urllib.error
 import urllib.request
 from collections import namedtuple
@@ -28,6 +31,8 @@ DATAFEED = "https://datafeed.dukascopy.com/datafeed"
 HOUR_MS = 3_600_000
 _REC = struct.Struct(">3i2f")  # 20 bytes: ms, ask, bid, askVol, bidVol
 _UA = "Mozilla/5.0 (vike-trader-app forex source)"
+# Transient HTTP statuses worth retrying (Dukascopy's CDN occasionally 503s mid-pull).
+_TRANSIENT_CODES = frozenset({429, 500, 502, 503, 504})
 
 #: One decoded tick. ``mid`` is the bid/ask midpoint used for OHLC aggregation.
 Tick = namedtuple("Tick", "ts bid ask bid_vol ask_vol")
@@ -94,13 +99,40 @@ def hour_url(symbol: str, hour_start_ms: int) -> str:
             f"{dt.day:02d}/{dt.hour:02d}h_ticks.bi5")
 
 
+def _is_transient(err: BaseException) -> bool:
+    """Whether a network error is worth retrying. 404/other-4xx are permanent."""
+    if isinstance(err, urllib.error.HTTPError):
+        return err.code in _TRANSIENT_CODES
+    return True  # non-HTTP URLError (DNS / connection reset) or timeout -> retry
+
+
+def _retry(call, *, tries: int = 4, sleep=time.sleep, base: float = 0.5):
+    """Run ``call()``, retrying transient failures with exponential backoff.
+
+    Retries 429/5xx, connection errors, and timeouts; re-raises 404/other-4xx immediately so
+    the caller can map them (a 404 hour = no file). The final attempt's error propagates.
+    ``sleep``/``base`` are injectable so tests run without real delay.
+    """
+    for attempt in range(tries):
+        try:
+            return call()
+        except (urllib.error.URLError, TimeoutError) as e:  # HTTPError subclasses URLError
+            if attempt == tries - 1 or not _is_transient(e):
+                raise
+            sleep(base * (2 ** attempt))
+
+
 def _fetch_hour(symbol: str, hour_start_ms: int, timeout: int = 30) -> bytes | None:
-    """Download one hour's ``.bi5`` (or None if the archive has no file for that hour)."""
+    """Download one hour's ``.bi5`` (None if absent), retrying transient CDN errors."""
     req = urllib.request.Request(hour_url(symbol, hour_start_ms),  # noqa: S310 - fixed https host
                                  headers={"User-Agent": _UA})
-    try:
+
+    def _open() -> bytes:
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return resp.read()
+
+    try:
+        return _retry(_open)
     except urllib.error.HTTPError as e:
         if e.code == 404:  # no data for this hour (weekend / pre-listing / not-yet-published)
             return None

@@ -2,10 +2,14 @@
 
 import lzma
 import struct
+import urllib.error
+
+import pytest
 
 from vike_trader_app.core.model import Bar
 from vike_trader_app.data.dukascopy_source import (
     Tick,
+    _retry,
     decode_ticks,
     decompress,
     hour_url,
@@ -14,6 +18,50 @@ from vike_trader_app.data.dukascopy_source import (
 )
 
 _REC = struct.Struct(">3i2f")  # ms, ask, bid, askVol, bidVol
+
+
+def _http(code):
+    return urllib.error.HTTPError("http://x", code, "msg", {}, None)
+
+
+def test_retry_succeeds_after_transient_failures():
+    calls = {"n": 0}
+    slept = []
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise _http(503)  # transient
+        return b"ok"
+
+    assert _retry(flaky, sleep=slept.append, base=0) == b"ok"
+    assert calls["n"] == 3        # failed twice, succeeded on the third
+    assert len(slept) == 2        # backed off before each retry
+
+
+def test_retry_does_not_retry_permanent_404():
+    calls = {"n": 0}
+
+    def gone():
+        calls["n"] += 1
+        raise _http(404)
+
+    with pytest.raises(urllib.error.HTTPError) as ei:
+        _retry(gone, sleep=lambda s: None)
+    assert ei.value.code == 404
+    assert calls["n"] == 1        # 404 is permanent -> no retry
+
+
+def test_retry_exhausts_then_raises_on_persistent_transient():
+    calls = {"n": 0}
+
+    def busy():
+        calls["n"] += 1
+        raise _http(503)
+
+    with pytest.raises(urllib.error.HTTPError):
+        _retry(busy, tries=3, sleep=lambda s: None)
+    assert calls["n"] == 3        # tried exactly `tries` times
 
 
 def test_point_divisor_jpy_vs_rest():
