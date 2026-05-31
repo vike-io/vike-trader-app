@@ -7,6 +7,9 @@ detail grid), a Trades tab (round-trips, click-to-focus-chart), and a Runs tab (
 iterate-and-compare history table). The overfit-risk verdict banner sits above the tabs.
 """
 
+import difflib
+import html
+
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
@@ -606,6 +609,84 @@ class BacktestConfigDialog(QtWidgets.QDialog):
 
 
 # ---------------------------------------------------------------------------
+# DiffDialog
+# ---------------------------------------------------------------------------
+
+class DiffDialog(QtWidgets.QDialog):
+    """Side-by-side 'current vs AI-proposed' code diff with Apply / Reject.
+
+    Human-in-the-loop gate (TradeLocker's AI never silently edits): removed lines shade
+    red on the left, added lines shade green on the right. Applying bumps the version.
+    """
+
+    def __init__(self, current: str, proposed: str, version: int,
+                 parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle(f"AI proposed change → v{version}")
+        self.setModal(True)
+        self.resize(940, 580)
+        root = QtWidgets.QVBoxLayout(self)
+        left_html, right_html = self._diff_html(current, proposed)
+        row = QtWidgets.QHBoxLayout()
+        row.addWidget(self._pane(f"Current · v{version - 1} (read only)", left_html), 1)
+        row.addWidget(self._pane("Proposed", right_html), 1)
+        root.addLayout(row, 1)
+
+        btns = QtWidgets.QDialogButtonBox()
+        apply = btns.addButton("Apply", QtWidgets.QDialogButtonBox.AcceptRole)
+        apply.setObjectName("play")
+        btns.addButton("Reject", QtWidgets.QDialogButtonBox.RejectRole)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    @staticmethod
+    def _pane(title: str, body_html: str) -> QtWidgets.QWidget:
+        box = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(box)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(3)
+        cap = QtWidgets.QLabel(title.upper())
+        cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:1px;")
+        view = QtWidgets.QTextEdit()
+        view.setReadOnly(True)
+        view.setLineWrapMode(QtWidgets.QTextEdit.NoWrap)
+        view.setStyleSheet(
+            f"QTextEdit{{background:{theme.PANEL};border:1px solid {theme.BORDER};border-radius:6px;}}"
+        )
+        view.setHtml(body_html)
+        v.addWidget(cap)
+        v.addWidget(view, 1)
+        return box
+
+    @staticmethod
+    def _diff_html(current: str, proposed: str) -> tuple[str, str]:
+        cur = current.splitlines() or [""]
+        new = proposed.splitlines() or [""]
+        sm = difflib.SequenceMatcher(None, cur, new)
+        del_bg, add_bg = "rgba(248,81,73,0.18)", "rgba(63,185,80,0.18)"
+
+        def row(s: str, bg: str | None = None) -> str:
+            style = f"background:{bg};" if bg else ""
+            return (f'<div style="{style}white-space:pre;font-family:monospace;'
+                    f'color:{theme.TEXT2}">{html.escape(s) or "&nbsp;"}</div>')
+
+        left, right = [], []
+        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+            if tag == "equal":
+                left += [row(s) for s in cur[i1:i2]]
+                right += [row(s) for s in new[j1:j2]]
+            elif tag == "replace":
+                left += [row(s, del_bg) for s in cur[i1:i2]]
+                right += [row(s, add_bg) for s in new[j1:j2]]
+            elif tag == "delete":
+                left += [row(s, del_bg) for s in cur[i1:i2]]
+            elif tag == "insert":
+                right += [row(s, add_bg) for s in new[j1:j2]]
+        return "".join(left), "".join(right)
+
+
+# ---------------------------------------------------------------------------
 # StudioTab
 # ---------------------------------------------------------------------------
 
@@ -621,6 +702,7 @@ class StudioTab(QtWidgets.QWidget):
         self._worker: ChatWorker | None = None  # keep a reference so GC doesn't collect it
         self._run_capital = None     # None -> use config.cash
         self._run_range = None       # None -> full bars, else (start_ts, end_ts)
+        self._apply_version = 0      # AI-applied-change version (for the diff-and-apply flow)
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(6, 6, 6, 6)
@@ -747,7 +829,19 @@ class StudioTab(QtWidgets.QWidget):
 
     def _on_agent_result(self, res) -> None:
         if res.code:
-            self.editor.setText(res.code)
+            current = self.editor.text()
+            if current.strip():
+                # human-in-the-loop: review the AI's change as a diff before applying
+                self._apply_version += 1
+                dlg = DiffDialog(current, res.code, self._apply_version, parent=self)
+                if dlg.exec() == QtWidgets.QDialog.Accepted:
+                    self.editor.setText(res.code)
+                    self.chat.append_message("system", f"Applied AI change — v{self._apply_version}.")
+                else:
+                    self._apply_version -= 1
+                    self.chat.append_message("system", "AI change rejected.")
+            else:
+                self.editor.setText(res.code)  # empty editor -> just load it
         if res.explanation:
             self.chat.append_message("assistant", res.explanation)
         elif not res.accepted and res.problems:

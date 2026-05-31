@@ -130,3 +130,10 @@ def test_run_respects_capital_override(app):
     tab._run_capital = 5000.0                     # as the Settings modal would set
     tab.run_code()
     assert abs(tab.results.last_report.equity_curve[0] - 5000.0) < 1.0
+
+
+def test_diff_dialog_builds_and_highlights(app):
+    from vike_trader_app.ui.studio import DiffDialog
+    DiffDialog("a = 1\nb = 2\n", "a = 1\nb = 3\nc = 4\n", version=1)  # constructs
+    left, right = DiffDialog._diff_html("a = 1\nb = 2", "a = 1\nb = 3")
+    assert "background" in right and "b = 3" in right  # changed/added line highlighted
