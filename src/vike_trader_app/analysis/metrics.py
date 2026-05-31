@@ -72,11 +72,19 @@ def calmar(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -
     ``inf`` when there is positive growth and zero drawdown; 0.0 for a flat/short curve or
     non-positive growth with zero drawdown.
     """
-    if len(equity_curve) < 2 or equity_curve[0] <= 0:
+    if len(equity_curve) < 3 or equity_curve[0] <= 0:
         return 0.0
-    n_periods = len(equity_curve) - 1
+    n = len(equity_curve) - 1
     growth = equity_curve[-1] / equity_curve[0]
-    cagr = growth ** (periods_per_year / n_periods) - 1.0
+    if growth <= 0:
+        return 0.0
+    exponent = periods_per_year / n
+    if exponent > 1000:
+        return 0.0
+    try:
+        cagr = growth ** exponent - 1.0
+    except OverflowError:
+        return 0.0
     mdd = max_drawdown(equity_curve)
     if mdd == 0:
         return float("inf") if cagr > 0 else 0.0
