@@ -173,3 +173,119 @@ def pvi(closes, volumes):
         else:
             out[i] = out[i - 1]
     return out
+
+
+# ---------------------------------------------------------------------------
+# Tier B volume — Task 3
+# ---------------------------------------------------------------------------
+
+
+@indicator(
+    category="volume",
+    inputs=["close", "volume"],
+    params=[],
+    outputs=["net_volume"],
+)
+def net_volume(closes, volumes):
+    """Signed (non-cumulative) volume per bar.
+
+    ``+volume`` when close rises vs previous close,
+    ``-volume`` when close falls,
+    ``0`` when unchanged or at bar 0 (no prior close).
+    """
+    n = len(closes)
+    out = [0.0] * n
+    for i in range(1, n):
+        if closes[i] > closes[i - 1]:
+            out[i] = volumes[i]
+        elif closes[i] < closes[i - 1]:
+            out[i] = -volumes[i]
+        # else unchanged → 0.0 already
+    return out
+
+
+@indicator(
+    category="volume",
+    inputs=["volume"],
+    params=[
+        Param("short", "int", 5, 2, 50, 1),
+        Param("long", "int", 10, 2, 200, 1),
+    ],
+    outputs=["volume_osc"],
+)
+def volume_osc(volumes, short: int = 5, long: int = 10):
+    """Volume Oscillator: ``(EMA(vol, short) - EMA(vol, long)) / EMA(vol, long) * 100``.
+
+    Returns None during warm-up (until the slow EMA is seeded).
+    """
+    ema_short = ema(volumes, short)
+    ema_long = ema(volumes, long)
+    n = len(volumes)
+    out: list[float | None] = [None] * n
+    for i in range(n):
+        s, l = ema_short[i], ema_long[i]
+        if s is not None and l is not None and l != 0.0:
+            out[i] = (s - l) / l * 100.0
+    return out
+
+
+@indicator(
+    category="volume",
+    inputs=["high", "low", "close", "volume"],
+    params=[
+        Param("fast", "int", 34, 2, 200, 1),
+        Param("slow", "int", 55, 2, 500, 1),
+        Param("signal", "int", 13, 2, 100, 1),
+    ],
+    outputs=["kvo", "signal"],
+)
+def kvo(highs, lows, closes, volumes, fast: int = 34, slow: int = 55, signal: int = 13):
+    """Klinger Volume Oscillator.
+
+    Trend direction ``t = +1`` when HLC3 rises, ``-1`` when it falls.
+    Volume Force (simplified): ``vf = volume * t``.
+    ``kvo = EMA(vf, fast) - EMA(vf, slow)``; ``signal = EMA(kvo, signal_period)``.
+
+    (Simplified VF = volume * t; the cm bookkeeping version is numerically
+    equivalent in directional signal and avoids the edge-case of cm=0 on
+    trend reversals.)
+    """
+    n = len(closes)
+
+    # Step 1: compute per-bar volume force
+    vf_raw: list[float | None] = [None] * n
+    for i in range(1, n):
+        hlc3_cur = (highs[i] + lows[i] + closes[i]) / 3.0
+        hlc3_prev = (highs[i - 1] + lows[i - 1] + closes[i - 1]) / 3.0
+        t = 1.0 if hlc3_cur > hlc3_prev else -1.0
+        vf_raw[i] = volumes[i] * t
+
+    # Step 2: EMA of vf over the defined tail
+    defined = [(i, v) for i, v in enumerate(vf_raw) if v is not None]
+    ema_fast_full: list[float | None] = [None] * n
+    ema_slow_full: list[float | None] = [None] * n
+    if len(defined) >= slow:
+        vf_vals = [v for _, v in defined]
+        ef = ema(vf_vals, fast)
+        es = ema(vf_vals, slow)
+        for (idx, _), ef_v, es_v in zip(defined, ef, es):
+            ema_fast_full[idx] = ef_v
+            ema_slow_full[idx] = es_v
+
+    # Step 3: kvo = fast EMA - slow EMA
+    kvo_raw: list[float | None] = [None] * n
+    for i in range(n):
+        f, s = ema_fast_full[i], ema_slow_full[i]
+        if f is not None and s is not None:
+            kvo_raw[i] = f - s
+
+    # Step 4: signal = EMA(kvo, signal_period) over defined kvo tail
+    kvo_defined = [(i, v) for i, v in enumerate(kvo_raw) if v is not None]
+    signal_full: list[float | None] = [None] * n
+    if len(kvo_defined) >= signal:
+        kvo_vals = [v for _, v in kvo_defined]
+        sig_ema = ema(kvo_vals, signal)
+        for (idx, _), sv in zip(kvo_defined, sig_ema):
+            signal_full[idx] = sv
+
+    return kvo_raw, signal_full
