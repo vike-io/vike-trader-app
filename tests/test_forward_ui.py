@@ -78,11 +78,11 @@ def test_forward_locks_backtest_controls(app):
     win.close()
 
 
-def test_main_window_has_studio_and_tools_tabs(app):
+def test_main_window_has_studio_tools_screener_tabs(app):
     win = MainWindow()
     assert isinstance(win.centralWidget(), QtWidgets.QTabWidget)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert titles[:3] == ["Backtester", "Studio", "Tools"]
+    assert titles[:4] == ["Backtester", "Studio", "Tools", "Screener"]
     win.close()
 
 

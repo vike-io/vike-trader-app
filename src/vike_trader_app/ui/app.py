@@ -33,6 +33,7 @@ from .panels import (
 )
 from .replay import Replay
 from .studio import StudioTab
+from .screener import ScreenerTab
 from .tools import ToolsTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
@@ -187,6 +188,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.studio, "Studio")
         self.tools = ToolsTab()
         self.tabs.addTab(self.tools, "Tools")
+        self.screener = ScreenerTab()
+        self.tabs.addTab(self.screener, "Screener")
         self.setCentralWidget(self.tabs)
 
     def _build_controls(self) -> QtWidgets.QWidget:
