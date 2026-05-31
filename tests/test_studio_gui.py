@@ -178,6 +178,23 @@ def test_load_template_into_empty_editor_runs(app):
     assert tab.results.last_report is not None     # the loaded template actually runs
 
 
+def test_distribution_tab_and_mfe_mae_columns(app):
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    tab.run_code()
+    assert tab.results._tabs.count() == 5            # Chart|Performance|Trades|Runs|Distribution
+    assert tab.results._trades.columnCount() == 9    # ... + MFE + MAE columns
+    assert tab.results._dist is not None
+
+
+def test_export_csv_without_report_is_graceful(app):
+    tab = StudioTab()
+    tab._export_csv()                                # no report -> toast, no dialog, no crash
+    assert tab.results.last_report is None
+
+
 def test_indicator_dialog_builds_and_autoselects(app):
     from vike_trader_app.ui.indicators import IndicatorCatalogDialog
     dlg = IndicatorCatalogDialog()

@@ -10,8 +10,10 @@ iterate-and-compare history table). The overfit-risk verdict banner sits above t
 import difflib
 import html
 
+import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from ..analysis import report_extras
 from . import theme
 from .chart import EquityChart, PriceChart
 from .editor import CodeEditor
@@ -48,7 +50,7 @@ class ResultsPanel(QtWidgets.QWidget):
     ]
     _SIGNED = {"net_profit", "expected_payoff", "avg_win"}
 
-    _TRADE_COLS = ["#", "Side", "Entry", "Exit", "Size", "PnL", "Return"]
+    _TRADE_COLS = ["#", "Side", "Entry", "Exit", "Size", "PnL", "Return", "MFE", "MAE"]
     _RUN_COLS = ["#", "Return", "Max DD", "Trades", "Sharpe"]
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
@@ -78,6 +80,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._build_performance_tab()
         self._build_trades_tab()
         self._build_runs_tab()
+        self._build_distribution_tab()
 
         self.last_report: object = None
         self._report_trades: list = []           # row -> Trade, for the chart-focus linkage
@@ -187,6 +190,30 @@ class ResultsPanel(QtWidgets.QWidget):
         self._runs_table.cellClicked.connect(self._on_run_clicked)
         self._tabs.addTab(self._runs_table, "Runs")
 
+    def _build_distribution_tab(self) -> None:
+        self._dist = pg.PlotWidget()
+        self._dist.setBackground(theme.BG)
+        self._dist.showGrid(x=True, y=True, alpha=0.12)
+        self._dist.getAxis("left").setTextPen(theme.TEXT3)
+        self._dist.getAxis("bottom").setTextPen(theme.TEXT3)
+        self._dist.getAxis("bottom").enableAutoSIPrefix(False)  # show raw return fractions
+        self._dist.setLabel("bottom", "trade return")
+        self._dist.setLabel("left", "count")
+        self._tabs.addTab(self._dist, "Distribution")
+
+    def _update_distribution(self, returns) -> None:
+        self._dist.clear()
+        edges, counts = report_extras.returns_histogram(returns, bins=20)
+        if not counts:
+            return
+        width = (edges[1] - edges[0]) * 0.9
+        for i, h in enumerate(counts):
+            cx = (edges[i] + edges[i + 1]) / 2.0
+            color = theme.UP if cx >= 0 else theme.DOWN
+            self._dist.addItem(pg.BarGraphItem(x=[cx], height=[h], width=width,
+                                               brush=pg.mkBrush(color), pen=None))
+        self._dist.addLine(x=0.0, pen=pg.mkPen(theme.TEXT3, style=QtCore.Qt.DashLine))
+
     # --- formatting helpers ---
 
     @staticmethod
@@ -295,11 +322,12 @@ class ResultsPanel(QtWidgets.QWidget):
             "n": len(report.trades),
         }
 
-    def _fill_trades(self, trades) -> None:
+    def _fill_trades(self, trades, mfe_mae=None) -> None:
         self._report_trades = list(trades)
         self._trades.setRowCount(len(trades))
         for r, t in enumerate(trades):
             ret = t.pnl / (abs(t.size) * t.entry_price) if t.size and t.entry_price else 0.0
+            mfe, mae = mfe_mae[r] if mfe_mae and r < len(mfe_mae) else (None, None)
             cells = [
                 str(r + 1),
                 "LONG" if t.size >= 0 else "SHORT",
@@ -308,6 +336,8 @@ class ResultsPanel(QtWidgets.QWidget):
                 f"{abs(t.size):g}",
                 f"{t.pnl:,.2f}",
                 f"{ret * 100:.2f}%",
+                f"{mfe * 100:.2f}%" if mfe is not None else "—",
+                f"{mae * 100:.2f}%" if mae is not None else "—",
             ]
             up = t.pnl >= 0
             for c, text in enumerate(cells):
@@ -316,6 +346,10 @@ class ResultsPanel(QtWidgets.QWidget):
                     item.setForeground(QtGui.QColor(theme.UP if t.size >= 0 else theme.DOWN))
                 elif c in (5, 6):
                     item.setForeground(QtGui.QColor(theme.UP if up else theme.DOWN))
+                elif c == 7:                                  # MFE = best excursion -> green
+                    item.setForeground(QtGui.QColor(theme.UP))
+                elif c == 8:                                  # MAE = worst excursion -> red
+                    item.setForeground(QtGui.QColor(theme.DOWN))
                 if c >= 2:
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self._trades.setItem(r, c, item)
@@ -385,7 +419,9 @@ class ResultsPanel(QtWidgets.QWidget):
             except Exception:  # noqa: BLE001
                 pass
 
-        self._fill_trades(report.trades)
+        mm = report_extras.mfe_mae(report.trades, bars) if bars else None
+        self._fill_trades(report.trades, mm)
+        self._update_distribution(report_extras.trade_returns(report.trades))
         self._tabs.setCurrentIndex(0)  # land on the chart — the headline view
 
     def add_run(self, report, bars=None, overlays=None) -> None:
@@ -735,6 +771,9 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_indicators = QtWidgets.QPushButton("ƒx Indicators")
         self._btn_indicators.clicked.connect(self._open_indicators)
         toolbar.addWidget(self._btn_indicators)
+        self._btn_export = QtWidgets.QPushButton("⤓ Export CSV")
+        self._btn_export.clicked.connect(self._export_csv)
+        toolbar.addWidget(self._btn_export)
         toolbar.addStretch(1)
         root.addLayout(toolbar)
 
@@ -831,6 +870,24 @@ class StudioTab(QtWidgets.QWidget):
             if ok != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
         self.editor.setText(code)
+
+    def _export_csv(self) -> None:
+        """Export the current run's metrics + trades to a CSV file."""
+        report = self.results.last_report
+        if report is None:
+            self.results.toast("Run a backtest first — nothing to export.")
+            return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export report CSV", "report.csv", "CSV (*.csv)"
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(report_extras.report_to_csv(report))
+            self.results.toast(f"Exported → {path}")
+        except OSError as exc:
+            self.results.show_error(f"Export failed: {exc}")
 
     def _open_indicators(self) -> None:
         """Open the indicator catalogue; chosen snippet is appended to the editor."""
