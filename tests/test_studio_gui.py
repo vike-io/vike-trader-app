@@ -137,3 +137,37 @@ def test_diff_dialog_builds_and_highlights(app):
     DiffDialog("a = 1\nb = 2\n", "a = 1\nb = 3\nc = 4\n", version=1)  # constructs
     left, right = DiffDialog._diff_html("a = 1\nb = 2", "a = 1\nb = 3")
     assert "background" in right and "b = 3" in right  # changed/added line highlighted
+
+
+def test_pct_money_handle_inf_nan(app):
+    rp = StudioTab().results
+    assert rp._pct(float("inf")) == "∞"
+    assert rp._pct(float("nan")) == "—"
+    assert rp._money(float("inf")) == ""
+    assert rp._money(float("nan")) == ""
+
+
+def test_short_span_run_does_not_crash(app):
+    # 2 bars with a gain -> tiny time-span -> annualized **(1/years) would OverflowError unguarded
+    bars = [Bar(ts=0, open=100.0, high=100.0, low=100.0, close=100.0),
+            Bar(ts=60_000, open=100.0, high=120.0, low=100.0, close=120.0)]
+    tab = StudioTab()
+    tab.set_bars(bars)
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    tab.run_code()                       # must not raise
+    if tab.results._runs:
+        tab.results._on_run_clicked(0, 0)  # the previously-uncaught Qt-slot path must not raise
+
+
+def test_concurrent_prompt_is_refused(app):
+    tab = StudioTab()
+    tab.set_agent_client(object())       # any non-None client
+
+    class _Busy:
+        def isRunning(self):
+            return True
+
+    tab._worker = _Busy()
+    tab._on_prompt("second prompt")      # a worker is "running" -> must not start another
+    assert isinstance(tab._worker, _Busy)  # unchanged; the submit was refused

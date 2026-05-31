@@ -191,11 +191,15 @@ class ResultsPanel(QtWidgets.QWidget):
 
     @staticmethod
     def _pct(v) -> str:
-        return "—" if v is None else f"{v * 100:.2f}%"
+        if v is None or v != v:            # None or NaN
+            return "—"
+        if v in (float("inf"), float("-inf")):
+            return "∞" if v > 0 else "−∞"
+        return f"{v * 100:.2f}%"
 
     @staticmethod
     def _money(v) -> str:
-        if v is None:
+        if v is None or v != v or v in (float("inf"), float("-inf")):
             return ""
         sign = "+" if v > 0 else "−" if v < 0 else ""
         return f"{sign}${abs(v):,.2f}"
@@ -269,8 +273,11 @@ class ResultsPanel(QtWidgets.QWidget):
         if bars and len(bars) > 1:
             span_ms = bars[-1].ts - bars[0].ts
             years = span_ms / _YEAR_MS if span_ms > 0 else None
-            if years and initial and initial > 0 and report.final_equity > 0:
-                annualized = (report.final_equity / initial) ** (1.0 / years) - 1.0
+            if years and years > 1e-6 and initial and initial > 0 and report.final_equity > 0:
+                try:
+                    annualized = (report.final_equity / initial) ** (1.0 / years) - 1.0
+                except OverflowError:  # sub-day spans -> astronomically large exponent
+                    annualized = float("inf")
         # time in market: fraction of the span spent holding a position
         time_in_market = None
         if bars and len(bars) > 1:
@@ -518,6 +525,11 @@ class ChatPanel(QtWidgets.QWidget):
         if prompt:
             self.promptSubmitted.emit(prompt)
             self._prompt_input.clear()
+
+    def set_busy(self, busy: bool) -> None:
+        """Disable the prompt + Ask button while an AI request is in flight."""
+        self._btn_ask.setEnabled(not busy)
+        self._prompt_input.setEnabled(not busy)
 
 
 # ---------------------------------------------------------------------------
@@ -819,13 +831,19 @@ class StudioTab(QtWidgets.QWidget):
         if self._agent_client is None:
             self.chat.append_message("system", "No AI client configured.")
             return
+        if self._worker is not None and self._worker.isRunning():
+            self.chat.append_message("system", "AI is still working — please wait…")
+            return
 
         from vike_trader_app.tester import TesterConfig
         config = self._config if self._config is not None else TesterConfig()
-        self._worker = ChatWorker(self._agent_client, prompt, self._bars, config)
-        self._worker.result.connect(self._on_agent_result)
+        worker = ChatWorker(self._agent_client, prompt, self._bars, config)
+        self._worker = worker
+        worker.result.connect(self._on_agent_result)
+        worker.finished.connect(self._on_worker_finished)
+        self.chat.set_busy(True)
         self.chat.append_message("user", prompt)
-        self._worker.start()
+        worker.start()
 
     def _on_agent_result(self, res) -> None:
         if res.code:
@@ -846,3 +864,16 @@ class StudioTab(QtWidgets.QWidget):
             self.chat.append_message("assistant", res.explanation)
         elif not res.accepted and res.problems:
             self.chat.append_message("system", "Agent failed: " + "; ".join(res.problems))
+
+    def _on_worker_finished(self) -> None:
+        """Release the finished worker (only now is the QThread truly done) + re-enable input."""
+        self.chat.set_busy(False)
+        worker, self._worker = self._worker, None
+        if worker is not None:
+            worker.deleteLater()
+
+    def shutdown(self) -> None:
+        """Wait for any in-flight AI worker so we never destroy a running QThread on close."""
+        worker = self._worker
+        if worker is not None and worker.isRunning():
+            worker.wait(3000)

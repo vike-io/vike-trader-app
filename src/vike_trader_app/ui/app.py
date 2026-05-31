@@ -628,6 +628,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._stop_forward()  # never leave a feed thread running
+        self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
         super().closeEvent(event)
 
     def _tick_clock(self):
