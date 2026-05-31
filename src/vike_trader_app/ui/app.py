@@ -33,6 +33,7 @@ from .panels import (
 )
 from .replay import Replay
 from .studio import StudioTab
+from .alerts import AlertsTab
 from .journal import JournalTab
 from .screener import ScreenerTab
 from .tools import ToolsTab
@@ -193,6 +194,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.screener, "Screener")
         self.journal = JournalTab()
         self.tabs.addTab(self.journal, "Journal")
+        self.alerts = AlertsTab()
+        self.tabs.addTab(self.alerts, "Alerts")
         self.setCentralWidget(self.tabs)
 
     def _build_controls(self) -> QtWidgets.QWidget:
