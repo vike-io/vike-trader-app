@@ -8,7 +8,16 @@ hosts the small ``expand`` helper and the optional ``from_talib`` bridge.
 
 from .momentum import adx, cci, macd, roc, rsi, stochastic, williams_r
 from .overlap import ema, sma, wma
-from .patterns import doji, engulfing, hammer
+from .patterns import (
+    doji, engulfing, hammer,
+    inverted_hammer, hanging_man, shooting_star,
+    dragonfly_doji, gravestone_doji, longlegged_doji,
+    rickshaw_man, takuri,
+    marubozu, closing_marubozu, opening_marubozu,
+    spinning_top, high_wave,
+    long_line, short_line,
+    belt_hold, doji_star,
+)
 from .pairs import ratio, spread, spread_zscore  # registers pairs indicators
 from .price import avgprice, medprice, typprice, wclprice  # registers price transforms
 from .statistics import (  # registers statistics indicators
@@ -43,6 +52,13 @@ __all__ = [
     "ratio", "spread", "spread_zscore",
     "zigzag", "williams_fractal", "pivot_points", "volume_profile_poc",
     "doji", "engulfing", "hammer",
+    "inverted_hammer", "hanging_man", "shooting_star",
+    "dragonfly_doji", "gravestone_doji", "longlegged_doji",
+    "rickshaw_man", "takuri",
+    "marubozu", "closing_marubozu", "opening_marubozu",
+    "spinning_top", "high_wave",
+    "long_line", "short_line",
+    "belt_hold", "doji_star",
     "expand", "from_talib",
 ]
 
