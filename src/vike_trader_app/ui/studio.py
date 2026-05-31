@@ -726,6 +726,9 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_run.setObjectName("play")
         self._btn_run.clicked.connect(self.run_code)
         toolbar.addWidget(self._btn_run)
+        self._btn_templates = QtWidgets.QPushButton("📁 Templates")
+        self._btn_templates.clicked.connect(self._open_templates)
+        toolbar.addWidget(self._btn_templates)
         self._btn_config = QtWidgets.QPushButton("⚙ Settings")
         self._btn_config.clicked.connect(self._open_config)
         toolbar.addWidget(self._btn_config)
@@ -810,6 +813,23 @@ class StudioTab(QtWidgets.QWidget):
             self.results.add_run(report, bars, overlays)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"{type(exc).__name__}: {exc}")
+
+    def _open_templates(self) -> None:
+        """Open the strategy-template gallery; chosen template loads into the editor."""
+        from .templates import StrategyTemplateDialog
+
+        dlg = StrategyTemplateDialog(parent=self)
+        dlg.loadRequested.connect(self._load_template)
+        dlg.exec()
+
+    def _load_template(self, code: str) -> None:
+        if self.editor.text().strip():
+            ok = QtWidgets.QMessageBox.question(
+                self, "Load template", "Replace the current editor contents with this template?"
+            )
+            if ok != QtWidgets.QMessageBox.StandardButton.Yes:
+                return
+        self.editor.setText(code)
 
     def _open_indicators(self) -> None:
         """Open the indicator catalogue; chosen snippet is appended to the editor."""

@@ -160,6 +160,24 @@ def test_short_span_run_does_not_crash(app):
         tab.results._on_run_clicked(0, 0)  # the previously-uncaught Qt-slot path must not raise
 
 
+def test_template_dialog_builds_and_autoselects(app):
+    from vike_trader_app.ui.templates import StrategyTemplateDialog
+    dlg = StrategyTemplateDialog()
+    assert dlg._code.toPlainText() != ""   # first template auto-selected
+    assert dlg._btn_load.isEnabled()
+
+
+def test_load_template_into_empty_editor_runs(app):
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    tab = StudioTab()
+    tab._load_template(TEMPLATES[0].code)          # empty editor -> loads without a prompt
+    assert "class MaCrossover" in tab.text()
+    tab.set_bars(_bars(60))
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.run_code()
+    assert tab.results.last_report is not None     # the loaded template actually runs
+
+
 def test_indicator_dialog_builds_and_autoselects(app):
     from vike_trader_app.ui.indicators import IndicatorCatalogDialog
     dlg = IndicatorCatalogDialog()
