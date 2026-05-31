@@ -819,6 +819,7 @@ class StudioTab(QtWidgets.QWidget):
         from .templates import StrategyTemplateDialog
 
         dlg = StrategyTemplateDialog(parent=self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)  # don't accumulate dialogs across opens
         dlg.loadRequested.connect(self._load_template)
         dlg.exec()
 
@@ -836,6 +837,7 @@ class StudioTab(QtWidgets.QWidget):
         from .indicators import IndicatorCatalogDialog
 
         dlg = IndicatorCatalogDialog(parent=self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         dlg.insertRequested.connect(self._insert_snippet)
         dlg.exec()
 
@@ -855,6 +857,7 @@ class StudioTab(QtWidgets.QWidget):
         if cap is None:
             cap = (self._config.cash if self._config is not None else TesterConfig().cash)
         dlg = BacktestConfigDialog(self._bars, capital=cap, parent=self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)  # freed after exec returns (deferred delete)
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             cap, start_ts, end_ts = dlg.values()
             self._run_capital = cap
@@ -888,6 +891,7 @@ class StudioTab(QtWidgets.QWidget):
                 # human-in-the-loop: review the AI's change as a diff before applying
                 self._apply_version += 1
                 dlg = DiffDialog(current, res.code, self._apply_version, parent=self)
+                dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
                 if dlg.exec() == QtWidgets.QDialog.Accepted:
                     self.editor.setText(res.code)
                     self.chat.append_message("system", f"Applied AI change — v{self._apply_version}.")

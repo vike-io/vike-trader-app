@@ -92,9 +92,11 @@ def _cards() -> list[_CalcCard]:
         return f"Expectancy {r['expectancy']:+,.4f} / trade  ·  Profit factor {pf}"
 
     def ror(v):
+        # trials kept modest so the live preview stays responsive on the GUI thread (~25ms)
         p = C.risk_of_ruin(v["win_pct"] / 100.0, v["payoff"], v["risk_pct"],
-                           ruin_drawdown_pct=v["ruin_pct"], trials=1500, max_trades=500)
-        return f"Risk of ruin ≈ {p * 100:.1f}%  (lose {v['ruin_pct']:.0f}% within 500 trades)"
+                           ruin_drawdown_pct=v["ruin_pct"], trials=600, max_trades=500)
+        return (f"Risk of ruin ≈ {p * 100:.1f}%  "
+                f"(lose {v['ruin_pct']:.0f}% of starting capital within 500 trades)")
 
     return [
         _CalcCard("Position size", [
@@ -130,7 +132,7 @@ def _cards() -> list[_CalcCard]:
             ("win_pct", "Win rate (%)", "num", (55.0, 2, 0.0, 100.0)),
             ("payoff", "Payoff ratio (R)", "num", (1.5, 3, 0.0, 100.0)),
             ("risk_pct", "Risk per trade (%)", "num", (2.0, 3, 0.01, 100.0)),
-            ("ruin_pct", "Ruin = drawdown of (%)", "num", (100.0, 1, 1.0, 100.0)),
+            ("ruin_pct", "Ruin = lose % of start", "num", (100.0, 1, 1.0, 100.0)),
         ], ror),
     ]
 

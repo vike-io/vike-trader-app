@@ -36,3 +36,10 @@ def test_card_recomputes_on_input_change(app):
     card._fields["risk_pct"][1].setValue(2.0)  # double the risk -> qty doubles
     assert card._out.text() != before
     assert "40" in card._out.text()
+
+
+def test_risk_of_ruin_card_wording_is_honest(app):
+    tab = ToolsTab()
+    ror = tab.cards[5]  # Risk of ruin — must say "starting capital", not the misleading "drawdown"
+    assert "starting capital" in ror._out.text()
+    assert "drawdown" not in ror._out.text().lower()
