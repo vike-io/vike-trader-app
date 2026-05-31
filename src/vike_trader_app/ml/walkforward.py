@@ -40,8 +40,17 @@ def walk_forward_ml(
     n_splits: int = 4,
     fee_rate: float = 0.0,
     cash: float = 10_000.0,
+    embargo: int = 0,
 ):
-    """Train ``train_fn`` per walk-forward window, run its predictor OOS, stitch results."""
+    """Train ``train_fn`` per walk-forward window, run its predictor OOS, stitch results.
+
+    PURGE + EMBARGO (López de Prado, applied to a walk-forward). A label at bar ``j`` peeks
+    ``horizon`` bars ahead (see ``make_labels``), so the last ``horizon`` training samples before
+    a test window would train on prices that fall *inside* that test window — look-ahead leakage
+    that inflates OOS performance. We purge them (drop ``j >= test_start - horizon``) plus an
+    optional ``embargo`` gap, so the model never trains on the answer it is tested on.
+    ``n_train`` on each ``MLWindow`` reflects the purged sample count.
+    """
     closes = [b.close for b in bars]
     feats = make_features(closes, lookback)
     labels = make_labels(closes, horizon)
@@ -51,8 +60,9 @@ def walk_forward_ml(
     stitched: list[float] = []
     equity = cash
     for tr_s, tr_e, te_s, te_e in splits:
+        train_end = max(tr_s, te_s - horizon - embargo)  # purge label-horizon leakage + embargo
         x_train, y_train = [], []
-        for j in range(tr_s, tr_e):
+        for j in range(tr_s, train_end):
             if feats[j] is not None and labels[j] is not None:
                 x_train.append(feats[j])
                 y_train.append(labels[j])
