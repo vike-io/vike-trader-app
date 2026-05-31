@@ -283,13 +283,12 @@ def kurtosis(values, period: int = 20):
             continue
         sd = math.sqrt(m2)
         m4 = sum(d ** 4 for d in diffs) / p
-        # population kurtosis
+        # population kurtosis (using population sd — correct for this form of G2)
         pop_kurt = m4 / (sd ** 4)
-        # excess kurtosis (Fisher) with sample correction
-        num = (p + 1) * p * (p - 1) * pop_kurt
+        # unbiased excess kurtosis G2 (Fisher definition, scipy kurtosis(bias=False) / Excel KURT):
+        # G2 = (p+1)*(p-1)/((p-2)*(p-3)) * pop_kurt  -  3*(p-1)^2/((p-2)*(p-3))
         denom = (p - 2) * (p - 3)
-        bias = 3.0 * (p - 1) ** 2 / ((p - 2) * (p - 3))
-        out[i] = num / ((p + 1) * denom) * (p - 1) - bias if denom != 0.0 else None
+        out[i] = (p + 1) * (p - 1) / denom * pop_kurt - 3.0 * (p - 1) ** 2 / denom if denom != 0.0 else None
     return out
 
 

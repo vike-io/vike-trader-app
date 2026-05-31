@@ -98,14 +98,18 @@ def cmf(highs, lows, closes, volumes, period: int = 20):
 def efi(closes, volumes, period: int = 13):
     """Elder Force Index: ``EMA((close[i]-close[i-1])*volume[i], period)``."""
     n = len(closes)
-    raw = [0.0] * n
+    # Force values are only defined from index 1 onward (no prior close at i=0).
+    # Build the defined tail and EMA over it, then scatter back to aligned output
+    # to avoid polluting the EMA seed with the synthetic raw[0]=0.0.
+    raw: list[float | None] = [None] * n
     for i in range(1, n):
         raw[i] = (closes[i] - closes[i - 1]) * volumes[i]
-    # EMA of defined portion (skip index 0 which is 0/warm-up)
+    defined = [(i, v) for i, v in enumerate(raw) if v is not None]
     out: list[float | None] = [None] * n
-    e = ema(raw, period)
-    for i in range(period - 1, n):
-        out[i] = e[i]
+    if len(defined) >= period:
+        e = ema([v for _, v in defined], period)
+        for (i, _), ev in zip(defined, e, strict=True):
+            out[i] = ev
     return out
 
 

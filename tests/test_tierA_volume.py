@@ -196,6 +196,18 @@ class TestEfi:
         post = [v for v in out if v is not None]
         assert all(v > 0 for v in post)
 
+    def test_efi_not_biased_by_seed(self):
+        # constant positive force from i>=1: close rises by 1 each bar, volume constant -> force=+vol each bar
+        # Use just enough bars so the EMA seed pollution is measurable (n=20 gives ~0.3-0.5 bias at tail)
+        closes = [100.0 + i for i in range(20)]
+        volumes = [10.0] * 20
+        out = efi(closes, volumes, period=13)
+        tail = [v for v in out[-5:] if v is not None]
+        assert tail
+        # force = (Δclose=1)*vol=10 every bar from i=1 -> EFI must converge to 10.0, not be dragged toward 0
+        # with seed pollution from raw[0]=0 the buggy code produces values ~9.5-9.7 (bias > 0.25)
+        assert all(abs(v - 10.0) < 0.1 for v in tail), f"EFI biased by seed: {tail}"
+
 
 # ---------------------------------------------------------------------------
 # pvt  (Price Volume Trend)
