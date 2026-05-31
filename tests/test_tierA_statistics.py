@@ -324,14 +324,22 @@ class TestKurtosis:
         tail = _tail(out)
         assert tail and all(math.isfinite(v) for v in tail)
 
-    def test_normal_like_excess_kurtosis_near_zero(self):
-        """Uniform window should have kurtosis below that of normal distribution."""
+    def test_kurtosis_near_zero_for_normal_like_data(self):
         import random
-        random.seed(42)
-        vals = [random.gauss(0, 1) for _ in range(200)]
-        out = kurtosis(vals, 50)
-        tail = _tail(out)
-        assert tail  # just checking it produces values
+        rng = random.Random(0)
+        closes = [rng.gauss(100.0, 5.0) for _ in range(300)]
+        out = kurtosis(closes, period=100)
+        tail = [v for v in out[-50:] if v is not None]
+        assert tail
+        # excess kurtosis of ~normal data is near 0; the pre-fix bug returned ~+150
+        assert all(abs(v) < 3.0 for v in tail), f"excess kurtosis not near 0: {max(abs(v) for v in tail)}"
+
+    def test_kurtosis_matches_reference_window(self):
+        # hand/reference excess kurtosis (unbiased, bias=False) of this exact 8-point window
+        window = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 20.0]  # one outlier -> high positive excess kurtosis
+        out = kurtosis(window, period=8)
+        # reference value computed with the corrected unbiased estimator G2 = 5.522 for this window
+        assert out[-1] == pytest.approx(5.522, abs=0.05)
 
 
 # ── mad ───────────────────────────────────────────────────────────────────────
