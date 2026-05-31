@@ -6,6 +6,8 @@ subclasses are ignored) and returns the class.
 
 import importlib.util
 import inspect
+import os
+import tempfile
 
 from .strategy import Strategy
 
@@ -26,3 +28,28 @@ def load_strategy_from_file(path: str) -> type[Strategy]:
     if not candidates:
         raise ValueError(f"no Strategy subclass found in {path!r}")
     return candidates[0]
+
+
+def load_strategy_from_string(code: str, *, validate: bool = True) -> type[Strategy]:
+    """Load a Strategy subclass from source TEXT.
+
+    With ``validate`` (default), runs the AST pre-flight gate first and raises ``ValueError`` on any
+    problem. Materializes ``code`` to a temp ``.py`` and reuses ``load_strategy_from_file``. This is
+    NOT a sandbox — run untrusted code via ``core.sandbox.run_sandboxed``.
+    """
+    if validate:
+        from .sandbox.preflight import check_strategy_source
+
+        problems = check_strategy_source(code)
+        if problems:
+            raise ValueError("strategy source rejected by pre-flight: " + "; ".join(problems))
+    fd, path = tempfile.mkstemp(suffix=".py", prefix="vike_strategy_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(code)
+        return load_strategy_from_file(path)
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
