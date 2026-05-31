@@ -268,7 +268,7 @@ def kvo(highs, lows, closes, volumes, fast: int = 34, slow: int = 55, signal: in
         vf_vals = [v for _, v in defined]
         ef = ema(vf_vals, fast)
         es = ema(vf_vals, slow)
-        for (idx, _), ef_v, es_v in zip(defined, ef, es):
+        for (idx, _), ef_v, es_v in zip(defined, ef, es, strict=True):
             ema_fast_full[idx] = ef_v
             ema_slow_full[idx] = es_v
 
@@ -285,7 +285,7 @@ def kvo(highs, lows, closes, volumes, fast: int = 34, slow: int = 55, signal: in
     if len(kvo_defined) >= signal:
         kvo_vals = [v for _, v in kvo_defined]
         sig_ema = ema(kvo_vals, signal)
-        for (idx, _), sv in zip(kvo_defined, sig_ema):
+        for (idx, _), sv in zip(kvo_defined, sig_ema, strict=True):
             signal_full[idx] = sv
 
     return kvo_raw, signal_full
