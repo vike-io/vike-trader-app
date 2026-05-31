@@ -1,6 +1,9 @@
 """TesterConfig + StrategyTester facade."""
 
-from vike_trader_app.tester import TesterConfig
+from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.model import Bar
+from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.tester import Backtester, StrategyTester, TesterConfig, TesterReport
 
 
 def test_config_defaults_and_engine_kwargs():
@@ -14,12 +17,6 @@ def test_config_defaults_and_engine_kwargs():
         "maker_fee": 0.0005, "taker_fee": 0.001, "multiplier": 2.0,
         "leverage": None, "maint_margin": 0.0, "cashflows": None,
     }
-
-
-from vike_trader_app.core.engine import BacktestEngine
-from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
-from vike_trader_app.tester import Backtester, StrategyTester, TesterReport
 
 
 class _BuyHold(Strategy):
