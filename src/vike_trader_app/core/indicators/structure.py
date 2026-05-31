@@ -78,15 +78,6 @@ def zigzag(highs, lows, deviation: float = 5.0):
                     extreme_idx      = i
                     direction        = 1
 
-    # Emit the last unconfirmed extreme at the final bar so the series always
-    # has a current reference level (the in-progress swing high/low).
-    if out[extreme_idx] is None:
-        out[extreme_idx] = extreme_price
-    # If the last bar itself is not the extreme, also mark the last bar with
-    # the current extreme so consumers can read the latest pivot level.
-    if extreme_idx != n - 1:
-        out[n - 1] = extreme_price
-
     return out
 
 
@@ -114,9 +105,6 @@ def williams_fractal(highs, lows, n: int = 2):
     fu: list[float | None] = [None] * length
     fd: list[float | None] = [None] * length
 
-    last_fu: float | None = None
-    last_fd: float | None = None
-
     for i in range(n, length - n):
         h_centre = highs[i]
         l_centre = lows[i]
@@ -133,21 +121,8 @@ def williams_fractal(highs, lows, n: int = 2):
                 break
         if is_up:
             fu[i] = h_centre
-            last_fu = h_centre
         if is_down:
             fd[i] = l_centre
-            last_fd = l_centre
-
-    # Carry the most recent confirmed fractal to the last *computable* bar
-    # (index ``length - 1 - n``) so the output always has a current reference
-    # level within the valid compute window.  The true edge bars (last n) remain
-    # None, preserving the contract that centred fractals require a full window.
-    last_valid = length - 1 - n
-    if last_valid >= n:
-        if last_fu is not None and fu[last_valid] is None:
-            fu[last_valid] = last_fu
-        if last_fd is not None and fd[last_valid] is None:
-            fd[last_valid] = last_fd
 
     return fu, fd
 

@@ -100,18 +100,26 @@ class TestIchimoku:
         # kijun defined from bar 25 (index 25)
         assert kijun[25] is not None
 
-    def test_chikou_leading_none(self):
-        """chikou[i] = close[i - kijun]; first kijun bars should be None (leading warm-up)."""
+    def test_chikou_forward_displacement(self):
+        """chikou[i] = close[i + kijun] (Lagging Span forward form).
+
+        The last kijun bars must be None (no future close available).
+        A bar well within the valid range must equal closes[i + kijun].
+        """
         n = 100
         h, l, c = _synth_ohlc(n)
         kijun_p = 26
         _, _, _, _, chikou = ichimoku(h, l, c, tenkan=9, kijun=kijun_p, senkou=52)
-        # first kijun_p values should all be None
-        leading = chikou[:kijun_p]
-        assert all(v is None for v in leading)
-        # tail should be defined (chikou[i] = closes[i - kijun] for i >= kijun)
-        tail = [v for v in chikou[-10:] if v is not None]
-        assert len(tail) > 0
+        # last kijun_p values should all be None (no future data)
+        trailing = chikou[n - kijun_p:]
+        assert all(v is None for v in trailing), (
+            f"Expected last {kijun_p} chikou values to be None, got {trailing}"
+        )
+        # A bar well within range: chikou[i] == closes[i + kijun_p]
+        i = 10
+        assert chikou[i] == pytest.approx(c[i + kijun_p]), (
+            f"chikou[{i}]={chikou[i]} != closes[{i + kijun_p}]={c[i + kijun_p]}"
+        )
 
     def test_senkou_forward_shift_leading_none(self):
         """senkou_a/b are shifted forward by kijun; first kijun bars may not be defined."""

@@ -275,7 +275,7 @@ def relative_volatility(values, period: int = 14):
     if len(defined_u) >= period:
         eu = ema([v for _, v in defined_u], period)
         ed = ema([v for _, v in defined_d], period)
-        for (idx, _), eu_v, ed_v in zip(defined_u, eu, ed):
+        for (idx, _), eu_v, ed_v in zip(defined_u, eu, ed, strict=True):
             ema_u[idx] = eu_v
             ema_d[idx] = ed_v
 
@@ -292,10 +292,10 @@ def relative_volatility(values, period: int = 14):
 @indicator(
     category="volatility",
     inputs=["high", "low"],
-    params=[Param("period", "int", 52, 2, 1000, 1)],
+    params=[Param("period", "int", 252, 2, 1000, 1)],
     outputs=["high_n", "low_n"],
 )
-def high_low_52w(highs, lows, period: int = 52):
+def high_low_52w(highs, lows, period: int = 252):
     """Rolling N-period high and low.
 
     ``high_n[i] = max(high[i-period+1..i])``

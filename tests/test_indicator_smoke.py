@@ -7,7 +7,7 @@ import pytest
 from vike_trader_app.core.indicators import base
 
 
-def _synth(n=120):
+def _synth(n=300):
     closes = [100.0 + 10 * math.sin(i / 7) + (i % 5) for i in range(n)]
     return {
         "open": [c - 0.3 for c in closes],
@@ -30,9 +30,11 @@ def test_every_indicator_computes_and_aligns(name):
     n = len(data["close"])
     series = out if isinstance(out, tuple) else (out,)
     assert len(series) == len(spec.outputs), f"{name}: output count != declared outputs"
+    all_present = []
     for line in series:
         assert len(line) == n, f"{name}: output length {len(line)} != input length {n}"
-        tail = [v for v in line[-10:] if v is not None]
-        assert tail, f"{name}: no finite values in tail"
+        present = [v for v in line if v is not None]
         assert all(isinstance(v, (int, float)) and not math.isnan(v) and not math.isinf(v)
-                   for v in tail), f"{name}: non-finite tail values"
+                   for v in present), f"{name}: non-finite values"
+        all_present.extend(present)
+    assert all_present, f"{name}: produced no finite values at all"

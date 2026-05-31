@@ -276,8 +276,8 @@ def supertrend(highs, lows, closes, period: int = 10, mult: float = 3.0):
     hl2 = (highs[start] + lows[start]) / 2.0
     final_upper = hl2 + mult * atr_vals[start]
     final_lower = hl2 - mult * atr_vals[start]
-    # Seed direction based on whether close is above or below the midpoint band
-    curr_dir = 1 if closes[start] >= final_lower else -1
+    # Seed direction based on whether close is above or below hl2 at the seed bar
+    curr_dir = 1 if closes[start] >= hl2 else -1
     st[start] = final_lower if curr_dir == 1 else final_upper
     direction[start] = curr_dir
 
@@ -377,13 +377,14 @@ def ichimoku(highs, lows, closes, tenkan: int = 9, kijun: int = 26, senkou: int 
             if target < n:
                 senkou_b[target] = senkou_b_raw[i]
 
-    # chikou: Chikou Span = current close displaced −kijun bars back.
-    # Stored as chikou[i] = closes[i - kijun] for i >= kijun (look-back form).
-    # This gives leading Nones for the first kijun bars, but the tail is always defined,
-    # making the series smoke-test-compatible while preserving the displacement semantics.
+    # chikou: Chikou Span = current close plotted kijun bars back (Lagging Span).
+    # chikou[i] = closes[i + kijun] when i + kijun < n, else None.
+    # The last kijun bars are None (no future data available).
     chikou: list[float | None] = [None] * n
-    for i in range(kijun, n):
-        chikou[i] = closes[i - kijun]
+    for i in range(n):
+        target = i + kijun
+        if target < n:
+            chikou[i] = closes[target]
 
     return tenkan_line, kijun_line, senkou_a, senkou_b, chikou
 
