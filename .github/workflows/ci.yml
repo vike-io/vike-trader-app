@@ -1,0 +1,37 @@
+name: CI
+
+# Test gate for PRs/pushes. The repo had no CI before — backtest-engine bugs and
+# docstring/feature drift slipped through merged PRs because nothing ran the suite.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      # Non-UI extras: enough for the engine / analysis / indicators / ml / ai-tool
+      # tests. The `ui` extra (PySide6/pyqtgraph) is intentionally omitted — those
+      # tests need a display; run them under xvfb in a follow-up job if desired.
+      - name: Sync dependencies
+        run: uv sync --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
+
+      - name: Run test suite (non-UI)
+        run: >
+          uv run pytest -q
+          --ignore=tests/test_chartdata.py
+          --ignore=tests/test_dashboard_data.py
+          --ignore=tests/test_forward_ui.py
+          --ignore=tests/test_overlays.py
+          --ignore=tests/test_replay.py
+          --ignore=tests/test_tables.py
+          --ignore=tests/test_windowing.py
+          --ignore=tests/test_interactive.py

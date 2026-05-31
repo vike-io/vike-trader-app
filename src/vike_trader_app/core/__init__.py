@@ -7,9 +7,11 @@ Modules:
     strategy_loader.py load user Strategy subclasses
     portfolio.py       multi-symbol / cross-sectional helpers
     timeframe.py       timeframe parsing + resampling to higher TFs
-    vectorized.py      fast vectorized backtest path
+    vectorized.py      fast vectorized backtest path (grid builder / parity oracle)
+    fastsim.py         compiled (numba) fast_backtest kernel — parity with engine.py
+    signal_strategy.py SignalStrategy front door over the compiled kernel
     forward.py         forward (paper) runner — drive the engine live, bar-at-a-time
-    indicators/        technical-analysis library
+    indicators/        technical-analysis library (self-describing @indicator registry)
 
 Engine rules (implemented):
   - broker processes pending orders BEFORE the strategy runs each bar (look-ahead guard)
