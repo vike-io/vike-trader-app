@@ -17,7 +17,8 @@ from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
 from ..data.cache import get_bars
-from ..data.polling_feed import PollingBarFeed, make_vike_fetch_latest
+from ..data.polling_feed import PollingBarFeed
+from ..data.sources import select_source
 from ..data.store import RunRecord, Store
 from . import theme
 from .chart import EquityChart, PriceChart
@@ -365,7 +366,8 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.processEvents()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            bars = get_bars(rec.symbol, rec.interval, rec.start_ts, rec.end_ts)
+            bars = get_bars(rec.symbol, rec.interval, rec.start_ts, rec.end_ts,
+                            fetcher=select_source(rec.symbol).fetch_bars_range)
         except Exception as exc:  # noqa: BLE001 - report load failure
             QtWidgets.QMessageBox.warning(self, "Reopen failed", f"{rec.symbol}: {exc}")
             return
@@ -390,7 +392,8 @@ class MainWindow(QtWidgets.QMainWindow):
         now = int(time.time() * 1000)
         start = now - _WATCHLIST_DAYS * _DAY_MS
         try:
-            bars = get_bars(symbol, "1m", start, now, progress=self._fetch_progress)
+            bars = get_bars(symbol, "1m", start, now, progress=self._fetch_progress,
+                            fetcher=select_source(symbol).fetch_bars_range)
         except Exception as exc:  # noqa: BLE001 - report network/load failure
             QtWidgets.QMessageBox.warning(self, "Load failed", f"{symbol}: {exc}")
             self.crumb.setText("No data loaded")
@@ -517,15 +520,14 @@ class MainWindow(QtWidgets.QMainWindow):
     def _start_forward(self):
         """Seed warm-up history, then stream live closed bars into a PaperTester."""
         symbol, interval = self._symbol, self._interval
+        src = select_source(symbol)  # crypto -> vike/binance; forex -> Yahoo+Dukascopy
         self.crumb.setText(f"Forward: seeding {symbol} {interval}…")
         QtWidgets.QApplication.processEvents()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            from ..data.vike_source import fetch_bars_range as vike_fetch
-
             now = int(time.time() * 1000)
             start = now - _FORWARD_SEED_BARS * interval_ms(interval)
-            seed = vike_fetch(symbol, interval, start, now)
+            seed = src.fetch_bars_range(symbol, interval, start, now)
         except Exception as exc:  # noqa: BLE001 - network/seed failure
             QtWidgets.QMessageBox.warning(self, "Forward failed", f"Could not seed {symbol}: {exc}")
             self.crumb.setText("No data loaded")
@@ -542,10 +544,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_backtest_controls_enabled(False)
         self.btn_forward.setText("■ Stop forward")
 
-        # Prefer the push WebSocket feed (lower latency); fall back to REST polling.
-        if not self._start_live_worker(symbol, interval):
+        # Prefer the push WebSocket feed (lower latency) when the source has one;
+        # forex has no push feed, so it falls straight through to REST polling.
+        if not (src.supports_live_ws and self._start_live_worker(symbol, interval)):
             self._feed = PollingBarFeed(
-                symbol, interval, fetch_latest=make_vike_fetch_latest(symbol, interval)
+                symbol, interval, fetch_latest=src.make_fetch_latest(symbol, interval)
             )
             self._fwd_timer.start(int(self._feed.poll_seconds * 1000))
         self.crumb.setText(f"● FORWARD (paper) · {symbol} · {interval} · waiting for bars…")
