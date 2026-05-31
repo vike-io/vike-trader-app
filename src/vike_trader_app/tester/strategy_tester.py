@@ -63,14 +63,11 @@ class StrategyTester:
         stitched: list = []
         concat_trades: list = []
         windows: list = []
-        all_trial_returns: list = []
         final_curves: list = []
         for tr_s, tr_e, te_s, te_e in walk_forward_splits(len(self.data), n_splits):
             opt = StrategyTester(make, self.data[tr_s:tr_e], self.config).optimize(
                 make, param_grid, criterion=criterion
             )
-            for t in opt.ranked:
-                all_trial_returns.append(_returns(t.report.equity_curve))
             final_curves = [t.report.equity_curve for t in opt.ranked]
             oos = Backtester(make(**opt.best.params), self.data[te_s:te_e], self.config).run()
             windows.append(WalkForwardWindow((tr_s, tr_e), (te_s, te_e), opt.best.params, oos))
@@ -89,8 +86,10 @@ class StrategyTester:
         )
         observed_sr = m.sharpe(stitched, 1) if len(stitched) > 1 else 0.0
         trial_sharpes = [m.sharpe(c, 1) for c in final_curves] or [observed_sr]
+        # Verdict is scoped to the final (largest-train) window's trials for coherent DSR/PBO/effective-N.
+        final_returns = [_returns(c) for c in final_curves]
         dsr = deflated_sharpe_with_effective_n(
-            observed_sr, trial_sharpes, all_trial_returns, max(len(stitched) - 1, 2)
+            observed_sr, trial_sharpes, final_returns, max(len(stitched) - 1, 2)
         )
         oos_report.verdict = overfit_verdict(_pbo_from_curves(final_curves), dsr, wf_consistency)
         return WalkForwardReport(windows=windows, oos_report=oos_report,
