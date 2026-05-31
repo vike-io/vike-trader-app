@@ -96,10 +96,10 @@ def test_engine_equals_fastsim_canonical_guarantee():
     assert got["n_trades"] == len(expected.trades)
 
 
-def test_kernel_inline_math_equals_broker_sim_primitives():
-    """Drift-guard: the kernel's inline fee/slippage/funding equal broker_sim's formulas."""
+def test_broker_sim_primitives_match_canonical_formulas():
+    """Pin broker_sim's primitives to their literal formulas (engine<->kernel drift is covered by the parity tests above)."""
     from vike_trader_app.core.broker_sim import adverse_fill_price, fee, funding_charge
-    # the exact arithmetic the kernel inlines (fastsim.py): verify it matches broker_sim.
+    # verify broker_sim returns the canonical formulas (the same arithmetic the engine + kernel use).
     raw, side_sign, slip, sz, rate, mult, pos, close, frate = 100.0, 1, 0.0005, 2.0, 0.001, 5.0, 3.0, 101.0, 0.0001
     fill = raw * (1.0 + side_sign * slip)
     assert fill == adverse_fill_price(raw, side_sign, slip)
