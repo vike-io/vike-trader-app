@@ -847,3 +847,779 @@ def tasuki_gap(opens, highs, lows, closes):
             if min(po, pc) < o < max(po, pc) and c < po:
                 out[i] = -100
     return out
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Three-bar (and longer) patterns (27)
+# ---------------------------------------------------------------------------
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["morning_star"])
+def morning_star(opens, highs, lows, closes):
+    """3-bar: long black, small-body star gapping down, long white closing into first body → +100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bar1: long black
+        if not _is_black(o1, c1) or _body(o1, c1) < a:
+            continue
+        # bar2: small body star (body < 30% of avg), gaps down (entire bar below bar1 close)
+        if _body(o2, c2) >= 0.3 * a or h2 >= c1:
+            continue
+        # bar3: long white closing above bar1 midpoint
+        if not _is_white(o3, c3) or _body(o3, c3) < a:
+            continue
+        mid1 = (o1 + c1) / 2
+        if c3 > mid1:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["evening_star"])
+def evening_star(opens, highs, lows, closes):
+    """3-bar: long white, small-body star gapping up, long black closing into first body → -100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bar1: long white
+        if not _is_white(o1, c1) or _body(o1, c1) < a:
+            continue
+        # bar2: small body star, gaps up (entire bar above bar1 close)
+        if _body(o2, c2) >= 0.3 * a or l2 <= c1:
+            continue
+        # bar3: long black closing below bar1 midpoint
+        if not _is_black(o3, c3) or _body(o3, c3) < a:
+            continue
+        mid1 = (o1 + c1) / 2
+        if c3 < mid1:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["morning_doji_star"])
+def morning_doji_star(opens, highs, lows, closes):
+    """Morning star where the star bar is a doji → +100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not _is_black(o1, c1) or _body(o1, c1) < a:
+            continue
+        # star must be a doji (body ≤ 10% avg) and gap down
+        if _body(o2, c2) > 0.1 * a or h2 >= c1:
+            continue
+        if not _is_white(o3, c3) or _body(o3, c3) < a:
+            continue
+        mid1 = (o1 + c1) / 2
+        if c3 > mid1:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["evening_doji_star"])
+def evening_doji_star(opens, highs, lows, closes):
+    """Evening star where the star bar is a doji → -100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not _is_white(o1, c1) or _body(o1, c1) < a:
+            continue
+        # star must be a doji and gap up
+        if _body(o2, c2) > 0.1 * a or l2 <= c1:
+            continue
+        if not _is_black(o3, c3) or _body(o3, c3) < a:
+            continue
+        mid1 = (o1 + c1) / 2
+        if c3 < mid1:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_white_soldiers"])
+def three_white_soldiers(opens, highs, lows, closes):
+    """3 consecutive long white candles, each opening within prior body, closing near high → +100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # all three must be long white candles
+        if not (_is_white(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3)):
+            continue
+        if _body(o1, c1) < 0.7 * a or _body(o2, c2) < 0.7 * a or _body(o3, c3) < 0.7 * a:
+            continue
+        # bar2 opens within bar1 body, bar3 opens within bar2 body
+        if not (o1 < o2 < c1 and o2 < o3 < c2):
+            continue
+        # each closes near its high (upper shadow ≤ 30% of body)
+        if (_upper(o1, h1, c1) > 0.3 * _body(o1, c1) or
+                _upper(o2, h2, c2) > 0.3 * _body(o2, c2) or
+                _upper(o3, h3, c3) > 0.3 * _body(o3, c3)):
+            continue
+        # progressing upward
+        if c1 < c2 < c3:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_black_crows"])
+def three_black_crows(opens, highs, lows, closes):
+    """3 consecutive long black candles, each opening within prior body, closing near low → -100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not (_is_black(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3)):
+            continue
+        if _body(o1, c1) < 0.7 * a or _body(o2, c2) < 0.7 * a or _body(o3, c3) < 0.7 * a:
+            continue
+        # bar2 opens within bar1 body, bar3 opens within bar2 body
+        if not (c1 < o2 < o1 and c2 < o3 < o2):
+            continue
+        # each closes near its low (lower shadow ≤ 30% of body)
+        if (_lower(o1, l1, c1) > 0.3 * _body(o1, c1) or
+                _lower(o2, l2, c2) > 0.3 * _body(o2, c2) or
+                _lower(o3, l3, c3) > 0.3 * _body(o3, c3)):
+            continue
+        # progressing downward
+        if c1 > c2 > c3:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["identical_three_crows"])
+def identical_three_crows(opens, highs, lows, closes):
+    """Three black crows where each bar opens ≈ at the prior close → -100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not (_is_black(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3)):
+            continue
+        if _body(o1, c1) < 0.7 * a or _body(o2, c2) < 0.7 * a or _body(o3, c3) < 0.7 * a:
+            continue
+        # each bar opens at ≈ prior close (tolerance 5% of avg body)
+        tol = 0.05 * a
+        if abs(o2 - c1) > tol or abs(o3 - c2) > tol:
+            continue
+        if c1 > c2 > c3:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_inside"])
+def three_inside(opens, highs, lows, closes):
+    """Harami then confirming third bar.
+    Bar1 black, bar2 white harami inside bar1, bar3 white confirming (close > bar1 open) → +100.
+    Bar1 white, bar2 black harami inside bar1, bar3 black confirming (close < bar1 open) → -100.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(2, n):
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        b1_hi = max(o1, c1); b1_lo = min(o1, c1)
+        b2_hi = max(o2, c2); b2_lo = min(o2, c2)
+        # bar2 body must be inside bar1 body
+        if b2_hi >= b1_hi or b2_lo <= b1_lo:
+            continue
+        if _is_black(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3) and c3 > o1:
+            out[i] = 100
+        elif _is_white(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3) and c3 < o1:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_outside"])
+def three_outside(opens, highs, lows, closes):
+    """Engulfing then confirming third bar.
+    Bar1 black, bar2 white engulfs, bar3 white confirming (close > bar2 close) → +100.
+    Bar1 white, bar2 black engulfs, bar3 black confirming (close < bar2 close) → -100.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(2, n):
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bullish outside: bar1 black, bar2 white engulfs bar1
+        if _is_black(o1, c1) and _is_white(o2, c2) and c2 >= o1 and o2 <= c1:
+            if _is_white(o3, c3) and c3 > c2:
+                out[i] = 100
+        # bearish outside: bar1 white, bar2 black engulfs bar1
+        elif _is_white(o1, c1) and _is_black(o2, c2) and o2 >= c1 and c2 <= o1:
+            if _is_black(o3, c3) and c3 < c2:
+                out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_line_strike"])
+def three_line_strike(opens, highs, lows, closes):
+    """3 same-colour trend candles then a 4th that engulfs all three → ±100 (reversal signal).
+    Three whites then a big black → +100 (bull reversal implied).
+    Three blacks then a big white → -100 (bear reversal implied).
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(3, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o2, h2, l2, c2 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o3, h3, l3, c3 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o4, h4, l4, c4 = opens[i], highs[i], lows[i], closes[i]
+        # three white soldiers → fourth black engulfs all three
+        if (_is_white(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3)
+                and c1 < c2 < c3 and _is_black(o4, c4)
+                and o4 >= c3 and c4 <= o1):
+            out[i] = 100
+        # three black crows → fourth white engulfs all three
+        elif (_is_black(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3)
+              and c1 > c2 > c3 and _is_white(o4, c4)
+              and o4 <= c3 and c4 >= o1):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_stars_in_south"])
+def three_stars_in_south(opens, highs, lows, closes):
+    """Three black candles of diminishing range in a downtrend → +100 (bullish reversal)."""
+    n = len(closes)
+    out = [0] * n
+    for i in range(2, n):
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not (_is_black(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3)):
+            continue
+        rng1 = _range(h1, l1); rng2 = _range(h2, l2); rng3 = _range(h3, l3)
+        if rng1 <= 0 or rng2 <= 0 or rng3 <= 0:
+            continue
+        # diminishing range
+        if not (rng1 > rng2 > rng3):
+            continue
+        # bar2 low higher than bar1 low (upward pivot on lows)
+        if l2 <= l1:
+            continue
+        # bar3 (star): high < bar2 high, low > bar2 low (inside bar2 range)
+        if h3 >= h2 or l3 <= l2:
+            continue
+        out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["abandoned_baby"])
+def abandoned_baby(opens, highs, lows, closes):
+    """Doji island reversal: bar1 long, bar2 is a doji with gaps on BOTH sides, bar3 confirming.
+    Bullish: long black → gap-down doji → gap-up white → +100.
+    Bearish: long white → gap-up doji → gap-down black → -100.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bar2 must be a doji
+        if _body(o2, c2) > 0.1 * a or _range(h2, l2) <= 0:
+            continue
+        # bullish: bar1 long black, doji gaps down (h2 < l1), bar3 white gaps up (l3 >= h2)
+        if (_is_black(o1, c1) and _body(o1, c1) >= a
+                and h2 < l1 and _is_white(o3, c3) and l3 >= h2):
+            out[i] = 100
+        # bearish: bar1 long white, doji gaps up (l2 > h1), bar3 black gaps down (h3 <= l2)
+        elif (_is_white(o1, c1) and _body(o1, c1) >= a
+              and l2 > h1 and _is_black(o3, c3) and h3 <= l2):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["advance_block"])
+def advance_block(opens, highs, lows, closes):
+    """Three white candles with weakening bodies and/or growing upper shadows → -100 (bearish warning)."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not (_is_white(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3)):
+            continue
+        b1 = _body(o1, c1); b2 = _body(o2, c2); b3 = _body(o3, c3)
+        if b1 <= 0 or b2 <= 0 or b3 <= 0:
+            continue
+        u1 = _upper(o1, h1, c1); u2 = _upper(o2, h2, c2); u3 = _upper(o3, h3, c3)
+        # progressing upward
+        if not (c1 < c2 < c3):
+            continue
+        # weakening: bodies shrinking OR upper shadows growing
+        weakening_bodies = b2 < b1 and b3 < b2
+        growing_shadows = u2 > u1 and u3 > u2
+        if weakening_bodies or growing_shadows:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["stalled_pattern"])
+def stalled_pattern(opens, highs, lows, closes):
+    """Two long whites then a small white body near the top (stalling) → -100 (bearish warning)."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not (_is_white(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3)):
+            continue
+        # bars 1 and 2 must be long; bar3 must be small (body < 50% avg)
+        if _body(o1, c1) < a or _body(o2, c2) < a:
+            continue
+        if _body(o3, c3) >= 0.5 * a:
+            continue
+        # progressing upward on bars 1-2, bar3 opens near bar2 close (near top)
+        if c1 < c2 and o3 >= c2 * 0.98:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["two_crows"])
+def two_crows(opens, highs, lows, closes):
+    """Long white, gap-up black (bar2), then black bar3 closing into bar1 body → -100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bar1: long white
+        if not _is_white(o1, c1) or _body(o1, c1) < a:
+            continue
+        # bar2: black, gaps up (opens above bar1 close)
+        if not _is_black(o2, c2) or o2 <= c1:
+            continue
+        # bar3: black, closes inside bar1 body (between o1 and c1)
+        if not _is_black(o3, c3):
+            continue
+        if o1 < c3 < c1:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["upside_gap_two_crows"])
+def upside_gap_two_crows(opens, highs, lows, closes):
+    """Upside gap two crows: bar1 long white, bar2 black gaps up, bar3 black engulfs bar2 but stays above bar1 close → -100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bar1: long white
+        if not _is_white(o1, c1) or _body(o1, c1) < a:
+            continue
+        # bar2: black, gaps up (opens above bar1 close)
+        if not _is_black(o2, c2) or o2 <= c1:
+            continue
+        # bar3: black, engulfs bar2 (opens above bar2 open, closes below bar2 close)
+        # but closes above bar1 close (stays in the gap)
+        if not _is_black(o3, c3):
+            continue
+        if o3 >= o2 and c3 <= c2 and c3 > c1:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["tristar"])
+def tristar(opens, highs, lows, closes):
+    """Three dojis: middle gaps away from first, third gaps back → ±100 (reversal by gap direction).
+    Bullish (+100): middle doji gaps DOWN, third doji gaps back UP.
+    Bearish (-100): middle doji gaps UP, third doji gaps back DOWN.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # all three must be dojis
+        if (_body(o1, c1) > 0.1 * a or _range(h1, l1) <= 0
+                or _body(o2, c2) > 0.1 * a or _range(h2, l2) <= 0
+                or _body(o3, c3) > 0.1 * a or _range(h3, l3) <= 0):
+            continue
+        # Use body midpoints to determine gap direction (dojis may have overlapping shadows)
+        mid1 = (max(o1, c1) + min(o1, c1)) / 2
+        mid2 = (max(o2, c2) + min(o2, c2)) / 2
+        mid3 = (max(o3, c3) + min(o3, c3)) / 2
+        # bullish: middle doji is lower than first, third is higher than middle
+        if mid2 < mid1 and mid3 > mid2:
+            out[i] = 100
+        # bearish: middle doji is higher than first, third is lower than middle
+        elif mid2 > mid1 and mid3 < mid2:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["unique_three_river"])
+def unique_three_river(opens, highs, lows, closes):
+    """Long black, harami-like black with lower low, small white → +100 (bullish reversal)."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bar1: long black
+        if not _is_black(o1, c1) or _body(o1, c1) < a:
+            continue
+        # bar2: black, body inside bar1, lower low (hammer-like)
+        if not _is_black(o2, c2):
+            continue
+        if not (min(o2, c2) > min(o1, c1) and max(o2, c2) < max(o1, c1)):
+            continue
+        if l2 >= l1:
+            continue
+        # bar3: small white body, closes below bar2 close (moderate)
+        if not _is_white(o3, c3):
+            continue
+        if _body(o3, c3) >= _body(o2, c2):
+            continue
+        out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["stick_sandwich"])
+def stick_sandwich(opens, highs, lows, closes):
+    """Black, white, black — two blacks with equal closes → +100 (bullish reversal at support)."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(2, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        if not (_is_black(o1, c1) and _is_white(o2, c2) and _is_black(o3, c3)):
+            continue
+        # two blacks with equal closes (tolerance 3% of avg body)
+        if abs(c3 - c1) <= 0.03 * a + 1e-9:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["ladder_bottom"])
+def ladder_bottom(opens, highs, lows, closes):
+    """Four black candles stepping lower, fourth with upper shadow, then white reversal → +100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(4, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 4], highs[i - 4], lows[i - 4], closes[i - 4]
+        o2, h2, l2, c2 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o3, h3, l3, c3 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o4, h4, l4, c4 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o5, h5, l5, c5 = opens[i], highs[i], lows[i], closes[i]
+        # bars 1-4: all black, progressively lower closes
+        if not (_is_black(o1, c1) and _is_black(o2, c2)
+                and _is_black(o3, c3) and _is_black(o4, c4)):
+            continue
+        if not (c1 > c2 > c3 > c4):
+            continue
+        # bar4 has an upper shadow (some upper wick)
+        if _upper(o4, h4, c4) <= 0:
+            continue
+        # bar5: white reversal, closes above bar4 open
+        if _is_white(o5, c5) and c5 > o4:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["concealing_baby_swallow"])
+def concealing_baby_swallow(opens, highs, lows, closes):
+    """Four black candles: first two marubozu, third gaps down with upper shadow, fourth engulfs third → +100."""
+    n = len(closes)
+    out = [0] * n
+    for i in range(3, n):
+        o1, h1, l1, c1 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o2, h2, l2, c2 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o3, h3, l3, c3 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o4, h4, l4, c4 = opens[i], highs[i], lows[i], closes[i]
+        # all four must be black
+        if not (_is_black(o1, c1) and _is_black(o2, c2)
+                and _is_black(o3, c3) and _is_black(o4, c4)):
+            continue
+        # bars 1 and 2 must be marubozu (no shadows)
+        if not (_is_marubozu(o1, h1, l1, c1) and _is_marubozu(o2, h2, l2, c2)):
+            continue
+        # bar3 has an upper shadow (high > open for black = upper shadow exists)
+        if _upper(o3, h3, c3) <= 0:
+            continue
+        # bar4 engulfs bar3 (bar4 range covers bar3 range)
+        if h4 >= h3 and l4 <= l3:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["rise_fall_three_methods"])
+def rise_fall_three_methods(opens, highs, lows, closes):
+    """5-bar pattern: long candle, 3 small opposite-colour candles within its range, long candle continuing.
+    Rising three methods → +100 (long white, 3 small blacks, long white closing higher).
+    Falling three methods → -100 (long black, 3 small whites, long black closing lower).
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(4, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 4], highs[i - 4], lows[i - 4], closes[i - 4]
+        o2, h2, l2, c2 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o3, h3, l3, c3 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o4, h4, l4, c4 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o5, h5, l5, c5 = opens[i], highs[i], lows[i], closes[i]
+        b1 = _body(o1, c1)
+        if b1 < a:
+            continue
+        # middle three bars must be small (body < 50% of avg)
+        if (_body(o2, c2) >= 0.5 * a or _body(o3, c3) >= 0.5 * a
+                or _body(o4, c4) >= 0.5 * a):
+            continue
+        # rising three methods
+        if (_is_white(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3) and _is_black(o4, c4)
+                and _is_white(o5, c5) and _body(o5, c5) >= a
+                and l2 > l1 and h2 < h1  # middle bars within bar1 range
+                and l3 > l1 and h3 < h1
+                and l4 > l1 and h4 < h1
+                and c5 > c1):
+            out[i] = 100
+        # falling three methods
+        elif (_is_black(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3) and _is_white(o4, c4)
+              and _is_black(o5, c5) and _body(o5, c5) >= a
+              and h2 < h1 and l2 > l1
+              and h3 < h1 and l3 > l1
+              and h4 < h1 and l4 > l1
+              and c5 < c1):
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["mat_hold"])
+def mat_hold(opens, highs, lows, closes):
+    """Bullish mat hold (gap variant of rising three methods): long white, gap-up small blacks, long white → +100."""
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(4, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 4], highs[i - 4], lows[i - 4], closes[i - 4]
+        o2, h2, l2, c2 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o3, h3, l3, c3 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o4, h4, l4, c4 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o5, h5, l5, c5 = opens[i], highs[i], lows[i], closes[i]
+        # bar1: long white
+        if not _is_white(o1, c1) or _body(o1, c1) < a:
+            continue
+        # bar2: small black, opens above bar1 close (gap up)
+        if not _is_black(o2, c2) or _body(o2, c2) >= 0.5 * a or o2 <= c1:
+            continue
+        # bars 3 and 4: small candles staying above bar1 open
+        if _body(o3, c3) >= 0.5 * a or _body(o4, c4) >= 0.5 * a:
+            continue
+        if l3 <= o1 or l4 <= o1:
+            continue
+        # bar5: long white, close above bar1 close
+        if _is_white(o5, c5) and _body(o5, c5) >= a and c5 > c1:
+            out[i] = 100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["hikkake"])
+def hikkake(opens, highs, lows, closes):
+    """Inside bar then false breakout that reverses: 4-bar pattern.
+    Bar1: reference; bar2: inside bar (h<b1.h, l>b1.l); bar3: false breakout;
+    bar4: reversal back through bar2's opposite side → ±100.
+    Bullish (+100): bar3 breaks below bar2 low, bar4 closes above bar2 high.
+    Bearish (-100): bar3 breaks above bar2 high, bar4 closes below bar2 low.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(3, n):
+        o1, h1, l1, c1 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o2, h2, l2, c2 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o3, h3, l3, c3 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o4, h4, l4, c4 = opens[i], highs[i], lows[i], closes[i]
+        # bar2 must be an inside bar relative to bar1
+        if h2 >= h1 or l2 <= l1:
+            continue
+        # bullish hikkake: bar3 breaks below bar2 low, bar4 reverses above bar2 high
+        if l3 < l2 and c4 > h2:
+            out[i] = 100
+        # bearish hikkake: bar3 breaks above bar2 high, bar4 reverses below bar2 low
+        elif h3 > h2 and c4 < l2:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["hikkake_mod"])
+def hikkake_mod(opens, highs, lows, closes):
+    """Modified hikkake: 5-bar — inside bar, false breakout, reversal, confirming bar → ±100."""
+    n = len(closes)
+    out = [0] * n
+    for i in range(4, n):
+        o1, h1, l1, c1 = opens[i - 4], highs[i - 4], lows[i - 4], closes[i - 4]
+        o2, h2, l2, c2 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o3, h3, l3, c3 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o4, h4, l4, c4 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o5, h5, l5, c5 = opens[i], highs[i], lows[i], closes[i]
+        # bar2 is an inside bar
+        if h2 >= h1 or l2 <= l1:
+            continue
+        # bullish: bar3 false bear break, bar4 reverses above bar2 high, bar5 confirms up
+        if l3 < l2 and c4 > h2 and c5 > c4:
+            out[i] = 100
+        # bearish: bar3 false bull break, bar4 reverses below bar2 low, bar5 confirms down
+        elif h3 > h2 and c4 < l2 and c5 < c4:
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["xside_gap_three_methods"])
+def xside_gap_three_methods(opens, highs, lows, closes):
+    """Gap then a filling candle in a trend — continuation pattern.
+    Upside gap three methods (+100): two whites with gap, third black fills partway but stays above bar1 close.
+    Downside gap three methods (-100): two blacks with gap, third white fills partway but stays below bar1 close.
+    """
+    n = len(closes)
+    out = [0] * n
+    for i in range(2, n):
+        o1, h1, l1, c1 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o2, h2, l2, c2 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o3, h3, l3, c3 = opens[i], highs[i], lows[i], closes[i]
+        # bullish (upside gap): bars 1 and 2 white, gap up between them, bar3 black partial fill
+        if (_is_white(o1, c1) and _is_white(o2, c2)
+                and o2 > c1  # gap up
+                and _is_black(o3, c3)
+                and c3 > c1):  # stays above bar1 close (in the gap)
+            out[i] = 100
+        # bearish (downside gap): bars 1 and 2 black, gap down, bar3 white partial fill
+        elif (_is_black(o1, c1) and _is_black(o2, c2)
+              and o2 < c1  # gap down
+              and _is_white(o3, c3)
+              and c3 < c1):  # stays below bar1 close
+            out[i] = -100
+    return out
+
+
+@indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["breakaway"])
+def breakaway(opens, highs, lows, closes):
+    """5-bar breakaway: gap, 3-bar run, then reversal closing into the gap → ±100.
+    Bullish (+100): bar1 long black, bars 2-4 black trending down, bar5 white reversal closes above bar2 open.
+    Bearish (-100): bar1 long white, bars 2-4 white trending up, bar5 black reversal closes below bar2 open.
+    """
+    n = len(closes)
+    avg = _avg_body(opens, closes)
+    out = [0] * n
+    for i in range(4, n):
+        a = avg[i]
+        if a is None or a <= 0:
+            continue
+        o1, h1, l1, c1 = opens[i - 4], highs[i - 4], lows[i - 4], closes[i - 4]
+        o2, h2, l2, c2 = opens[i - 3], highs[i - 3], lows[i - 3], closes[i - 3]
+        o3, h3, l3, c3 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
+        o4, h4, l4, c4 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
+        o5, h5, l5, c5 = opens[i], highs[i], lows[i], closes[i]
+        # bullish breakaway: 4 black bars declining, white reversal
+        if (_is_black(o1, c1) and _body(o1, c1) >= 0.7 * a
+                and _is_black(o2, c2) and _is_black(o3, c3) and _is_black(o4, c4)
+                and c1 > c2 and c2 > c3 and c3 > c4
+                and _is_white(o5, c5) and c5 >= o2):
+            out[i] = 100
+        # bearish breakaway: 4 white bars rising, black reversal
+        elif (_is_white(o1, c1) and _body(o1, c1) >= 0.7 * a
+              and _is_white(o2, c2) and _is_white(o3, c3) and _is_white(o4, c4)
+              and c1 < c2 and c2 < c3 and c3 < c4
+              and _is_black(o5, c5) and c5 <= o2):
+            out[i] = -100
+    return out
