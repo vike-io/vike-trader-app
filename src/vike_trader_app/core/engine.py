@@ -6,6 +6,7 @@ because pending orders are filled at the start of each bar *before* the strategy
 
 from dataclasses import dataclass
 
+from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
 from .timeframe import parse_timeframe, resample
 
@@ -198,7 +199,7 @@ class BacktestEngine:
         self._now = bar.ts
         self._price = bar.close
         if bar.funding is not None and self.position.size != 0:
-            self.cash -= self.position.size * bar.close * bar.funding * self.multiplier  # longs pay +funding
+            self.cash -= funding_charge(self.position.size, bar.close, bar.funding, self.multiplier)
         if self._cashflows is not None:
             self.cash += self._cashflows[i]
         self._check_liquidation(bar)
@@ -248,8 +249,9 @@ class BacktestEngine:
         return None
 
     def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> None:
-        price = price * (1 + side_sign * self.slippage)  # adverse fill: buys up, sells down
-        fee = size * price * (self.maker_fee if is_maker else self.taker_fee) * self.multiplier
+        price = adverse_fill_price(price, side_sign, self.slippage)  # adverse: buys up, sells down
+        rate = self.maker_fee if is_maker else self.taker_fee
+        fee = _fee(size, price, rate, self.multiplier)
         self.cash -= fee
         delta = side_sign * size
         pos = self.position
