@@ -1,7 +1,7 @@
 import math
 
 from .base import Param, indicator
-from .overlap import ema, sma
+from .overlap import ema, sma, wma
 
 
 @indicator(category="momentum", inputs=["close"], params=[Param("period", "int", 14, 2, 100, 1)], outputs=["rsi"])
@@ -493,3 +493,407 @@ def kst(values, roc1: int = 10, sma1: int = 10, roc2: int = 15, sma2: int = 10,
             sig_line[i] = sv
 
     return kst_line, sig_line
+
+
+# ---------------------------------------------------------------------------
+# Tier B momentum — Task 2 (11 indicators)
+# ---------------------------------------------------------------------------
+
+
+@indicator(category="momentum", inputs=["high", "low"], params=[], outputs=["ao"])
+def ao(highs, lows):
+    """Awesome Oscillator: ``SMA(median, 5) - SMA(median, 34)``, median = (H+L)/2."""
+    n = len(highs)
+    median = [(highs[i] + lows[i]) / 2.0 for i in range(n)]
+    sma5  = sma(median, 5)
+    sma34 = sma(median, 34)
+    out: list[float | None] = [None] * n
+    for i in range(n):
+        if sma5[i] is not None and sma34[i] is not None:
+            out[i] = sma5[i] - sma34[i]
+    return out
+
+
+@indicator(category="momentum", inputs=["high", "low"], params=[], outputs=["ac"])
+def ac(highs, lows):
+    """Accelerator Oscillator: ``AO - SMA(AO, 5)``."""
+    n = len(highs)
+    ao_vals = ao(highs, lows)
+    # compute SMA-5 of the defined AO tail, mapped back to aligned positions
+    defined = [(i, v) for i, v in enumerate(ao_vals) if v is not None]
+    sma5: list[float | None] = [None] * n
+    if len(defined) >= 5:
+        sm = sma([v for _, v in defined], 5)
+        for (i, _), sv in zip(defined, sm, strict=True):
+            sma5[i] = sv
+    out: list[float | None] = [None] * n
+    for i in range(n):
+        if ao_vals[i] is not None and sma5[i] is not None:
+            out[i] = ao_vals[i] - sma5[i]
+    return out
+
+
+@indicator(
+    category="momentum",
+    inputs=["high", "low"],
+    params=[Param("period", "int", 9, 2, 100, 1)],
+    outputs=["fisher", "trigger"],
+)
+def fisher(highs, lows, period: int = 9):
+    """Fisher Transform: normalises the (H+L)/2 position within its recent range
+    and applies ``0.5 * ln((1+v)/(1-v))``, smoothed; trigger = fisher[i-1]."""
+    n = len(highs)
+    fish: list[float | None] = [None] * n
+    trig: list[float | None] = [None] * n
+    if n < period:
+        return fish, trig
+    median = [(highs[i] + lows[i]) / 2.0 for i in range(n)]
+    prev_value = 0.0
+    prev_fish  = 0.0
+    for i in range(period - 1, n):
+        hi = max(median[i - period + 1 : i + 1])
+        lo = min(median[i - period + 1 : i + 1])
+        rng = hi - lo
+        if rng == 0.0:
+            norm = 0.0
+        else:
+            norm = (median[i] - lo) / rng  # [0, 1]
+        # compress to (-1, 1) with memory
+        value = 0.66 * (2.0 * norm - 1.0) + 0.67 * prev_value
+        value = max(-0.999, min(0.999, value))
+        f = 0.5 * math.log((1.0 + value) / (1.0 - value)) + 0.5 * prev_fish
+        fish[i]    = f
+        trig[i]    = prev_fish if i > period - 1 else None
+        prev_value = value
+        prev_fish  = f
+    # first defined bar has no previous fisher → trigger is None there
+    if period - 1 < n:
+        trig[period - 1] = None
+    return fish, trig
+
+
+@indicator(
+    category="momentum",
+    inputs=["close"],
+    params=[
+        Param("rsi_p",    "int", 3,   2, 100, 1),
+        Param("streak_p", "int", 2,   2, 100, 1),
+        Param("rank_p",   "int", 100, 10, 500, 1),
+    ],
+    outputs=["crsi"],
+)
+def connors_rsi(values, rsi_p: int = 3, streak_p: int = 2, rank_p: int = 100):
+    """ConnorsRSI = (RSI(close,3) + RSI(streak,2) + PercentRank(ROC(1),100)) / 3.
+
+    *streak* = consecutive up/down days count (positive for up-streaks,
+    negative for down-streaks, 0 on flat).
+    *PercentRank* = percentage of the last ``rank_p`` ROC values that are
+    strictly less than the current value.
+    """
+    n = len(values)
+    # --- streak series ---
+    streak: list[float] = [0.0] * n
+    for i in range(1, n):
+        diff = values[i] - values[i - 1]
+        if diff > 0:
+            streak[i] = streak[i - 1] + 1.0 if streak[i - 1] > 0 else 1.0
+        elif diff < 0:
+            streak[i] = streak[i - 1] - 1.0 if streak[i - 1] < 0 else -1.0
+        else:
+            streak[i] = 0.0
+
+    # --- component 1: RSI(close, rsi_p) ---
+    rsi1 = rsi(values, rsi_p)
+
+    # --- component 2: RSI(streak, streak_p) ---
+    rsi2 = rsi(streak, streak_p)
+
+    # --- component 3: PercentRank of ROC(1) over rank_p ---
+    # roc returns percent, but for percentrank we just need the direction of each value
+    roc1: list[float | None] = [None] * n
+    for i in range(1, n):
+        if values[i - 1] != 0:
+            roc1[i] = (values[i] / values[i - 1] - 1.0) * 100.0
+
+    prank: list[float | None] = [None] * n
+    for i in range(rank_p, n):
+        cur = roc1[i]
+        if cur is None:
+            continue
+        window = [roc1[j] for j in range(i - rank_p + 1, i + 1) if roc1[j] is not None]
+        if len(window) < 1:
+            continue
+        count_below = sum(1 for v in window if v < cur)
+        prank[i] = 100.0 * count_below / len(window)
+
+    out: list[float | None] = [None] * n
+    for i in range(n):
+        r1, r2, pr = rsi1[i], rsi2[i], prank[i]
+        if r1 is not None and r2 is not None and pr is not None:
+            out[i] = (r1 + r2 + pr) / 3.0
+    return out
+
+
+@indicator(
+    category="momentum",
+    inputs=["close"],
+    params=[
+        Param("wma_p",     "int", 10, 2, 100, 1),
+        Param("roc_long",  "int", 14, 2, 200, 1),
+        Param("roc_short", "int", 11, 2, 200, 1),
+    ],
+    outputs=["coppock"],
+)
+def coppock(values, wma_p: int = 10, roc_long: int = 14, roc_short: int = 11):
+    """Coppock Curve: ``WMA(ROC(close, roc_long) + ROC(close, roc_short), wma_p)``."""
+    n = len(values)
+    roc_l = roc(values, roc_long)
+    roc_s = roc(values, roc_short)
+    combined: list[float | None] = [None] * n
+    for i in range(n):
+        if roc_l[i] is not None and roc_s[i] is not None:
+            combined[i] = roc_l[i] + roc_s[i]
+    # WMA of the defined combined tail, mapped back
+    defined = [(i, v) for i, v in enumerate(combined) if v is not None]
+    out: list[float | None] = [None] * n
+    if len(defined) >= wma_p:
+        wma_vals = wma([v for _, v in defined], wma_p)
+        for (i, _), wv in zip(defined, wma_vals, strict=True):
+            out[i] = wv
+    return out
+
+
+@indicator(
+    category="momentum",
+    inputs=["high", "low", "close"],
+    params=[Param("period", "int", 13, 2, 200, 1)],
+    outputs=["bull_power", "bear_power"],
+)
+def elder_ray(highs, lows, closes, period: int = 13):
+    """Elder Ray Index: ``bull_power = high - EMA(close, p)``,
+    ``bear_power = low - EMA(close, p)``."""
+    ema_c = ema(closes, period)
+    n = len(closes)
+    bull: list[float | None] = [None] * n
+    bear: list[float | None] = [None] * n
+    for i in range(n):
+        if ema_c[i] is not None:
+            bull[i] = highs[i] - ema_c[i]
+            bear[i] = lows[i]  - ema_c[i]
+    return bull, bear
+
+
+def _swma(values: list[float]) -> list[float | None]:
+    """Symmetric Weighted Moving Average [1,2,2,1]/6 over 4 bars (pure, unregistered helper)."""
+    n = len(values)
+    out: list[float | None] = [None] * n
+    for i in range(3, n):
+        out[i] = (values[i - 3] + 2.0 * values[i - 2] + 2.0 * values[i - 1] + values[i]) / 6.0
+    return out
+
+
+@indicator(
+    category="momentum",
+    inputs=["open", "high", "low", "close"],
+    params=[Param("period", "int", 10, 2, 200, 1)],
+    outputs=["rvgi", "signal"],
+)
+def relative_vigor(opens, highs, lows, closes, period: int = 10):
+    """Relative Vigor Index (RVGI): SWMA-smoothed close-open / SWMA-smoothed H-L
+    summed over ``period``; signal = 4-bar SWMA of rvgi."""
+    n = len(closes)
+    co = [closes[i] - opens[i] for i in range(n)]
+    hl = [highs[i] - lows[i]   for i in range(n)]
+    num_sw = _swma(co)   # SWMA of (close - open)
+    den_sw = _swma(hl)   # SWMA of (high  - low)
+
+    rvgi_line: list[float | None] = [None] * n
+    for i in range(period - 1 + 3, n):   # +3 because swma needs 4 bars
+        num_sum = 0.0
+        den_sum = 0.0
+        valid = True
+        for k in range(i - period + 1, i + 1):
+            if num_sw[k] is None or den_sw[k] is None:
+                valid = False
+                break
+            num_sum += num_sw[k]
+            den_sum += den_sw[k]
+        if valid and den_sum != 0.0:
+            rvgi_line[i] = num_sum / den_sum
+
+    # signal = 4-bar SWMA of rvgi (mapped back using the defined tail pattern)
+    defined = [(i, v) for i, v in enumerate(rvgi_line) if v is not None]
+    sig: list[float | None] = [None] * n
+    if len(defined) >= 4:
+        sig_raw = _swma([v for _, v in defined])
+        for (i, _), sv in zip(defined, sig_raw, strict=True):
+            sig[i] = sv
+    return rvgi_line, sig
+
+
+@indicator(
+    category="momentum",
+    inputs=["close"],
+    params=[
+        Param("long",   "int", 20, 2, 400, 1),
+        Param("short",  "int", 5,  2, 200, 1),
+        Param("signal", "int", 5,  2, 200, 1),
+    ],
+    outputs=["smi", "signal"],
+)
+def smi_ergodic(values, long: int = 20, short: int = 5, signal: int = 5):
+    """SMI Ergodic Indicator: TSI pattern with (long, short) double-EMA smoothing;
+    signal = EMA(smi, signal_period). Range approximately ±100."""
+    n = len(values)
+    delta      = [0.0] + [values[i] - values[i - 1] for i in range(1, n)]
+    abs_delta  = [abs(d) for d in delta]
+
+    # double-EMA of delta and abs_delta using the map-back pattern
+    def _double_ema(src, p1, p2):
+        e1 = ema(src, p1)
+        defined1 = [(i, v) for i, v in enumerate(e1) if v is not None]
+        e2: list[float | None] = [None] * n
+        if len(defined1) >= p2:
+            e2_vals = ema([v for _, v in defined1], p2)
+            for (i, _), ev in zip(defined1, e2_vals, strict=True):
+                e2[i] = ev
+        return e2
+
+    ema2_d = _double_ema(delta,     long, short)
+    ema2_a = _double_ema(abs_delta, long, short)
+
+    smi_line: list[float | None] = [None] * n
+    for i in range(n):
+        d_val, a_val = ema2_d[i], ema2_a[i]
+        if d_val is not None and a_val is not None and a_val != 0:
+            smi_line[i] = 100.0 * d_val / a_val
+
+    # signal = EMA of smi_line, mapped back
+    defined_smi = [(i, v) for i, v in enumerate(smi_line) if v is not None]
+    sig_line: list[float | None] = [None] * n
+    if len(defined_smi) >= signal:
+        sig_vals = ema([v for _, v in defined_smi], signal)
+        for (i, _), sv in zip(defined_smi, sig_vals, strict=True):
+            sig_line[i] = sv
+
+    return smi_line, sig_line
+
+
+@indicator(
+    category="momentum",
+    inputs=["high", "low", "close"],
+    params=[Param("period", "int", 14, 2, 200, 1)],
+    outputs=["vi_plus", "vi_minus"],
+)
+def vortex(highs, lows, closes, period: int = 14):
+    """Vortex Indicator: ``vi_plus = sum(|H[i]-L[i-1]|, p) / sum(TR, p)``,
+    ``vi_minus = sum(|L[i]-H[i-1]|, p) / sum(TR, p)``."""
+    n = len(closes)
+    # import locally to avoid circular-import at module load
+    from .volatility import true_range as _true_range
+    trs = _true_range(highs, lows, closes)
+    vm_plus:  list[float] = [0.0] * n
+    vm_minus: list[float] = [0.0] * n
+    for i in range(1, n):
+        vm_plus[i]  = abs(highs[i] - lows[i - 1])
+        vm_minus[i] = abs(lows[i]  - highs[i - 1])
+
+    vi_p: list[float | None] = [None] * n
+    vi_m: list[float | None] = [None] * n
+    for i in range(period, n):
+        sum_tr  = sum(trs[i - period + 1 : i + 1])
+        sum_vp  = sum(vm_plus[i  - period + 1 : i + 1])
+        sum_vm  = sum(vm_minus[i - period + 1 : i + 1])
+        if sum_tr > 0:
+            vi_p[i] = sum_vp / sum_tr
+            vi_m[i] = sum_vm / sum_tr
+    return vi_p, vi_m
+
+
+@indicator(
+    category="momentum",
+    inputs=["high", "low", "close"],
+    params=[
+        Param("p", "int", 10, 2, 200,  1),
+        Param("x", "int",  1, 1,  10,  1),
+        Param("q", "int",  9, 2, 200,  1),
+    ],
+    outputs=["long_stop", "short_stop"],
+)
+def chande_kroll_stop(highs, lows, closes, p: int = 10, x: int = 1, q: int = 9):
+    """Chande Kroll Stop: first_high = maxH(p) - x*ATR(p);
+    first_low = minL(p) + x*ATR(p);
+    long_stop  = rolling max(first_high, q);
+    short_stop = rolling min(first_low, q)."""
+    from .volatility import atr as _atr
+    n = len(closes)
+    atr_vals = _atr(highs, lows, closes, p)
+
+    first_high: list[float | None] = [None] * n
+    first_low:  list[float | None] = [None] * n
+    for i in range(p - 1, n):
+        if atr_vals[i] is None:
+            continue
+        hh = max(highs[i - p + 1 : i + 1])
+        ll = min(lows[i  - p + 1 : i + 1])
+        first_high[i] = hh - x * atr_vals[i]
+        first_low[i]  = ll + x * atr_vals[i]
+
+    long_stop:  list[float | None] = [None] * n
+    short_stop: list[float | None] = [None] * n
+    for i in range(q - 1, n):
+        window_h = [first_high[j] for j in range(i - q + 1, i + 1) if first_high[j] is not None]
+        window_l = [first_low[j]  for j in range(i - q + 1, i + 1) if first_low[j]  is not None]
+        if window_h:
+            long_stop[i]  = max(window_h)
+        if window_l:
+            short_stop[i] = min(window_l)
+    return long_stop, short_stop
+
+
+@indicator(
+    category="momentum",
+    inputs=["open", "high", "low", "close"],
+    params=[Param("limit", "float", 1.0, 0.1, 10.0, 0.1)],
+    outputs=["asi"],
+)
+def asi(opens, highs, lows, closes, limit: float = 1.0):
+    """Wilder's Accumulative Swing Index (ASI) — cumulative sum of per-bar SI.
+
+    Per-bar SI formula (Wilder, 1978):
+        R  = largest of: |H-Cprev|, |L-Cprev|, |H-L|
+        K  = max(|H-Cprev|, |L-Cprev|)
+        T  = R + 0.25*|Cprev-Oprev| (modified R)
+        SI = 50 * [(C - Cprev + 0.5*(C-O) + 0.25*(Cprev-Oprev)) / T] * (K/limit)
+    """
+    n = len(closes)
+    out: list[float | None] = [None] * n
+    cum = 0.0
+    for i in range(1, n):
+        c  = closes[i];   cp = closes[i - 1]
+        o  = opens[i];    op = opens[i - 1]
+        h  = highs[i];    l  = lows[i]
+
+        # R: greatest of |H-Cp|, |L-Cp|, |H-L|
+        a = abs(h  - cp)
+        b = abs(l  - cp)
+        c2 = h - l
+        r = max(a, b, c2)
+
+        # K: max of first two
+        k = max(a, b)
+
+        if r == 0.0 or limit == 0.0:
+            si = 0.0
+        else:
+            # modified R per Wilder: R + 0.25*|Cprev - Oprev|
+            t = r + 0.25 * abs(cp - op)
+            if t == 0.0:
+                si = 0.0
+            else:
+                numerator = (c - cp) + 0.5 * (c - o) + 0.25 * (cp - op)
+                si = 50.0 * (numerator / t) * (k / limit)
+
+        cum    += si
+        out[i]  = cum
+    return out
