@@ -17,6 +17,15 @@ from .patterns import (
     spinning_top, high_wave,
     long_line, short_line,
     belt_hold, doji_star,
+    # two-bar patterns (Task 3)
+    harami, harami_cross,
+    piercing, dark_cloud_cover,
+    counterattack, meeting_lines,
+    separating_lines, matching_low,
+    on_neck, in_neck, thrusting,
+    kicking, kicking_by_length,
+    homing_pigeon,
+    gap_side_side_white, tasuki_gap,
 )
 from .pairs import ratio, spread, spread_zscore  # registers pairs indicators
 from .price import avgprice, medprice, typprice, wclprice  # registers price transforms
@@ -59,6 +68,15 @@ __all__ = [
     "spinning_top", "high_wave",
     "long_line", "short_line",
     "belt_hold", "doji_star",
+    # two-bar patterns (Task 3)
+    "harami", "harami_cross",
+    "piercing", "dark_cloud_cover",
+    "counterattack", "meeting_lines",
+    "separating_lines", "matching_low",
+    "on_neck", "in_neck", "thrusting",
+    "kicking", "kicking_by_length",
+    "homing_pigeon",
+    "gap_side_side_white", "tasuki_gap",
     "expand", "from_talib",
 ]
 
