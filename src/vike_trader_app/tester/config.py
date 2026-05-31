@@ -7,10 +7,12 @@ from dataclasses import dataclass
 class TesterConfig:
     """Costs + capital + contract settings for a tester run. ``engine_kwargs`` feeds BacktestEngine."""
 
+    __test__ = False
+
     cash: float = 10_000.0
     fee_rate: float = 0.0
     maker_fee: float | None = None
-    taker_fee: float = 0.0
+    taker_fee: float | None = None
     slippage: float = 0.0
     multiplier: float = 1.0
     leverage: float | None = None

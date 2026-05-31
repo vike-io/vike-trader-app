@@ -5,14 +5,18 @@ trades + equity curve so the GUI/tearsheet can render without recomputation. (Th
 verdict is attached later, in the optimize/walk-forward phases.)
 """
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 from ..analysis import metrics as m
 
 
 @dataclass
 class TesterReport:
-    """Standardized backtest metrics + the underlying trades/equity curve."""
+    """Standardized backtest metrics + the underlying trades/equity curve.
+
+    ``net_profit`` is gross PnL (sum of trade pnl); subtract ``total_fees`` for net-of-cost."""
+
+    __test__ = False
 
     n_trades: int
     final_equity: float
@@ -75,7 +79,6 @@ class TesterReport:
 
     def as_dict(self) -> dict:
         """Headline metrics as a plain dict (for UI tables / JSON), excluding the bulky series."""
-        from dataclasses import asdict
         d = asdict(self)
         d.pop("trades", None)
         d.pop("equity_curve", None)

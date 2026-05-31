@@ -5,7 +5,7 @@ from vike_trader_app.tester import TesterConfig
 
 def test_config_defaults_and_engine_kwargs():
     c = TesterConfig()
-    assert c.cash == 10_000.0 and c.taker_fee == 0.0 and c.slippage == 0.0
+    assert c.cash == 10_000.0 and c.taker_fee is None and c.slippage == 0.0
     assert c.multiplier == 1.0 and c.leverage is None
     kw = TesterConfig(taker_fee=0.001, maker_fee=0.0005, slippage=0.0002,
                       cash=5_000.0, multiplier=2.0).engine_kwargs()
