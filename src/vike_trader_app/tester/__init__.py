@@ -6,7 +6,8 @@ A ``StrategyTester`` runs/optimizes/walk-forwards a strategy and returns a stand
 
 from .backtester import Backtester
 from .config import TesterConfig
+from .optimize import OptimizeReport, OptimizeTrial
 from .report import TesterReport
 from .strategy_tester import StrategyTester
 
-__all__ = ["TesterConfig", "TesterReport", "Backtester", "StrategyTester"]
+__all__ = ["TesterConfig", "TesterReport", "Backtester", "StrategyTester", "OptimizeReport", "OptimizeTrial"]
