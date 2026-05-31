@@ -441,7 +441,7 @@ def opening_marubozu(opens, highs, lows, closes):
 
 @indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["doji_star"])
 def doji_star(opens, highs, lows, closes):
-    """Doji that gaps away from a prior long body; gap up after white → +100, gap down after black → -100."""
+    """Doji that gaps away from a prior long body; gap up after white → -100 (bearish evening-doji-star setup); gap down after black → +100 (bullish morning-doji-star setup)."""
     n = len(closes)
     avg = _avg_body(opens, closes)
     out = [0] * n
@@ -460,12 +460,12 @@ def doji_star(opens, highs, lows, closes):
         prev_body = _body(po, pc)
         if prev_body < a:
             continue
-        # gap up: doji entire bar above prior close (after white prior)
+        # gap up: doji entire bar above prior close (after white prior) → bearish
         if _is_white(po, pc) and l > pc:
-            out[i] = 100
-        # gap down: doji entire bar below prior close (after black prior)
-        elif _is_black(po, pc) and h < pc:
             out[i] = -100
+        # gap down: doji entire bar below prior close (after black prior) → bullish
+        elif _is_black(po, pc) and h < pc:
+            out[i] = 100
     return out
 
 
@@ -1101,8 +1101,8 @@ def three_outside(opens, highs, lows, closes):
 @indicator(category="pattern", inputs=["open", "high", "low", "close"], outputs=["three_line_strike"])
 def three_line_strike(opens, highs, lows, closes):
     """3 same-colour trend candles then a 4th that engulfs all three → ±100 (reversal signal).
-    Three whites then a big black → +100 (bull reversal implied).
-    Three blacks then a big white → -100 (bear reversal implied).
+    Three whites then a big black → -100 (bearish reversal).
+    Three blacks then a big white → +100 (bullish reversal).
     """
     n = len(closes)
     avg = _avg_body(opens, closes)
@@ -1115,16 +1115,16 @@ def three_line_strike(opens, highs, lows, closes):
         o2, h2, l2, c2 = opens[i - 2], highs[i - 2], lows[i - 2], closes[i - 2]
         o3, h3, l3, c3 = opens[i - 1], highs[i - 1], lows[i - 1], closes[i - 1]
         o4, h4, l4, c4 = opens[i], highs[i], lows[i], closes[i]
-        # three white soldiers → fourth black engulfs all three
+        # three white soldiers → fourth black engulfs all three → bearish
         if (_is_white(o1, c1) and _is_white(o2, c2) and _is_white(o3, c3)
                 and c1 < c2 < c3 and _is_black(o4, c4)
                 and o4 >= c3 and c4 <= o1):
-            out[i] = 100
-        # three black crows → fourth white engulfs all three
+            out[i] = -100
+        # three black crows → fourth white engulfs all three → bullish
         elif (_is_black(o1, c1) and _is_black(o2, c2) and _is_black(o3, c3)
               and c1 > c2 > c3 and _is_white(o4, c4)
               and o4 <= c3 and c4 >= o1):
-            out[i] = -100
+            out[i] = 100
     return out
 
 
