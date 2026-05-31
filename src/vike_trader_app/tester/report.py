@@ -43,6 +43,7 @@ class TesterReport:
     total_fees: float
     trades: list = field(default_factory=list, repr=False)
     equity_curve: list = field(default_factory=list, repr=False)
+    verdict: object | None = None
 
     @classmethod
     def from_result(cls, result, periods_per_year: float = 365 * 24 * 60) -> "TesterReport":

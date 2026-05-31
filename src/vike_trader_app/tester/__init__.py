@@ -9,5 +9,10 @@ from .config import TesterConfig
 from .optimize import OptimizeReport, OptimizeTrial
 from .report import TesterReport
 from .strategy_tester import StrategyTester
+from .walkforward import WalkForwardReport, WalkForwardWindow
 
-__all__ = ["TesterConfig", "TesterReport", "Backtester", "StrategyTester", "OptimizeReport", "OptimizeTrial"]
+__all__ = [
+    "TesterConfig", "TesterReport", "Backtester", "StrategyTester",
+    "OptimizeReport", "OptimizeTrial",
+    "WalkForwardReport", "WalkForwardWindow",
+]
