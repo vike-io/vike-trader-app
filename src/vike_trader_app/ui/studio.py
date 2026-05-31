@@ -729,6 +729,9 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_config = QtWidgets.QPushButton("⚙ Settings")
         self._btn_config.clicked.connect(self._open_config)
         toolbar.addWidget(self._btn_config)
+        self._btn_indicators = QtWidgets.QPushButton("ƒx Indicators")
+        self._btn_indicators.clicked.connect(self._open_indicators)
+        toolbar.addWidget(self._btn_indicators)
         toolbar.addStretch(1)
         root.addLayout(toolbar)
 
@@ -807,6 +810,19 @@ class StudioTab(QtWidgets.QWidget):
             self.results.add_run(report, bars, overlays)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"{type(exc).__name__}: {exc}")
+
+    def _open_indicators(self) -> None:
+        """Open the indicator catalogue; chosen snippet is appended to the editor."""
+        from .indicators import IndicatorCatalogDialog
+
+        dlg = IndicatorCatalogDialog(parent=self)
+        dlg.insertRequested.connect(self._insert_snippet)
+        dlg.exec()
+
+    def _insert_snippet(self, snippet: str) -> None:
+        current = self.editor.text()
+        sep = "" if not current or current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
+        self.editor.setText(current + sep + snippet)
 
     def _open_config(self) -> None:
         """Open the per-run backtest-config modal (capital + date range)."""

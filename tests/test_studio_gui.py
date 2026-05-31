@@ -160,6 +160,22 @@ def test_short_span_run_does_not_crash(app):
         tab.results._on_run_clicked(0, 0)  # the previously-uncaught Qt-slot path must not raise
 
 
+def test_indicator_dialog_builds_and_autoselects(app):
+    from vike_trader_app.ui.indicators import IndicatorCatalogDialog
+    dlg = IndicatorCatalogDialog()
+    assert dlg._code.toPlainText() != ""   # first indicator auto-selected
+    assert dlg._btn_insert.isEnabled()
+
+
+def test_indicator_insert_appends_to_editor(app):
+    from vike_trader_app.analysis.indicator_catalog import CATALOG
+    tab = StudioTab()
+    tab.set_text("# my strategy\n")
+    tab._insert_snippet(CATALOG[0].snippet)
+    assert CATALOG[0].snippet.strip() in tab.text()
+    assert "# my strategy" in tab.text()  # existing code preserved
+
+
 def test_concurrent_prompt_is_refused(app):
     tab = StudioTab()
     tab.set_agent_client(object())       # any non-None client
