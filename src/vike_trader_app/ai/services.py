@@ -159,6 +159,28 @@ def overfit_check(observed_sr: float, trial_sharpes, n_obs: int, *,
     }
 
 
+def list_indicators(category: str | None = None) -> dict:
+    """List available technical indicators with their parameter metadata (for discovery)."""
+    from ..core.indicators import base
+
+    specs = base.list_indicators(category)
+    return {"n": len(specs), "indicators": [base.describe(s.name) for s in specs]}
+
+
+def compute_indicator(name: str, ohlcv: dict, params: dict | None = None) -> dict:
+    """Compute indicator ``name`` over an OHLCV column dict; return its named output series.
+
+    ``ohlcv`` maps open/high/low/close/volume (and ``benchmark`` for beta/correl) to aligned lists.
+    ``params`` overrides indicator parameters (registry defaults are used otherwise).
+    """
+    from ..core.indicators import base
+
+    spec = base.get(name)
+    out = base.compute(name, ohlcv, **(params or {}))
+    series = out if isinstance(out, tuple) else (out,)
+    return {"name": name, "outputs": {o: list(s) for o, s in zip(spec.outputs, series)}}
+
+
 def query_kb(query: str, k: int = 5, *, kb=None, embedder=None) -> dict:
     """Search the project knowledge base; return the top-k passages.
 

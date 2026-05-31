@@ -36,7 +36,18 @@ def query_kb(query: str, k: int = 5) -> dict:
     return services.query_kb(query, k=k)
 
 
-_TOOLS = [run_sma_backtest, optimize_sma, fetch_ohlcv, overfit_check, query_kb]
+def list_indicators(category: str | None = None) -> dict:
+    """List available technical indicators and their parameter metadata."""
+    return services.list_indicators(category)
+
+
+def compute_indicator(name: str, ohlcv: dict, params: dict | None = None) -> dict:
+    """Compute a named technical indicator over an OHLCV column dict; return its output series."""
+    return services.compute_indicator(name, ohlcv, params)
+
+
+_TOOLS = [run_sma_backtest, optimize_sma, fetch_ohlcv, overfit_check, query_kb,
+          list_indicators, compute_indicator]
 
 
 def build_server():

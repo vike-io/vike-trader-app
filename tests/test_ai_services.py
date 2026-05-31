@@ -87,3 +87,32 @@ def test_overfit_check_with_pbo_matrix():
                         n_obs=8, pbo_matrix=matrix, n_splits=4)
     assert 0.0 <= out["pbo"] <= 1.0
     assert out["verdict"]["level"] in {"Low", "Medium", "High"}
+
+
+def test_list_indicators_service():
+    from vike_trader_app.ai.services import list_indicators
+
+    out = list_indicators()
+    assert out["n"] >= 79
+    names = {ind["name"] for ind in out["indicators"]}
+    assert {"rsi", "macd", "sma", "supertrend"} & names == {"rsi", "macd", "sma"} or {"rsi", "macd", "sma"} <= names
+    # each entry carries describe() metadata
+    rsi = next(ind for ind in out["indicators"] if ind["name"] == "rsi")
+    assert rsi["category"] == "momentum" and rsi["inputs"] == ["close"]
+    assert any(p["name"] == "period" for p in rsi["params"])
+
+
+def test_compute_indicator_service_single_and_multi():
+    from vike_trader_app.ai.services import compute_indicator
+
+    n = 60
+    closes = [100.0 + (i % 7) for i in range(n)]
+    ohlcv = {"open": closes, "high": [c + 1 for c in closes], "low": [c - 1 for c in closes],
+             "close": closes, "volume": [10.0] * n}
+    # single-line
+    r = compute_indicator("rsi", ohlcv, {"period": 14})
+    assert r["name"] == "rsi" and "rsi" in r["outputs"] and len(r["outputs"]["rsi"]) == n
+    # multi-line maps each declared output name
+    m = compute_indicator("macd", ohlcv)
+    assert set(m["outputs"]) == {"macd", "signal", "hist"}
+    assert all(len(v) == n for v in m["outputs"].values())
