@@ -16,6 +16,7 @@ class JournalTab(QtWidgets.QWidget):
     def __init__(self, journal: Journal | None = None, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self._journal = journal if journal is not None else Journal()
+        self._display_indices: list[int] = []   # display row -> store index (set by _refresh)
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
@@ -74,20 +75,15 @@ class JournalTab(QtWidgets.QWidget):
 
     def _remove(self) -> None:
         row = self._table.currentRow()
-        shown = self._journal.entries()  # newest-first display order
-        if not (0 <= row < len(shown)):
-            return
-        target = shown[row]
-        for i, e in enumerate(self._journal._entries):
-            if e.ts == target.ts and e.title == target.title:
-                self._journal.remove(i)
-                break
-        self._refresh()
+        if 0 <= row < len(self._display_indices):
+            self._journal.remove(self._display_indices[row])   # exact store index, no ts/title match
+            self._refresh()
 
     def _refresh(self) -> None:
-        entries = self._journal.entries()
-        self._table.setRowCount(len(entries))
-        for r, e in enumerate(entries):
+        indexed = self._journal.entries_indexed()
+        self._display_indices = [i for i, _ in indexed]        # display row -> store index
+        self._table.setRowCount(len(indexed))
+        for r, (_, e) in enumerate(indexed):
             dt = datetime.fromtimestamp(e.ts / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
             cells = [dt, e.title, e.symbol, e.strategy, e.notes.replace("\n", " ")]
             for c, text in enumerate(cells):

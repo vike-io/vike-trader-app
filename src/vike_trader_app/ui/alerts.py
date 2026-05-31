@@ -11,6 +11,16 @@ from ..analysis.screener import RULES
 from . import theme
 
 _COLS = ["Symbol", "Rule", "Notify on", "Status", "Signal", "Value"]
+_TF_RANK = {"1m": 0, "5m": 1, "15m": 2, "30m": 3, "1h": 4, "4h": 5, "1d": 6, "1w": 7, "1M": 8}
+
+
+def _pick_interval(ivals):
+    """Prefer 1m, else the SHORTEST available timeframe (not the lexically-first, e.g. '1d')."""
+    if not ivals:
+        return None
+    if "1m" in ivals:
+        return "1m"
+    return min(ivals, key=lambda x: _TF_RANK.get(x, 99))
 
 
 class AlertsTab(QtWidgets.QWidget):
@@ -98,8 +108,7 @@ class AlertsTab(QtWidgets.QWidget):
         cat = self._catalog()
         closes: dict[str, list] = {}
         for sym in {r.symbol for r in rules}:
-            ivals = cat.intervals(sym)
-            iv = "1m" if "1m" in ivals else (ivals[0] if ivals else None)
+            iv = _pick_interval(cat.intervals(sym))
             closes[sym] = [b.close for b in cat.query(sym, iv)] if iv else []
         hits = evaluate(rules, closes)
         self._refresh(hits)

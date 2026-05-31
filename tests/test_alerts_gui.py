@@ -43,3 +43,10 @@ def test_alerts_check_flags_triggers(app, tmp_path, monkeypatch):
     tab.check()
     assert "1 of 1" in tab._status.text()                    # the short alert fired
     assert tab._table.item(0, 3).text() == "TRIGGERED"
+
+
+def test_pick_interval_prefers_shortest(app):
+    from vike_trader_app.ui.alerts import _pick_interval
+    assert _pick_interval(["1d", "1h", "1m"]) == "1m"
+    assert _pick_interval(["1d", "1h"]) == "1h"   # shortest available, not the lexical "1d"
+    assert _pick_interval([]) is None

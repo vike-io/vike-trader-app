@@ -61,3 +61,7 @@ class Journal:
     def entries(self) -> list[JournalEntry]:
         """Entries, newest first."""
         return sorted(self._entries, key=lambda e: e.ts, reverse=True)
+
+    def entries_indexed(self):
+        """``(store_index, entry)`` pairs, newest first — a stable display->store mapping."""
+        return sorted(enumerate(self._entries), key=lambda iv: iv[1].ts, reverse=True)

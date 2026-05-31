@@ -31,6 +31,7 @@ class ScreenRule:
     name: str
     description: str
     fn: object
+    long_low: bool = False   # True when a LONG fires on a LOW value (mean-reversion: RSI, Z-score)
 
 
 def _sma(c, n):
@@ -94,20 +95,37 @@ def _rule_zscore(n=50, k=2.0):
 
 
 RULES: list[ScreenRule] = [
-    ScreenRule("RSI(14) 30/70", "Oversold (<30) = long, overbought (>70) = short.", _rule_rsi()),
+    ScreenRule("RSI(14) 30/70", "Oversold (<30) = long, overbought (>70) = short.",
+               _rule_rsi(), long_low=True),
     ScreenRule("SMA(50) trend", "Price above/below the 50-bar SMA (% deviation).", _rule_sma_trend()),
     ScreenRule("ROC(30) momentum", "30-bar rate of change; positive = long.", _rule_roc()),
-    ScreenRule("Z-score(50) ±2", "Mean-reversion: z ≤ −2 = long, z ≥ +2 = short.", _rule_zscore()),
+    ScreenRule("Z-score(50) ±2", "Mean-reversion: z ≤ −2 = long, z ≥ +2 = short.",
+               _rule_zscore(), long_low=True),
 ]
 
 
-def screen(symbol_closes: dict, rule_fn) -> list[ScreenRow]:
-    """Run ``rule_fn`` across ``{symbol: closes}``; rows grouped long, short, neutral."""
+def screen(symbol_closes: dict, rule) -> list[ScreenRow]:
+    """Run ``rule`` (a ScreenRule or a bare fn) across ``{symbol: closes}``.
+
+    Rows are grouped long, short, neutral; WITHIN each group they rank by setup STRENGTH
+    (distance into the favourable tail), not raw value — so the strongest candidate is on top
+    whether the rule is long-on-low (RSI/Z-score) or long-on-high (SMA-trend/ROC).
+    """
+    fn = getattr(rule, "fn", rule)
+    long_low = getattr(rule, "long_low", False)
     rows: list[ScreenRow] = []
     for sym, closes in symbol_closes.items():
         if not closes:
             continue
-        signal, value = rule_fn(closes)
+        signal, value = fn(closes)
         rows.append(ScreenRow(sym, signal, value, closes[-1]))
-    rows.sort(key=lambda r: (_ORDER.get(r.signal, 3), -r.value))
+
+    def strength(r: ScreenRow) -> float:
+        if r.signal == "long":
+            return -r.value if long_low else r.value
+        if r.signal == "short":
+            return r.value if long_low else -r.value
+        return 0.0
+
+    rows.sort(key=lambda r: (_ORDER.get(r.signal, 3), -strength(r)))
     return rows

@@ -88,7 +88,7 @@ class ScreenerTab(QtWidgets.QWidget):
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             closes = {s: [b.close for b in cat.query(s, interval)] for s in syms}
-            rows = screen(closes, self._rule.currentData().fn)
+            rows = screen(closes, self._rule.currentData())
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self._fill(rows)
