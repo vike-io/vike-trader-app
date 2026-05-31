@@ -220,6 +220,99 @@ def chop(highs, lows, closes, period: int = 14):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Tier B volatility — Task 3
+# ---------------------------------------------------------------------------
+
+
+@indicator(
+    category="volatility",
+    inputs=["close"],
+    params=[Param("period", "int", 14, 2, 200, 1)],
+    outputs=["rvi"],
+)
+def relative_volatility(values, period: int = 14):
+    """Relative Volatility Index — RSI-like on rolling stddev.
+
+    For each bar compute ``sd = stddev(close, period)``.  Then:
+      ``u[i] = sd[i]`` if ``close[i] > close[i-1]`` else ``0``
+      ``d[i] = sd[i]`` if ``close[i] < close[i-1]`` else ``0``
+    ``rvi = 100 * EMA(u, period) / (EMA(u, period) + EMA(d, period))``.
+
+    Uses Wilder smoothing via the standard EMA helper.
+    Output name: ``rvi`` (distinct from momentum ``relative_vigor``).
+    """
+    n = len(values)
+
+    # Step 1: rolling stddev series
+    sd_series = stddev(values, period)
+
+    # Step 2: split into up-stddev and down-stddev from index 1 onward
+    # (bar 0 has no previous close so both u and d default to 0)
+    u_raw: list[float | None] = [None] * n
+    d_raw: list[float | None] = [None] * n
+    for i in range(1, n):
+        sd = sd_series[i]
+        if sd is None:
+            continue
+        if values[i] > values[i - 1]:
+            u_raw[i] = sd
+            d_raw[i] = 0.0
+        elif values[i] < values[i - 1]:
+            u_raw[i] = 0.0
+            d_raw[i] = sd
+        else:
+            u_raw[i] = 0.0
+            d_raw[i] = 0.0
+
+    # Step 3: EMA of u and d over the defined tail
+    defined_u = [(i, v) for i, v in enumerate(u_raw) if v is not None]
+    defined_d = [(i, v) for i, v in enumerate(d_raw) if v is not None]
+
+    ema_u: list[float | None] = [None] * n
+    ema_d: list[float | None] = [None] * n
+
+    if len(defined_u) >= period:
+        eu = ema([v for _, v in defined_u], period)
+        ed = ema([v for _, v in defined_d], period)
+        for (idx, _), eu_v, ed_v in zip(defined_u, eu, ed):
+            ema_u[idx] = eu_v
+            ema_d[idx] = ed_v
+
+    # Step 4: RVI formula
+    out: list[float | None] = [None] * n
+    for i in range(n):
+        eu_v, ed_v = ema_u[i], ema_d[i]
+        if eu_v is not None and ed_v is not None:
+            denom = eu_v + ed_v
+            out[i] = 100.0 * eu_v / denom if denom != 0.0 else 50.0
+    return out
+
+
+@indicator(
+    category="volatility",
+    inputs=["high", "low"],
+    params=[Param("period", "int", 52, 2, 1000, 1)],
+    outputs=["high_n", "low_n"],
+)
+def high_low_52w(highs, lows, period: int = 52):
+    """Rolling N-period high and low.
+
+    ``high_n[i] = max(high[i-period+1..i])``
+    ``low_n[i]  = min(low[i-period+1..i])``
+
+    None during warm-up (first ``period - 1`` bars).
+    Returns ``(high_n, low_n)``.
+    """
+    n = len(highs)
+    high_n: list[float | None] = [None] * n
+    low_n: list[float | None] = [None] * n
+    for i in range(period - 1, n):
+        high_n[i] = max(highs[i - period + 1 : i + 1])
+        low_n[i] = min(lows[i - period + 1 : i + 1])
+    return high_n, low_n
+
+
 @indicator(category="volatility", inputs=["high", "low"], params=[Param("period", "int", 25, 2, 200, 1), Param("ema_period", "int", 9, 2, 50, 1)], outputs=["mass"])
 def mass(highs, lows, period: int = 25, ema_period: int = 9):
     """Mass Index: ``sum(EMA(H-L, ema) / EMA(EMA(H-L, ema), ema), period)``."""
