@@ -304,3 +304,161 @@ def mad(values, period: int = 20):
         mean = sum(window) / period
         out[i] = sum(abs(x - mean) for x in window) / period
     return out
+
+
+# ── Tier B statistics — Task 4 ────────────────────────────────────────────────
+
+
+@indicator(
+    category="statistics",
+    inputs=["close"],
+    params=[Param("period", "int", 20, 2, 200, 1)],
+    outputs=["std_error"],
+)
+def std_error(values, period: int = 20):
+    """Standard error of the linear regression estimate over each rolling window.
+
+    ``se = sqrt( sum((y - yhat)^2) / (period - 2) ) / sqrt(period)``
+
+    where ``yhat`` values come from the OLS line fitted over ``x = 0..period-1``.
+    Reuses the shared ``_ols`` helper.  Returns ``None`` during warm-up.
+    """
+    n = len(values)
+    out: list[float | None] = [None] * n
+    for i in range(period - 1, n):
+        window = values[i - period + 1 : i + 1]
+        b, a = _ols(window)
+        residuals_sq = sum((window[j] - (a + b * j)) ** 2 for j in range(period))
+        if period > 2:
+            mse = residuals_sq / (period - 2)
+            out[i] = math.sqrt(mse) / math.sqrt(period)
+        else:
+            out[i] = 0.0
+    return out
+
+
+@indicator(
+    category="statistics",
+    inputs=["close"],
+    params=[
+        Param("period", "int", 20, 2, 200, 1),
+        Param("mult", "float", 2.0, 0.1, 10.0, 0.1),
+    ],
+    outputs=["upper", "mid", "lower"],
+)
+def std_error_bands(values, period: int = 20, mult: float = 2.0):
+    """Standard error bands around the linear regression line.
+
+    ``mid = linearreg(period)``
+    ``upper = mid + mult * std_error(period)``
+    ``lower = mid - mult * std_error(period)``
+
+    Returns ``(upper, mid, lower)``, all aligned to ``values``.
+    """
+    lr = linearreg(values, period)
+    se = std_error(values, period)
+    n = len(values)
+    upper: list[float | None] = [None] * n
+    lower: list[float | None] = [None] * n
+    mid: list[float | None] = list(lr)  # copy
+    for i in range(n):
+        if lr[i] is not None and se[i] is not None:
+            upper[i] = lr[i] + mult * se[i]
+            lower[i] = lr[i] - mult * se[i]
+    return upper, mid, lower
+
+
+@indicator(
+    category="statistics",
+    inputs=["close"],
+    params=[Param("period", "int", 14, 2, 200, 1)],
+    outputs=["rci"],
+)
+def rank_correlation(values, period: int = 14):
+    """Spearman rank-correlation of price vs the time index, scaled to [-100, 100].
+
+    Formula: ``100 * (1 - 6 * Σd² / (period * (period² - 1)))``
+    where ``d[j] = rank(price[j]) - rank(time_index[j])`` over the window.
+
+    The time index is ``[0, 1, ..., period-1]`` whose ranks are always
+    ``[1, 2, ..., period]``.  The price ranks are computed by
+    ``argsort(argsort(window))`` (1-based, ascending).
+
+    Output name: ``rci`` (Rank Correlation Index).
+    """
+    n = len(values)
+    out: list[float | None] = [None] * n
+    p = period
+    p2 = p * p
+
+    for i in range(p - 1, n):
+        window = values[i - p + 1 : i + 1]
+        # Rank prices (1-based ascending): sort by value to get rank
+        indexed = sorted(range(p), key=lambda j: window[j])
+        price_rank = [0] * p
+        for rank, j in enumerate(indexed, start=1):
+            price_rank[j] = rank
+        # Time-index rank is simply [1, 2, ..., p] (time is already ordered)
+        sum_d2 = sum((price_rank[j] - (j + 1)) ** 2 for j in range(p))
+        denom = p * (p2 - 1)
+        if denom != 0:
+            out[i] = 100.0 * (1.0 - 6.0 * sum_d2 / denom)
+        else:
+            out[i] = 0.0
+    return out
+
+
+@indicator(
+    category="statistics",
+    inputs=["close", "benchmark"],
+    params=[Param("period", "int", 30, 2, 200, 1)],
+    outputs=["correl_log"],
+)
+def correl_log(closes, benchmarks, period: int = 30):
+    """Rolling Pearson correlation of LOG RETURNS of ``close`` vs ``benchmark``.
+
+    Log return at bar ``i``: ``ln(close[i] / close[i-1])``.
+    Requires at least ``period + 1`` bars (one extra for the first log return).
+    Returns ``None`` during warm-up and whenever either series has
+    non-positive values (log undefined).
+    """
+    n = len(closes)
+    # Compute log-return series (index 0 is None — no prior bar)
+    lr_a: list[float | None] = [None] * n
+    lr_b: list[float | None] = [None] * n
+    for i in range(1, n):
+        if closes[i] > 0 and closes[i - 1] > 0:
+            lr_a[i] = math.log(closes[i] / closes[i - 1])
+        if benchmarks[i] > 0 and benchmarks[i - 1] > 0:
+            lr_b[i] = math.log(benchmarks[i] / benchmarks[i - 1])
+
+    # Rolling Pearson over the log-return pairs using a sliding buffer
+    out: list[float | None] = [None] * n
+    buf_a: list[float] = []
+    buf_b: list[float] = []
+    # Track original indices for placement
+    for i in range(1, n):
+        if lr_a[i] is not None and lr_b[i] is not None:
+            buf_a.append(lr_a[i])
+            buf_b.append(lr_b[i])
+        else:
+            buf_a.clear()
+            buf_b.clear()
+            continue
+        if len(buf_a) > period:
+            buf_a.pop(0)
+            buf_b.pop(0)
+        if len(buf_a) == period:
+            p = period
+            sa = sum(buf_a)
+            sb = sum(buf_b)
+            sa2 = sum(x * x for x in buf_a)
+            sb2 = sum(x * x for x in buf_b)
+            sab = sum(buf_a[j] * buf_b[j] for j in range(p))
+            num = p * sab - sa * sb
+            denom = math.sqrt(
+                max((p * sa2 - sa * sa) * (p * sb2 - sb * sb), 0.0)
+            )
+            if denom != 0.0:
+                out[i] = max(-1.0, min(1.0, num / denom))
+    return out
