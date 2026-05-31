@@ -79,6 +79,9 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
 
     config = config or TesterConfig()
     is_bars, oos_bars = _split(bars, holdout_frac)
+    if not oos_bars or not is_bars:
+        return AgentResult(code="", explanation="", accepted=False, attempts=0,
+                           problems=["not enough bars for an in-sample + out-of-sample split"])
     tools = [submit_strategy_tool()]
     user = prompt
     code = explanation = ""
@@ -93,7 +96,12 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
                 return {"ok": True}
             return {"error": f"unknown tool {name}"}
 
-        client.run(STRATEGY_SYSTEM_PROMPT, user, tools, _dispatch)
+        try:
+            client.run(STRATEGY_SYSTEM_PROMPT, user, tools, _dispatch)
+        except Exception as exc:  # noqa: BLE001 - a flaky client becomes a repair attempt, not a crash
+            problems = [f"client error: {type(exc).__name__}: {exc}"]
+            user = "The previous attempt errored. Submit a strategy via submit_strategy."
+            continue
         code = captured.get("code", "")
         explanation = captured.get("explanation", "")
         if not code:

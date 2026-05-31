@@ -81,3 +81,18 @@ def test_develop_strategies_ranks_candidates():
                              config=TesterConfig(taker_fee=0.0))
     assert len(out) == 2
     assert out[0].accepted is True
+
+
+def test_empty_data_fails_honestly():
+    res = develop_strategy("x", _bars(1), client=_FakeClient([_GOOD]))
+    assert res.accepted is False
+    assert any("split" in p for p in res.problems)
+
+
+def test_raising_client_does_not_crash():
+    class _Boom:
+        def run(self, *a, **k):
+            raise RuntimeError("api down")
+    res = develop_strategy("x", _bars(), client=_Boom(), max_repairs=1)
+    assert isinstance(res, AgentResult)
+    assert res.accepted is False
