@@ -75,3 +75,27 @@ def test_chat_without_client_is_graceful(app):
     tab.set_bars(_bars())
     tab.chat.promptSubmitted.emit("make me a strategy")
     # no client set -> no crash (a system message is appended)
+
+
+def test_run_populates_chart_and_trades(app):
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    tab.run_code()
+    # chart got the bars; trades table + linkage list got the round-trips
+    assert tab.results._price._bars
+    assert tab.results._trades.rowCount() == tab.results.last_report.n_trades
+    assert len(tab.results._report_trades) == tab.results.last_report.n_trades
+
+
+def test_trade_click_jumps_to_chart(app):
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    tab.run_code()
+    tab.results._tabs.setCurrentIndex(2)        # look at the Trades tab
+    tab.results._on_trade_clicked(0, 0)         # click the first trade
+    assert tab.results._tabs.currentIndex() == 0  # jumped to the Chart tab
+    assert tab.results._price._follow is False    # chart focused on that trade

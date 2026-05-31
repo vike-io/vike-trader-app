@@ -31,6 +31,7 @@ from .panels import (
     strategy_params,
 )
 from .replay import Replay
+from .studio import StudioTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -104,6 +105,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setMenuWidget(self._build_header())
         self._build_central()
         self._build_docks()
+        self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.strategy.show_strategy(self._strategy_factory)
         self.history.update_runs(self.store.list_runs())
@@ -172,7 +174,14 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.setSpacing(7)
         outer.addWidget(charts, 1)
         outer.addWidget(self._build_controls())
-        self.setCentralWidget(container)
+
+        # The Backtester (charts + replay) and the Studio (AI strategy dev) are sibling
+        # tabs of one window — the Studio reuses the same charts/tester under the hood.
+        self.tabs = QtWidgets.QTabWidget()
+        self.tabs.addTab(container, "Backtester")
+        self.studio = StudioTab()
+        self.tabs.addTab(self.studio, "Studio")
+        self.setCentralWidget(self.tabs)
 
     def _build_controls(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -266,6 +275,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabifyDockWidget(trades, history)
         trades.raise_()
         self.resizeDocks([markets, report], [262, 380], QtCore.Qt.Horizontal)
+        self._docks = [markets, strat, report, trades, history]
 
     def _scroll(self, widget):
         sc = QtWidgets.QScrollArea()
@@ -274,12 +284,19 @@ class MainWindow(QtWidgets.QMainWindow):
         sc.setWidget(widget)
         return sc
 
+    def _on_tab_changed(self, _index: int) -> None:
+        """Hide the Backtester docks while the Studio tab is active (clean 3-pane workspace)."""
+        on_backtester = self.tabs.currentWidget() is not self.studio
+        for d in self._docks:
+            d.setVisible(on_backtester)
+
     # --- data / strategy loading ---
     def load_bars(self, bars, strategy_factory=None, *, record=True):
         if strategy_factory is not None:
             self._strategy_factory = strategy_factory
         self.strategy.show_strategy(self._strategy_factory)
         self._bars = bars
+        self.studio.set_bars(bars)  # the Studio tab backtests the same data
         self._result = BacktestEngine(bars, self._strategy_factory()).run()
         self._replay = Replay(len(bars))
         self.price.set_data(bars, self._result.trades)

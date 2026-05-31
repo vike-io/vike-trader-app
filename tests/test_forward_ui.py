@@ -76,3 +76,21 @@ def test_forward_locks_backtest_controls(app):
     win._set_backtest_controls_enabled(True)
     assert win.btn_play.isEnabled()
     win.close()
+
+
+def test_main_window_has_studio_tab(app):
+    win = MainWindow()
+    assert isinstance(win.centralWidget(), QtWidgets.QTabWidget)
+    titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
+    assert "Backtester" in titles and "Studio" in titles
+    win.close()
+
+
+def test_studio_tab_hides_backtester_docks(app):
+    win = MainWindow()
+    studio_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.studio)
+    win.tabs.setCurrentIndex(studio_idx)
+    assert all(d.isHidden() for d in win._docks)      # clean Studio workspace
+    win.tabs.setCurrentIndex(0)                        # back to Backtester
+    assert all(not d.isHidden() for d in win._docks)
+    win.close()

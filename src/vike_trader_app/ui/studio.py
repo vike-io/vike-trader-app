@@ -1,8 +1,9 @@
 """Studio tab: ChatPanel | CodeEditor | ResultsPanel with Run wiring and ChatWorker thread."""
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
+from .chart import EquityChart, PriceChart
 from .editor import CodeEditor
 
 
@@ -11,122 +12,238 @@ from .editor import CodeEditor
 # ---------------------------------------------------------------------------
 
 class ResultsPanel(QtWidgets.QWidget):
-    """Verdict banner + metrics grid + status label for a tester run."""
+    """Tabbed results — Chart | Performance | Trades — mirroring TradingView/TradeLocker.
+
+    The price chart (candles + entry/exit markers) over an equity curve is the
+    default view; the metric grid and the trade list are tabs. The overfit-verdict
+    banner sits ABOVE the tabs so the honesty signal is always visible.
+    """
 
     _METRIC_DEFS = [
         ("n_trades",        "Trades"),
         ("total_return",    "Total return"),
         ("net_profit",      "Net profit"),
         ("sharpe",          "Sharpe"),
+        ("sortino",         "Sortino"),
         ("max_drawdown",    "Max drawdown"),
         ("profit_factor",   "Profit factor"),
         ("win_rate",        "Win rate"),
         ("expected_payoff", "Expected payoff"),
         ("recovery_factor", "Recovery factor"),
+        ("avg_win",         "Avg win"),
+        ("avg_loss",        "Avg loss"),
     ]
+    # metrics where >0 is good (green) / <0 is bad (red)
+    _SIGNED = {"total_return", "net_profit", "expected_payoff", "avg_win"}
+    _PCT = {"total_return", "max_drawdown", "win_rate"}
+
+    _TRADE_COLS = ["#", "Side", "Entry", "Exit", "Size", "PnL", "Return"]
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
 
-        # verdict banner
+        # verdict banner (above the tabs — always visible)
         self._banner = QtWidgets.QLabel()
         self._banner.setVisible(False)
         self._banner.setWordWrap(True)
-        self._banner.setStyleSheet(
-            f"padding:8px;border-radius:6px;font-weight:700;background:{theme.PANEL2};"
-            f"border:1px solid {theme.BORDER};"
-        )
+        self._banner.setContentsMargins(8, 0, 8, 0)
         root.addWidget(self._banner)
 
-        # metrics grid
-        grid = QtWidgets.QGridLayout()
-        grid.setSpacing(4)
-        self._value_labels: dict[str, QtWidgets.QLabel] = {}
-        for i, (key, label) in enumerate(self._METRIC_DEFS):
-            lbl = QtWidgets.QLabel(label + ":")
-            lbl.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;")
-            val = QtWidgets.QLabel("—")
-            val.setStyleSheet(f"color:{theme.TEXT};font-weight:600;")
-            self._value_labels[key] = val
-            grid.addWidget(lbl, i, 0)
-            grid.addWidget(val, i, 1)
-        root.addLayout(grid)
-
-        # status label (error / info)
+        # status label (errors / info)
         self._status = QtWidgets.QLabel()
         self._status.setWordWrap(True)
         self._status.setVisible(False)
+        self._status.setContentsMargins(8, 0, 8, 0)
         root.addWidget(self._status)
-        root.addStretch(1)
+
+        self._tabs = QtWidgets.QTabWidget()
+        root.addWidget(self._tabs, 1)
+
+        # --- Chart tab: candles + trade markers over an equity curve ---
+        self._price = PriceChart()
+        self._equity = EquityChart()
+        chart_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        chart_split.addWidget(self._price)
+        chart_split.addWidget(self._equity)
+        chart_split.setStretchFactor(0, 3)
+        chart_split.setStretchFactor(1, 1)
+        self._tabs.addTab(chart_split, "Chart")
+
+        # --- Performance tab: metric cards in a 2-col grid ---
+        perf = QtWidgets.QWidget()
+        pgrid = QtWidgets.QGridLayout(perf)
+        pgrid.setContentsMargins(12, 12, 12, 12)
+        pgrid.setHorizontalSpacing(16)
+        pgrid.setVerticalSpacing(10)
+        self._value_labels: dict[str, QtWidgets.QLabel] = {}
+        ncols = 2
+        for i, (key, label) in enumerate(self._METRIC_DEFS):
+            r, c = divmod(i, ncols)
+            cell = QtWidgets.QWidget()
+            cv = QtWidgets.QVBoxLayout(cell)
+            cv.setContentsMargins(0, 0, 0, 0)
+            cv.setSpacing(1)
+            cap = QtWidgets.QLabel(label.upper())
+            cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:1px;")
+            val = QtWidgets.QLabel("—")
+            val.setStyleSheet(self._metric_style("", None))
+            cv.addWidget(cap)
+            cv.addWidget(val)
+            self._value_labels[key] = val
+            pgrid.addWidget(cell, r, c)
+        pgrid.setRowStretch((len(self._METRIC_DEFS) + ncols - 1) // ncols, 1)
+        self._tabs.addTab(perf, "Performance")
+
+        # --- Trades tab ---
+        self._trades = QtWidgets.QTableWidget(0, len(self._TRADE_COLS))
+        self._trades.setHorizontalHeaderLabels(self._TRADE_COLS)
+        self._trades.verticalHeader().setVisible(False)
+        self._trades.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._trades.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._trades.setAlternatingRowColors(True)
+        _hdr = self._trades.horizontalHeader()
+        _hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)  # share width, no h-scroll
+        _hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)  # "#" snug
+        self._trades.cellClicked.connect(self._on_trade_clicked)
+        self._tabs.addTab(self._trades, "Trades")
 
         self.last_report: object = None
+        self._report_trades: list = []  # row index -> Trade, for the chart-focus linkage
+
+    # --- formatting helpers ---
+
+    def _fmt(self, key: str, raw) -> str:
+        if raw is None:
+            return "—"
+        if isinstance(raw, int) and key not in self._PCT:
+            return str(raw)
+        if raw == float("inf"):
+            return "∞"
+        if raw == float("-inf"):
+            return "−∞"
+        if key in self._PCT:
+            return f"{raw * 100:.2f}%"
+        return f"{raw:,.2f}"
+
+    def _metric_style(self, key: str, raw) -> str:
+        base = "font-weight:700;font-size:15px;"
+        color = theme.TEXT
+        if isinstance(raw, (int, float)) and raw == raw:  # exclude NaN
+            if key in self._SIGNED:
+                color = theme.UP if raw > 0 else theme.DOWN if raw < 0 else theme.TEXT
+            elif key == "max_drawdown":
+                color = theme.DOWN if raw > 0 else theme.TEXT
+            elif key == "profit_factor":
+                color = theme.UP if raw >= 1 else theme.DOWN
+            elif key == "win_rate":
+                color = theme.UP if raw >= 0.5 else theme.TEXT
+        return f"color:{color};{base}"
+
+    def _set_banner(self, verdict) -> None:
+        if verdict is None:
+            self._banner.setVisible(False)
+            return
+        level = verdict.level
+        color = theme.VERDICT.get(level, theme.WARN)
+        reason = verdict.reasons[0] if verdict.reasons else ""
+        self._banner.setText(f"⚠  OVERFIT RISK · {level.upper()}  —  {reason}")
+        self._banner.setStyleSheet(
+            f"padding:8px 10px;border-radius:6px;font-weight:700;"
+            f"color:{color};background:rgba(0,0,0,0.25);border:1px solid {color};"
+        )
+        self._banner.setVisible(True)
+
+    def _fill_trades(self, trades) -> None:
+        self._report_trades = list(trades)
+        self._trades.setRowCount(len(trades))
+        for r, t in enumerate(trades):
+            ret = t.pnl / (abs(t.size) * t.entry_price) if t.size and t.entry_price else 0.0
+            cells = [
+                str(r + 1),
+                "LONG" if t.size >= 0 else "SHORT",
+                f"{t.entry_price:,.2f}",
+                f"{t.exit_price:,.2f}",
+                f"{abs(t.size):g}",
+                f"{t.pnl:,.2f}",
+                f"{ret * 100:.2f}%",
+            ]
+            up = t.pnl >= 0
+            for c, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                if c == 1:
+                    item.setForeground(QtGui.QColor(theme.UP if t.size >= 0 else theme.DOWN))
+                elif c in (5, 6):
+                    item.setForeground(QtGui.QColor(theme.UP if up else theme.DOWN))
+                if c >= 2:
+                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                self._trades.setItem(r, c, item)
+
+    def _on_trade_clicked(self, row: int, _col: int) -> None:
+        """Trade-row click -> jump to the Chart tab and zoom to that trade (TradingView UX)."""
+        if 0 <= row < len(self._report_trades):
+            self._tabs.setCurrentIndex(0)  # Chart
+            self._price.focus_ts(self._report_trades[row].entry_ts)
 
     # --- public ---
 
-    def show_report(self, report) -> None:
-        """Populate metrics from a TesterReport; show verdict banner if present."""
+    def show_report(self, report, bars=None, overlays=None) -> None:
+        """Populate metrics + chart + trade list from a TesterReport.
+
+        ``bars`` (the price series) is needed to draw candles + trade markers; pass it
+        from the Run path. ``overlays`` is ``{label: series}`` for indicator lines.
+        """
         self.last_report = report
         self._status.setVisible(False)
         self._status.setText("")
 
-        def _pct(v: float) -> str:
-            return f"{v * 100:.2f}%"
-
-        def _f(v: float) -> str:
-            return "∞" if v == float("inf") else f"{v:.4f}"
-
-        formatters = {
-            "total_return": _pct,
-            "max_drawdown": _pct,
-            "win_rate":     _pct,
-        }
-
         for key, _ in self._METRIC_DEFS:
             raw = getattr(report, key, None)
-            if raw is None:
-                text = "—"
-            elif key in formatters:
-                text = formatters[key](raw)
-            elif isinstance(raw, int):
-                text = str(raw)
-            else:
-                text = _f(float(raw))
-            self._value_labels[key].setText(text)
+            self._value_labels[key].setText(self._fmt(key, raw))
+            self._value_labels[key].setStyleSheet(self._metric_style(key, raw))
 
-        # verdict banner
-        if report.verdict is not None:
-            level = report.verdict.level
-            color = theme.VERDICT.get(level, theme.WARN)
-            reason = report.verdict.reasons[0] if report.verdict.reasons else ""
-            self._banner.setText(f"OVERFIT RISK · {level.upper()}  —  {reason}")
-            self._banner.setStyleSheet(
-                f"padding:8px;border-radius:6px;font-weight:700;"
-                f"color:{color};background:rgba(0,0,0,0.25);border:1px solid {color};"
-            )
-            self._banner.setVisible(True)
-        else:
-            self._banner.setVisible(False)
+        self._set_banner(report.verdict)
+
+        if bars:
+            try:
+                self._price.set_data(bars, report.trades)
+                self._price.set_overlays(overlays or {})
+            except Exception:  # noqa: BLE001 - charting must never break the run
+                pass
+        if report.equity_curve:
+            try:
+                self._equity.set_data(report.equity_curve)
+            except Exception:  # noqa: BLE001
+                pass
+
+        self._fill_trades(report.trades)
+        self._tabs.setCurrentIndex(0)  # land on the chart — the headline view
 
     def show_error(self, msg: str) -> None:
         """Display an error message; clear any previous report."""
         self.last_report = None
+        self._report_trades = []
         self._banner.setVisible(False)
         self._status.setText(msg)
-        self._status.setStyleSheet(f"color:{theme.DOWN};font-size:11px;")
+        self._status.setStyleSheet(f"color:{theme.DOWN};font-size:11px;padding:6px 8px;")
         self._status.setVisible(True)
         for lbl in self._value_labels.values():
             lbl.setText("—")
+            lbl.setStyleSheet(self._metric_style("", None))
+        self._trades.setRowCount(0)
 
     def clear(self) -> None:
         """Reset to blank state."""
         self.last_report = None
+        self._report_trades = []
         self._banner.setVisible(False)
         self._status.setVisible(False)
         for lbl in self._value_labels.values():
             lbl.setText("—")
+            lbl.setStyleSheet(self._metric_style("", None))
+        self._trades.setRowCount(0)
 
 
 # ---------------------------------------------------------------------------
@@ -316,7 +433,12 @@ class StudioTab(QtWidgets.QWidget):
         try:
             cls = load_strategy_from_string(code, validate=True)
             report = StrategyTester(cls(), self._bars, config).run()
-            self.results.show_report(report)
+            overlays = {}
+            try:
+                overlays = cls().chart_overlays([b.close for b in self._bars]) or {}
+            except Exception:  # noqa: BLE001 - overlays are optional, never block the run
+                overlays = {}
+            self.results.show_report(report, self._bars, overlays)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"{type(exc).__name__}: {exc}")
 

@@ -74,6 +74,7 @@ class PriceChart(pg.PlotWidget):
         self._follow = True  # keep the replay cursor in view
         self._entries = []
         self._exits = []
+        self._ts_index = {}  # bar timestamp -> index (for trade-row -> chart focus)
         self._overlays = {}  # label -> full series (aligned to bars)
         self._overlay_curves = {}  # label -> PlotDataItem
 
@@ -94,6 +95,7 @@ class PriceChart(pg.PlotWidget):
     def set_data(self, bars, trades):
         self._bars = bars
         ts_index = {b.ts: i for i, b in enumerate(bars)}
+        self._ts_index = ts_index
         self._entries, self._exits = [], []
         for m in trade_markers(trades):
             idx = ts_index.get(m.ts)
@@ -142,6 +144,26 @@ class PriceChart(pg.PlotWidget):
             yb = y_bounds(self._bars, lo, min(hi, index + 1))
             if yb:
                 self.setYRange(yb[0], yb[1], padding=0.06)
+
+    def focus(self, index: int, span: int = 40):
+        """Pan/zoom the price view to centre on bar ``index`` (driven by trade-row clicks)."""
+        if not self._bars:
+            return
+        self._follow = False  # an explicit focus range should stick, not be overridden
+        lo = max(0, index - span)
+        hi = min(len(self._bars), index + span)
+        self.setXRange(lo, hi, padding=0.05)
+        yb = y_bounds(self._bars, lo, hi)
+        if yb:
+            self.setYRange(yb[0], yb[1], padding=0.1)
+        self._cursor.show()
+        self._cursor.setPos(index)
+
+    def focus_ts(self, ts: int, span: int = 40):
+        """Focus the bar whose timestamp is ``ts`` (a trade fill), if it's in view."""
+        idx = self._ts_index.get(ts)
+        if idx is not None:
+            self.focus(idx, span)
 
 
 class EquityChart(pg.PlotWidget):
