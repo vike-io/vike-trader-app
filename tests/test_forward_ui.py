@@ -82,7 +82,7 @@ def test_main_window_has_studio_tools_screener_tabs(app):
     win = MainWindow()
     assert isinstance(win.centralWidget(), QtWidgets.QTabWidget)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert titles[:4] == ["Backtester", "Studio", "Tools", "Screener"]
+    assert titles[:5] == ["Backtester", "Studio", "Tools", "Screener", "Journal"]
     win.close()
 
 
