@@ -762,6 +762,10 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_run.setObjectName("play")
         self._btn_run.clicked.connect(self.run_code)
         toolbar.addWidget(self._btn_run)
+        self._btn_optimize = QtWidgets.QPushButton("⚖ Optimize")
+        self._btn_optimize.setToolTip("Walk-forward optimize the PARAM_GRID + attach an overfit verdict")
+        self._btn_optimize.clicked.connect(self._optimize)
+        toolbar.addWidget(self._btn_optimize)
         self._btn_templates = QtWidgets.QPushButton("📁 Templates")
         self._btn_templates.clicked.connect(self._open_templates)
         toolbar.addWidget(self._btn_templates)
@@ -870,6 +874,52 @@ class StudioTab(QtWidgets.QWidget):
             if ok != QtWidgets.QMessageBox.StandardButton.Yes:
                 return
         self.editor.setText(code)
+
+    def _optimize(self) -> None:
+        """Walk-forward optimize the strategy's PARAM_GRID; show the stitched OOS run + overfit verdict.
+
+        This is the "optimize safely" path: parameters are picked per train window and scored
+        OUT-OF-SAMPLE, and the stitched result carries a PBO/deflated-Sharpe overfit verdict (the
+        banner) — so a curve-fit grid sweep shows up as High overfit risk rather than a shiny number.
+        """
+        from dataclasses import replace
+
+        from vike_trader_app.core.strategy_loader import load_strategy_from_string
+        from vike_trader_app.tester import StrategyTester, TesterConfig
+
+        config = self._config if self._config is not None else TesterConfig()
+        if self._run_capital is not None:
+            config = replace(config, cash=self._run_capital)
+        bars = self._bars
+        if self._run_range is not None:
+            s, e = self._run_range
+            bars = [b for b in self._bars if s <= b.ts <= e] or self._bars
+        try:
+            cls = load_strategy_from_string(self.editor.text(), validate=True)
+        except Exception as exc:  # noqa: BLE001
+            self.results.show_error(f"{type(exc).__name__}: {exc}")
+            return
+        grid = getattr(cls, "PARAM_GRID", {}) or {}
+        if not grid:
+            self.results.toast("Add a PARAM_GRID to the strategy to walk-forward optimize it.")
+            return
+        if len(bars) < 120:
+            self.results.toast("Need ≥120 bars to walk-forward optimize.")
+            return
+        self.results.toast("Optimizing + walk-forward validating…")
+        QtWidgets.QApplication.processEvents()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            wf = StrategyTester(cls(), bars, config).walk_forward(cls.make, grid, n_splits=3)
+        except Exception as exc:  # noqa: BLE001
+            self.results.show_error(f"Optimize failed: {type(exc).__name__}: {exc}")
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.results.add_run(wf.oos_report, bars)
+        best = wf.windows[-1].best_params if wf.windows else {}
+        level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
+        self.results.toast(f"Walk-forward OOS · overfit risk: {level} · best {best}")
 
     def _export_csv(self) -> None:
         """Export the current run's metrics + trades to a CSV file."""

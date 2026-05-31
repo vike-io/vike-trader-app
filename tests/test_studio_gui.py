@@ -195,6 +195,32 @@ def test_export_csv_without_report_is_graceful(app):
     assert tab.results.last_report is None
 
 
+def test_optimize_walk_forward_attaches_overfit_verdict(app):
+    import math
+
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    bars = [Bar(ts=i * 60_000, open=100 + 10 * math.sin(i / 9.0),
+                high=102 + 10 * math.sin(i / 9.0), low=98 + 10 * math.sin(i / 9.0),
+                close=100 + 10 * math.sin(i / 9.0) + i * 0.04) for i in range(260)]
+    ma = next(t for t in TEMPLATES if "MaCrossover" in t.code)  # has a PARAM_GRID
+    tab = StudioTab()
+    tab.set_bars(bars)
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(ma.code)
+    tab._optimize()
+    assert tab.results.last_report is not None
+    v = tab.results.last_report.verdict
+    assert v is not None and v.level in ("Low", "Medium", "High")  # the PBO/overfit gate
+
+
+def test_optimize_without_grid_is_graceful(app):
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_text(_GOOD)        # no PARAM_GRID
+    tab._optimize()            # -> toast, no run recorded, no crash
+    assert tab.results.last_report is None
+
+
 def test_indicator_dialog_builds_and_autoselects(app):
     from vike_trader_app.ui.indicators import IndicatorCatalogDialog
     dlg = IndicatorCatalogDialog()

@@ -28,6 +28,7 @@ class MaCrossover(Strategy):
     WARMUP = 30
     fast = 10
     slow = 30
+    PARAM_GRID = {"fast": [5, 10], "slow": [20, 30]}
 
     def __init__(self):
         self.closes = []
