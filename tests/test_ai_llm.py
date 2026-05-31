@@ -70,3 +70,29 @@ def test_tool_specs_cover_the_five_services():
     for s in specs:
         assert s.input_schema.get("type") == "object"
         assert isinstance(s.description, str) and s.description
+
+
+def test_run_chat_uses_injected_client_and_dispatch():
+    from vike_trader_app.ai.cli import run_chat
+
+    class _FakeClient:
+        def __init__(self):
+            self.seen = None
+
+        def run(self, system, user, tools, dispatch, max_turns=8):
+            self.seen = (system, user, tools)
+            dispatch("query_kb", {"query": "compiled kernel", "k": 1})
+            return f"answered: {user}"
+
+    fake = _FakeClient()
+    routed = {}
+
+    def dispatch(name, args):
+        routed["name"] = name
+        return {"n": 0, "hits": []}
+
+    out = run_chat("how fast is the engine?", client=fake, dispatch=dispatch)
+    assert out == "answered: how fast is the engine?"
+    assert routed["name"] == "query_kb"
+    assert fake.seen[1] == "how fast is the engine?"
+    assert fake.seen[2]
