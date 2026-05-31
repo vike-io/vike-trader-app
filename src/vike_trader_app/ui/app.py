@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtWidgets
 
 from ..analysis import metrics
 from ..core.engine import BacktestEngine
-from ..core.forward import ForwardTester, pump
+from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
 from ..data.cache import get_bars
@@ -84,7 +84,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interval = "1m"
 
         # forward (paper) mode state
-        self._forward = None      # ForwardTester while live, else None
+        self._forward = None      # PaperTester while live, else None
         self._feed = None         # PollingBarFeed (poll fallback)
         self._fwd_worker = None   # _LiveFeedWorker (push, preferred)
         self._fwd_bars = []       # live bars received this run (charted)
@@ -480,7 +480,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._start_forward()
 
     def _start_forward(self):
-        """Seed warm-up history, then stream live closed bars into a paper ForwardTester."""
+        """Seed warm-up history, then stream live closed bars into a PaperTester."""
         symbol, interval = self._symbol, self._interval
         self.crumb.setText(f"Forward: seeding {symbol} {interval}…")
         QtWidgets.QApplication.processEvents()
@@ -498,7 +498,7 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
 
-        self._forward = ForwardTester(
+        self._forward = PaperTester(
             symbol=symbol, interval=interval, strategy=self._strategy_factory(),
             cash=_FORWARD_CASH, fee_rate=_FORWARD_FEE, seed_bars=seed,
             store=self.store, on_step=None, created_ts=int(time.time() * 1000),

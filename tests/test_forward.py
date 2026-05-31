@@ -1,7 +1,7 @@
-"""Forward (paper) testing: engine.step() reuse, PollingBarFeed, ForwardTester."""
+"""Forward (paper) testing: engine.step() reuse, PollingBarFeed, PaperTester."""
 
 from vike_trader_app.core.engine import BacktestEngine
-from vike_trader_app.core.forward import ForwardTester
+from vike_trader_app.core.paper import PaperTester, pump
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.data.store import Store
@@ -42,10 +42,10 @@ def test_stepping_bars_one_by_one_matches_run():
     assert eng.equity_now() == full.final_equity
 
 
-# --- ForwardTester: same fills as the backtest, driven bar-by-bar -------------
+# --- PaperTester: same fills as the backtest, driven bar-by-bar -------------
 
 def test_live_bars_fill_at_next_open_exactly_like_backtest():
-    ft = ForwardTester(symbol="BTCUSDT", interval="1m", strategy=_BuyThenClose(), cash=10_000.0)
+    ft = PaperTester(symbol="BTCUSDT", interval="1m", strategy=_BuyThenClose(), cash=10_000.0)
     for bar in _bars():
         ft.on_bar_live(bar)
     res = ft.result()
@@ -67,7 +67,7 @@ class _CountCalls(Strategy):
 
 def test_seed_bars_warm_up_strategy_but_stay_out_of_the_live_curve():
     strat = _CountCalls()
-    ft = ForwardTester(
+    ft = PaperTester(
         symbol="X", interval="1m", strategy=strat, cash=10_000.0, seed_bars=_bars()[:2]
     )
     assert strat.calls == 2  # warmed up on the 2 seed bars at construction
@@ -79,7 +79,7 @@ def test_seed_bars_warm_up_strategy_but_stay_out_of_the_live_curve():
 
 def test_each_live_bar_is_persisted_to_the_store():
     s = Store(":memory:")
-    ft = ForwardTester(symbol="BTCUSDT", interval="1m", strategy=_BuyThenClose(), cash=10_000.0, store=s)
+    ft = PaperTester(symbol="BTCUSDT", interval="1m", strategy=_BuyThenClose(), cash=10_000.0, store=s)
     for bar in _bars():
         ft.on_bar_live(bar)
     assert [b.ts for b in s.forward_bars(ft.run_id)] == [0, 60_000, 120_000, 180_000]
@@ -88,12 +88,12 @@ def test_each_live_bar_is_persisted_to_the_store():
 
 def test_resume_reconstructs_state_from_the_store():
     s = Store(":memory:")
-    ft = ForwardTester(symbol="BTCUSDT", interval="1m", strategy=_BuyThenClose(), cash=10_000.0, store=s)
+    ft = PaperTester(symbol="BTCUSDT", interval="1m", strategy=_BuyThenClose(), cash=10_000.0, store=s)
     for bar in _bars():
         ft.on_bar_live(bar)
     final = ft.result().final_equity
 
-    resumed = ForwardTester.resume(s, ft.run_id, strategy=_BuyThenClose())
+    resumed = PaperTester.resume(s, ft.run_id, strategy=_BuyThenClose())
     assert resumed.result().final_equity == final
     assert [t.pnl for t in resumed.result().trades] == [20.0]
     # resume replays without duplicating stored bars
@@ -101,8 +101,6 @@ def test_resume_reconstructs_state_from_the_store():
 
 
 def test_pump_drives_each_polled_bar_into_the_tester():
-    from vike_trader_app.core.forward import pump
-
     class _FakeFeed:
         def __init__(self, batches):
             self._batches = list(batches)
@@ -110,7 +108,7 @@ def test_pump_drives_each_polled_bar_into_the_tester():
             return self._batches.pop(0) if self._batches else []
 
     feed = _FakeFeed([_bars()[:2], _bars()[2:]])
-    ft = ForwardTester(symbol="X", interval="1m", strategy=_BuyThenClose(), cash=10_000.0)
+    ft = PaperTester(symbol="X", interval="1m", strategy=_BuyThenClose(), cash=10_000.0)
     first = pump(feed, ft)
     second = pump(feed, ft)
     assert [b.ts for b in first] == [0, 60_000]
@@ -131,7 +129,7 @@ class _RecordHigherTF(Strategy):
 
 def test_forward_exposes_completed_higher_tf_bars_live_without_lookahead():
     strat = _RecordHigherTF()
-    ft = ForwardTester(symbol="X", interval="1m", strategy=strat, timeframes=["2m"])
+    ft = PaperTester(symbol="X", interval="1m", strategy=strat, timeframes=["2m"])
     for bar in _bars():  # closes 100,110,120,130 at ts 0,60k,120k,180k
         ft.on_bar_live(bar)
     # Identical visibility to the backtest engine (deliver-on-complete, look-ahead-safe):
@@ -140,7 +138,7 @@ def test_forward_exposes_completed_higher_tf_bars_live_without_lookahead():
 
 def test_on_step_callback_fires_per_live_bar_with_equity():
     seen = []
-    ft = ForwardTester(
+    ft = PaperTester(
         symbol="X", interval="1m", strategy=_BuyThenClose(), cash=10_000.0,
         on_step=lambda bar, eq: seen.append((bar.ts, eq)),
     )
@@ -148,3 +146,9 @@ def test_on_step_callback_fires_per_live_bar_with_equity():
         ft.on_bar_live(bar)
     assert [ts for ts, _ in seen] == [0, 60_000, 120_000, 180_000]
     assert seen[-1][1] == 10_020.0
+
+
+def test_paper_tester_new_name_and_backcompat_shim():
+    from vike_trader_app.core.paper import PaperTester
+    from vike_trader_app.core import forward as _shim
+    assert _shim.ForwardTester is PaperTester  # old import path still resolves

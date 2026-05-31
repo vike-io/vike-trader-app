@@ -10,7 +10,7 @@ pytest.importorskip("PySide6")
 
 from PySide6 import QtWidgets  # noqa: E402
 
-from vike_trader_app.core.forward import ForwardTester  # noqa: E402
+from vike_trader_app.core.paper import PaperTester  # noqa: E402
 from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.core.strategy import Strategy  # noqa: E402
 from vike_trader_app.ui.app import MainWindow  # noqa: E402
@@ -33,7 +33,7 @@ class _BuyFirst(Strategy):
 
 def test_render_forward_updates_charts_and_crumb(app):
     win = MainWindow()
-    ft = ForwardTester(symbol="BTCUSDT", interval="1m", strategy=_BuyFirst(), cash=10_000.0)
+    ft = PaperTester(symbol="BTCUSDT", interval="1m", strategy=_BuyFirst(), cash=10_000.0)
     win._forward = ft
     for i, c in enumerate((100.0, 110.0, 120.0)):
         ft.on_bar_live(_bar(i * 60_000, c))
@@ -47,7 +47,7 @@ def test_render_forward_updates_charts_and_crumb(app):
 
 def test_poll_tick_drains_a_fake_feed_into_the_tester(app):
     win = MainWindow()
-    ft = ForwardTester(symbol="X", interval="1m", strategy=_BuyFirst(), cash=10_000.0)
+    ft = PaperTester(symbol="X", interval="1m", strategy=_BuyFirst(), cash=10_000.0)
     win._forward = ft
 
     class _FakeFeed:
