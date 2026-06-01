@@ -35,5 +35,14 @@ def test_launch_button_emits_signal(app):
 
 def test_exposes_strategy_and_history(app):
     panel = BotsPanel()
-    assert panel.strategy is not None
-    assert panel.history is not None
+    # the exposed children are exactly the widgets mounted in the tabs
+    assert panel._tabs.widget(0) is panel.strategy
+    assert panel._tabs.widget(1) is panel.history
+
+
+def test_run_chosen_forwarded(app):
+    panel = BotsPanel()
+    received = []
+    panel.runChosen.connect(received.append)
+    panel.history.runChosen.emit("sentinel")
+    assert received == ["sentinel"]
