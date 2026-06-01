@@ -1,10 +1,9 @@
 """Studio tab: ChatPanel | CodeEditor | ResultsPanel with Run wiring and ChatWorker thread.
 
-The ResultsPanel mirrors TradingView/TradeLocker (validated by the UI/UX research +
-the 66-frame video teardown): a Chart tab (candles + entry/exit markers over an equity
-curve with drawdown shading), a Performance tab (KPI hero tiles pairing % with $, plus a
-detail grid), a Trades tab (round-trips, click-to-focus-chart), and a Runs tab (the
-iterate-and-compare history table). The overfit-risk verdict banner sits above the tabs.
+The ResultsPanel has five tabs — Equity (stand-alone equity curve), Performance (KPI hero
+tiles + detail grid), Trades (round-trips), Runs (iterate-and-compare history), and
+Distribution (trade-return histogram). The price candlestick chart now lives in the Chart
+space (app.py), not here. The overfit-risk verdict banner sits above the tabs.
 """
 
 import difflib
@@ -15,7 +14,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import report_extras
 from . import theme
-from .chart import EquityChart, PriceChart
+from .chart import EquityChart
 from .editor import CodeEditor
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
@@ -26,7 +25,7 @@ _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 # ---------------------------------------------------------------------------
 
 class ResultsPanel(QtWidgets.QWidget):
-    """Tabbed results — Chart | Performance | Trades | Runs."""
+    """Tabbed results — Equity | Performance | Trades | Runs | Distribution."""
 
     # hero tiles (caption); values + $ sub-lines are computed in show_report
     _HERO = [
@@ -373,7 +372,7 @@ class ResultsPanel(QtWidgets.QWidget):
     # --- public ---
 
     def show_report(self, report, bars=None, overlays=None) -> None:
-        """Display a TesterReport: hero KPIs + detail grid + chart + trades."""
+        """Display a TesterReport: hero KPIs + detail grid + equity curve + trades."""
         self.last_report = report
         self._status.setVisible(False)
         self._status.setText("")
