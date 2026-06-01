@@ -99,7 +99,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_q = []        # crypto symbols cycled by the quote refresh
 
         # widgets
-        self.price = PriceChart()
+        self.price = PriceChart()         # Chart space — clean standalone viewer
+        self.studio_price = PriceChart()  # Studio workspace chart — same data, driven in lockstep
         self.trades = TradesTable()
         self.watchlist = WatchlistPanel()
         self.bots = BotsPanel()
@@ -167,15 +168,18 @@ class MainWindow(QtWidgets.QMainWindow):
         outer.setContentsMargins(7, 7, 7, 7)
         outer.setSpacing(7)
         outer.addWidget(charts, 1)
-        outer.addWidget(self._build_controls())
 
-        # The Backtester (charts + replay) and the Studio (AI strategy dev) are sibling
-        # tabs of one window — the Studio reuses the same charts/tester under the hood.
+        # The Chart space (clean price chart) and the Studio (AI strategy dev) are sibling
+        # tabs of one window. The replay/data control bar and the Bots panel now live in the
+        # Studio workspace (moved out of the Chart space and the right dock respectively).
         self._backtester = container
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
+        self.studio.mount_controls(self._build_controls())
+        self.studio.mount_bots(self.bots)
+        self.studio.mount_chart(self.studio_price)
         self.tabs.addTab(self.studio, "Studio")
         self.tools = ToolsTab()
         self.tabs.addTab(self.tools, "Tools")
@@ -213,7 +217,6 @@ class MainWindow(QtWidgets.QMainWindow):
     _PANELS = [
         ("backtester", "chart", "Chart", "Ctrl+G"),
         ("market", "market", "Market watch", "Ctrl+M"),
-        ("strategies", "strategies", "Bots", "Ctrl+B"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
     ]
 
@@ -343,19 +346,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._feed_badge.setText(f"{prefix}{self._feed_label(self._symbol)}")
 
     def _build_controls(self) -> QtWidgets.QWidget:
+        # Lives inline in the Studio toolbar (one row), so it carries no panel border/margins.
         bar = QtWidgets.QWidget()
-        bar.setStyleSheet(
-            f"background:{theme.PANEL};border:1px solid {theme.BORDER};border-radius:8px;"
-        )
         row = QtWidgets.QHBoxLayout(bar)
-        row.setContentsMargins(9, 7, 9, 7)
+        row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(8)
 
         self.btn_load = QtWidgets.QPushButton("⤓ Load data")
         self.btn_strategy = QtWidgets.QPushButton("⟐ Load strategy")
         self.btn_validate = QtWidgets.QPushButton("⚠ Validate")
         self.btn_validate.setObjectName("validate")
-        self.btn_optimize = QtWidgets.QPushButton("⚙ Optimize")
+        self.btn_optimize = QtWidgets.QPushButton("⚙ Grid optimize")
+        self.btn_optimize.setToolTip("Grid-search the loaded strategy's parameters (optimizer dialog)")
         self.btn_back = QtWidgets.QPushButton("◀")
         self.btn_play = QtWidgets.QPushButton("▶ Play")
         self.btn_play.setObjectName("play")
@@ -422,31 +424,26 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_docks(self):
         # TradeLocker-style information architecture:
-        #   Bots (left) · Chart (centre) · Market watch + Report (right) ·
-        #   Trades & Positions (full-width bottom).
+        #   Chart (centre) · Market watch (right) · Trades & Positions (full-width bottom).
+        # The Bots panel now lives in the Studio workspace, not a right dock.
         # The bottom area owns both lower corners so the trades strip spans the full width,
         # with the side docks sitting above it.
         self.setCorner(QtCore.Qt.BottomLeftCorner, QtCore.Qt.BottomDockWidgetArea)
         self.setCorner(QtCore.Qt.BottomRightCorner, QtCore.Qt.BottomDockWidgetArea)
 
         market = self._dock("Market watch", self.watchlist)
-        strategies = self._dock("Bots", self.bots)
         trades = self._dock("Trades & Positions", self._build_trades_panel())
 
-        # RIGHT: Market watch on top, Strategies beneath it — both toggle from the rail.
-        # No "Backtest Report" panel: TradeLocker's trader screen has none, and backtest
-        # analysis (metrics/verdict) belongs to the Studio tab's ResultsPanel, not here.
+        # RIGHT: Market watch.  BOTTOM: Trades & Positions, spanning the full width.
         self.addDockWidget(QtCore.Qt.RightDockWidgetArea, market)
-        self.splitDockWidget(market, strategies, QtCore.Qt.Vertical)
-        # BOTTOM: Trades & Positions, spanning the full width.
         self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, trades)
 
         # rail PANELS toggle targets (key must match _PANELS)
         self._market_dock = market
-        self._panel_dock_map = {"market": market, "strategies": strategies, "trades": trades}
+        self._panel_dock_map = {"market": market, "trades": trades}
         self.resizeDocks([market], [300], QtCore.Qt.Horizontal)
         self.resizeDocks([trades], [190], QtCore.Qt.Vertical)
-        self._docks = [market, strategies, trades]
+        self._docks = [market, trades]
 
     def _scroll(self, widget):
         sc = QtWidgets.QScrollArea()
@@ -590,8 +587,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio.set_bars(bars)  # the Studio tab backtests the same data
         self._result = BacktestEngine(bars, self._strategy_factory()).run()
         self._replay = Replay(len(bars))
-        self.price.set_data(bars, self._result.trades)
-        self.price.set_overlays(self._strategy_factory().chart_overlays([b.close for b in bars]))
+        overlays = self._strategy_factory().chart_overlays([b.close for b in bars])
+        for ch in (self.price, self.studio_price):
+            ch.set_data(bars, self._result.trades)
+            ch.set_overlays(overlays)
         self.trades.update_trades(self._result.trades)
         self.slider.setMaximum(self._replay.last_index)
         self.slider.setValue(self._replay.last_index)
@@ -881,7 +880,8 @@ class MainWindow(QtWidgets.QMainWindow):
     # --- replay wiring ---
     def _render_frame(self):
         i = self._replay.index
-        self.price.show_upto(i)
+        for ch in (self.price, self.studio_price):
+            ch.show_upto(i)
         self.pos_label.setText(f"bar {i} / {self._replay.last_index}")
         if self.slider.value() != i:
             self.slider.blockSignals(True)
@@ -1007,11 +1007,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fwd_bars = list(self._forward.engine.bars[-len(self._forward.equity_curve):]) \
             if self._forward.equity_curve else []
         res = self._forward.result()
-        self.price.set_data(self._fwd_bars, res.trades)
-        self.price.set_overlays(
-            self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
-        )
-        self.price.show_upto(len(self._fwd_bars) - 1)
+        overlays = self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
+        for ch in (self.price, self.studio_price):
+            ch.set_data(self._fwd_bars, res.trades)
+            ch.set_overlays(overlays)
+            ch.show_upto(len(self._fwd_bars) - 1)
         self.trades.update_trades(res.trades)
         if self._fwd_bars:
             last = self._fwd_bars[-1].close

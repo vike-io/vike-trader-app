@@ -72,9 +72,12 @@ class PriceChart(pg.PlotWidget):
     def __init__(self):
         super().__init__()
         self.setBackground(theme.BG)
-        self.showGrid(x=True, y=True, alpha=_GRID)
-        self.getAxis("left").setTextPen(theme.TEXT3)
+        # Price scale on the RIGHT (TradingView / Lightweight-Charts convention).
+        self.showAxis("right")
+        self.hideAxis("left")
+        self.getAxis("right").setTextPen(theme.TEXT3)
         self.getAxis("bottom").setTextPen(theme.TEXT3)
+        self.showGrid(x=True, y=True, alpha=_GRID)
         self.addLegend(offset=(10, 8), labelTextColor=theme.TEXT2)
         self._bars = []
         self._window = 300  # default candles shown; user can mouse-zoom out

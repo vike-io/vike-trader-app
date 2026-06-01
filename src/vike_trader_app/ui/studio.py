@@ -927,13 +927,14 @@ class StudioTab(QtWidgets.QWidget):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(5)
 
-        # toolbar
+        # toolbar (the replay/data control bar is merged into this same row via mount_controls)
         toolbar = QtWidgets.QHBoxLayout()
+        self._toolbar = toolbar
         self._btn_run = QtWidgets.QPushButton("Run")
         self._btn_run.setObjectName("play")
         self._btn_run.clicked.connect(self.run_code)
         toolbar.addWidget(self._btn_run)
-        self._btn_optimize = QtWidgets.QPushButton("⚖ Optimize")
+        self._btn_optimize = QtWidgets.QPushButton("⚖ Walk-forward")
         self._btn_optimize.setToolTip("Walk-forward optimize the PARAM_GRID + attach an overfit verdict")
         self._btn_optimize.clicked.connect(self._optimize)
         toolbar.addWidget(self._btn_optimize)
@@ -972,6 +973,41 @@ class StudioTab(QtWidgets.QWidget):
         root.addWidget(self._splitter, stretch=1)
 
         self.chat.promptSubmitted.connect(self._on_prompt)
+
+    # --- hosted panels (moved in from the Chart space / right dock) ---
+
+    def mount_controls(self, bar: QtWidgets.QWidget) -> None:
+        """Merge the replay/data control bar into the Studio toolbar as one row.
+
+        Appended after the Studio action buttons; the bar's trailing slider takes the row's
+        stretch, so the Studio toolbar's own trailing stretch is dropped first.
+        """
+        last = self._toolbar.count() - 1
+        item = self._toolbar.itemAt(last)
+        if item is not None and item.spacerItem() is not None:
+            self._toolbar.takeAt(last)
+        self._toolbar.addWidget(bar, 1)
+
+    def mount_bots(self, bots: QtWidgets.QWidget) -> None:
+        """Host the Bots panel as the leftmost pane of the Studio splitter (moved from a dock)."""
+        self._splitter.insertWidget(0, bots)
+        # rebalance panes: bots | chat | editor | results
+        for i, factor in enumerate((2, 2, 3, 3)):
+            self._splitter.setStretchFactor(i, factor)
+        self._splitter.setCollapsible(0, True)
+
+    def mount_chart(self, chart: QtWidgets.QWidget) -> None:
+        """Host the price chart as the hero, above the bots|chat|editor|results row."""
+        vsplit = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        idx = self.layout().indexOf(self._splitter)
+        self.layout().removeWidget(self._splitter)
+        vsplit.addWidget(chart)
+        vsplit.addWidget(self._splitter)
+        vsplit.setStretchFactor(0, 3)   # chart
+        vsplit.setStretchFactor(1, 4)   # the panes row
+        vsplit.setCollapsible(0, True)
+        self.layout().insertWidget(idx, vsplit, 1)
+        self._vsplit = vsplit
 
     # --- state setters ---
 
