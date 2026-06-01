@@ -108,8 +108,13 @@ def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
     fresh = [_bar(base + i * 60_000, 100.0) for i in range(50)]  # last bar = now-60s -> "fresh"
 
     class _Cat:
+        root = "storage/parquet"
+
         def query(self, *a, **k):
             return fresh
+
+        def symbols(self):           # used by _populate_watchlist at construction
+            return []
 
     monkeypatch.setattr(cat_mod, "Catalog", _Cat)
 

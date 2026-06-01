@@ -116,6 +116,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.strategy.show_strategy(self._strategy_factory)
         self.history.update_runs(self.store.list_runs())
+        self._populate_watchlist()
 
         self._fwd_timer = QtCore.QTimer(self)
         self._fwd_timer.timeout.connect(self._forward_poll_tick)
@@ -497,19 +498,49 @@ class MainWindow(QtWidgets.QMainWindow):
             self._interval = dlg.interval.currentText()
             self.load_bars(dlg.bars)
 
+    def _populate_watchlist(self):
+        """Fill the watchlist from the local cache so every row maps to loadable data.
+
+        Symbols are grouped Crypto / Forex / Other; last close + change fill in via a
+        background reader. Falls back to the panel's built-in demo list if nothing is cached.
+        """
+        from ..data.catalog import Catalog
+
+        cat = Catalog()
+        symbols = cat.symbols()
+        if not symbols:
+            return
+        crypto, forex, other = [], [], []
+        for s in symbols:
+            if s.endswith(("USDT", "USDC", "BUSD")):
+                crypto.append(s)
+            elif len(s) == 6 and s.isalpha():
+                forex.append(s)
+            else:
+                other.append(s)
+        groups = [("Crypto", crypto), ("Forex", forex), ("Other", other)]
+        self.watchlist.set_symbols([(g, syms) for g, syms in groups if syms])
+
     def _load_symbol(self, symbol):
-        """Load a symbol — cache-first (instant, no network) when fresh; else fetch + cache."""
+        """Load a symbol — cache-first (instant, no network) when the cache covers the window.
+
+        The on-disk Parquet cache is reused whenever it spans the requested range (or is
+        fresh); only a missing/partial cache hits the network, and even then ``get_bars``
+        fetches just the gap from the last cached bar forward (incremental, never a full
+        re-download).
+        """
         now = int(time.time() * 1000)
         start = now - _WATCHLIST_DAYS * _DAY_MS
 
-        # Cache-first: if the Parquet cache already has recent bars, load them straight away with
-        # zero network. Only hit the source when the cache is missing or stale.
         from ..data.catalog import Catalog
         cached = Catalog().query(symbol, "1m", start, now)
-        if cached and (now - cached[-1].ts) <= _WATCHLIST_FRESH_MS:
-            self._symbol, self._interval = symbol, "1m"
-            self.load_bars(cached)
-            return
+        if cached:
+            fresh = (now - cached[-1].ts) <= _WATCHLIST_FRESH_MS
+            covers = (cached[-1].ts - cached[0].ts) >= 0.5 * (now - start)
+            if fresh or covers:                    # serve from cache instantly, zero network
+                self._symbol, self._interval = symbol, "1m"
+                self.load_bars(cached)
+                return
 
         self.crumb.setText(f"Loading {symbol}…")
         QtWidgets.QApplication.processEvents()

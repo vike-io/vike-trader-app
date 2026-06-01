@@ -149,58 +149,89 @@ class TradesTable(QtWidgets.QTableWidget):
 
 
 class WatchlistPanel(QtWidgets.QListWidget):
-    """Clickable crypto symbol list. Emits ``symbolChosen(symbol)`` on activation."""
+    """Clickable symbol list, grouped by asset class. Emits ``symbolChosen(symbol)``.
+
+    Populated from the local cache (``set_symbols``) so every clickable row maps to data
+    that loads instantly. Falls back to a small demo list until ``set_symbols`` is called.
+    (No live prices — the cache is historical; a right-hand ``1m`` chip marks the cached
+    resolution. Reading every file for a price column would block startup, so it's omitted.)
+    """
 
     symbolChosen = QtCore.Signal(str)
 
-    _DEMO = [
-        ("BTCUSDT", "72,955.40", 1.82),
-        ("ETHUSDT", "3,704.18", 0.94),
-        ("SOLUSDT", "168.92", -2.11),
-        ("BNBUSDT", "604.50", 0.37),
-        ("XRPUSDT", "0.5218", -1.04),
-        ("DOGEUSDT", "0.1402", 3.66),
-        ("ADAUSDT", "0.4471", -0.58),
-        ("AVAXUSDT", "34.07", 2.20),
-        ("LINKUSDT", "17.83", 0.12),
-        ("TONUSDT", "7.41", -0.83),
-    ]
+    _DEMO = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
     def __init__(self):
         super().__init__()
         self.itemActivated.connect(self._chosen)
         self.itemClicked.connect(self._chosen)
-        for sym, px, chg in self._DEMO:
-            self._add_row(sym, px, chg)
+        for sym in self._DEMO:
+            self._add_row(sym)
         if self.count():
             self.setCurrentRow(0)
 
-    def _add_row(self, sym, px, chg):
+    # --- public population API ---
+
+    def set_symbols(self, groups: list[tuple[str, list[str]]]) -> None:
+        """Rebuild the list from ``[(group_name, [symbols]), ...]`` with section headers."""
+        self.clear()
+        first: QtWidgets.QListWidgetItem | None = None
+        for gname, syms in groups:
+            if not syms:
+                continue
+            self._add_header(gname)
+            for sym in syms:
+                item = self._add_row(sym)
+                if first is None:
+                    first = item
+        if first is not None:
+            self.setCurrentItem(first)
+
+    # --- internals ---
+
+    @staticmethod
+    def _pair_label(sym: str) -> tuple[str, str]:
+        if sym.endswith("USDT"):
+            return sym[:-4], "/USDT"
+        if len(sym) == 6 and sym.isalpha():       # forex like EURUSD -> EUR /USD
+            return sym[:3], "/" + sym[3:]
+        return sym, ""
+
+    def _add_header(self, text: str) -> None:
+        item = QtWidgets.QListWidgetItem(self)
+        item.setFlags(QtCore.Qt.NoItemFlags)       # non-selectable, non-clickable divider
+        lbl = QtWidgets.QLabel(text.upper())
+        lbl.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:9px;font-weight:700;letter-spacing:1px;"
+            f"border:none;padding:6px 11px 2px 11px;"
+        )
+        item.setSizeHint(lbl.sizeHint())
+        self.setItemWidget(item, lbl)
+
+    def _add_row(self, sym: str) -> QtWidgets.QListWidgetItem:
         item = QtWidgets.QListWidgetItem(self)
         item.setData(QtCore.Qt.UserRole, sym)
         w = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(w)
         lay.setContentsMargins(11, 6, 11, 6)
-        base = sym[:-4] if sym.endswith("USDT") else sym
+        base, quote = self._pair_label(sym)
         name = QtWidgets.QLabel(
-            f"{base}<span style='color:{theme.TEXT3};font-size:9px'>/USDT</span>"
+            f"{base}<span style='color:{theme.TEXT3};font-size:9px'>{quote}</span>"
         )
         name.setStyleSheet(f"color:{theme.TEXT};font-weight:600;border:none;")
-        col = theme.UP if chg >= 0 else theme.DOWN
-        right = QtWidgets.QLabel(
-            f"<div style='text-align:right'>{px}<br>"
-            f"<span style='color:{col};font-size:10px'>{chg:+.2f}%</span></div>"
-        )
-        right.setStyleSheet("border:none;")
-        right.setAlignment(QtCore.Qt.AlignRight)
+        chip = QtWidgets.QLabel("1m")
+        chip.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;border:none;")
         lay.addWidget(name)
         lay.addStretch(1)
-        lay.addWidget(right)
+        lay.addWidget(chip)
         item.setSizeHint(w.sizeHint())
         self.setItemWidget(item, w)
+        return item
 
     def _chosen(self, item):
-        self.symbolChosen.emit(item.data(QtCore.Qt.UserRole))
+        sym = item.data(QtCore.Qt.UserRole)
+        if sym:                                    # ignore clicks on group-header rows
+            self.symbolChosen.emit(sym)
 
 
 class StrategyPanel(QtWidgets.QWidget):
