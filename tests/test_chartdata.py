@@ -69,7 +69,11 @@ def test_axis_time_label_utc():
 
 
 def test_ohlc_legend_text():
+    # TradingView/TradeLocker look: thousands separators + magnitude-scaled decimals.
     b = Bar(ts=0, open=100, high=110, low=95, close=105)
-    assert ohlc_legend_text(b).startswith("O100  H110  L95  C105")
-    assert "+5" in ohlc_legend_text(b, prev_close=100)
+    assert ohlc_legend_text(b).startswith("O100.00  H110.00  L95.00  C105.00")
+    assert "+5.00" in ohlc_legend_text(b, prev_close=100)
     assert ohlc_legend_text(None) == ""
+    # large prices get grouped with commas (and stay at 2 dp)
+    btc = Bar(ts=0, open=73182.49, high=73252.30, low=73160.20, close=73217.77)
+    assert ohlc_legend_text(btc).startswith("O73,182.49  H73,252.30  L73,160.20  C73,217.77")

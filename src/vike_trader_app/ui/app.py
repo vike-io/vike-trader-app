@@ -138,6 +138,26 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clock.start(1000)
         self._tick_clock()
 
+        # Place the window fully on-screen. We have no saved geometry, so without
+        # this Windows can position a 1440-wide window past the right edge — which
+        # pushed the Market watch dock (and its resize splitter) off-screen.
+        self._center_on_screen()
+
+        # Open BTCUSDT by default (cache-first; on the main thread per the data-layer
+        # thread-safety constraint), so the app starts on a populated chart.
+        QtCore.QTimer.singleShot(200, lambda: self._load_symbol("BTCUSDT"))
+
+    def _center_on_screen(self) -> None:
+        """Clamp the window to the available screen area and center it."""
+        screen = self.screen() or QtWidgets.QApplication.primaryScreen()
+        if screen is None:
+            return
+        avail = screen.availableGeometry()
+        self.resize(min(self.width(), avail.width()), min(self.height(), avail.height()))
+        frame = self.frameGeometry()
+        frame.moveCenter(avail.center())
+        self.move(frame.topLeft())
+
     # --- header ---
     def _build_header(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -170,8 +190,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         container = QtWidgets.QWidget()
         outer = QtWidgets.QVBoxLayout(container)
-        outer.setContentsMargins(7, 7, 7, 7)
-        outer.setSpacing(7)
+        # generous padding so the chart "floats" with gaps to the rail / docks / edges (vike.io look)
+        outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(10)
         outer.addWidget(charts, 1)
 
         # The Chart space (clean price chart) and the Studio (AI strategy dev) are sibling
@@ -182,9 +203,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
-        self.studio.mount_controls(self._build_controls())
-        self.studio.mount_bots(self.bots)
-        self.studio.mount_chart(self.studio_price)
+        # Bots panel (Active Bots / Historic Runs / Launch Bot) intentionally NOT mounted in
+        # Studio for now — pending a refactor. self.bots stays alive so self.strategy /
+        # self.history (its sub-widgets) keep serving show_strategy()/update_runs() calls.
+        #
+        # Replay/data controls: a 2-column button strip docked to the chart's RIGHT (fitted to
+        # its height), with the scrubber on a full-width row BELOW the chart.
+        _controls, _scrubber = self._build_controls()
+        _chart_block = QtWidgets.QWidget()
+        _cb = QtWidgets.QVBoxLayout(_chart_block)
+        _cb.setContentsMargins(0, 0, 0, 0)
+        _cb.setSpacing(4)
+        _row = QtWidgets.QHBoxLayout()
+        _row.setContentsMargins(0, 0, 0, 0)
+        _row.setSpacing(6)
+        _row.addWidget(self.studio_price, 1)
+        _row.addWidget(_controls, 0)
+        _cb.addLayout(_row, 1)
+        _cb.addWidget(_scrubber)
+        self.studio.mount_chart(_chart_block)
         self.tabs.addTab(self.studio, "Studio")
         self.tools = ToolsTab()
         self.tabs.addTab(self.tools, "Tools")
@@ -350,13 +387,10 @@ class MainWindow(QtWidgets.QMainWindow):
         prefix = "● LIVE · " if live else "● "
         self._feed_badge.setText(f"{prefix}{self._feed_label(self._symbol)}")
 
-    def _build_controls(self) -> QtWidgets.QWidget:
-        # Lives inline in the Studio toolbar (one row), so it carries no panel border/margins.
-        bar = QtWidgets.QWidget()
-        row = QtWidgets.QHBoxLayout(bar)
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
-
+    def _build_controls(self):
+        """Replay/data controls for the Studio chart: a 2-column button strip docked at the
+        chart's right (stretched to its height) + a full-width scrubber row the caller places
+        below the chart. Returns ``(panel, scrubber)``."""
         self.btn_load = QtWidgets.QPushButton("⤓ Load data")
         self.btn_strategy = QtWidgets.QPushButton("⟐ Load strategy")
         self.btn_validate = QtWidgets.QPushButton("⚠ Validate")
@@ -391,32 +425,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self.pos_label = QtWidgets.QLabel("bar 0 / 0")
         self.pos_label.setStyleSheet(f"color:{theme.TEXT2};")
 
-        widgets = [
-            self.btn_load,
-            self.btn_strategy,
-            self.btn_validate,
-            self.btn_optimize,
-            self._sep(),
-            self.btn_back,
-            self.btn_play,
-            self.btn_fwd,
-            self.btn_full,
-            self._sep(),
-            self.btn_forward,
-            self._sep(),
-        ]
-        for w in widgets:
-            row.addWidget(w)
-        row.addWidget(self.speed)
-        row.addWidget(self.slider, 1)
-        row.addWidget(self.pos_label)
-        return bar
+        # Single-column vertical button strip — docked to the right of the Studio chart,
+        # stretching to the chart's height (buttons packed at the top).
+        panel = QtWidgets.QWidget()
+        col = QtWidgets.QVBoxLayout(panel)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.setSpacing(6)
+        for w in (
+            self.btn_load, self.btn_strategy,
+            self.btn_validate, self.btn_optimize,
+            self.btn_back, self.btn_play,
+            self.btn_fwd, self.btn_full,
+            self.btn_forward, self.speed,
+        ):
+            col.addWidget(w)
+        col.addStretch(1)  # keep buttons packed at the top
+        panel.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Expanding)
 
-    def _sep(self):
-        line = QtWidgets.QFrame()
-        line.setFixedWidth(1)
-        line.setStyleSheet(f"background:{theme.BORDER};")
-        return line
+        # full-width scrubber row — the caller places this below the chart
+        scrubber = QtWidgets.QWidget()
+        srow = QtWidgets.QHBoxLayout(scrubber)
+        srow.setContentsMargins(0, 0, 0, 0)
+        srow.setSpacing(8)
+        srow.addWidget(self.slider, 1)
+        srow.addWidget(self.pos_label)
+        return panel, scrubber
 
     # --- docks ---
     def _dock(self, title, widget):
@@ -445,9 +478,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # rail PANELS toggle targets (key must match _PANELS)
         self._market_dock = market
+        self._trades_dock = trades
         self._panel_dock_map = {"market": market, "trades": trades}
-        self.resizeDocks([market], [300], QtCore.Qt.Horizontal)
-        self.resizeDocks([trades], [190], QtCore.Qt.Vertical)
+        # Start both docks COLLAPSED to a thin strip (chart-first); drag the splitter to expand.
+        # Market watch -> its icon-width strip; Trades -> the account-summary strip (table hidden).
+        self.trades.setMinimumHeight(0)  # let the trades table collapse so the dock can be thin
+        self.resizeDocks([market], [78], QtCore.Qt.Horizontal)
+        self.resizeDocks([trades], [62], QtCore.Qt.Vertical)
         self._docks = [market, trades]
 
     def _scroll(self, widget):
@@ -1061,9 +1098,25 @@ class MainWindow(QtWidgets.QMainWindow):
         self.clock.setText(QtCore.QTime.currentTime().toString("HH:mm:ss"))
 
 
+def _install_qt_log_filter():
+    """Silence known-benign Qt warnings (missing bundled fonts dir, platform size-hint
+    notice) while letting every other Qt message through to stderr."""
+    import sys
+
+    _benign = ("Cannot find font directory", "propagateSizeHints")
+
+    def handler(mode, ctx, msg):  # noqa: ANN001
+        if any(s in msg for s in _benign):
+            return
+        sys.stderr.write(msg + "\n")
+
+    QtCore.qInstallMessageHandler(handler)
+
+
 def main():
     import sys
 
+    _install_qt_log_filter()
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(theme.stylesheet())
     # Windows shows python.exe's icon in the title bar/taskbar unless the process claims its own

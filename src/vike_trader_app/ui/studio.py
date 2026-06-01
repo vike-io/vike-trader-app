@@ -16,6 +16,7 @@ from ..analysis import report_extras
 from . import theme
 from .chart import EquityChart
 from .editor import CodeEditor
+from .flowlayout import FlowLayout
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 
@@ -927,8 +928,10 @@ class StudioTab(QtWidgets.QWidget):
         root.setContentsMargins(6, 6, 6, 6)
         root.setSpacing(5)
 
-        # toolbar (the replay/data control bar is merged into this same row via mount_controls)
-        toolbar = QtWidgets.QHBoxLayout()
+        # toolbar — TradeLocker-style: sits directly ABOVE the code editor (its pane header),
+        # not at the top of the whole Studio tab. A wrapping FlowLayout so the buttons never
+        # force the editor pane (and the window) wider than the screen.
+        toolbar = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
         self._toolbar = toolbar
         self._btn_run = QtWidgets.QPushButton("Run")
         self._btn_run.setObjectName("play")
@@ -950,8 +953,6 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_export = QtWidgets.QPushButton("⤓ Export CSV")
         self._btn_export.clicked.connect(self._export_csv)
         toolbar.addWidget(self._btn_export)
-        toolbar.addStretch(1)
-        root.addLayout(toolbar)
 
         # splitter
         self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
@@ -960,8 +961,22 @@ class StudioTab(QtWidgets.QWidget):
         self.editor = CodeEditor()
         self.results = ResultsPanel()
 
+        # editor pane = toolbar header + code editor (so the buttons sit above the editor)
+        editor_pane = QtWidgets.QWidget()
+        ep = QtWidgets.QVBoxLayout(editor_pane)
+        ep.setContentsMargins(0, 0, 0, 0)
+        ep.setSpacing(5)
+        toolbar_row = QtWidgets.QWidget()
+        toolbar_row.setLayout(toolbar)
+        _sp = toolbar_row.sizePolicy()
+        _sp.setHeightForWidth(True)
+        _sp.setVerticalPolicy(QtWidgets.QSizePolicy.Minimum)
+        toolbar_row.setSizePolicy(_sp)
+        ep.addWidget(toolbar_row)
+        ep.addWidget(self.editor, 1)
+
         self._splitter.addWidget(self.chat)
-        self._splitter.addWidget(self.editor)
+        self._splitter.addWidget(editor_pane)
         self._splitter.addWidget(self.results)
         self._splitter.setStretchFactor(0, 2)
         self._splitter.setStretchFactor(1, 3)

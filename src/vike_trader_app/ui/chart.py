@@ -13,6 +13,7 @@ from . import theme
 from .chartdata import (
     axis_time_label,
     bar_spacing,
+    fmt_price,
     follow_window,
     ohlc_legend_text,
     ts_to_x,
@@ -25,7 +26,9 @@ _DOWN = theme.CANDLE_DOWN
 _ENTRY = theme.UP
 _EXIT = theme.DOWN
 _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
-_GRID = 0.06  # subtle grid, like TradingView
+_GRID = 0.5  # grid alpha (scales the BORDER tick pen) — subtle but visible, like TradingView
+# TradingView-style range selector: (label, days of history to zoom the view to)
+_RANGES = [("1D", 1), ("5D", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365), ("5Y", 1825)]
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -100,7 +103,7 @@ class TimeAxis(pg.AxisItem):
         t0, t1 = x_to_ts(bars, minVal), x_to_ts(bars, maxVal)
         if t1 <= t0:
             return super().tickValues(minVal, maxVal, size)
-        target = max(2, int(size / 95))  # ~one label per 95 px
+        target = max(2, int(size / 65))  # ~one gridline per 65 px — matches TradingView's vertical grid
         raw = (t1 - t0) / target
         step = next((s for s in self._STEPS_MS if s >= raw), self._STEPS_MS[-1])
         first = (t0 // step) * step
@@ -116,12 +119,91 @@ class TimeAxis(pg.AxisItem):
         return [axis_time_label(self._bars, v) for v in values]
 
 
+class PriceAxis(pg.AxisItem):
+    """Right-hand price axis with thousands separators and tick-spacing-derived decimals
+    (e.g. ``74,600.00`` for BTC, ``1.1650`` for forex) — the TradingView/TradeLocker look."""
+
+    def tickValues(self, minVal, maxVal, size):
+        # One evenly-spaced gridline level at a "nice" step (1/2/2.5/5 × 10^k), targeting
+        # ~one line per 55 px — TradingView's grid density. (pyqtgraph's default emits a
+        # too-coarse major level plus dense minor lines; we want exactly one tidy level.)
+        import math
+
+        span = abs(maxVal - minVal)
+        if span <= 0 or size <= 0:
+            return super().tickValues(minVal, maxVal, size)[:1]
+        target = max(2, int(size / 40))  # ~one gridline per 40 px — TradingView's dense, faint grid
+        raw = span / target
+        mag = 10.0 ** math.floor(math.log10(raw))
+        step = next((m * mag for m in (1, 2, 2.5, 5) if raw <= m * mag), 10 * mag)
+        first = math.ceil(minVal / step) * step
+        ticks, v = [], first
+        while v <= maxVal and len(ticks) < 500:
+            ticks.append(v)
+            v += step
+        return [(step, ticks)]
+
+    def tickStrings(self, values, scale, spacing):
+        import math
+
+        sp = abs(spacing * scale)
+        dec = 2 if sp <= 0 else min(8, max(2, int(math.ceil(-math.log10(sp)))))
+        return [f"{v * scale:,.{dec}f}" for v in values]
+
+
 # TradeStation-style trade markers: buy = blue ▲ below the bar, sell = red ▼ above,
 # exit = white arrow above/below (opposite the entry), + a dotted entry→exit connector.
 _BUY = theme.BLUE
 _SELL = theme.DOWN
 _EXIT_C = "#ffffff"
 _MARKER_SIZE = 22  # arrow size in px (TradeStation-style prominence)
+
+# Indicator categories that overlay on the PRICE scale (look correct on the candles).
+# Oscillators (momentum/volume/etc.) need a separate sub-pane — a later step.
+_OVERLAY_CATEGORIES = ("overlap", "price")
+
+
+class _IndicatorPicker(QtWidgets.QDialog):
+    """Searchable list of registered price-overlay indicators (TradingView-style)."""
+
+    chosen = QtCore.Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Indicators")
+        self.resize(340, 460)
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(10, 10, 10, 10)
+        v.setSpacing(8)
+        self._search = QtWidgets.QLineEdit()
+        self._search.setPlaceholderText("Search")
+        self._search.setClearButtonEnabled(True)
+        v.addWidget(self._search)
+        self._list = QtWidgets.QListWidget()
+        v.addWidget(self._list, 1)
+
+        import vike_trader_app.core.indicators  # noqa: F401 - populate the REGISTRY
+        from vike_trader_app.core.indicators import base as _base
+
+        specs = [s for s in _base.list_indicators() if s.category in _OVERLAY_CATEGORIES]
+        for s in specs:
+            item = QtWidgets.QListWidgetItem(f"{s.name}   ·   {s.category}")
+            item.setData(QtCore.Qt.UserRole, s.name)
+            self._list.addItem(item)
+
+        self._search.textChanged.connect(self._filter)
+        self._list.itemActivated.connect(self._activate)
+        self._list.itemDoubleClicked.connect(self._activate)
+
+    def _filter(self, text):
+        t = text.strip().lower()
+        for i in range(self._list.count()):
+            it = self._list.item(i)
+            it.setHidden(bool(t) and t not in it.text().lower())
+
+    def _activate(self, item):
+        self.chosen.emit(item.data(QtCore.Qt.UserRole))
+        self.accept()
 
 
 class PriceChart(pg.PlotWidget):
@@ -131,7 +213,7 @@ class PriceChart(pg.PlotWidget):
 
     def __init__(self):
         axis = TimeAxis(orientation="bottom")
-        super().__init__(axisItems={"bottom": axis})
+        super().__init__(axisItems={"bottom": axis, "right": PriceAxis(orientation="right")})
         self._time_axis = axis
         self.setBackground(theme.BG)
         # Price scale on the RIGHT (TradingView / Lightweight-Charts convention).
@@ -139,12 +221,15 @@ class PriceChart(pg.PlotWidget):
         self.hideAxis("left")
         self.getAxis("right").setTextPen(theme.TEXT3)
         self.getAxis("bottom").setTextPen(theme.TEXT3)
-        # No hard spine line between the chart and the price labels (TradingView look):
-        # faint axis pen + no tick marks, leaving only the subtle grid + the labels.
+        # TradingView look: NO hard spine line by the labels — the axis pen is transparent,
+        # and the grid is drawn via the (visible) tick pen, so only labels + gridlines show.
+        _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
         for _ax in ("right", "bottom"):
-            self.getAxis(_ax).setPen(pg.mkPen(theme.BORDER))
+            self.getAxis(_ax).setPen(_transparent)          # no spine
+            self.getAxis(_ax).setTickPen(pg.mkPen(theme.BORDER))  # gridline colour
             self.getAxis(_ax).setStyle(tickLength=0)
         self.showGrid(x=True, y=True, alpha=_GRID)
+        self.hideButtons()  # hide pyqtgraph's built-in auto-range "A" button (we have our own "Auto")
         self.addLegend(offset=(10, 30), labelTextColor=theme.TEXT2)
 
         self._bars = []
@@ -162,10 +247,12 @@ class PriceChart(pg.PlotWidget):
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
-        # dotted entry->exit connectors (under the candles); markers on top
-        self._conn_curve = self.plot(
-            [], [], pen=pg.mkPen(theme.TEXT3, width=1, style=QtCore.Qt.DotLine), connect="finite"
-        )
+        # dashed entry->exit connectors (under the candles); markers on top.
+        # TradeStation/TradingView use a few long dashes, not many tiny dots. Light grey +
+        # slightly thicker so the dashes read clearly against the candles.
+        _conn_pen = pg.mkPen(theme.TEXT2, width=1.4)
+        _conn_pen.setDashPattern([5, 3])  # 5px dash, 3px gap (pen-width units)
+        self._conn_curve = self.plot([], [], pen=_conn_pen, connect="finite")
         self._marker_scatter = pg.ScatterPlotItem(pen=None)
         self.addItem(self._marker_scatter)
 
@@ -193,14 +280,46 @@ class PriceChart(pg.PlotWidget):
         self._cx_v.hide()
         self._cx_h.hide()
 
-        # OHLC legend header (top-left overlay)
+        # Indicators button (top-left) — opens the searchable catalog, overlays on the chart.
+        self._ind_btn = QtWidgets.QPushButton("ƒx Indicators", self)
+        self._ind_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._ind_btn.setStyleSheet(
+            f"QPushButton{{color:{theme.TEXT2};background:transparent;border:none;"
+            f"padding:2px 9px;font-size:14px;font-weight:400;border-radius:3px;}}"
+            f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
+        )
+        self._ind_btn.clicked.connect(self._open_indicator_picker)
+        self._ind_btn.move(8, 4)
+        self._ind_btn.adjustSize()
+
+        # range selector (TradingView-style) — quick-zoom to the last 1D … 5Y
+        self._range_bar = QtWidgets.QWidget(self)
+        _rb = QtWidgets.QHBoxLayout(self._range_bar)
+        _rb.setContentsMargins(0, 0, 0, 0)
+        _rb.setSpacing(1)
+        _range_qss = (
+            f"QPushButton{{color:{theme.TEXT3};background:transparent;border:none;"
+            f"padding:2px 8px;font-size:14px;font-weight:400;border-radius:3px;}}"
+            f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
+        )
+        for _label, _days in _RANGES:
+            _b = QtWidgets.QPushButton(_label, self._range_bar)
+            _b.setCursor(QtCore.Qt.PointingHandCursor)
+            _b.setStyleSheet(_range_qss)
+            _b.clicked.connect(lambda _checked=False, d=_days: self.set_visible_range(d))
+            _rb.addWidget(_b)
+        self._range_bar.move(self._ind_btn.x() + self._ind_btn.width() + 12, 4)
+        self._range_bar.adjustSize()
+
+        # OHLC legend header — on the SAME line, to the right of the range selector.
         self._ohlc_label = QtWidgets.QLabel(self)
         self._ohlc_label.setTextFormat(QtCore.Qt.RichText)
         self._ohlc_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         self._ohlc_label.setStyleSheet(
-            f"color:{theme.TEXT2};font-family:{theme.FONT_MONO};font-size:11px;background:transparent;"
+            f"color:{theme.TEXT2};font-family:{theme.FONT_MONO};font-size:14px;"
+            f"font-weight:400;background:transparent;"
         )
-        self._ohlc_label.move(12, 6)
+        self._ohlc_label.move(self._range_bar.x() + self._range_bar.width() + 16, 7)
 
         # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
         _tag_qss = (f"color:#fff;background:{theme.RAISE};border-radius:2px;padding:0 4px;"
@@ -277,6 +396,46 @@ class PriceChart(pg.PlotWidget):
                 [], [], pen=pg.mkPen(color, width=1), name=label
             )
         self.show_upto(len(self._bars) - 1 if self._bars else 0)
+
+    # --- indicators (TradingView-style: pick from the catalog, overlay on the chart) ---
+    def _open_indicator_picker(self):
+        dlg = _IndicatorPicker(self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        dlg.chosen.connect(self.add_indicator)
+        dlg.exec()
+
+    def add_indicator(self, name: str):
+        """Compute indicator ``name`` over the loaded bars and add it as a chart overlay."""
+        if not self._bars:
+            return
+        from vike_trader_app.core.indicators import base as _base
+
+        data = {
+            "open": [b.open for b in self._bars],
+            "high": [b.high for b in self._bars],
+            "low": [b.low for b in self._bars],
+            "close": [b.close for b in self._bars],
+            "volume": [b.volume for b in self._bars],
+        }
+        try:
+            spec = _base.get(name)
+            result = _base.compute(name, data)
+        except Exception:  # noqa: BLE001 - bad inputs / unknown indicator -> ignore
+            return
+
+        def _clean(seq):  # nan/inf -> None so the overlay renderer skips warmup gaps
+            out = []
+            for v in seq:
+                out.append(None if v is None or (isinstance(v, float) and v != v) else v)
+            return out
+
+        merged = dict(self._overlays)
+        if len(spec.outputs) <= 1:
+            merged[name] = _clean(result)
+        else:  # multi-output (e.g. ichimoku, envelopes) -> one line per named output
+            for label, series in zip(spec.outputs, result):
+                merged[f"{name}:{label}"] = _clean(series)
+        self.set_overlays(merged)
 
     def show_upto(self, index: int):
         """Reveal candles/markers/overlays up to and including ``index``."""
@@ -370,6 +529,23 @@ class PriceChart(pg.PlotWidget):
         if idx is not None:
             self.focus(idx, span)
 
+    def set_visible_range(self, days: float):
+        """Zoom the view to the last ``days`` of history (the top-left range selector)."""
+        if not self._bars or len(self._bars) < 2:
+            return
+        sp = bar_spacing(self._bars)  # ms per bar
+        if sp <= 0:
+            return
+        n = max(2, int(days * 86_400_000 / sp))
+        last = len(self._bars) - 1
+        lo = max(0, last - n)
+        self._follow = False  # an explicit range selection should stick
+        self._window = min(n, len(self._bars))
+        self._fitting = True
+        self.setXRange(lo, last + 0.5, padding=0.0)
+        self._fitting = False
+        self._autoscale_y()
+
     # --- TradingView-style chrome ---
     def _autoscale_y(self):
         """Fit the Y range to the candles visible in the current X window (when Auto is on)."""
@@ -402,7 +578,7 @@ class PriceChart(pg.PlotWidget):
         self._last_line.setPen(pg.mkPen(col, width=1, style=QtCore.Qt.DashLine))
         self._last_line.setPos(b.close)
         self._last_line.show()
-        self._last_badge.setText(f"{b.close:g}")
+        self._last_badge.setText(fmt_price(b.close))
         self._last_badge.fill = pg.mkBrush(col)
         self._last_badge.setPos(i, b.close)
         self._last_badge.show()
@@ -480,6 +656,7 @@ class EquityChart(pg.PlotWidget):
         super().__init__()
         self.setBackground(theme.BG)
         self.showGrid(x=True, y=True, alpha=_GRID)
+        self.hideButtons()  # hide pyqtgraph's built-in auto-range "A" button
         self.getAxis("left").setTextPen(theme.TEXT3)
         self.getAxis("bottom").setTextPen(theme.TEXT3)
         self._equity = []

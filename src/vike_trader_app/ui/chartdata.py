@@ -89,14 +89,29 @@ def axis_time_label(bars, index) -> str:
     return dt.strftime("%b %d") if (dt.hour == 0 and dt.minute == 0) else dt.strftime("%H:%M")
 
 
+def price_decimals(ref: float) -> int:
+    """Decimal places for a price of this magnitude — BTC/indices 2, sub-$ forex up to 6."""
+    a = abs(ref)
+    return 2 if a >= 100 else 4 if a >= 1 else 6
+
+
+def fmt_price(v: float, ref: float | None = None) -> str:
+    """Price with thousands separators + magnitude-scaled decimals (TradingView look):
+    ``73,182.49`` for BTC, ``1.1650`` for forex. ``ref`` fixes the precision to another
+    value's magnitude (so a +35.36 change next to a 73k price still shows 2 dp)."""
+    return f"{v:,.{price_decimals(v if ref is None else ref)}f}"
+
+
 def ohlc_legend_text(bar, prev_close=None) -> str:
     """'O.. H.. L.. C.. +chg (chg%)' header text; '' when bar is None."""
     if bar is None:
         return ""
-    parts = [f"O{bar.open:g}", f"H{bar.high:g}", f"L{bar.low:g}", f"C{bar.close:g}"]
+    ref = bar.close
+    parts = [f"O{fmt_price(bar.open, ref)}", f"H{fmt_price(bar.high, ref)}",
+             f"L{fmt_price(bar.low, ref)}", f"C{fmt_price(bar.close, ref)}"]
     if prev_close:
         chg = bar.close - prev_close
         pct = chg / prev_close * 100
         s = "+" if chg >= 0 else ""
-        parts.append(f"{s}{chg:g} ({s}{pct:.2f}%)")
+        parts.append(f"{s}{fmt_price(chg, ref)} ({s}{pct:.2f}%)")
     return "  ".join(parts)
