@@ -77,28 +77,32 @@ def test_chat_without_client_is_graceful(app):
     # no client set -> no crash (a system message is appended)
 
 
-def test_run_populates_chart_and_trades(app):
+def test_run_populates_equity_and_trades(app):
     tab = StudioTab()
     tab.set_bars(_bars())
     tab.set_config(TesterConfig(taker_fee=0.0))
     tab.set_text(_GOOD)
     tab.run_code()
-    # chart got the bars; trades table + linkage list got the round-trips
-    assert tab.results._price._bars
+    # equity tab is populated after the run
+    assert tab.results._equity is not None
+    assert tab.results.last_report is not None
+    assert tab.results.last_report.equity_curve  # non-empty equity curve stored
+    # trades table + linkage list got the round-trips
     assert tab.results._trades.rowCount() == tab.results.last_report.n_trades
     assert len(tab.results._report_trades) == tab.results.last_report.n_trades
 
 
-def test_trade_click_jumps_to_chart(app):
+def test_trade_click_is_noop(app):
+    """_on_trade_clicked is now a deliberate no-op; price-chart focus lives in the Chart space."""
     tab = StudioTab()
     tab.set_bars(_bars())
     tab.set_config(TesterConfig(taker_fee=0.0))
     tab.set_text(_GOOD)
     tab.run_code()
-    tab.results._tabs.setCurrentIndex(2)        # look at the Trades tab
-    tab.results._on_trade_clicked(0, 0)         # click the first trade
-    assert tab.results._tabs.currentIndex() == 0  # jumped to the Chart tab
-    assert tab.results._price._follow is False    # chart focused on that trade
+    tab.results._tabs.setCurrentIndex(2)        # stay on the Trades tab
+    result = tab.results._on_trade_clicked(0, 0)  # call must not raise
+    assert result is None                          # returns nothing (explicit return)
+    assert tab.results._tabs.currentIndex() == 2  # tab index unchanged — no navigation
 
 
 def test_runs_history_records_and_reopens(app):
@@ -201,7 +205,7 @@ def test_distribution_tab_and_mfe_mae_columns(app):
     tab.set_config(TesterConfig(taker_fee=0.0))
     tab.set_text(_GOOD)
     tab.run_code()
-    assert tab.results._tabs.count() == 5            # Chart|Performance|Trades|Runs|Distribution
+    assert tab.results._tabs.count() == 5            # Equity|Performance|Trades|Runs|Distribution
     assert tab.results._trades.columnCount() == 9    # ... + MFE + MAE columns
     assert tab.results._dist is not None
 

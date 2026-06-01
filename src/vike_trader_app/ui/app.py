@@ -21,16 +21,16 @@ from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
 from . import icons, theme
-from .chart import EquityChart, PriceChart
+from .bots_panel import BotsPanel
+from .chart import PriceChart
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .panels import (
-    HistoryPanel,
-    StrategyPanel,
     TradesTable,
     WatchlistPanel,
     strategy_params,
 )
 from .replay import Replay
+from .watchlist_data import is_stale, quote_from_bars
 from .studio import StudioTab
 from .alerts import AlertsTab
 from .journal import JournalTab
@@ -75,7 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("vike-trader-app   Backtester")  # space name updated on tab change
+        self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[0][1]}")  # space name updated on tab change
         self.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))  # brand V in the title bar
         self.resize(1440, 900)
         self.setDockNestingEnabled(True)
@@ -95,17 +95,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self._feed = None         # PollingBarFeed (poll fallback)
         self._fwd_worker = None   # _LiveFeedWorker (push, preferred)
         self._fwd_bars = []       # live bars received this run (charted)
+        self._refresh_timer = None  # round-robin live quote refresh (started after cache fill)
+        self._refresh_q = []        # crypto symbols cycled by the quote refresh
 
         # widgets
         self.price = PriceChart()
-        self.equity = EquityChart()
         self.trades = TradesTable()
         self.watchlist = WatchlistPanel()
-        self.strategy = StrategyPanel()
-        self.history = HistoryPanel()
+        self.bots = BotsPanel()
+        self.strategy = self.bots.strategy   # alias: existing code calls self.strategy.show_strategy
+        self.history = self.bots.history     # alias: existing code calls self.history.update_runs
         self.store = Store(str(Path(_DB_PATH)))
         self.watchlist.symbolChosen.connect(self._load_symbol)
-        self.history.runChosen.connect(self._open_run)
+        self.bots.runChosen.connect(self._open_run)
+        self.bots.launchRequested.connect(self._launch_bot)
 
         self.setMenuWidget(self._build_header())
         self._build_central()
@@ -140,20 +143,24 @@ class MainWindow(QtWidgets.QMainWindow):
         # Brand + active space both live in the OS title bar now ("vike-trader-app — Studio"),
         # and the V is the window/taskbar icon — so the header carries only the data crumb.
         # (The clock is in the status bar, bottom-right.)
+        self._mode_tag = QtWidgets.QLabel("CHART")
+        self._mode_tag.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+        )
         self.crumb = QtWidgets.QLabel("No data loaded")
         self.crumb.setStyleSheet(f"color:{theme.TEXT2};")
 
+        row.addWidget(self._mode_tag)
         row.addWidget(self.crumb)
         row.addStretch(1)
         return bar
 
     # --- central charts + replay ---
     def _build_central(self):
+        # Chart space shows price candles only — equity moved to Studio's results.
         charts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         charts.addWidget(self.price)
-        charts.addWidget(self.equity)
-        charts.setStretchFactor(0, 3)
-        charts.setStretchFactor(1, 1)
+        charts.setStretchFactor(0, 1)
 
         container = QtWidgets.QWidget()
         outer = QtWidgets.QVBoxLayout(container)
@@ -166,7 +173,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # tabs of one window — the Studio reuses the same charts/tester under the hood.
         self._backtester = container
         self.tabs = QtWidgets.QTabWidget()
-        self.tabs.addTab(container, "Backtester")
+        self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
         self.tabs.addTab(self.studio, "Studio")
@@ -196,7 +203,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.addToolBar(QtCore.Qt.LeftToolBarArea, rail_tb)
 
     _RAIL_ITEMS = [
-        ("▤", "Backtester"), ("✦", "Studio"), ("⚙", "Tools"),
+        ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
     ]
 
@@ -204,9 +211,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # (key, icon_name, tooltip, shortcut). "backtester" toggles the centre chart; the others
     # map to docks in _panel_dock_map.
     _PANELS = [
-        ("backtester", "chart", "Backtester", "Ctrl+G"),
+        ("backtester", "chart", "Chart", "Ctrl+G"),
         ("market", "market", "Market watch", "Ctrl+M"),
-        ("strategies", "strategies", "Strategies", "Ctrl+B"),
+        ("strategies", "strategies", "Bots", "Ctrl+B"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
     ]
 
@@ -415,7 +422,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_docks(self):
         # TradeLocker-style information architecture:
-        #   Strategies (left) · Chart (centre) · Market watch + Report (right) ·
+        #   Bots (left) · Chart (centre) · Market watch + Report (right) ·
         #   Trades & Positions (full-width bottom).
         # The bottom area owns both lower corners so the trades strip spans the full width,
         # with the side docks sitting above it.
@@ -423,7 +430,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCorner(QtCore.Qt.BottomRightCorner, QtCore.Qt.BottomDockWidgetArea)
 
         market = self._dock("Market watch", self.watchlist)
-        strategies = self._dock("Strategies", self._build_strategies_panel())
+        strategies = self._dock("Bots", self.bots)
         trades = self._dock("Trades & Positions", self._build_trades_panel())
 
         # RIGHT: Market watch on top, Strategies beneath it — both toggle from the rail.
@@ -447,14 +454,6 @@ class MainWindow(QtWidgets.QMainWindow):
         sc.setFrameShape(QtWidgets.QFrame.NoFrame)
         sc.setWidget(widget)
         return sc
-
-    def _build_strategies_panel(self) -> QtWidgets.QWidget:
-        """Strategies space (TradeLocker 'Active Bots / Historic Runs'): the active strategy
-        (name + params) on one tab, the persistent run history on another."""
-        tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self.strategy, "Active")
-        tabs.addTab(self.history, "Historic")
-        return tabs
 
     def _build_trades_panel(self) -> QtWidgets.QWidget:
         """Trades & Positions: an account summary strip (balance/equity/PnL) over the trades."""
@@ -546,7 +545,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._panel_dock_map[key].setVisible(on)
 
     def _on_tab_changed(self, index: int) -> None:
-        """Show the Backtester docks only on the Backtester tab (Studio/Tools are full-width)."""
+        """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width."""
         on_backtester = self.tabs.currentWidget() is self._backtester
         # The centre must be visible to show any non-Backtester space; on the Backtester space
         # itself, honor the "backtester" hide toggle.
@@ -593,7 +592,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._replay = Replay(len(bars))
         self.price.set_data(bars, self._result.trades)
         self.price.set_overlays(self._strategy_factory().chart_overlays([b.close for b in bars]))
-        self.equity.set_data(self._result.equity_curve)
         self.trades.update_trades(self._result.trades)
         self.slider.setMaximum(self._replay.last_index)
         self.slider.setValue(self._replay.last_index)
@@ -609,6 +607,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._render_frame()
         if record and bars:
             self._save_run()
+
+    def _launch_bot(self) -> None:
+        """Launch Bot: run the active strategy on the loaded bars and record it.
+
+        If no data is loaded yet, open the load dialog first. A successful run drops
+        markers on the chart and appears under Historic Runs (via _save_run)."""
+        if not self._bars:
+            self._open_load_dialog()
+            return
+        self.load_bars(self._bars, record=True)
 
     def _save_run(self):
         """Persist the just-finished backtest to the history store."""
@@ -681,6 +689,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 other.append(s)
         groups = [("Crypto", crypto), ("Forex", forex), ("Other", other)]
         self.watchlist.set_symbols([(g, syms) for g, syms in groups if syms])
+        self._crypto_syms = crypto       # round-robin set for the live quote refresh
         self._start_price_fill(symbols)  # fill last price / forex bid-ask progressively
 
     def _start_price_fill(self, symbols) -> None:
@@ -699,6 +708,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._price_timer.timeout.connect(self._fill_price_chunk)
         self._price_timer.start(10)
 
+    def _push_watch_quote(self, symbol, bars) -> None:
+        """Update one watchlist row's quote from freshly loaded bars (keeps it in sync)."""
+        quote = quote_from_bars(bars)
+        if quote is not None:
+            self.watchlist.set_prices({symbol: quote})
+
     def _fill_price_chunk(self) -> None:
         now = int(time.time() * 1000)
         start = now - 3 * _DAY_MS  # a few days back to clear forex weekend gaps
@@ -706,41 +721,72 @@ class MainWindow(QtWidgets.QMainWindow):
         for _ in range(2):
             if not self._price_queue:
                 self._price_timer.stop()
+                self._start_quote_refresh()  # cache painted; now keep quotes live
                 break
             sym = self._price_queue.pop(0)
             try:
-                bars = self._price_cat.query(sym, "1m", start, now)
-                if bars:
-                    last = bars[-1]
-                    cutoff = last.ts - _DAY_MS  # ~24h change reference
-                    ref = next((b for b in bars if b.ts >= cutoff), bars[0])
-                    chg = (last.close / ref.close - 1.0) if ref.close else 0.0
-                    chunk[sym] = (last.close, chg)
+                quote = quote_from_bars(self._price_cat.query(sym, "1m", start, now))
+                if quote is not None:
+                    chunk[sym] = quote
             except Exception:  # noqa: BLE001 - a missing/locked file just yields no price
                 continue
         if chunk:
             self.watchlist.set_prices(chunk)
 
-    def _load_symbol(self, symbol):
-        """Load a symbol — cache-first (instant, no network) when the cache covers the window.
+    def _start_quote_refresh(self) -> None:
+        """Keep crypto Market Watch quotes live by topping up one symbol per tick from Binance.
 
-        The on-disk Parquet cache is reused whenever it spans the requested range (or is
-        fresh); only a missing/partial cache hits the network, and even then ``get_bars``
-        fetches just the gap from the last cached bar forward (incremental, never a full
-        re-download).
+        Crypto only: Binance trades 24/7 and responds quickly, so a gentle round-robin keeps
+        prices current without a startup network storm (forex weekend gaps would just spin).
+        Runs on the main thread — the Parquet layer isn't safe for background reads — and
+        relies on ``get_bars`` being incremental: a fresh symbol is a cheap cache read, a stale
+        one fetches only the last few bars.
+        """
+        self._refresh_q = list(getattr(self, "_crypto_syms", []))
+        if not self._refresh_q:
+            return
+        self._refresh_timer = QtCore.QTimer(self)
+        self._refresh_timer.timeout.connect(self._refresh_quote_tick)
+        self._refresh_timer.start(6000)  # one symbol per 6s -> a full lap every ~Nx6s
+
+    def _refresh_quote_tick(self) -> None:
+        """Top up the next crypto symbol's recent bars and refresh its watchlist quote."""
+        if self._forward is not None or not self._refresh_q:
+            return  # forward mode owns the network; idle if nothing to refresh
+        sym = self._refresh_q.pop(0)
+        self._refresh_q.append(sym)  # rotate to the back
+        now = int(time.time() * 1000)
+        start = now - _WATCHLIST_DAYS * _DAY_MS
+        try:
+            cached = self._price_cat.query(sym, "1m", start, now)
+            if cached and not is_stale(cached[-1].ts, now, _WATCHLIST_FRESH_MS):
+                self._push_watch_quote(sym, cached)  # already fresh -> no network
+                return
+            bars = get_bars(sym, "1m", start, now, fetcher=select_source(sym).fetch_bars_range)
+            self._push_watch_quote(sym, bars)
+        except Exception:  # noqa: BLE001 - a transient fetch failure just skips this tick
+            return
+
+    def _load_symbol(self, symbol):
+        """Load a symbol, topping up the recent gap so the newest bars are always shown.
+
+        Cache-first: a *fresh* cached tail (newest bar within ``_WATCHLIST_FRESH_MS``) paints
+        instantly with zero network. Otherwise we fetch only the missing recent gap before
+        painting — ``get_bars`` is incremental, so it pulls just the bars after the last cached
+        one, never a full re-download. (The old logic served deep-but-hours-stale history
+        without ever fetching the gap, which is why the chart lagged behind Binance.) If the
+        top-up fetch fails we fall back to whatever is cached rather than leaving an empty chart.
         """
         now = int(time.time() * 1000)
         start = now - _WATCHLIST_DAYS * _DAY_MS
 
         from ..data.catalog import Catalog
         cached = Catalog().query(symbol, "1m", start, now)
-        if cached:
-            fresh = (now - cached[-1].ts) <= _WATCHLIST_FRESH_MS
-            covers = (cached[-1].ts - cached[0].ts) >= 0.5 * (now - start)
-            if fresh or covers:                    # serve from cache instantly, zero network
-                self._symbol, self._interval = symbol, "1m"
-                self.load_bars(cached)
-                return
+        if cached and not is_stale(cached[-1].ts, now, _WATCHLIST_FRESH_MS):
+            self._symbol, self._interval = symbol, "1m"     # fresh -> paint instantly
+            self.load_bars(cached)
+            self._push_watch_quote(symbol, cached)
+            return
 
         self.crumb.setText(f"Loading {symbol}…")
         QtWidgets.QApplication.processEvents()
@@ -748,7 +794,13 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             bars = get_bars(symbol, "1m", start, now, progress=self._fetch_progress,
                             fetcher=select_source(symbol).fetch_bars_range)
-        except Exception as exc:  # noqa: BLE001 - report network/load failure
+        except Exception as exc:  # noqa: BLE001 - network/load failure
+            if cached:  # offline / fetch failed -> show cached rather than nothing
+                self._symbol, self._interval = symbol, "1m"
+                self.load_bars(cached)
+                self._push_watch_quote(symbol, cached)
+                self.crumb.setText(f"{symbol}: latest unavailable, showing cached · {exc}")
+                return
             QtWidgets.QMessageBox.warning(self, "Load failed", f"{symbol}: {exc}")
             self.crumb.setText("No data loaded")
             return
@@ -757,6 +809,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._symbol = symbol
         self._interval = "1m"
         self.load_bars(bars)
+        self._push_watch_quote(symbol, bars)
 
     def _fetch_progress(self, done, start, end):
         pct = (done - start) / max(end - start, 1) * 100
@@ -829,7 +882,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _render_frame(self):
         i = self._replay.index
         self.price.show_upto(i)
-        self.equity.show_upto(i)
         self.pos_label.setText(f"bar {i} / {self._replay.last_index}")
         if self.slider.value() != i:
             self.slider.blockSignals(True)
@@ -959,9 +1011,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.price.set_overlays(
             self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
         )
-        self.equity.set_data(res.equity_curve)
         self.price.show_upto(len(self._fwd_bars) - 1)
-        self.equity.show_upto(len(res.equity_curve) - 1)
         self.trades.update_trades(res.trades)
         if self._fwd_bars:
             last = self._fwd_bars[-1].close
@@ -997,6 +1047,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
         if getattr(self, "_price_timer", None) is not None:
             self._price_timer.stop()  # halt the watchlist price-fill ticks
+        if getattr(self, "_refresh_timer", None) is not None:
+            self._refresh_timer.stop()  # halt the live quote refresh
         super().closeEvent(event)
 
     def _tick_clock(self):

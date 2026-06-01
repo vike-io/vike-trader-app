@@ -1,10 +1,9 @@
 """Studio tab: ChatPanel | CodeEditor | ResultsPanel with Run wiring and ChatWorker thread.
 
-The ResultsPanel mirrors TradingView/TradeLocker (validated by the UI/UX research +
-the 66-frame video teardown): a Chart tab (candles + entry/exit markers over an equity
-curve with drawdown shading), a Performance tab (KPI hero tiles pairing % with $, plus a
-detail grid), a Trades tab (round-trips, click-to-focus-chart), and a Runs tab (the
-iterate-and-compare history table). The overfit-risk verdict banner sits above the tabs.
+The ResultsPanel has five tabs — Equity (stand-alone equity curve), Performance (KPI hero
+tiles + detail grid), Trades (round-trips), Runs (iterate-and-compare history), and
+Distribution (trade-return histogram). The price candlestick chart now lives in the Chart
+space (app.py), not here. The overfit-risk verdict banner sits above the tabs.
 """
 
 import difflib
@@ -15,7 +14,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import report_extras
 from . import theme
-from .chart import EquityChart, PriceChart
+from .chart import EquityChart
 from .editor import CodeEditor
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
@@ -26,7 +25,7 @@ _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 # ---------------------------------------------------------------------------
 
 class ResultsPanel(QtWidgets.QWidget):
-    """Tabbed results — Chart | Performance | Trades | Runs."""
+    """Tabbed results — Equity | Performance | Trades | Runs | Distribution."""
 
     # hero tiles (caption); values + $ sub-lines are computed in show_report
     _HERO = [
@@ -76,7 +75,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._tabs = QtWidgets.QTabWidget()
         root.addWidget(self._tabs, 1)
 
-        self._build_chart_tab()
+        self._build_equity_tab()
         self._build_performance_tab()
         self._build_trades_tab()
         self._build_runs_tab()
@@ -88,15 +87,9 @@ class ResultsPanel(QtWidgets.QWidget):
 
     # --- tab builders ---
 
-    def _build_chart_tab(self) -> None:
-        self._price = PriceChart()
+    def _build_equity_tab(self) -> None:
         self._equity = EquityChart()
-        split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        split.addWidget(self._price)
-        split.addWidget(self._equity)
-        split.setStretchFactor(0, 3)
-        split.setStretchFactor(1, 1)
-        self._tabs.addTab(split, "Chart")
+        self._tabs.addTab(self._equity, "Equity")
 
     def _make_tile(self, caption: str):
         cell = QtWidgets.QWidget()
@@ -367,10 +360,8 @@ class ResultsPanel(QtWidgets.QWidget):
                 self._trades.setItem(r, c, item)
 
     def _on_trade_clicked(self, row: int, _col: int) -> None:
-        """Trade-row click -> jump to the Chart tab and zoom to that trade (TradingView UX)."""
-        if 0 <= row < len(self._report_trades):
-            self._tabs.setCurrentIndex(0)
-            self._price.focus_ts(self._report_trades[row].entry_ts)
+        """Trade-row click — selection only; price-chart focus lives in the Chart space now."""
+        return
 
     def _on_run_clicked(self, row: int, _col: int) -> None:
         """Run-row click -> re-display that stored run (iterate-and-compare loop)."""
@@ -381,7 +372,7 @@ class ResultsPanel(QtWidgets.QWidget):
     # --- public ---
 
     def show_report(self, report, bars=None, overlays=None) -> None:
-        """Display a TesterReport: hero KPIs + detail grid + chart + trades."""
+        """Display a TesterReport: hero KPIs + detail grid + equity curve + trades."""
         self.last_report = report
         self._status.setVisible(False)
         self._status.setText("")
@@ -419,12 +410,6 @@ class ResultsPanel(QtWidgets.QWidget):
 
         self._set_banner(report.verdict)
 
-        if bars:
-            try:
-                self._price.set_data(bars, report.trades)
-                self._price.set_overlays(overlays or {})
-            except Exception:  # noqa: BLE001 - charting must never break the run
-                pass
         if report.equity_curve:
             try:
                 self._equity.set_data(report.equity_curve)
@@ -434,7 +419,7 @@ class ResultsPanel(QtWidgets.QWidget):
         mm = report_extras.mfe_mae(report.trades, bars) if bars else None
         self._fill_trades(report.trades, mm)
         self._update_distribution(report_extras.trade_returns(report.trades))
-        self._tabs.setCurrentIndex(0)  # land on the chart — the headline view
+        self._tabs.setCurrentIndex(0)  # land on the Equity tab — the headline view
 
     def add_run(self, report, bars=None, overlays=None) -> None:
         """Record a run in the history table (versioned) and display it."""
