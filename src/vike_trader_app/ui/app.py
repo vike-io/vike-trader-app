@@ -111,6 +111,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setMenuWidget(self._build_header())
         self._build_central()
         self._build_docks()
+        self.setStatusBar(self._build_statusbar())
         self.tabs.currentChanged.connect(self._on_tab_changed)
 
         self.strategy.show_strategy(self._strategy_factory)
@@ -143,11 +144,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         name = QtWidgets.QLabel("vike-trader-app")
         name.setStyleSheet("font-size:15px;font-weight:700;")
-        tag = QtWidgets.QLabel("BACKTESTER")
-        tag.setStyleSheet(
+        self._mode_tag = QtWidgets.QLabel("BACKTESTER")
+        self._mode_tag.setStyleSheet(
             f"color:{theme.ACCENT};font-size:9px;letter-spacing:2px;"
             f"border:1px solid rgba(255,106,0,0.4);border-radius:4px;padding:2px 6px;"
         )
+        tag = self._mode_tag
         self.crumb = QtWidgets.QLabel("No data loaded")
         self.crumb.setStyleSheet(f"color:{theme.TEXT2};")
 
@@ -197,7 +199,96 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.journal, "Journal")
         self.alerts = AlertsTab()
         self.tabs.addTab(self.alerts, "Alerts")
-        self.setCentralWidget(self.tabs)
+
+        # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
+        # tab strip is hidden, so the rail alone switches between the six spaces.
+        self.tabs.tabBar().hide()
+        central = QtWidgets.QWidget()
+        hbox = QtWidgets.QHBoxLayout(central)
+        hbox.setContentsMargins(0, 0, 0, 0)
+        hbox.setSpacing(0)
+        hbox.addWidget(self._build_icon_rail())
+        hbox.addWidget(self.tabs, 1)
+        self.setCentralWidget(central)
+
+    _RAIL_ITEMS = [
+        ("▤", "Backtester"), ("✦", "Studio"), ("⚙", "Tools"),
+        ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
+    ]
+
+    def _build_icon_rail(self) -> QtWidgets.QWidget:
+        rail = QtWidgets.QWidget()
+        rail.setFixedWidth(54)
+        rail.setStyleSheet(f"background:{theme.PANEL};border-right:1px solid {theme.BORDER};")
+        col = QtWidgets.QVBoxLayout(rail)
+        col.setContentsMargins(7, 10, 7, 10)
+        col.setSpacing(6)
+
+        mark = QtWidgets.QLabel("V")
+        mark.setFixedSize(40, 40)
+        mark.setAlignment(QtCore.Qt.AlignCenter)
+        mark.setStyleSheet(
+            f"background:{theme.ACCENT};color:{theme.BG};font-weight:700;"
+            f"font-size:18px;border-radius:11px;"
+        )
+        col.addWidget(mark, 0, QtCore.Qt.AlignHCenter)
+        col.addSpacing(8)
+
+        self._rail_group = QtWidgets.QButtonGroup(self)
+        self._rail_group.setExclusive(True)
+        btn_qss = (
+            f"QToolButton{{background:transparent;border:none;border-radius:11px;"
+            f"color:{theme.TEXT3};font-size:18px;}}"
+            f"QToolButton:hover{{background:{theme.RAISE};color:{theme.TEXT2};}}"
+            f"QToolButton:checked{{background:{theme.RAISE};color:{theme.ACCENT};}}"
+        )
+        for i, (glyph, name) in enumerate(self._RAIL_ITEMS):
+            b = QtWidgets.QToolButton()
+            b.setText(glyph)
+            b.setToolTip(name)
+            b.setCheckable(True)
+            b.setFixedSize(40, 40)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.setStyleSheet(btn_qss)
+            b.clicked.connect(lambda _c, idx=i: self.tabs.setCurrentIndex(idx))
+            self._rail_group.addButton(b, i)
+            col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
+        col.addStretch(1)
+
+        demo = QtWidgets.QLabel("DEMO")
+        demo.setAlignment(QtCore.Qt.AlignCenter)
+        demo.setStyleSheet(
+            f"color:{theme.ACCENT};font-size:9px;font-weight:700;letter-spacing:1px;"
+            f"border:1px solid rgba(255,106,0,0.4);border-radius:6px;padding:3px 0;"
+        )
+        col.addWidget(demo, 0, QtCore.Qt.AlignHCenter)
+
+        first = self._rail_group.button(0)
+        if first is not None:
+            first.setChecked(True)
+        return rail
+
+    def _build_statusbar(self) -> QtWidgets.QStatusBar:
+        sb = QtWidgets.QStatusBar()
+        sb.setSizeGripEnabled(False)
+        sb.setStyleSheet(
+            f"QStatusBar{{background:{theme.PANEL};border-top:1px solid {theme.BORDER};}}"
+            f"QStatusBar::item{{border:none;}}"
+        )
+        self.foot_status = QtWidgets.QLabel("Ready")
+        self.foot_status.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;padding:0 6px;")
+        sb.addWidget(self.foot_status)
+
+        self.foot_info = QtWidgets.QLabel("No data loaded")
+        self.foot_info.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;padding:0 6px;")
+        sb.addPermanentWidget(self.foot_info)
+        feed = QtWidgets.QLabel("● BINANCE")
+        feed.setStyleSheet(
+            f"color:{theme.UP};font-size:10px;background:{theme.BG};"
+            f"border:1px solid {theme.BORDER};border-radius:20px;padding:3px 10px;margin-right:6px;"
+        )
+        sb.addPermanentWidget(feed)
+        return sb
 
     def _build_controls(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -300,11 +391,17 @@ class MainWindow(QtWidgets.QMainWindow):
         sc.setWidget(widget)
         return sc
 
-    def _on_tab_changed(self, _index: int) -> None:
+    def _on_tab_changed(self, index: int) -> None:
         """Show the Backtester docks only on the Backtester tab (Studio/Tools are full-width)."""
         on_backtester = self.tabs.currentWidget() is self._backtester
         for d in self._docks:
             d.setVisible(on_backtester)
+        btn = self._rail_group.button(index)  # keep the icon rail in sync with the tabs
+        if btn is not None:
+            btn.setChecked(True)
+        # the header tag is now the active-space indicator (the tab strip is hidden)
+        if 0 <= index < len(self._RAIL_ITEMS):
+            self._mode_tag.setText(self._RAIL_ITEMS[index][1].upper())
 
     def _wire_studio_agent(self) -> None:
         """Give the Studio a live Claude client iff an API key + the [ai] extra are present.
@@ -345,6 +442,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.crumb.setText(
                 f"{self._symbol}  ·  {self._interval}  ·  {last:,.2f}  ·  {len(bars):,} bars"
             )
+            self.foot_info.setText(f"{self._symbol} · {self._interval} · {len(bars):,} bars")
+            self.foot_status.setText("Loaded")
         self._render_frame()
         if record and bars:
             self._save_run()

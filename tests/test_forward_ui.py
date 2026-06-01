@@ -80,9 +80,13 @@ def test_forward_locks_backtest_controls(app):
 
 def test_main_window_has_studio_tools_screener_tabs(app):
     win = MainWindow()
-    assert isinstance(win.centralWidget(), QtWidgets.QTabWidget)
+    # the central widget now wraps the tab stack alongside the left icon rail
+    assert isinstance(win.tabs, QtWidgets.QTabWidget)
+    assert win.tabs.isAncestorOf(win.studio)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
     assert titles[:6] == ["Backtester", "Studio", "Tools", "Screener", "Journal", "Alerts"]
+    # the icon rail mirrors the tabs one-for-one
+    assert len(win._rail_group.buttons()) == win.tabs.count()
     win.close()
 
 

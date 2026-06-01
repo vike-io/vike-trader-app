@@ -100,15 +100,26 @@ class ResultsPanel(QtWidgets.QWidget):
 
     def _make_tile(self, caption: str):
         cell = QtWidgets.QWidget()
+        cell.setAttribute(QtCore.Qt.WA_StyledBackground, True)  # paint bg/border on a bare QWidget
+        cell.setStyleSheet(
+            f"background:{theme.PANEL2};border:1px solid {theme.BORDER};border-radius:10px;"
+        )
         cv = QtWidgets.QVBoxLayout(cell)
-        cv.setContentsMargins(0, 0, 0, 0)
-        cv.setSpacing(0)
+        cv.setContentsMargins(14, 11, 14, 11)
+        cv.setSpacing(3)
         cap = QtWidgets.QLabel(caption.upper())
-        cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:1px;")
+        cap.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;border:none;"
+        )
         val = QtWidgets.QLabel("—")
-        val.setStyleSheet(f"color:{theme.TEXT};font-weight:700;font-size:17px;")
+        val.setStyleSheet(
+            f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-weight:700;"
+            f"font-size:23px;border:none;"
+        )
         sub = QtWidgets.QLabel("")
-        sub.setStyleSheet(f"color:{theme.TEXT2};font-size:10px;")
+        sub.setStyleSheet(
+            f"color:{theme.TEXT2};font-family:{theme.FONT_MONO};font-size:11px;border:none;"
+        )
         cv.addWidget(cap)
         cv.addWidget(val)
         cv.addWidget(sub)
@@ -148,7 +159,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._value_labels: dict[str, QtWidgets.QLabel] = {}
         for i, (key, label) in enumerate(self._DETAIL):
             cap = QtWidgets.QLabel(label.upper())
-            cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:1px;")
+            cap.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;")
             val = QtWidgets.QLabel("—")
             val.setStyleSheet(self._metric_style("", None))
             self._value_labels[key] = val
@@ -243,7 +254,7 @@ class ResultsPanel(QtWidgets.QWidget):
         return f"{raw:,.2f}"
 
     def _metric_style(self, key: str, raw) -> str:
-        base = "font-weight:700;font-size:13px;"
+        base = f"font-family:{theme.FONT_MONO};font-weight:700;font-size:14px;"
         color = theme.TEXT
         if isinstance(raw, (int, float)) and raw == raw:  # exclude NaN
             if key in self._SIGNED:
@@ -263,7 +274,8 @@ class ResultsPanel(QtWidgets.QWidget):
                 good = theme.UP if raw >= 1 else theme.DOWN
             elif key == "win_ratio":
                 good = theme.UP if raw >= 0.5 else theme.TEXT
-        return f"color:{good};font-weight:700;font-size:17px;"
+        return (f"color:{good};font-family:{theme.FONT_MONO};font-weight:700;"
+                f"font-size:23px;border:none;")
 
     def _set_banner(self, verdict) -> None:
         if verdict is None:
@@ -494,58 +506,113 @@ class ResultsPanel(QtWidgets.QWidget):
 # ChatPanel
 # ---------------------------------------------------------------------------
 
-_CHIPS = ["SMA crossover on BTC", "RSI mean-reversion", "breakout with ATR stop"]
+_EXAMPLES = [
+    "SMA crossover on BTC with a 2×ATR trailing stop",
+    "RSI mean-reversion — buy below 30, exit above 55",
+    "Donchian breakout with volatility-scaled sizing",
+]
+
+
+class _ExampleCard(QtWidgets.QFrame):
+    """A clickable example-prompt card (fills the prompt input when clicked)."""
+
+    clicked = QtCore.Signal(str)
+
+    def __init__(self, text: str, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self._text = text
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setStyleSheet(
+            f"_ExampleCard{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:10px;}}"
+            f"_ExampleCard:hover{{border-color:{theme.ACCENT};}}"
+        )
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setContentsMargins(13, 11, 13, 11)
+        label = QtWidgets.QLabel(text)
+        label.setWordWrap(True)
+        label.setStyleSheet(f"color:{theme.TEXT2};border:none;background:transparent;")
+        lay.addWidget(label)
+
+    def mouseReleaseEvent(self, event: QtGui.QMouseEvent) -> None:  # noqa: N802
+        if event.button() == QtCore.Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit(self._text)
+        super().mouseReleaseEvent(event)
 
 
 class ChatPanel(QtWidgets.QWidget):
-    """Chat log + prompt input + AI button + example chips."""
+    """Empty-state (heading + example cards) → chat log, plus prompt input + AI button."""
 
     promptSubmitted = QtCore.Signal(str)
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(5)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
 
+        # --- empty state (shown until the first message) ---
+        self._empty = self._build_empty()
+        root.addWidget(self._empty, stretch=1)
+
+        # --- chat log (hidden until the first message) ---
         self._log = QtWidgets.QTextEdit()
         self._log.setReadOnly(True)
         self._log.setStyleSheet(
             f"QTextEdit{{background:{theme.PANEL};border:1px solid {theme.BORDER};"
-            f"border-radius:6px;padding:4px;color:{theme.TEXT2};}}"
+            f"border-radius:10px;padding:8px;color:{theme.TEXT2};}}"
         )
+        self._log.hide()
         root.addWidget(self._log, stretch=1)
-
-        # example chips
-        chips_row = QtWidgets.QHBoxLayout()
-        chips_row.setSpacing(4)
-        for chip_text in _CHIPS:
-            btn = QtWidgets.QPushButton(chip_text)
-            btn.setStyleSheet(
-                f"QPushButton{{background:{theme.PANEL2};color:{theme.TEXT2};"
-                f"border:1px solid {theme.BORDER};border-radius:4px;padding:3px 8px;font-size:10px;}}"
-                f"QPushButton:hover{{color:{theme.TEXT};border-color:{theme.BORDER2};}}"
-            )
-            btn.clicked.connect(lambda _checked, t=chip_text: self._prompt_input.setText(t))
-            chips_row.addWidget(btn)
-        chips_row.addStretch(1)
-        root.addLayout(chips_row)
 
         # input row
         input_row = QtWidgets.QHBoxLayout()
-        input_row.setSpacing(4)
+        input_row.setSpacing(6)
         self._prompt_input = QtWidgets.QLineEdit()
         self._prompt_input.setPlaceholderText("Describe a strategy …")
         self._prompt_input.returnPressed.connect(self._submit)
         input_row.addWidget(self._prompt_input, stretch=1)
 
-        self._btn_ask = QtWidgets.QPushButton("Ask AI")
+        self._btn_ask = QtWidgets.QPushButton("✦ Ask AI")
+        self._btn_ask.setObjectName("play")
         self._btn_ask.clicked.connect(self._submit)
         input_row.addWidget(self._btn_ask)
         root.addLayout(input_row)
 
+    def _build_empty(self) -> QtWidgets.QWidget:
+        box = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(box)
+        v.setContentsMargins(6, 16, 6, 6)
+        v.setSpacing(7)
+
+        eyebrow = QtWidgets.QLabel("✦ AI STUDIO")
+        eyebrow.setStyleSheet(f"color:{theme.ACCENT};font-size:10px;font-weight:700;letter-spacing:2px;")
+        heading = QtWidgets.QLabel("Let's build a strategy")
+        heading.setStyleSheet(f"color:{theme.TEXT};font-size:18px;font-weight:700;")
+        subtitle = QtWidgets.QLabel("Describe an idea in plain English, or start from an example below.")
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;")
+        v.addWidget(eyebrow)
+        v.addWidget(heading)
+        v.addWidget(subtitle)
+        v.addSpacing(6)
+
+        for ex in _EXAMPLES:
+            card = _ExampleCard(ex)
+            card.clicked.connect(self._prompt_from_card)
+            v.addWidget(card)
+        v.addStretch(1)
+        return box
+
+    def _prompt_from_card(self, text: str) -> None:
+        self._prompt_input.setText(text)
+        self._prompt_input.setFocus()
+
     def append_message(self, role: str, text: str) -> None:
-        """Append a message to the log with a role prefix."""
+        """Append a message to the log with a role prefix (revealing the log on first use)."""
+        if self._empty.isVisible():
+            self._empty.hide()
+            self._log.show()
         color = {
             "system": theme.TEXT3,
             "user": theme.TEXT,
@@ -553,7 +620,7 @@ class ChatPanel(QtWidgets.QWidget):
         }.get(role, theme.TEXT2)
         self._log.append(
             f'<span style="color:{color};font-weight:700">{role.upper()}:</span> '
-            f'<span style="color:{theme.TEXT2}">{text}</span>'
+            f'<span style="color:{theme.TEXT2}">{html.escape(text)}</span>'
         )
 
     def _submit(self) -> None:
@@ -600,21 +667,128 @@ class ChatWorker(QtCore.QThread):
 
 
 # ---------------------------------------------------------------------------
+# SegmentedControl
+# ---------------------------------------------------------------------------
+
+class SegmentedControl(QtWidgets.QWidget):
+    """A pill group of mutually-exclusive options (TradeLocker's resolution selector).
+
+    Exclusive checkable buttons in a rounded track; emits ``valueChanged(str)``. Options
+    can be disabled (e.g. resolutions finer than the loaded base data, which we can't
+    synthesize). Use ``value()`` / ``setValue()`` to read/set the active option.
+    """
+
+    valueChanged = QtCore.Signal(str)
+
+    def __init__(self, options, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f"SegmentedControl{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:9px;}}"
+        )
+        row = QtWidgets.QHBoxLayout(self)
+        row.setContentsMargins(3, 3, 3, 3)
+        row.setSpacing(2)
+        self._group = QtWidgets.QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons: dict[str, QtWidgets.QPushButton] = {}
+        for opt in options:
+            btn = QtWidgets.QPushButton(opt)
+            btn.setCheckable(True)
+            btn.setCursor(QtCore.Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                f"QPushButton{{background:transparent;border:none;border-radius:7px;"
+                f"padding:6px 14px;color:{theme.TEXT3};font-weight:600;}}"
+                f"QPushButton:hover{{color:{theme.TEXT2};}}"
+                f"QPushButton:checked{{background:{theme.RAISE};color:{theme.TEXT};}}"
+                f"QPushButton:disabled{{color:#3a4048;}}"
+            )
+            btn.clicked.connect(lambda _c, o=opt: self.valueChanged.emit(o))
+            self._group.addButton(btn)
+            row.addWidget(btn)
+            self._buttons[opt] = btn
+
+    def set_enabled_options(self, enabled) -> None:
+        """Enable only the options in ``enabled`` (an iterable of labels); disable the rest."""
+        allow = set(enabled)
+        for opt, btn in self._buttons.items():
+            btn.setEnabled(opt in allow)
+
+    def value(self) -> str | None:
+        for opt, btn in self._buttons.items():
+            if btn.isChecked():
+                return opt
+        return None
+
+    def setValue(self, opt: str) -> None:  # noqa: N802 - Qt-style setter
+        btn = self._buttons.get(opt)
+        if btn is not None and btn.isEnabled():
+            btn.setChecked(True)
+
+
+# ---------------------------------------------------------------------------
 # BacktestConfigDialog
 # ---------------------------------------------------------------------------
 
-class BacktestConfigDialog(QtWidgets.QDialog):
-    """Per-run config — starting capital + date range over the loaded bars.
+# resolution label -> window in epoch ms (parse_timeframe wants lowercase units, so we
+# keep an explicit display-label map that includes the upper-case 1H/4H/1D forms).
+_RESOLUTIONS = {
+    "1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
+    "1H": 3_600_000, "4H": 14_400_000, "1D": 86_400_000,
+}
 
-    Mirrors TradeLocker's "Backtest" modal. Instrument/resolution come from the data
-    already loaded into the Studio, so the modal only collects capital + a date sub-range.
+
+def _base_resolution_ms(bars) -> int | None:
+    """Infer the loaded data's base bar spacing (min positive gap across a sample)."""
+    if not bars or len(bars) < 2:
+        return None
+    gaps = [bars[i + 1].ts - bars[i].ts for i in range(min(len(bars) - 1, 200))]
+    pos = [g for g in gaps if g > 0]
+    return min(pos) if pos else None
+
+
+class BacktestConfigDialog(QtWidgets.QDialog):
+    """Per-run config — capital + resolution + date range over the loaded bars.
+
+    Mirrors TradeLocker's "Backtest" modal: a segmented resolution selector (resolutions
+    finer than the loaded base data are disabled — we synthesize coarser bars by OHLCV
+    aggregation but never invent finer ones), plus starting capital and a date sub-range.
     """
 
     def __init__(self, bars, capital: float = 10_000.0, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Backtest configuration")
         self.setModal(True)
-        form = QtWidgets.QFormLayout(self)
+        self.setMinimumWidth(440)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(14)
+
+        eyebrow = QtWidgets.QLabel("BACKTEST")
+        eyebrow.setStyleSheet(f"color:{theme.ACCENT};font-size:10px;font-weight:700;letter-spacing:2px;")
+        title = QtWidgets.QLabel("Run configuration")
+        title.setStyleSheet(f"color:{theme.TEXT};font-size:18px;font-weight:700;")
+        root.addWidget(eyebrow)
+        root.addWidget(title)
+
+        form = QtWidgets.QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+        form.setLabelAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+
+        # resolution segmented control (disable options finer than the base data)
+        self._base_ms = _base_resolution_ms(bars)
+        self.resolution = SegmentedControl(list(_RESOLUTIONS.keys()))
+        if self._base_ms is not None:
+            enabled = [lbl for lbl, ms in _RESOLUTIONS.items() if ms >= self._base_ms]
+            self.resolution.set_enabled_options(enabled or list(_RESOLUTIONS.keys()))
+            # default to the base resolution if it lines up, else the finest enabled
+            base_lbl = next((lbl for lbl, ms in _RESOLUTIONS.items() if ms == self._base_ms), None)
+            self.resolution.setValue(base_lbl or (enabled[0] if enabled else "1m"))
+        else:
+            self.resolution.setValue("1m")
+        form.addRow("Resolution", self.resolution)
 
         self.capital = QtWidgets.QDoubleSpinBox()
         self.capital.setRange(1.0, 1e9)
@@ -635,25 +809,36 @@ class BacktestConfigDialog(QtWidgets.QDialog):
                 w.setDateRange(d0, d1)
             self.start.setDate(d0)
             self.end.setDate(d1)
-            note = QtWidgets.QLabel(f"{len(bars):,} bars loaded")
-            note.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;")
-            form.addRow(note)
         form.addRow("Start date", self.start)
         form.addRow("End date", self.end)
+        root.addLayout(form)
+
+        if bars:
+            note = QtWidgets.QLabel(f"{len(bars):,} base bars loaded")
+            note.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
+            root.addWidget(note)
 
         btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Cancel)
         run = btns.addButton("Run", QtWidgets.QDialogButtonBox.AcceptRole)
         run.setObjectName("play")
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
-        form.addRow(btns)
+        root.addWidget(btns)
 
     def values(self):
-        """(capital, start_ts, end_ts) — start/end span the selected dates inclusive (epoch ms)."""
+        """(capital, start_ts, end_ts, resolution_ms) — dates inclusive (epoch ms).
+
+        ``resolution_ms`` is None when the chosen resolution equals the base data (no
+        resampling needed); otherwise it's the coarse window to aggregate the bars to.
+        """
         cap = self.capital.value()
         start_ts = QtCore.QDateTime(self.start.date(), QtCore.QTime(0, 0, 0)).toMSecsSinceEpoch()
         end_ts = QtCore.QDateTime(self.end.date(), QtCore.QTime(23, 59, 59)).toMSecsSinceEpoch()
-        return cap, start_ts, end_ts
+        res_lbl = self.resolution.value()
+        res_ms = _RESOLUTIONS.get(res_lbl)
+        if res_ms is not None and self._base_ms is not None and res_ms <= self._base_ms:
+            res_ms = None  # same as (or finer than) base -> no resampling
+        return cap, start_ts, end_ts, res_ms
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +935,7 @@ class StudioTab(QtWidgets.QWidget):
         self._worker: ChatWorker | None = None  # keep a reference so GC doesn't collect it
         self._run_capital = None     # None -> use config.cash
         self._run_range = None       # None -> full bars, else (start_ts, end_ts)
+        self._run_resolution = None  # None -> base bars, else coarse window ms to resample to
         self._apply_version = 0      # AI-applied-change version (for the diff-and-apply flow)
 
         root = QtWidgets.QVBoxLayout(self)
@@ -841,10 +1027,7 @@ class StudioTab(QtWidgets.QWidget):
         config = self._config if self._config is not None else TesterConfig()
         if self._run_capital is not None:
             config = replace(config, cash=self._run_capital)
-        bars = self._bars
-        if self._run_range is not None:
-            s, e = self._run_range
-            bars = [b for b in self._bars if s <= b.ts <= e] or self._bars
+        bars = self._effective_bars()
         try:
             cls = load_strategy_from_string(code, validate=True)
             report = StrategyTester(cls(), bars, config).run()
@@ -856,6 +1039,19 @@ class StudioTab(QtWidgets.QWidget):
             self.results.add_run(report, bars, overlays)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"{type(exc).__name__}: {exc}")
+
+    def _effective_bars(self) -> list:
+        """Apply the per-run date slice + resolution resample to the loaded base bars."""
+        bars = self._bars
+        if self._run_range is not None:
+            s, e = self._run_range
+            bars = [b for b in self._bars if s <= b.ts <= e] or self._bars
+        if self._run_resolution is not None and bars:
+            from vike_trader_app.core.timeframe import resample
+            coarse = resample(bars, self._run_resolution)
+            if len(coarse) >= 2:           # never resample down to an unusable handful
+                bars = coarse
+        return bars
 
     def _open_templates(self) -> None:
         """Open the strategy-template gallery; chosen template loads into the editor."""
@@ -890,10 +1086,7 @@ class StudioTab(QtWidgets.QWidget):
         config = self._config if self._config is not None else TesterConfig()
         if self._run_capital is not None:
             config = replace(config, cash=self._run_capital)
-        bars = self._bars
-        if self._run_range is not None:
-            s, e = self._run_range
-            bars = [b for b in self._bars if s <= b.ts <= e] or self._bars
+        bars = self._effective_bars()
         try:
             cls = load_strategy_from_string(self.editor.text(), validate=True)
         except Exception as exc:  # noqa: BLE001
@@ -966,10 +1159,14 @@ class StudioTab(QtWidgets.QWidget):
         dlg = BacktestConfigDialog(self._bars, capital=cap, parent=self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)  # freed after exec returns (deferred delete)
         if dlg.exec() == QtWidgets.QDialog.Accepted:
-            cap, start_ts, end_ts = dlg.values()
+            cap, start_ts, end_ts, res_ms = dlg.values()
             self._run_capital = cap
             self._run_range = (start_ts, end_ts)
-            self.results.toast(f"Settings · capital ${cap:,.0f} · range set — press Run")
+            self._run_resolution = res_ms
+            res_lbl = dlg.resolution.value() or "base"
+            self.results.toast(
+                f"Settings · capital ${cap:,.0f} · {res_lbl} · range set — press Run"
+            )
 
     # --- chat ---
 
