@@ -94,6 +94,32 @@ def test_tools_tab_also_hides_backtester_docks(app):
     win.close()
 
 
+def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
+    import time
+
+    import vike_trader_app.data.catalog as cat_mod
+    import vike_trader_app.ui.app as app_mod
+    now = int(time.time() * 1000)
+    base = now - 50 * 60_000
+    fresh = [_bar(base + i * 60_000, 100.0) for i in range(50)]  # last bar = now-60s -> "fresh"
+
+    class _Cat:
+        def query(self, *a, **k):
+            return fresh
+
+    monkeypatch.setattr(cat_mod, "Catalog", _Cat)
+
+    def _boom(*a, **k):
+        raise AssertionError("get_bars (network) called despite a fresh cache")
+
+    monkeypatch.setattr(app_mod, "get_bars", _boom)
+    win = MainWindow()
+    win._load_symbol("EURUSD")          # fresh cache -> must load WITHOUT touching the network
+    assert win._symbol == "EURUSD"
+    assert len(win._bars) == 50
+    win.close()
+
+
 def test_studio_agent_unconfigured_without_key(app, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     win = MainWindow()

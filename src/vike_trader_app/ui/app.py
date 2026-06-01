@@ -41,6 +41,7 @@ from .tools import ToolsTab
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
 _WATCHLIST_DAYS = 7  # history pulled when clicking a watchlist symbol
+_WATCHLIST_FRESH_MS = 5 * 60_000  # cache-first: reuse cached bars if the last one is this fresh
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
 _FORWARD_FEE = 0.001
@@ -398,12 +399,22 @@ class MainWindow(QtWidgets.QMainWindow):
             self.load_bars(dlg.bars)
 
     def _load_symbol(self, symbol):
-        """Fetch a symbol from Binance (cached) and run the current strategy on it."""
+        """Load a symbol — cache-first (instant, no network) when fresh; else fetch + cache."""
+        now = int(time.time() * 1000)
+        start = now - _WATCHLIST_DAYS * _DAY_MS
+
+        # Cache-first: if the Parquet cache already has recent bars, load them straight away with
+        # zero network. Only hit the source when the cache is missing or stale.
+        from ..data.catalog import Catalog
+        cached = Catalog().query(symbol, "1m", start, now)
+        if cached and (now - cached[-1].ts) <= _WATCHLIST_FRESH_MS:
+            self._symbol, self._interval = symbol, "1m"
+            self.load_bars(cached)
+            return
+
         self.crumb.setText(f"Loading {symbol}…")
         QtWidgets.QApplication.processEvents()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        now = int(time.time() * 1000)
-        start = now - _WATCHLIST_DAYS * _DAY_MS
         try:
             bars = get_bars(symbol, "1m", start, now, progress=self._fetch_progress,
                             fetcher=select_source(symbol).fetch_bars_range)
