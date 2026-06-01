@@ -138,9 +138,15 @@ def test_studio_agent_unconfigured_without_key(app, monkeypatch):
 
 def test_studio_tab_hides_backtester_docks(app):
     win = MainWindow()
+    # Chart-first: Market watch + Trades start HIDDEN on first run.
+    assert all(d.isHidden() for d in win._docks)
+    # Open them via the rail toggles, then verify the tab switch hides on Studio
+    # and restores them on the Backtester.
+    for key in ("market", "trades"):
+        win._panel_btns[key].setChecked(True)
     studio_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.studio)
     win.tabs.setCurrentIndex(studio_idx)
     assert all(d.isHidden() for d in win._docks)      # clean Studio workspace
     win.tabs.setCurrentIndex(0)                        # back to Backtester
-    assert all(not d.isHidden() for d in win._docks)
+    assert all(not d.isHidden() for d in win._docks)  # restored per the (now-on) toggles
     win.close()

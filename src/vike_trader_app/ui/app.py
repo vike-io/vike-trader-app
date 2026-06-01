@@ -40,6 +40,9 @@ from .tools import ToolsTab
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
 _WATCHLIST_DAYS = 7  # history pulled when clicking a watchlist symbol
+# Days of history to pull per timeframe so the range selector (1D..5Y) has enough bars.
+_INTERVAL_LOOKBACK = {"1m": 7, "3m": 7, "5m": 10, "15m": 21, "30m": 30,
+                      "1h": 90, "2h": 120, "4h": 240, "1d": 1825, "1w": 3650}
 _WATCHLIST_FRESH_MS = 5 * 60_000  # cache-first: reuse cached bars if the last one is this fresh
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
@@ -110,6 +113,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.watchlist.symbolChosen.connect(self._load_symbol)
         self.bots.runChosen.connect(self._open_run)
         self.bots.launchRequested.connect(self._launch_bot)
+        # timeframe dropdown on either chart -> reload the current symbol at that interval
+        self.price.intervalChosen.connect(self._on_interval_chosen)
+        self.studio_price.intervalChosen.connect(self._on_interval_chosen)
 
         # Header crumb removed — it duplicated the chart's OHLC legend + the status bar.
         # Keep the labels as hidden status sinks so existing setText() calls (and tests) work.
@@ -480,11 +486,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._market_dock = market
         self._trades_dock = trades
         self._panel_dock_map = {"market": market, "trades": trades}
-        # Start both docks COLLAPSED to a thin strip (chart-first); drag the splitter to expand.
-        # Market watch -> its icon-width strip; Trades -> the account-summary strip (table hidden).
-        self.trades.setMinimumHeight(0)  # let the trades table collapse so the dock can be thin
-        self.resizeDocks([market], [78], QtCore.Qt.Horizontal)
-        self.resizeDocks([trades], [62], QtCore.Qt.Vertical)
+        # Sizes used when the user OPENS a dock via the rail toggle (both start hidden on first
+        # run — see _wire_panels_toggle, chart-first).
+        self.resizeDocks([market], [300], QtCore.Qt.Horizontal)
+        self.resizeDocks([trades], [190], QtCore.Qt.Vertical)
         self._docks = [market, trades]
 
     def _scroll(self, widget):
@@ -573,6 +578,13 @@ class MainWindow(QtWidgets.QMainWindow):
             sc = QtGui.QShortcut(QtGui.QKeySequence(shortcut), self)
             sc.activated.connect(self._panel_btns[key].toggle)
 
+        # Chart-first on first run: Market watch + Trades start CLOSED (not active/opened).
+        # Un-checking the rail toggle hides the dock via the wiring above; the toggle (or its
+        # Ctrl shortcut) re-opens it. Other panels (e.g. the chart) stay on.
+        for _k in ("market", "trades"):
+            if _k in self._panel_btns:
+                self._panel_btns[_k].setChecked(False)
+
     def _toggle_panel(self, key: str, on: bool) -> None:
         self._panel_visible[key] = on
         if self.tabs.currentWidget() is not self._backtester:
@@ -634,6 +646,7 @@ class MainWindow(QtWidgets.QMainWindow):
             ch.set_data(bars, self._result.trades)
             ch.set_overlays(overlays)
             ch.set_title(f"{self._symbol} · {self._interval}")
+            ch.set_timeframe(self._interval)
         self.trades.update_trades(self._result.trades)
         self.slider.setMaximum(self._replay.last_index)
         self.slider.setValue(self._replay.last_index)
@@ -809,8 +822,8 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:  # noqa: BLE001 - a transient fetch failure just skips this tick
             return
 
-    def _load_symbol(self, symbol):
-        """Load a symbol, topping up the recent gap so the newest bars are always shown.
+    def _load_symbol(self, symbol, interval=None):
+        """Load ``symbol`` at ``interval`` (default: current, else 1m), topping up the recent gap.
 
         Cache-first: a *fresh* cached tail (newest bar within ``_WATCHLIST_FRESH_MS``) paints
         instantly with zero network. Otherwise we fetch only the missing recent gap before
@@ -819,13 +832,14 @@ class MainWindow(QtWidgets.QMainWindow):
         without ever fetching the gap, which is why the chart lagged behind Binance.) If the
         top-up fetch fails we fall back to whatever is cached rather than leaving an empty chart.
         """
+        interval = interval or getattr(self, "_interval", None) or "1m"
         now = int(time.time() * 1000)
-        start = now - _WATCHLIST_DAYS * _DAY_MS
+        start = now - _INTERVAL_LOOKBACK.get(interval, _WATCHLIST_DAYS) * _DAY_MS
 
         from ..data.catalog import Catalog
-        cached = Catalog().query(symbol, "1m", start, now)
+        cached = Catalog().query(symbol, interval, start, now)
         if cached and not is_stale(cached[-1].ts, now, _WATCHLIST_FRESH_MS):
-            self._symbol, self._interval = symbol, "1m"     # fresh -> paint instantly
+            self._symbol, self._interval = symbol, interval     # fresh -> paint instantly
             self.load_bars(cached)
             self._push_watch_quote(symbol, cached)
             return
@@ -834,11 +848,11 @@ class MainWindow(QtWidgets.QMainWindow):
         QtWidgets.QApplication.processEvents()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            bars = get_bars(symbol, "1m", start, now, progress=self._fetch_progress,
+            bars = get_bars(symbol, interval, start, now, progress=self._fetch_progress,
                             fetcher=select_source(symbol).fetch_bars_range)
         except Exception as exc:  # noqa: BLE001 - network/load failure
             if cached:  # offline / fetch failed -> show cached rather than nothing
-                self._symbol, self._interval = symbol, "1m"
+                self._symbol, self._interval = symbol, interval
                 self.load_bars(cached)
                 self._push_watch_quote(symbol, cached)
                 self.crumb.setText(f"{symbol}: latest unavailable, showing cached · {exc}")
@@ -849,9 +863,14 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self._symbol = symbol
-        self._interval = "1m"
+        self._interval = interval
         self.load_bars(bars)
         self._push_watch_quote(symbol, bars)
+
+    def _on_interval_chosen(self, interval: str):
+        """Timeframe dropdown -> reload the current symbol at the chosen interval."""
+        if getattr(self, "_symbol", None):
+            self._load_symbol(self._symbol, interval)
 
     def _fetch_progress(self, done, start, end):
         pct = (done - start) / max(end - start, 1) * 100

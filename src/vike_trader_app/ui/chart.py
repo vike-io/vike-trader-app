@@ -29,6 +29,12 @@ _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
 _GRID = 0.5  # grid alpha (scales the BORDER tick pen) — subtle but visible, like TradingView
 # TradingView-style range selector: (label, days of history to zoom the view to)
 _RANGES = [("1D", 1), ("5D", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365), ("5Y", 1825)]
+# Timeframe dropdown: (section, [(label, interval)]) — intervals our data sources support.
+_TIMEFRAMES = [
+    ("Minutes", [("1m", "1m"), ("3m", "3m"), ("5m", "5m"), ("15m", "15m"), ("30m", "30m")]),
+    ("Hours", [("1h", "1h"), ("2h", "2h"), ("4h", "4h")]),
+    ("Days", [("1D", "1d"), ("1W", "1w")]),
+]
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -162,23 +168,58 @@ _MARKER_SIZE = 22  # arrow size in px (TradeStation-style prominence)
 # Oscillators (momentum/volume/etc.) need a separate sub-pane — a later step.
 _OVERLAY_CATEGORIES = ("overlap", "price")
 
+# Short codes shown verbatim in upper-case; longer codes get Title Case (e.g. "alligator").
+_INDICATOR_NAMES = {
+    "ema": "Exponential Moving Average", "sma": "Simple Moving Average",
+    "wma": "Weighted Moving Average", "hma": "Hull Moving Average",
+    "dema": "Double EMA", "tema": "Triple EMA", "trima": "Triangular MA",
+    "vwma": "Volume-Weighted MA", "zlema": "Zero-Lag EMA", "smma": "Smoothed MA",
+    "alma": "Arnaud Legoux MA", "t3": "T3 Moving Average", "mcginley": "McGinley Dynamic",
+    "gmma": "Guppy Multiple MA", "psar": "Parabolic SAR", "supertrend": "Supertrend",
+    "ichimoku": "Ichimoku Cloud", "envelopes": "Envelopes", "alligator": "Alligator",
+    "midpoint": "Midpoint", "midprice": "Mid Price", "avgprice": "Average Price",
+    "medprice": "Median Price",
+}
+
+
+def _pretty_indicator(code: str) -> str:
+    """Human-readable indicator label for the picker (TradingView-style)."""
+    if code in _INDICATOR_NAMES:
+        return _INDICATOR_NAMES[code]
+    return code.upper() if len(code) <= 5 else code.replace("_", " ").title()
+
 
 class _IndicatorPicker(QtWidgets.QDialog):
-    """Searchable list of registered price-overlay indicators (TradingView-style)."""
+    """Searchable, polished list of price-overlay indicators (TradingView/TradeLocker-style)."""
 
     chosen = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Indicators")
-        self.resize(340, 460)
+        self.resize(360, 480)
+        self.setStyleSheet(
+            f"QDialog{{background:{theme.PANEL};}}"
+            f"QLineEdit{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:8px 12px;color:{theme.TEXT};font-size:14px;}}"
+            f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
+            f"QListWidget{{background:transparent;border:none;outline:none;font-size:14px;}}"
+            f"QListWidget::item{{color:{theme.TEXT};padding:9px 8px;border-radius:6px;}}"
+            f"QListWidget::item:hover{{background:{theme.PANEL2};}}"
+            f"QListWidget::item:selected{{background:{theme.RAISE};color:{theme.TEXT};}}"
+        )
         v = QtWidgets.QVBoxLayout(self)
-        v.setContentsMargins(10, 10, 10, 10)
-        v.setSpacing(8)
+        v.setContentsMargins(14, 14, 14, 12)
+        v.setSpacing(10)
         self._search = QtWidgets.QLineEdit()
         self._search.setPlaceholderText("Search")
         self._search.setClearButtonEnabled(True)
         v.addWidget(self._search)
+        hdr = QtWidgets.QLabel("SCRIPT NAME")
+        hdr.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+        )
+        v.addWidget(hdr)
         self._list = QtWidgets.QListWidget()
         v.addWidget(self._list, 1)
 
@@ -186,8 +227,8 @@ class _IndicatorPicker(QtWidgets.QDialog):
         from vike_trader_app.core.indicators import base as _base
 
         specs = [s for s in _base.list_indicators() if s.category in _OVERLAY_CATEGORIES]
-        for s in specs:
-            item = QtWidgets.QListWidgetItem(f"{s.name}   ·   {s.category}")
+        for s in sorted(specs, key=lambda x: _pretty_indicator(x.name)):
+            item = QtWidgets.QListWidgetItem(_pretty_indicator(s.name))
             item.setData(QtCore.Qt.UserRole, s.name)
             self._list.addItem(item)
 
@@ -210,6 +251,8 @@ class PriceChart(pg.PlotWidget):
     """Candles + TradeStation-style trade markers + indicator overlays + a replay cursor,
     with TradingView-style chrome: time axis, mouse crosshair, OHLC legend header, a
     last-price line+badge, and vertical autoscale that fits the visible candles."""
+
+    intervalChosen = QtCore.Signal(str)  # emitted by the timeframe dropdown (e.g. "5m")
 
     def __init__(self):
         axis = TimeAxis(orientation="bottom")
@@ -280,46 +323,77 @@ class PriceChart(pg.PlotWidget):
         self._cx_v.hide()
         self._cx_h.hide()
 
-        # Indicators button (top-left) — opens the searchable catalog, overlays on the chart.
-        self._ind_btn = QtWidgets.QPushButton("ƒx Indicators", self)
-        self._ind_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self._ind_btn.setStyleSheet(
+        # ---- chart top toolbar: one aligned row (TradingView-style) ----
+        # LEFT: timeframe selector | Indicators | OHLC legend.  RIGHT (far): range selector.
+        self._top_bar = QtWidgets.QWidget(self)
+        _tb = QtWidgets.QHBoxLayout(self._top_bar)
+        _tb.setContentsMargins(8, 0, 8, 0)
+        _tb.setSpacing(8)
+        _btn_qss = (
             f"QPushButton{{color:{theme.TEXT2};background:transparent;border:none;"
             f"padding:2px 9px;font-size:14px;font-weight:400;border-radius:3px;}}"
             f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
+            f"QPushButton::menu-indicator{{width:0px;}}"
         )
+
+        def _divider():
+            ln = QtWidgets.QFrame(self._top_bar)
+            ln.setFrameShape(QtWidgets.QFrame.VLine)
+            ln.setFixedHeight(15)
+            ln.setStyleSheet(f"color:{theme.BORDER};")
+            return ln
+
+        # timeframe selector (grouped dropdown) -> emits intervalChosen
+        self._tf_btn = QtWidgets.QPushButton("1m  ▾", self._top_bar)
+        self._tf_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._tf_btn.setStyleSheet(_btn_qss)
+        _tf_menu = QtWidgets.QMenu(self._tf_btn)
+        for _sec, _items in _TIMEFRAMES:
+            _tf_menu.addSection(_sec)
+            for _lbl, _iv in _items:
+                _tf_menu.addAction(_lbl, lambda iv=_iv: self.intervalChosen.emit(iv))
+        self._tf_btn.setMenu(_tf_menu)
+        _tb.addWidget(self._tf_btn)
+        _tb.addWidget(_divider())
+
+        # indicators (searchable catalog -> overlay)
+        self._ind_btn = QtWidgets.QPushButton("ƒx Indicators", self._top_bar)
+        self._ind_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._ind_btn.setStyleSheet(_btn_qss)
         self._ind_btn.clicked.connect(self._open_indicator_picker)
-        self._ind_btn.move(8, 4)
-        self._ind_btn.adjustSize()
+        _tb.addWidget(self._ind_btn)
+        _tb.addWidget(_divider())
 
-        # range selector (TradingView-style) — quick-zoom to the last 1D … 5Y
-        self._range_bar = QtWidgets.QWidget(self)
-        _rb = QtWidgets.QHBoxLayout(self._range_bar)
-        _rb.setContentsMargins(0, 0, 0, 0)
-        _rb.setSpacing(1)
-        _range_qss = (
-            f"QPushButton{{color:{theme.TEXT3};background:transparent;border:none;"
-            f"padding:2px 8px;font-size:14px;font-weight:400;border-radius:3px;}}"
-            f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
-        )
-        for _label, _days in _RANGES:
-            _b = QtWidgets.QPushButton(_label, self._range_bar)
-            _b.setCursor(QtCore.Qt.PointingHandCursor)
-            _b.setStyleSheet(_range_qss)
-            _b.clicked.connect(lambda _checked=False, d=_days: self.set_visible_range(d))
-            _rb.addWidget(_b)
-        self._range_bar.move(self._ind_btn.x() + self._ind_btn.width() + 12, 4)
-        self._range_bar.adjustSize()
-
-        # OHLC legend header — on the SAME line, to the right of the range selector.
-        self._ohlc_label = QtWidgets.QLabel(self)
+        # OHLC legend
+        self._ohlc_label = QtWidgets.QLabel(self._top_bar)
         self._ohlc_label.setTextFormat(QtCore.Qt.RichText)
         self._ohlc_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         self._ohlc_label.setStyleSheet(
             f"color:{theme.TEXT2};font-family:{theme.FONT_MONO};font-size:14px;"
             f"font-weight:400;background:transparent;"
         )
-        self._ohlc_label.move(self._range_bar.x() + self._range_bar.width() + 16, 7)
+        _tb.addWidget(self._ohlc_label)
+
+        _tb.addStretch(1)  # push the range selector to the FAR right
+
+        # range selector (tight) -> far top-right
+        _range_w = QtWidgets.QWidget(self._top_bar)
+        _rb = QtWidgets.QHBoxLayout(_range_w)
+        _rb.setContentsMargins(0, 0, 0, 0)
+        _rb.setSpacing(0)
+        _range_qss = (
+            f"QPushButton{{color:{theme.TEXT3};background:transparent;border:none;"
+            f"padding:1px 6px;font-size:14px;font-weight:400;border-radius:3px;}}"
+            f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
+        )
+        for _label, _days in _RANGES:
+            _b = QtWidgets.QPushButton(_label, _range_w)
+            _b.setCursor(QtCore.Qt.PointingHandCursor)
+            _b.setStyleSheet(_range_qss)
+            _b.clicked.connect(lambda _checked=False, d=_days: self.set_visible_range(d))
+            _rb.addWidget(_b)
+        _tb.addWidget(_range_w)
+        self._top_bar.move(0, 4)
 
         # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
         _tag_qss = (f"color:#fff;background:{theme.RAISE};border-radius:2px;padding:0 4px;"
@@ -641,12 +715,22 @@ class PriceChart(pg.PlotWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        if hasattr(self, "_top_bar"):
+            # span the chart width but stop short of the right price-axis labels, so the
+            # far-right range selector clears them.
+            axis_w = self.getAxis("right").width() if self.getAxis("right").isVisible() else 0
+            self._top_bar.setGeometry(0, 4, max(0, self.width() - int(axis_w) - 6), 28)
         if hasattr(self, "_auto_btn"):
             self._auto_btn.adjustSize()
             self._auto_btn.move(
                 self.width() - self._auto_btn.width() - 8,
                 self.height() - self._auto_btn.height() - 6,
             )
+
+    def set_timeframe(self, interval: str):
+        """Update the timeframe selector button label (e.g. '5m')."""
+        if hasattr(self, "_tf_btn"):
+            self._tf_btn.setText(f"{interval}  ▾")
 
 
 class EquityChart(pg.PlotWidget):
