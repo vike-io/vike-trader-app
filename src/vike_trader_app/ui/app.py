@@ -24,8 +24,6 @@ from . import icons, theme
 from .chart import EquityChart, PriceChart
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .panels import (
-    HistoryPanel,
-    StrategyPanel,
     TradesTable,
     WatchlistPanel,
     strategy_params,
@@ -103,11 +101,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.equity = EquityChart()
         self.trades = TradesTable()
         self.watchlist = WatchlistPanel()
-        self.strategy = StrategyPanel()
-        self.history = HistoryPanel()
+        from .bots_panel import BotsPanel
+        self.bots = BotsPanel()
+        self.strategy = self.bots.strategy   # alias: existing code calls self.strategy.show_strategy
+        self.history = self.bots.history     # alias: existing code calls self.history.update_runs
         self.store = Store(str(Path(_DB_PATH)))
         self.watchlist.symbolChosen.connect(self._load_symbol)
-        self.history.runChosen.connect(self._open_run)
+        self.bots.runChosen.connect(self._open_run)
+        self.bots.launchRequested.connect(self._launch_bot)
 
         self.setMenuWidget(self._build_header())
         self._build_central()
@@ -424,7 +425,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCorner(QtCore.Qt.BottomRightCorner, QtCore.Qt.BottomDockWidgetArea)
 
         market = self._dock("Market watch", self.watchlist)
-        strategies = self._dock("Strategies", self._build_strategies_panel())
+        strategies = self._dock("Bots", self.bots)
         trades = self._dock("Trades & Positions", self._build_trades_panel())
 
         # RIGHT: Market watch on top, Strategies beneath it — both toggle from the rail.
@@ -448,14 +449,6 @@ class MainWindow(QtWidgets.QMainWindow):
         sc.setFrameShape(QtWidgets.QFrame.NoFrame)
         sc.setWidget(widget)
         return sc
-
-    def _build_strategies_panel(self) -> QtWidgets.QWidget:
-        """Strategies space (TradeLocker 'Active Bots / Historic Runs'): the active strategy
-        (name + params) on one tab, the persistent run history on another."""
-        tabs = QtWidgets.QTabWidget()
-        tabs.addTab(self.strategy, "Active")
-        tabs.addTab(self.history, "Historic")
-        return tabs
 
     def _build_trades_panel(self) -> QtWidgets.QWidget:
         """Trades & Positions: an account summary strip (balance/equity/PnL) over the trades."""
@@ -610,6 +603,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._render_frame()
         if record and bars:
             self._save_run()
+
+    def _launch_bot(self) -> None:
+        """Launch Bot: run the active strategy on the loaded bars and record it.
+
+        If no data is loaded yet, open the load dialog first. A successful run drops
+        markers on the chart and appears under Historic Runs (via _save_run)."""
+        if not self._bars:
+            self._open_load_dialog()
+            return
+        self.load_bars(self._bars, record=True)
 
     def _save_run(self):
         """Persist the just-finished backtest to the history store."""
