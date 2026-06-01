@@ -5,10 +5,11 @@ accent, JetBrains Mono throughout. Shared by the widgets and the pyqtgraph chart
 """
 
 # --- color tokens ---
-# Deeper near-black canvas (matches the "terminal-inside-a-product" depth of
-# polished trading studios) while keeping the GitHub-dark blue undertone + the
-# vike.io orange accent.
-BG = "#000000"
+# Canvas + sidebar sampled 1:1 from the live vike.io shell (the wallet page):
+# the GitHub-dark blue-tinted canvas `#0d1117` is BOTH the page background and the
+# left sidebar there, and cards sit a step lighter on `#1c2129`.
+BG = "#0d1117"        # vike canvas — app background + left icon rail (the "sidebar")
+CHART_BG = "#0d1117"  # chart panel, title bar + bottom bar — matches the canvas (one flat tone)
 PANEL = "#0e0e0e"
 PANEL2 = "#161616"
 RAISE = "#1e1e1e"

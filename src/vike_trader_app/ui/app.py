@@ -73,6 +73,46 @@ class _LiveFeedWorker(QtCore.QThread):
         self._stop = True
 
 
+class _RuleOverlay(QtWidgets.QWidget):
+    """Transparent, click-through overlay that paints the two separator hairlines (under the
+    title bar + above the status bar) in **device-pixel space**.
+
+    A plain 1px-tall coloured widget renders differently depending on where its top lands:
+    on an integer device pixel it's crisp/full, on a fractional one (common at 125%/150%
+    display scaling) it smears to ~half-coverage and looks thinner+dimmer — which is why the
+    two separators didn't match. Here both lines are filled as exactly one physical pixel at an
+    integer device row, so they're guaranteed identical at any scaling.
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self._bottom_y = 0  # logical y of the bottom rule; 0 = not placed yet
+        self._vline_x = 0   # logical x of the rail separator; 0 = not placed yet
+
+    def set_lines(self, bottom_y: int, vline_x: int) -> None:
+        if (bottom_y, vline_x) != (self._bottom_y, self._vline_x):
+            self._bottom_y, self._vline_x = bottom_y, vline_x
+            self.update()
+
+    def paintEvent(self, event):  # noqa: N802 - Qt override
+        painter = QtGui.QPainter(self)
+        dpr = self.devicePixelRatioF()
+        painter.scale(1.0 / dpr, 1.0 / dpr)  # now drawing in physical pixels
+        w = int(round(self.width() * dpr))
+        h = int(round(self.height() * dpr))
+        color = QtGui.QColor(theme.BORDER)
+        by = int(round(self._bottom_y * dpr)) if self._bottom_y > 0 else h
+        painter.fillRect(QtCore.QRect(0, 0, w, 1), color)        # under the title bar
+        if self._bottom_y > 0:
+            painter.fillRect(QtCore.QRect(0, by, w, 1), color)   # above the status bar
+        if self._vline_x > 0:                                    # rail separator (vertical)
+            painter.fillRect(QtCore.QRect(int(round(self._vline_x * dpr)), 0, 1, by), color)
+        painter.end()
+
+
 class MainWindow(QtWidgets.QMainWindow):
     """Main application window."""
 
@@ -190,8 +230,29 @@ class MainWindow(QtWidgets.QMainWindow):
     # --- central charts + replay ---
     def _build_central(self):
         # Chart space shows price candles only — equity moved to Studio's results.
+        # Rounded chart "card": pyqtgraph fills its viewport as a square rect, so we paint the
+        # chart on a TRANSPARENT scene/viewport inside a rounded card whose CHART_BG shows
+        # through at the corners (anti-aliased). FullViewportUpdate avoids any repaint trails
+        # from the translucent viewport.
+        self.price.setBackground(None)
+        _vp = self.price.viewport()
+        _vp.setAutoFillBackground(False)
+        _vp.setStyleSheet("background:transparent;")
+        self.price.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
+        chart_card = QtWidgets.QWidget()
+        chart_card.setObjectName("chartCard")
+        # subtle border so the rounded corners read against the near-black canvas (the chart
+        # bg and canvas are both near-black, so without an outline the curve is invisible).
+        chart_card.setStyleSheet(
+            f"#chartCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
+            f"border-radius:16px;}}"
+        )
+        _card_lay = QtWidgets.QVBoxLayout(chart_card)
+        _card_lay.setContentsMargins(0, 0, 0, 0)
+        _card_lay.addWidget(self.price)
+
         charts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        charts.addWidget(self.price)
+        charts.addWidget(chart_card)
         charts.setStretchFactor(0, 1)
 
         container = QtWidgets.QWidget()
@@ -251,8 +312,18 @@ class MainWindow(QtWidgets.QMainWindow):
         rail_tb.setMovable(False)
         rail_tb.setFloatable(False)
         rail_tb.setContentsMargins(0, 0, 0, 0)
+        # No frame line: the default toolbar border drew a stray horizontal rule under the
+        # title bar. Match the rail to the vike canvas so it reads as one flush sidebar.
+        rail_tb.setStyleSheet(f"QToolBar{{border:none;background:{theme.BG};}}")
         rail_tb.addWidget(self._build_icon_rail())
         self.addToolBar(QtCore.Qt.LeftToolBarArea, rail_tb)
+        self._rail_tb = rail_tb  # anchor for the rail separator line (see _place_rules)
+
+        # Full-width separator hairlines (under the title bar + above the status bar), painted
+        # in device-pixel space by one overlay so they match exactly at any display scaling.
+        # The top one also replaces the rail's old vertical border.
+        self._rules = _RuleOverlay(self)
+        self._rules.raise_()
 
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
@@ -290,23 +361,24 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_icon_rail(self) -> QtWidgets.QWidget:
         rail = QtWidgets.QWidget()
         rail.setFixedWidth(54)
-        rail.setStyleSheet(f"background:{theme.PANEL};border-right:1px solid {theme.BORDER};")
+        # Sidebar = the vike canvas colour; no right border (removed per the user — the
+        # separator is the full-width horizontal rule under the title bar instead).
+        rail.setStyleSheet(f"background:{theme.BG};")
         col = QtWidgets.QVBoxLayout(rail)
         col.setContentsMargins(7, 10, 7, 10)
         col.setSpacing(6)
 
-        # No brand mark here — the V now lives in the OS title bar (+ taskbar icon), so the rail
-        # opens straight at the SPACES section instead of duplicating the logo.
-        col.addWidget(self._rail_section("SPACES"), 0, QtCore.Qt.AlignHCenter)
-        col.addSpacing(2)
-
+        # No brand mark or "SPACES" caption — the V lives in the OS title bar, and the rail opens
+        # straight onto the space icons (cleaner; no caption + no rule under the title bar).
         self._rail_group = QtWidgets.QButtonGroup(self)
         self._rail_group.setExclusive(True)
+        # No filled box behind icons: the active icon is shown by its green colour alone
+        # (transparent background), per the user. Hover stays a faint colour-only cue.
         btn_qss = (
             f"QToolButton{{background:transparent;border:none;border-radius:11px;"
             f"color:{theme.TEXT3};font-size:18px;}}"
-            f"QToolButton:hover{{background:{theme.RAISE};color:{theme.TEXT2};}}"
-            f"QToolButton:checked{{background:{theme.RAISE};color:{theme.ACCENT};}}"
+            f"QToolButton:hover{{background:transparent;color:{theme.TEXT2};}}"
+            f"QToolButton:checked{{background:transparent;color:{theme.ACCENT};}}"
         )
         for i, (glyph, name) in enumerate(self._RAIL_ITEMS):
             b = QtWidgets.QToolButton()
@@ -322,10 +394,9 @@ class MainWindow(QtWidgets.QMainWindow):
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
         col.addStretch(1)
 
-        # PANELS section — independent show/hide toggles for the three docks (TradeLocker-style).
+        # PANELS toggles — independent show/hide for the three docks (TradeLocker-style).
         # Wired to the docks in _wire_panels_toggle() once _build_docks() has created them.
-        col.addWidget(self._rail_section("PANELS"), 0, QtCore.Qt.AlignHCenter)
-        col.addSpacing(2)
+        # (Section caption removed per the user; the toggles sit directly under the spaces.)
         self._panel_btns: dict[str, QtWidgets.QToolButton] = {}
         for key, icon_name, tip, sc in self._PANELS:
             b = QtWidgets.QToolButton()
@@ -341,14 +412,6 @@ class MainWindow(QtWidgets.QMainWindow):
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
         col.addSpacing(6)
 
-        demo = QtWidgets.QLabel("DEMO")
-        demo.setAlignment(QtCore.Qt.AlignCenter)
-        demo.setStyleSheet(
-            f"color:{theme.ACCENT};font-size:9px;font-weight:700;letter-spacing:1px;"
-            f"border:1px solid rgba(255,106,0,0.4);border-radius:6px;padding:3px 0;"
-        )
-        col.addWidget(demo, 0, QtCore.Qt.AlignHCenter)
-
         first = self._rail_group.button(0)
         if first is not None:
             first.setChecked(True)
@@ -357,21 +420,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def _build_statusbar(self) -> QtWidgets.QStatusBar:
         sb = QtWidgets.QStatusBar()
         sb.setSizeGripEnabled(False)
+        # No CSS border here — the top separator is an overlay QFrame (see _place_rules), so the
+        # bottom one is too, guaranteeing both render at exactly the same 1px thickness.
         sb.setStyleSheet(
-            f"QStatusBar{{background:{theme.PANEL};border-top:1px solid {theme.BORDER};}}"
+            f"QStatusBar{{background:{theme.CHART_BG};border:none;}}"
             f"QStatusBar::item{{border:none;}}"
         )
+        # "Loaded"/"Ready" status text removed from the bar per the user; keep the label as a
+        # hidden sink so the existing foot_status.setText(...) calls (and tests) still work.
         self.foot_status = QtWidgets.QLabel("Ready")
-        self.foot_status.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;padding:0 6px;")
-        sb.addWidget(self.foot_status)
+        self.foot_status.hide()
 
         self.foot_info = QtWidgets.QLabel("No data loaded")
         self.foot_info.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;padding:0 6px;")
         sb.addPermanentWidget(self.foot_info)
         self._feed_badge = QtWidgets.QLabel("● BINANCE")
+        # no pill/border per the user — just the green dot + label, flush on the bottom bar
         self._feed_badge.setStyleSheet(
-            f"color:{theme.UP};font-size:10px;background:{theme.BG};"
-            f"border:1px solid {theme.BORDER};border-radius:20px;padding:3px 10px;margin-right:6px;"
+            f"color:{theme.UP};font-size:10px;background:transparent;"
+            f"border:none;padding:3px 6px;margin-right:6px;"
         )
         sb.addPermanentWidget(self._feed_badge)
         # clock lives at the bottom-right now (moved out of the header)
@@ -1103,6 +1170,58 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btn_back, self.btn_play, self.btn_fwd, self.btn_full, self.slider, self.speed,
         ):
             w.setEnabled(on)
+
+    def showEvent(self, event):  # noqa: N802 - Qt override
+        super().showEvent(event)
+        self._apply_titlebar_color()  # native caption colour needs a live HWND (post-show)
+        self._place_rules()
+
+    def resizeEvent(self, event):  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._place_rules()
+
+    def _place_rules(self) -> None:
+        """Size the separator overlay to the whole window and tell it where the bottom rule
+        goes (the top of the status bar). The overlay paints both lines in device pixels."""
+        overlay = getattr(self, "_rules", None)
+        if overlay is None:
+            return
+        overlay.setGeometry(0, 0, self.width(), self.height())
+        sb = self.statusBar()
+        bottom_y = sb.geometry().top() if sb is not None else self.height() - 1
+        rail = getattr(self, "_rail_tb", None)
+        vline_x = rail.geometry().right() if rail is not None else 0  # rail's right edge
+        overlay.set_lines(bottom_y, vline_x)
+        overlay.raise_()
+
+    def _apply_titlebar_color(self) -> None:
+        """Recolour the native Windows 11 title bar to match the chart (DWM caption color).
+
+        Windows draws the caption itself, so we set it via DwmSetWindowAttribute
+        (CAPTION_COLOR/TEXT_COLOR/BORDER_COLOR — Win11 22000+). No-op elsewhere.
+        """
+        import sys
+
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            def _colorref(hex_color: str) -> int:  # COLORREF = 0x00BBGGRR
+                r, g, b = (int(hex_color[i:i + 2], 16) for i in (1, 3, 5))
+                return (b << 16) | (g << 8) | r
+
+            hwnd = int(self.winId())
+            dwm = ctypes.windll.dwmapi
+            for attr, color in ((35, theme.CHART_BG),  # DWMWA_CAPTION_COLOR
+                                (36, theme.TEXT),       # DWMWA_TEXT_COLOR
+                                (34, theme.CHART_BG)):  # DWMWA_BORDER_COLOR
+                val = wintypes.DWORD(_colorref(color))
+                dwm.DwmSetWindowAttribute(wintypes.HWND(hwnd), wintypes.DWORD(attr),
+                                          ctypes.byref(val), ctypes.sizeof(val))
+        except Exception:  # noqa: BLE001 - older Windows / no DWM -> keep the default caption
+            pass
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._stop_forward()  # never leave a feed thread running

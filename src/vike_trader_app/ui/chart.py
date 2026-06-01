@@ -15,7 +15,6 @@ from .chartdata import (
     bar_spacing,
     fmt_price,
     follow_window,
-    ohlc_legend_text,
     ts_to_x,
     x_to_ts,
     y_bounds,
@@ -258,7 +257,7 @@ class PriceChart(pg.PlotWidget):
         axis = TimeAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": axis, "right": PriceAxis(orientation="right")})
         self._time_axis = axis
-        self.setBackground(theme.BG)
+        self.setBackground(theme.CHART_BG)
         # Price scale on the RIGHT (TradingView / Lightweight-Charts convention).
         self.showAxis("right")
         self.hideAxis("left")
@@ -326,6 +325,11 @@ class PriceChart(pg.PlotWidget):
         # ---- chart top toolbar: one aligned row (TradingView-style) ----
         # LEFT: timeframe selector | Indicators | OHLC legend.  RIGHT (far): range selector.
         self._top_bar = QtWidgets.QWidget(self)
+        # Transparent overlay (TradingView-style): the toolbar floats over the chart so the
+        # grid + candles read through it, instead of a solid black band masking that strip.
+        # Cascades to the plain child containers/dividers; the buttons/labels keep their own
+        # styles (their non-hover background is already transparent).
+        self._top_bar.setStyleSheet("QWidget{background:transparent;}")
         _tb = QtWidgets.QHBoxLayout(self._top_bar)
         _tb.setContentsMargins(8, 0, 8, 0)
         _tb.setSpacing(8)
@@ -344,7 +348,7 @@ class PriceChart(pg.PlotWidget):
             return ln
 
         # timeframe selector (grouped dropdown) -> emits intervalChosen
-        self._tf_btn = QtWidgets.QPushButton("1m  ▾", self._top_bar)
+        self._tf_btn = QtWidgets.QPushButton("1m", self._top_bar)
         self._tf_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self._tf_btn.setStyleSheet(_btn_qss)
         _tf_menu = QtWidgets.QMenu(self._tf_btn)
@@ -368,11 +372,14 @@ class PriceChart(pg.PlotWidget):
         self._ohlc_label = QtWidgets.QLabel(self._top_bar)
         self._ohlc_label.setTextFormat(QtCore.Qt.RichText)
         self._ohlc_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        # vertically centre the rich text so it sits on the same line as the buttons (a
+        # rich-text QLabel otherwise rode high relative to the timeframe/Indicators row).
+        self._ohlc_label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._ohlc_label.setStyleSheet(
             f"color:{theme.TEXT2};font-family:{theme.FONT_MONO};font-size:14px;"
             f"font-weight:400;background:transparent;"
         )
-        _tb.addWidget(self._ohlc_label)
+        _tb.addWidget(self._ohlc_label, 0, QtCore.Qt.AlignVCenter)
 
         _tb.addStretch(1)  # push the range selector to the FAR right
 
@@ -545,8 +552,7 @@ class PriceChart(pg.PlotWidget):
             self._fitting = False
         self._update_last()
         self._autoscale_y()
-        if not self._cx_v.isVisible():
-            self._show_last_ohlc()
+        self._show_last_ohlc()  # header is pinned to the latest candle (not the hovered bar)
 
     def _add_marker(self, x, price, *, below, symbol, color, text):
         """Register a trade marker + its bold 'Buy'/'Sell' label (TradeStation style)."""
@@ -664,9 +670,24 @@ class PriceChart(pg.PlotWidget):
             return
         up = prev_close is None or bar.close >= prev_close
         col = theme.UP if up else theme.DOWN
+        ref = bar.close
+        # TradingView legend: the O/H/L/C *letters* are white; the *values* take the
+        # candle's up/down colour. The change/percent at the end stays coloured too.
+        def _cell(letter, val):
+            return (f"<span style='color:{theme.TEXT}'>{letter}</span>"
+                    f"<span style='color:{col}'>{fmt_price(val, ref)}</span>")
+
+        body = "&nbsp;&nbsp;".join([_cell("O", bar.open), _cell("H", bar.high),
+                                    _cell("L", bar.low), _cell("C", bar.close)])
+        if prev_close:
+            chg = bar.close - prev_close
+            pct = chg / prev_close * 100
+            s = "+" if chg >= 0 else ""
+            body += (f"&nbsp;&nbsp;<span style='color:{col}'>"
+                     f"{s}{fmt_price(chg, ref)} ({s}{pct:.2f}%)</span>")
         prefix = (f"<span style='color:{theme.TEXT}'>{self._title}</span>&nbsp;&nbsp;"
                   if self._title else "")
-        self._ohlc_label.setText(f"{prefix}<span style='color:{col}'>{ohlc_legend_text(bar, prev_close)}</span>")
+        self._ohlc_label.setText(prefix + body)
         self._ohlc_label.adjustSize()
 
     def _show_last_ohlc(self):
@@ -707,11 +728,8 @@ class PriceChart(pg.PlotWidget):
         self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
                                self.height() - self._cx_time_tag.height() - 1)
         self._cx_time_tag.show()
-        i = int(round(pt.x()))
-        revealed = self._candles._bars
-        if 0 <= i < len(revealed):
-            prev = revealed[i - 1].close if i > 0 else revealed[i].open
-            self._set_ohlc(revealed[i], prev)
+        # NB: the OHLC header is intentionally NOT updated to the hovered bar — it stays
+        # pinned to the latest candle (the crosshair still reads price/time off the axes).
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -730,7 +748,7 @@ class PriceChart(pg.PlotWidget):
     def set_timeframe(self, interval: str):
         """Update the timeframe selector button label (e.g. '5m')."""
         if hasattr(self, "_tf_btn"):
-            self._tf_btn.setText(f"{interval}  ▾")
+            self._tf_btn.setText(interval)
 
 
 class EquityChart(pg.PlotWidget):
@@ -738,7 +756,7 @@ class EquityChart(pg.PlotWidget):
 
     def __init__(self):
         super().__init__()
-        self.setBackground(theme.BG)
+        self.setBackground(theme.CHART_BG)
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()  # hide pyqtgraph's built-in auto-range "A" button
         self.getAxis("left").setTextPen(theme.TEXT3)

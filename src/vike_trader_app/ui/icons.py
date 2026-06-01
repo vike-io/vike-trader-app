@@ -102,13 +102,12 @@ def _draw_strategies(p, c):  # bot head
     p.drawEllipse(_P(28, 25), 2.3, 2.3)
 
 
-def _draw_chart(p, c):  # chart pane (Backtester toggle)
-    p.drawRoundedRect(_R(8, 12, 32, 26), 3, 3)
+def _draw_chart(p, c):  # box-less line chart: a clean rising zig-zag (no pane outline)
     path = QtGui.QPainterPath()
-    path.moveTo(13, 31)
-    path.lineTo(20, 22)
-    path.lineTo(26, 27)
-    path.lineTo(35, 16)
+    path.moveTo(9, 33)
+    path.lineTo(19, 22)
+    path.lineTo(27, 28)
+    path.lineTo(39, 12)
     p.drawPath(path)
 
 
