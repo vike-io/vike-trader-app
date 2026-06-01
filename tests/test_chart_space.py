@@ -22,8 +22,7 @@ def app():
 def test_main_window_uses_bots_panel(app):
     win = MainWindow()
     assert isinstance(win.bots, BotsPanel)
-    # equity chart is not parented into a visible layout (Studio owns equity now)
-    assert win.equity.parent() is None
+    assert not hasattr(win, "equity")  # equity lives in Studio now, not the Chart space
 
 
 def test_first_space_is_chart(app):

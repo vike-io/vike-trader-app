@@ -21,7 +21,8 @@ from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
 from . import icons, theme
-from .chart import EquityChart, PriceChart
+from .bots_panel import BotsPanel
+from .chart import PriceChart
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .panels import (
     TradesTable,
@@ -73,7 +74,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("vike-trader-app   Backtester")  # space name updated on tab change
+        self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[0][1]}")  # space name updated on tab change
         self.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))  # brand V in the title bar
         self.resize(1440, 900)
         self.setDockNestingEnabled(True)
@@ -96,10 +97,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # widgets
         self.price = PriceChart()
-        self.equity = EquityChart()
         self.trades = TradesTable()
         self.watchlist = WatchlistPanel()
-        from .bots_panel import BotsPanel
         self.bots = BotsPanel()
         self.strategy = self.bots.strategy   # alias: existing code calls self.strategy.show_strategy
         self.history = self.bots.history     # alias: existing code calls self.history.update_runs
@@ -211,7 +210,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _PANELS = [
         ("backtester", "chart", "Chart", "Ctrl+G"),
         ("market", "market", "Market watch", "Ctrl+M"),
-        ("strategies", "strategies", "Strategies", "Ctrl+B"),
+        ("strategies", "strategies", "Bots", "Ctrl+B"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
     ]
 
@@ -420,7 +419,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_docks(self):
         # TradeLocker-style information architecture:
-        #   Strategies (left) · Chart (centre) · Market watch + Report (right) ·
+        #   Bots (left) · Chart (centre) · Market watch + Report (right) ·
         #   Trades & Positions (full-width bottom).
         # The bottom area owns both lower corners so the trades strip spans the full width,
         # with the side docks sitting above it.
@@ -543,7 +542,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._panel_dock_map[key].setVisible(on)
 
     def _on_tab_changed(self, index: int) -> None:
-        """Show the Backtester docks only on the Backtester tab (Studio/Tools are full-width)."""
+        """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width."""
         on_backtester = self.tabs.currentWidget() is self._backtester
         # The centre must be visible to show any non-Backtester space; on the Backtester space
         # itself, honor the "backtester" hide toggle.
@@ -590,7 +589,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._replay = Replay(len(bars))
         self.price.set_data(bars, self._result.trades)
         self.price.set_overlays(self._strategy_factory().chart_overlays([b.close for b in bars]))
-        self.equity.set_data(self._result.equity_curve)
         self.trades.update_trades(self._result.trades)
         self.slider.setMaximum(self._replay.last_index)
         self.slider.setValue(self._replay.last_index)
@@ -836,7 +834,6 @@ class MainWindow(QtWidgets.QMainWindow):
     def _render_frame(self):
         i = self._replay.index
         self.price.show_upto(i)
-        self.equity.show_upto(i)
         self.pos_label.setText(f"bar {i} / {self._replay.last_index}")
         if self.slider.value() != i:
             self.slider.blockSignals(True)
@@ -966,9 +963,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.price.set_overlays(
             self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
         )
-        self.equity.set_data(res.equity_curve)
         self.price.show_upto(len(self._fwd_bars) - 1)
-        self.equity.show_upto(len(res.equity_curve) - 1)
         self.trades.update_trades(res.trades)
         if self._fwd_bars:
             last = self._fwd_bars[-1].close
