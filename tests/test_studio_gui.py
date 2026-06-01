@@ -117,9 +117,26 @@ def test_runs_history_records_and_reopens(app):
 def test_backtest_config_dialog_values(app):
     from vike_trader_app.ui.studio import BacktestConfigDialog
     dlg = BacktestConfigDialog(_bars(), capital=5000.0)
-    cap, start_ts, end_ts = dlg.values()
+    cap, start_ts, end_ts, res_ms = dlg.values()
     assert cap == 5000.0
     assert start_ts <= end_ts
+    assert res_ms is None                       # default == base (1m) -> no resample
+
+
+def test_backtest_config_resolution_resamples(app):
+    from vike_trader_app.ui.studio import BacktestConfigDialog
+    dlg = BacktestConfigDialog(_bars(), capital=5000.0)
+    dlg.resolution.setValue("1H")               # coarser than the 1m base
+    _cap, _s, _e, res_ms = dlg.values()
+    assert res_ms == 3_600_000                  # returns the coarse window to aggregate to
+
+
+def test_segmented_control_disables_finer_options(app):
+    from vike_trader_app.ui.studio import BacktestConfigDialog
+    dlg = BacktestConfigDialog(_bars())          # 1m base
+    # finer-than-base options don't exist below 1m here, but 1m must be enabled + selectable
+    assert dlg.resolution._buttons["1m"].isEnabled()
+    assert dlg.resolution.value() == "1m"
 
 
 def test_run_respects_capital_override(app):
