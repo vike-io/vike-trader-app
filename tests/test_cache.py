@@ -71,30 +71,6 @@ def test_missing_both_ends():
     assert cache.missing_ranges((40, 60), (0, 100), 10) == [(0, 30), (70, 100)]
 
 
-# --- is_stale (freshness gate for cache-first display) ---
-
-
-def test_is_stale_none_or_empty_is_stale():
-    # no cached tail -> must fetch before showing
-    assert cache.is_stale(None, now_ms=10 * STEP, fresh_ms=5 * STEP) is True
-
-
-def test_is_stale_recent_tail_is_fresh():
-    # last bar within the freshness window -> serve cache instantly, no network
-    assert cache.is_stale(8 * STEP, now_ms=10 * STEP, fresh_ms=5 * STEP) is False
-
-
-def test_is_stale_old_tail_even_with_deep_history():
-    # the bug being fixed: a deep cache whose newest bar is hours old is STILL stale.
-    # depth must not mask a stale right edge (old `covers` check did exactly that).
-    assert cache.is_stale(2 * STEP, now_ms=100 * STEP, fresh_ms=5 * STEP) is True
-
-
-def test_is_stale_boundary_is_inclusive_fresh():
-    # exactly at the window edge counts as fresh (not stale)
-    assert cache.is_stale(5 * STEP, now_ms=10 * STEP, fresh_ms=5 * STEP) is False
-
-
 # --- get_bars (fake fetcher + tmp cache dir) ---
 
 

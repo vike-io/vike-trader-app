@@ -16,7 +16,7 @@ from ..core.engine import BacktestEngine
 from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
-from ..data.cache import get_bars, is_stale
+from ..data.cache import get_bars
 from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
@@ -30,6 +30,7 @@ from .panels import (
     strategy_params,
 )
 from .replay import Replay
+from .watchlist_data import is_stale, quote_from_bars
 from .studio import StudioTab
 from .alerts import AlertsTab
 from .journal import JournalTab
@@ -707,20 +708,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._price_timer.timeout.connect(self._fill_price_chunk)
         self._price_timer.start(10)
 
-    @staticmethod
-    def _quote_from_bars(bars):
-        """``(last_close, 24h_change_frac)`` for a watchlist quote, or None if no bars."""
-        if not bars:
-            return None
-        last = bars[-1]
-        cutoff = last.ts - _DAY_MS  # ~24h change reference
-        ref = next((b for b in bars if b.ts >= cutoff), bars[0])
-        chg = (last.close / ref.close - 1.0) if ref.close else 0.0
-        return (last.close, chg)
-
     def _push_watch_quote(self, symbol, bars) -> None:
         """Update one watchlist row's quote from freshly loaded bars (keeps it in sync)."""
-        quote = self._quote_from_bars(bars)
+        quote = quote_from_bars(bars)
         if quote is not None:
             self.watchlist.set_prices({symbol: quote})
 
@@ -735,7 +725,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 break
             sym = self._price_queue.pop(0)
             try:
-                quote = self._quote_from_bars(self._price_cat.query(sym, "1m", start, now))
+                quote = quote_from_bars(self._price_cat.query(sym, "1m", start, now))
                 if quote is not None:
                     chunk[sym] = quote
             except Exception:  # noqa: BLE001 - a missing/locked file just yields no price
