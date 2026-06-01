@@ -143,9 +143,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # Brand + active space both live in the OS title bar now ("vike-trader-app — Studio"),
         # and the V is the window/taskbar icon — so the header carries only the data crumb.
         # (The clock is in the status bar, bottom-right.)
+        self._mode_tag = QtWidgets.QLabel("CHART")
+        self._mode_tag.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+        )
         self.crumb = QtWidgets.QLabel("No data loaded")
         self.crumb.setStyleSheet(f"color:{theme.TEXT2};")
 
+        row.addWidget(self._mode_tag)
         row.addWidget(self.crumb)
         row.addStretch(1)
         return bar
@@ -168,7 +173,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # tabs of one window — the Studio reuses the same charts/tester under the hood.
         self._backtester = container
         self.tabs = QtWidgets.QTabWidget()
-        self.tabs.addTab(container, "Backtester")
+        self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
         self.tabs.addTab(self.studio, "Studio")
@@ -198,7 +203,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.addToolBar(QtCore.Qt.LeftToolBarArea, rail_tb)
 
     _RAIL_ITEMS = [
-        ("▤", "Backtester"), ("✦", "Studio"), ("⚙", "Tools"),
+        ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
     ]
 
@@ -206,7 +211,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # (key, icon_name, tooltip, shortcut). "backtester" toggles the centre chart; the others
     # map to docks in _panel_dock_map.
     _PANELS = [
-        ("backtester", "chart", "Backtester", "Ctrl+G"),
+        ("backtester", "chart", "Chart", "Ctrl+G"),
         ("market", "market", "Market watch", "Ctrl+M"),
         ("strategies", "strategies", "Strategies", "Ctrl+B"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
