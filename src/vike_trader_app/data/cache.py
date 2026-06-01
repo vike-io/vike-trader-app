@@ -55,6 +55,18 @@ def missing_ranges(
     return gaps
 
 
+def is_stale(last_ts: int | None, now_ms: int, fresh_ms: int) -> bool:
+    """True when cached bars are missing or their newest bar is older than ``fresh_ms``.
+
+    The cache-first display path serves cached bars instantly only while *fresh*; a stale
+    (or empty) cache must top up the recent gap from the network before display, so the
+    latest bars actually appear. Freshness is decided purely by the right edge — depth of
+    history is irrelevant. (Replaces the old depth-based ``covers`` check, which happily
+    served deep-but-hours-stale history without ever fetching the missing recent bars.)
+    """
+    return last_ts is None or (now_ms - last_ts) > fresh_ms
+
+
 def get_bars(
     symbol: str,
     interval: str,

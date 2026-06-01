@@ -16,7 +16,7 @@ from ..core.engine import BacktestEngine
 from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
-from ..data.cache import get_bars
+from ..data.cache import get_bars, is_stale
 from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
@@ -94,6 +94,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._feed = None         # PollingBarFeed (poll fallback)
         self._fwd_worker = None   # _LiveFeedWorker (push, preferred)
         self._fwd_bars = []       # live bars received this run (charted)
+        self._refresh_timer = None  # round-robin live quote refresh (started after cache fill)
+        self._refresh_q = []        # crypto symbols cycled by the quote refresh
 
         # widgets
         self.price = PriceChart()
@@ -686,6 +688,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 other.append(s)
         groups = [("Crypto", crypto), ("Forex", forex), ("Other", other)]
         self.watchlist.set_symbols([(g, syms) for g, syms in groups if syms])
+        self._crypto_syms = crypto       # round-robin set for the live quote refresh
         self._start_price_fill(symbols)  # fill last price / forex bid-ask progressively
 
     def _start_price_fill(self, symbols) -> None:
@@ -704,6 +707,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._price_timer.timeout.connect(self._fill_price_chunk)
         self._price_timer.start(10)
 
+    @staticmethod
+    def _quote_from_bars(bars):
+        """``(last_close, 24h_change_frac)`` for a watchlist quote, or None if no bars."""
+        if not bars:
+            return None
+        last = bars[-1]
+        cutoff = last.ts - _DAY_MS  # ~24h change reference
+        ref = next((b for b in bars if b.ts >= cutoff), bars[0])
+        chg = (last.close / ref.close - 1.0) if ref.close else 0.0
+        return (last.close, chg)
+
+    def _push_watch_quote(self, symbol, bars) -> None:
+        """Update one watchlist row's quote from freshly loaded bars (keeps it in sync)."""
+        quote = self._quote_from_bars(bars)
+        if quote is not None:
+            self.watchlist.set_prices({symbol: quote})
+
     def _fill_price_chunk(self) -> None:
         now = int(time.time() * 1000)
         start = now - 3 * _DAY_MS  # a few days back to clear forex weekend gaps
@@ -711,41 +731,72 @@ class MainWindow(QtWidgets.QMainWindow):
         for _ in range(2):
             if not self._price_queue:
                 self._price_timer.stop()
+                self._start_quote_refresh()  # cache painted; now keep quotes live
                 break
             sym = self._price_queue.pop(0)
             try:
-                bars = self._price_cat.query(sym, "1m", start, now)
-                if bars:
-                    last = bars[-1]
-                    cutoff = last.ts - _DAY_MS  # ~24h change reference
-                    ref = next((b for b in bars if b.ts >= cutoff), bars[0])
-                    chg = (last.close / ref.close - 1.0) if ref.close else 0.0
-                    chunk[sym] = (last.close, chg)
+                quote = self._quote_from_bars(self._price_cat.query(sym, "1m", start, now))
+                if quote is not None:
+                    chunk[sym] = quote
             except Exception:  # noqa: BLE001 - a missing/locked file just yields no price
                 continue
         if chunk:
             self.watchlist.set_prices(chunk)
 
-    def _load_symbol(self, symbol):
-        """Load a symbol — cache-first (instant, no network) when the cache covers the window.
+    def _start_quote_refresh(self) -> None:
+        """Keep crypto Market Watch quotes live by topping up one symbol per tick from Binance.
 
-        The on-disk Parquet cache is reused whenever it spans the requested range (or is
-        fresh); only a missing/partial cache hits the network, and even then ``get_bars``
-        fetches just the gap from the last cached bar forward (incremental, never a full
-        re-download).
+        Crypto only: Binance trades 24/7 and responds quickly, so a gentle round-robin keeps
+        prices current without a startup network storm (forex weekend gaps would just spin).
+        Runs on the main thread — the Parquet layer isn't safe for background reads — and
+        relies on ``get_bars`` being incremental: a fresh symbol is a cheap cache read, a stale
+        one fetches only the last few bars.
+        """
+        self._refresh_q = list(getattr(self, "_crypto_syms", []))
+        if not self._refresh_q:
+            return
+        self._refresh_timer = QtCore.QTimer(self)
+        self._refresh_timer.timeout.connect(self._refresh_quote_tick)
+        self._refresh_timer.start(6000)  # one symbol per 6s -> a full lap every ~Nx6s
+
+    def _refresh_quote_tick(self) -> None:
+        """Top up the next crypto symbol's recent bars and refresh its watchlist quote."""
+        if self._forward is not None or not self._refresh_q:
+            return  # forward mode owns the network; idle if nothing to refresh
+        sym = self._refresh_q.pop(0)
+        self._refresh_q.append(sym)  # rotate to the back
+        now = int(time.time() * 1000)
+        start = now - _WATCHLIST_DAYS * _DAY_MS
+        try:
+            cached = self._price_cat.query(sym, "1m", start, now)
+            if cached and not is_stale(cached[-1].ts, now, _WATCHLIST_FRESH_MS):
+                self._push_watch_quote(sym, cached)  # already fresh -> no network
+                return
+            bars = get_bars(sym, "1m", start, now, fetcher=select_source(sym).fetch_bars_range)
+            self._push_watch_quote(sym, bars)
+        except Exception:  # noqa: BLE001 - a transient fetch failure just skips this tick
+            return
+
+    def _load_symbol(self, symbol):
+        """Load a symbol, topping up the recent gap so the newest bars are always shown.
+
+        Cache-first: a *fresh* cached tail (newest bar within ``_WATCHLIST_FRESH_MS``) paints
+        instantly with zero network. Otherwise we fetch only the missing recent gap before
+        painting — ``get_bars`` is incremental, so it pulls just the bars after the last cached
+        one, never a full re-download. (The old logic served deep-but-hours-stale history
+        without ever fetching the gap, which is why the chart lagged behind Binance.) If the
+        top-up fetch fails we fall back to whatever is cached rather than leaving an empty chart.
         """
         now = int(time.time() * 1000)
         start = now - _WATCHLIST_DAYS * _DAY_MS
 
         from ..data.catalog import Catalog
         cached = Catalog().query(symbol, "1m", start, now)
-        if cached:
-            fresh = (now - cached[-1].ts) <= _WATCHLIST_FRESH_MS
-            covers = (cached[-1].ts - cached[0].ts) >= 0.5 * (now - start)
-            if fresh or covers:                    # serve from cache instantly, zero network
-                self._symbol, self._interval = symbol, "1m"
-                self.load_bars(cached)
-                return
+        if cached and not is_stale(cached[-1].ts, now, _WATCHLIST_FRESH_MS):
+            self._symbol, self._interval = symbol, "1m"     # fresh -> paint instantly
+            self.load_bars(cached)
+            self._push_watch_quote(symbol, cached)
+            return
 
         self.crumb.setText(f"Loading {symbol}…")
         QtWidgets.QApplication.processEvents()
@@ -753,7 +804,13 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             bars = get_bars(symbol, "1m", start, now, progress=self._fetch_progress,
                             fetcher=select_source(symbol).fetch_bars_range)
-        except Exception as exc:  # noqa: BLE001 - report network/load failure
+        except Exception as exc:  # noqa: BLE001 - network/load failure
+            if cached:  # offline / fetch failed -> show cached rather than nothing
+                self._symbol, self._interval = symbol, "1m"
+                self.load_bars(cached)
+                self._push_watch_quote(symbol, cached)
+                self.crumb.setText(f"{symbol}: latest unavailable, showing cached · {exc}")
+                return
             QtWidgets.QMessageBox.warning(self, "Load failed", f"{symbol}: {exc}")
             self.crumb.setText("No data loaded")
             return
@@ -762,6 +819,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._symbol = symbol
         self._interval = "1m"
         self.load_bars(bars)
+        self._push_watch_quote(symbol, bars)
 
     def _fetch_progress(self, done, start, end):
         pct = (done - start) / max(end - start, 1) * 100
@@ -999,6 +1057,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
         if getattr(self, "_price_timer", None) is not None:
             self._price_timer.stop()  # halt the watchlist price-fill ticks
+        if getattr(self, "_refresh_timer", None) is not None:
+            self._refresh_timer.stop()  # halt the live quote refresh
         super().closeEvent(event)
 
     def _tick_clock(self):
