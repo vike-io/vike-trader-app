@@ -79,12 +79,14 @@ def x_to_ts(bars, x: float) -> int:
 
 
 def axis_time_label(bars, index) -> str:
-    """Format the time at integer bar ``index`` (UTC 'MM-DD HH:MM'); '' if no bars."""
+    """Wall-clock label for a (possibly fractional) bar-index tick: 'HH:MM' intraday,
+    'Mon DD' at a midnight boundary (TradingView-style). Uses interpolated time so ticks
+    placed on round wall-clock boundaries read as round times. '' if no bars."""
     if not bars:
         return ""
-    i = int(round(index))
-    ts = bars[i].ts if 0 <= i < len(bars) else x_to_ts(bars, index)
-    return datetime.fromtimestamp(ts / 1000, tz=timezone.utc).strftime("%m-%d %H:%M")
+    ts = x_to_ts(bars, index)
+    dt = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+    return dt.strftime("%b %d") if (dt.hour == 0 and dt.minute == 0) else dt.strftime("%H:%M")
 
 
 def ohlc_legend_text(bar, prev_close=None) -> str:

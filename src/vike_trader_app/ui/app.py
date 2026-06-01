@@ -111,7 +111,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.bots.runChosen.connect(self._open_run)
         self.bots.launchRequested.connect(self._launch_bot)
 
-        self.setMenuWidget(self._build_header())
+        # Header crumb removed — it duplicated the chart's OHLC legend + the status bar.
+        # Keep the labels as hidden status sinks so existing setText() calls (and tests) work.
+        self._mode_tag = QtWidgets.QLabel("CHART", self)
+        self._mode_tag.hide()
+        self.crumb = QtWidgets.QLabel("No data loaded", self)
+        self.crumb.hide()
         self._build_central()
         self._build_docks()
         self.setStatusBar(self._build_statusbar())

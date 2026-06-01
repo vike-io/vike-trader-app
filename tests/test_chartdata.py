@@ -63,8 +63,8 @@ def test_ts_x_empty_safe():
 
 
 def test_axis_time_label_utc():
-    bars = _obars(t0=0)  # epoch 0 = 1970-01-01 00:00 UTC
-    assert axis_time_label(bars, 0) == "01-01 00:00"
+    assert axis_time_label(_obars(t0=0), 0) == "Jan 01"             # midnight -> date label
+    assert axis_time_label(_obars(t0=10 * 3_600_000), 0) == "10:00"  # 10:00 UTC -> time label
     assert axis_time_label([], 0) == ""
 
 

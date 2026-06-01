@@ -3,19 +3,29 @@ overlays, plus an equity curve. Both plot by **bar index** and support progressi
 reveal (`show_upto`) so the replay hides future bars like MT5's visual tester.
 """
 
+from datetime import datetime, timezone
+
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QRectF
 
 from . import theme
-from .chartdata import axis_time_label, follow_window, ohlc_legend_text, y_bounds
+from .chartdata import (
+    axis_time_label,
+    bar_spacing,
+    follow_window,
+    ohlc_legend_text,
+    ts_to_x,
+    x_to_ts,
+    y_bounds,
+)
 
 _UP = theme.CANDLE_UP
 _DOWN = theme.CANDLE_DOWN
 _ENTRY = theme.UP
 _EXIT = theme.DOWN
 _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
-_GRID = 0.12
+_GRID = 0.06  # subtle grid, like TradingView
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -67,7 +77,11 @@ class CandlestickItem(pg.GraphicsObject):
 
 
 class TimeAxis(pg.AxisItem):
-    """Bottom axis that labels integer bar-index ticks with each bar's timestamp."""
+    """Bottom axis: ticks placed on round wall-clock boundaries (like TradingView),
+    mapped from the chart's bar-index x back to each bar's timestamp."""
+
+    _STEPS_MS = [60_000, 120_000, 300_000, 900_000, 1_800_000, 3_600_000, 7_200_000,
+                 14_400_000, 21_600_000, 43_200_000, 86_400_000, 172_800_000, 604_800_000]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -78,6 +92,26 @@ class TimeAxis(pg.AxisItem):
         self.picture = None
         self.update()
 
+    def tickValues(self, minVal, maxVal, size):
+        bars = self._bars
+        sp = bar_spacing(bars)
+        if len(bars) < 2 or sp <= 0:
+            return super().tickValues(minVal, maxVal, size)
+        t0, t1 = x_to_ts(bars, minVal), x_to_ts(bars, maxVal)
+        if t1 <= t0:
+            return super().tickValues(minVal, maxVal, size)
+        target = max(2, int(size / 95))  # ~one label per 95 px
+        raw = (t1 - t0) / target
+        step = next((s for s in self._STEPS_MS if s >= raw), self._STEPS_MS[-1])
+        first = (t0 // step) * step
+        if first < t0:
+            first += step
+        ticks, t = [], first
+        while t <= t1 and len(ticks) < 60:
+            ticks.append(ts_to_x(bars, t))
+            t += step
+        return [(step / sp, ticks)]
+
     def tickStrings(self, values, scale, spacing):
         return [axis_time_label(self._bars, v) for v in values]
 
@@ -87,6 +121,7 @@ class TimeAxis(pg.AxisItem):
 _BUY = theme.BLUE
 _SELL = theme.DOWN
 _EXIT_C = "#ffffff"
+_MARKER_SIZE = 22  # arrow size in px (TradeStation-style prominence)
 
 
 class PriceChart(pg.PlotWidget):
@@ -104,6 +139,11 @@ class PriceChart(pg.PlotWidget):
         self.hideAxis("left")
         self.getAxis("right").setTextPen(theme.TEXT3)
         self.getAxis("bottom").setTextPen(theme.TEXT3)
+        # No hard spine line between the chart and the price labels (TradingView look):
+        # faint axis pen + no tick marks, leaving only the subtle grid + the labels.
+        for _ax in ("right", "bottom"):
+            self.getAxis(_ax).setPen(pg.mkPen(theme.BORDER))
+            self.getAxis(_ax).setStyle(tickLength=0)
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.addLegend(offset=(10, 30), labelTextColor=theme.TEXT2)
 
@@ -113,7 +153,8 @@ class PriceChart(pg.PlotWidget):
         self._yauto = True   # vertical autoscale to the visible candles (TradingView default)
         self._fitting = False  # guard against autoscale re-entrancy
         self._title = ""     # "SYMBOL · interval" prefix for the OHLC header
-        self._markers = []   # [{x, price, below, symbol, color}] built from trades
+        self._markers = []   # [{x, price, below, symbol, color, label}] built from trades
+        self._marker_labels = []  # TextItem per marker ("Buy"/"Sell"), TradeStation-style
         self._conn = []      # [(entry_x, entry_price, exit_x, exit_price)] dotted connectors
         self._ts_index = {}  # bar timestamp -> index (for trade-row -> chart focus)
         self._overlays = {}  # label -> full series (aligned to bars)
@@ -161,6 +202,16 @@ class PriceChart(pg.PlotWidget):
         )
         self._ohlc_label.move(12, 6)
 
+        # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
+        _tag_qss = (f"color:#fff;background:{theme.RAISE};border-radius:2px;padding:0 4px;"
+                    f"font-family:{theme.FONT_MONO};font-size:10px;")
+        self._cx_price_tag = QtWidgets.QLabel(self)
+        self._cx_time_tag = QtWidgets.QLabel(self)
+        for _tag in (self._cx_price_tag, self._cx_time_tag):
+            _tag.setStyleSheet(_tag_qss)
+            _tag.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            _tag.hide()
+
         # "Auto" vertical-scale toggle (bottom-right) — on = fit visible candles
         self._auto_btn = QtWidgets.QPushButton("Auto", self)
         self._auto_btn.setCheckable(True)
@@ -189,22 +240,28 @@ class PriceChart(pg.PlotWidget):
         ts_index = {b.ts: i for i, b in enumerate(bars)}
         self._ts_index = ts_index
         self._markers, self._conn = [], []
+        for lbl in self._marker_labels:
+            self.removeItem(lbl)
+        self._marker_labels = []
         for t in trades:
             ei = ts_index.get(t.entry_ts)
             if ei is None:
                 continue
             long = getattr(t, "size", 1) >= 0
-            if long:  # buy entry: blue ▲ below the bar
-                self._markers.append({"x": ei, "price": t.entry_price, "below": True,
-                                      "symbol": "arrow_up", "color": _BUY})
-            else:     # sell (short) entry: red ▼ above the bar
-                self._markers.append({"x": ei, "price": t.entry_price, "below": False,
-                                      "symbol": "arrow_down", "color": _SELL})
+            if long:  # long entry = Buy: blue ▲ below the bar
+                self._add_marker(ei, t.entry_price, below=True, symbol="arrow_up",
+                                 color=_BUY, text="Buy")
+            else:     # short entry = Sell: red ▼ above the bar
+                self._add_marker(ei, t.entry_price, below=False, symbol="arrow_down",
+                                 color=_SELL, text="Sell")
             xi = ts_index.get(t.exit_ts)
-            if xi is not None:  # exit: white, opposite side from the entry
-                self._markers.append({"x": xi, "price": t.exit_price, "below": not long,
-                                      "symbol": "arrow_up" if not long else "arrow_down",
-                                      "color": _EXIT_C})
+            if xi is not None:  # exit = white arrow, opposite side, labelled by action
+                if long:  # long exit = Sell (above)
+                    self._add_marker(xi, t.exit_price, below=False, symbol="arrow_down",
+                                     color=_EXIT_C, text="Sell")
+                else:     # short exit = Buy (below)
+                    self._add_marker(xi, t.exit_price, below=True, symbol="arrow_up",
+                                     color=_EXIT_C, text="Buy")
                 self._conn.append((ei, t.entry_price, xi, t.exit_price))
         self.show_upto(len(bars) - 1)
 
@@ -241,8 +298,13 @@ class PriceChart(pg.PlotWidget):
             xs = [i for i in range(min(index + 1, len(series))) if series[i] is not None]
             ys = [series[i] for i in xs]
             curve.setData(xs, ys)
-        self._cursor.show()
-        self._cursor.setPos(index)
+        # replay cursor only mid-replay; hidden at the end so there's no persistent
+        # vertical line at rest (TradingView has none).
+        if index < len(self._bars) - 1:
+            self._cursor.setPos(index)
+            self._cursor.show()
+        else:
+            self._cursor.hide()
         if self._follow:
             lo, hi = follow_window(index, len(self._bars), self._window)
             self._fitting = True
@@ -253,15 +315,32 @@ class PriceChart(pg.PlotWidget):
         if not self._cx_v.isVisible():
             self._show_last_ohlc()
 
+    def _add_marker(self, x, price, *, below, symbol, color, text):
+        """Register a trade marker + its bold 'Buy'/'Sell' label (TradeStation style)."""
+        lbl = pg.TextItem(text=text, color=color, anchor=(0.5, 0.0 if below else 1.0))
+        font = QtGui.QFont()
+        font.setPointSize(8)
+        font.setBold(True)
+        lbl.setFont(font)
+        self.addItem(lbl, ignoreBounds=True)
+        lbl.hide()
+        self._marker_labels.append(lbl)
+        self._markers.append({"x": x, "price": price, "below": below, "symbol": symbol,
+                              "color": color, "label": lbl})
+
     def _render_markers(self, index: int, off: float = 0.0):
-        """Draw revealed buy/sell/exit arrows (``off`` below/above the fill) + dotted connectors."""
+        """Draw revealed buy/sell/exit arrows + 'Buy'/'Sell' labels + dotted connectors."""
         spots = []
         for m in self._markers:
+            lbl = m["label"]
             if m["x"] > index:
+                lbl.hide()
                 continue
             y = m["price"] - off if m["below"] else m["price"] + off
-            spots.append({"pos": (m["x"], y), "symbol": m["symbol"], "size": 14,
+            spots.append({"pos": (m["x"], y), "symbol": m["symbol"], "size": _MARKER_SIZE,
                           "brush": pg.mkBrush(m["color"]), "pen": None})
+            lbl.setPos(m["x"], y - off * 1.15 if m["below"] else y + off * 1.15)
+            lbl.show()
         self._marker_scatter.setData(spots)
         xs, ys = [], []
         for ex, ep, xx, xp in self._conn:
@@ -356,6 +435,8 @@ class PriceChart(pg.PlotWidget):
         if not vb.sceneBoundingRect().contains(scene_pos):
             self._cx_v.hide()
             self._cx_h.hide()
+            self._cx_price_tag.hide()
+            self._cx_time_tag.hide()
             self._show_last_ohlc()
             return
         pt = vb.mapSceneToView(scene_pos)
@@ -363,6 +444,19 @@ class PriceChart(pg.PlotWidget):
         self._cx_h.setPos(pt.y())
         self._cx_v.show()
         self._cx_h.show()
+        # axis tag boxes (scene coords ≈ widget pixels): price on the right, time on the bottom
+        py = int(scene_pos.y())
+        self._cx_price_tag.setText(f"{pt.y():,.2f}")
+        self._cx_price_tag.adjustSize()
+        self._cx_price_tag.move(self.width() - self._cx_price_tag.width() - 1,
+                                py - self._cx_price_tag.height() // 2)
+        self._cx_price_tag.show()
+        dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
+        self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
+        self._cx_time_tag.adjustSize()
+        self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
+                               self.height() - self._cx_time_tag.height() - 1)
+        self._cx_time_tag.show()
         i = int(round(pt.x()))
         revealed = self._candles._bars
         if 0 <= i < len(revealed):
