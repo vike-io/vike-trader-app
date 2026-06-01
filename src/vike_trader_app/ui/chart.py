@@ -43,9 +43,16 @@ class CandlestickItem(pg.GraphicsObject):
             color = QtGui.QColor(_UP if b.close >= b.open else _DOWN)
             painter.setPen(pg.mkPen(color))
             painter.setBrush(pg.mkBrush(color))
-            painter.drawLine(pg.Point(i, b.low), pg.Point(i, b.high))
+            if b.high > b.low:  # wick only when there's a range (skip flat/padding bars)
+                painter.drawLine(pg.Point(i, b.low), pg.Point(i, b.high))
             top, bottom = max(b.open, b.close), min(b.open, b.close)
-            painter.drawRect(QRectF(i - width / 2, bottom, width, max(top - bottom, 1e-9)))
+            if top > bottom:
+                painter.drawRect(QRectF(i - width / 2, bottom, width, top - bottom))
+            else:
+                # doji / flat bar: a thin horizontal tick, NEVER a degenerate rect (the old
+                # `max(top-bottom, 1e-9)` rect rendered as a full-height "wall" on the chart's
+                # extreme price scale when many flat padding bars trail the data).
+                painter.drawLine(pg.Point(i - width / 2, bottom), pg.Point(i + width / 2, bottom))
         painter.end()
 
     def paint(self, painter, *_):

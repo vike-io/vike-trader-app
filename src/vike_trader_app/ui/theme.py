@@ -160,6 +160,11 @@ def stylesheet() -> str:
     QSplitter::handle {{ background: {BG}; }}
     QSplitter::handle:hover {{ background: {BORDER}; }}
 
+    /* dock separators — a 6px canvas-coloured gutter so panels read as separate cards
+       (TradeLocker-style breathing room) instead of butting edge-to-edge */
+    QMainWindow::separator {{ background: {BG}; width: 8px; height: 8px; }}
+    QMainWindow::separator:hover {{ background: {BORDER}; }}
+
     /* dialogs */
     QDialog {{ background: {BG}; }}
 

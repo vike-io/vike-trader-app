@@ -1,0 +1,201 @@
+"""Hand-drawn vector icons for the left rail — crisp QPainter line-art, no asset files.
+
+Each icon is drawn on a 48px canvas (2× the 24px display size, for DPI crispness) and
+recolored per state: dim when idle, accent when the space/panel is active, mid on hover.
+``rail_icon(name, off, on, hover)`` returns a multi-state QIcon for a QToolButton.
+"""
+
+from PySide6 import QtCore, QtGui
+
+_S = 48
+
+
+def _painter(pm: QtGui.QPixmap, color: str) -> QtGui.QPainter:
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(QtGui.QColor(color))
+    pen.setWidthF(3.0)
+    pen.setCapStyle(QtCore.Qt.RoundCap)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    p.setPen(pen)
+    return p
+
+
+def _R(x, y, w, h):
+    return QtCore.QRectF(x, y, w, h)
+
+
+def _P(x, y):
+    return QtCore.QPointF(x, y)
+
+
+def _draw_backtester(p, c):  # candlesticks
+    p.setBrush(c)
+    for cx, wt, wb, bt, bb in [(13, 10, 38, 16, 30), (24, 8, 34, 13, 25), (35, 14, 41, 20, 34)]:
+        p.drawLine(QtCore.QLineF(cx, wt, cx, wb))
+        p.drawRect(_R(cx - 4, bt, 8, bb - bt))
+
+
+def _draw_studio(p, c):  # AI sparkle
+    p.setBrush(c)
+    pts = [(24, 8), (28, 20), (40, 24), (28, 28), (24, 40), (20, 28), (8, 24), (20, 20)]
+    path = QtGui.QPainterPath()
+    path.moveTo(*pts[0])
+    for x, y in pts[1:]:
+        path.lineTo(x, y)
+    path.closeSubpath()
+    p.drawPath(path)
+
+
+def _draw_tools(p, c):  # sliders
+    for y in (13, 24, 35):
+        p.drawLine(QtCore.QLineF(9, y, 39, y))
+    p.setBrush(QtGui.QColor("#0a0c10"))
+    for y, kx in [(13, 18), (24, 31), (35, 14)]:
+        p.drawEllipse(_P(kx, y), 4.2, 4.2)
+
+
+def _draw_screener(p, c):  # 2x2 grid
+    for x in (11, 27):
+        for y in (11, 27):
+            p.drawRoundedRect(_R(x, y, 10, 10), 2.5, 2.5)
+
+
+def _draw_journal(p, c):  # list
+    p.setBrush(c)
+    for y in (14, 24, 34):
+        p.drawEllipse(_P(11, y), 1.9, 1.9)
+        p.drawLine(QtCore.QLineF(18, y, 39, y))
+
+
+def _draw_alerts(p, c):  # bell
+    path = QtGui.QPainterPath()
+    path.moveTo(13, 32)
+    path.lineTo(13, 23)
+    path.cubicTo(13, 15, 18, 13, 24, 13)
+    path.cubicTo(30, 13, 35, 15, 35, 23)
+    path.lineTo(35, 32)
+    p.drawPath(path)
+    p.drawLine(QtCore.QLineF(9, 32, 39, 32))
+    p.drawLine(QtCore.QLineF(24, 13, 24, 9))
+    p.setBrush(c)
+    p.drawEllipse(_P(24, 37), 2.6, 2.6)
+
+
+def _draw_market(p, c):  # bid/ask arrows
+    p.drawLine(QtCore.QLineF(17, 37, 17, 11))
+    p.drawLine(QtCore.QLineF(17, 11, 12, 17))
+    p.drawLine(QtCore.QLineF(17, 11, 22, 17))
+    p.drawLine(QtCore.QLineF(31, 11, 31, 37))
+    p.drawLine(QtCore.QLineF(31, 37, 26, 31))
+    p.drawLine(QtCore.QLineF(31, 37, 36, 31))
+
+
+def _draw_strategies(p, c):  # bot head
+    p.drawLine(QtCore.QLineF(24, 9, 24, 14))
+    p.setBrush(c)
+    p.drawEllipse(_P(24, 8), 2.0, 2.0)
+    p.setBrush(QtCore.Qt.NoBrush)
+    p.drawRoundedRect(_R(13, 15, 22, 19), 4, 4)
+    p.setBrush(c)
+    p.drawEllipse(_P(20, 25), 2.3, 2.3)
+    p.drawEllipse(_P(28, 25), 2.3, 2.3)
+
+
+def _draw_chart(p, c):  # chart pane (Backtester toggle)
+    p.drawRoundedRect(_R(8, 12, 32, 26), 3, 3)
+    path = QtGui.QPainterPath()
+    path.moveTo(13, 31)
+    path.lineTo(20, 22)
+    path.lineTo(26, 27)
+    path.lineTo(35, 16)
+    p.drawPath(path)
+
+
+def _draw_trades(p, c):  # table
+    p.drawRoundedRect(_R(10, 12, 28, 24), 3, 3)
+    p.drawLine(QtCore.QLineF(10, 20, 38, 20))
+    p.drawLine(QtCore.QLineF(24, 20, 24, 36))
+    p.drawLine(QtCore.QLineF(10, 28, 38, 28))
+
+
+_DRAW = {
+    "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
+    "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
+    "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
+    "chart": _draw_chart,
+}
+
+
+def _pixmap(name: str, color: str) -> QtGui.QPixmap:
+    pm = QtGui.QPixmap(_S, _S)
+    pm.fill(QtCore.Qt.transparent)
+    p = _painter(pm, color)
+    fn = _DRAW.get(name)
+    if fn is not None:
+        fn(p, QtGui.QColor(color))
+    p.end()
+    return pm
+
+
+def avatar(text: str, bg: str, fg: str = "#0a0c10") -> QtGui.QPixmap:
+    """A round token / currency badge with a 1–2 char label (Market-watch instrument icon).
+
+    True national-flag art needs bundled image assets (and Windows has no flag-emoji glyphs),
+    so these coloured initial badges are the asset-free stand-in.
+    """
+    pm = QtGui.QPixmap(_S, _S)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    p.setPen(QtCore.Qt.NoPen)
+    p.setBrush(QtGui.QColor(bg))
+    p.drawEllipse(3, 3, 42, 42)
+    p.setPen(QtGui.QColor(fg))
+    font = p.font()
+    font.setPixelSize(23 if len(text) <= 1 else 17)
+    font.setBold(True)
+    p.setFont(font)
+    p.drawText(QtCore.QRectF(0, 0, _S, _S), QtCore.Qt.AlignCenter, text)
+    p.end()
+    return pm
+
+
+def brand_pixmap(size: int, bg: str, fg: str) -> QtGui.QPixmap:
+    """The vike brand 'V' mark: an accent rounded-square with a dark V — same look as the
+    left-rail badge, rendered at an arbitrary size for the window/taskbar app icon."""
+    pm = QtGui.QPixmap(size, size)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    p.setPen(QtCore.Qt.NoPen)
+    inset = size * 0.06  # keep the rounded square off the very edge so corners aren't clipped
+    p.setBrush(QtGui.QColor(bg))
+    p.drawRoundedRect(_R(inset, inset, size - 2 * inset, size - 2 * inset), size * 0.26, size * 0.26)
+    p.setPen(QtGui.QColor(fg))
+    font = p.font()
+    font.setPixelSize(max(int(size * 0.6), 6))
+    font.setBold(True)
+    p.setFont(font)
+    p.drawText(_R(0, 0, size, size), QtCore.Qt.AlignCenter, "V")
+    p.end()
+    return pm
+
+
+def brand_icon(bg: str, fg: str) -> QtGui.QIcon:
+    """Multi-resolution app/window icon of the brand 'V' mark (16–256px for crisp title bar
+    + taskbar rendering at any DPI)."""
+    ic = QtGui.QIcon()
+    for s in (16, 24, 32, 48, 64, 128, 256):
+        ic.addPixmap(brand_pixmap(s, bg, fg))
+    return ic
+
+
+def rail_icon(name: str, off: str, on: str, hover: str | None = None) -> QtGui.QIcon:
+    """A QToolButton icon: ``off`` idle, ``on`` when checked, ``hover`` under the mouse."""
+    ic = QtGui.QIcon()
+    ic.addPixmap(_pixmap(name, off), QtGui.QIcon.Normal, QtGui.QIcon.Off)
+    ic.addPixmap(_pixmap(name, on), QtGui.QIcon.Normal, QtGui.QIcon.On)
+    ic.addPixmap(_pixmap(name, hover or on), QtGui.QIcon.Active, QtGui.QIcon.Off)
+    ic.addPixmap(_pixmap(name, on), QtGui.QIcon.Active, QtGui.QIcon.On)
+    return ic

@@ -9,7 +9,7 @@ up the verdict banner — the differentiator.
 import time
 from pathlib import Path
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import metrics
 from ..core.engine import BacktestEngine
@@ -20,12 +20,11 @@ from ..data.cache import get_bars
 from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
-from . import theme
+from . import icons, theme
 from .chart import EquityChart, PriceChart
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .panels import (
     HistoryPanel,
-    ReportPanel,
     StrategyPanel,
     TradesTable,
     WatchlistPanel,
@@ -76,7 +75,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("vike-trader-app — visual backtester")
+        self.setWindowTitle("vike-trader-app   Backtester")  # space name updated on tab change
+        self.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))  # brand V in the title bar
         self.resize(1440, 900)
         self.setDockNestingEnabled(True)
         self.setDockOptions(
@@ -99,7 +99,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # widgets
         self.price = PriceChart()
         self.equity = EquityChart()
-        self.report = ReportPanel()
         self.trades = TradesTable()
         self.watchlist = WatchlistPanel()
         self.strategy = StrategyPanel()
@@ -113,6 +112,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_docks()
         self.setStatusBar(self._build_statusbar())
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._wire_panels_toggle()
 
         self.strategy.show_strategy(self._strategy_factory)
         self.history.update_runs(self.store.list_runs())
@@ -137,36 +137,14 @@ class MainWindow(QtWidgets.QMainWindow):
         row.setContentsMargins(12, 7, 12, 7)
         row.setSpacing(14)
 
-        mark = QtWidgets.QLabel("V")
-        mark.setFixedSize(25, 25)
-        mark.setAlignment(QtCore.Qt.AlignCenter)
-        mark.setStyleSheet(
-            f"background:{theme.ACCENT};color:{theme.BG};font-weight:700;border-radius:6px;"
-        )
-        name = QtWidgets.QLabel("vike-trader-app")
-        name.setStyleSheet("font-size:15px;font-weight:700;")
-        self._mode_tag = QtWidgets.QLabel("BACKTESTER")
-        self._mode_tag.setStyleSheet(
-            f"color:{theme.ACCENT};font-size:9px;letter-spacing:2px;"
-            f"border:1px solid rgba(255,106,0,0.4);border-radius:4px;padding:2px 6px;"
-        )
-        tag = self._mode_tag
+        # Brand + active space both live in the OS title bar now ("vike-trader-app — Studio"),
+        # and the V is the window/taskbar icon — so the header carries only the data crumb.
+        # (The clock is in the status bar, bottom-right.)
         self.crumb = QtWidgets.QLabel("No data loaded")
         self.crumb.setStyleSheet(f"color:{theme.TEXT2};")
 
-        feed = QtWidgets.QLabel("● BINANCE")
-        feed.setStyleSheet(
-            f"color:{theme.TEXT2};font-size:10px;background:{theme.BG};"
-            f"border:1px solid {theme.BORDER};border-radius:20px;padding:4px 10px;"
-        )
-        self.clock = QtWidgets.QLabel("--:--:--")
-        self.clock.setStyleSheet(f"color:{theme.TEXT2};")
-
-        for w in (mark, name, tag, self.crumb):
-            row.addWidget(w)
+        row.addWidget(self.crumb)
         row.addStretch(1)
-        row.addWidget(feed)
-        row.addWidget(self.clock)
         return bar
 
     # --- central charts + replay ---
@@ -204,18 +182,52 @@ class MainWindow(QtWidgets.QMainWindow):
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
         self.tabs.tabBar().hide()
-        central = QtWidgets.QWidget()
-        hbox = QtWidgets.QHBoxLayout(central)
-        hbox.setContentsMargins(0, 0, 0, 0)
-        hbox.setSpacing(0)
-        hbox.addWidget(self._build_icon_rail())
-        hbox.addWidget(self.tabs, 1)
-        self.setCentralWidget(central)
+        self.setCentralWidget(self.tabs)
+        # The rail lives in the LEFT TOOLBAR AREA so it sits flush against the window's left
+        # edge — *outside* (left of) the Markets/Strategy dock area, like a VS Code / TradeLocker
+        # activity bar. Inside the central widget it rendered to the right of the left docks,
+        # which put Markets at x=0 and the rail at x=146 — the bug we're fixing.
+        rail_tb = QtWidgets.QToolBar("Navigation")
+        rail_tb.setObjectName("railbar")
+        rail_tb.setMovable(False)
+        rail_tb.setFloatable(False)
+        rail_tb.setContentsMargins(0, 0, 0, 0)
+        rail_tb.addWidget(self._build_icon_rail())
+        self.addToolBar(QtCore.Qt.LeftToolBarArea, rail_tb)
 
     _RAIL_ITEMS = [
         ("▤", "Backtester"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
     ]
+
+    # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
+    # (key, icon_name, tooltip, shortcut). "backtester" toggles the centre chart; the others
+    # map to docks in _panel_dock_map.
+    _PANELS = [
+        ("backtester", "chart", "Backtester", "Ctrl+G"),
+        ("market", "market", "Market watch", "Ctrl+M"),
+        ("strategies", "strategies", "Strategies", "Ctrl+B"),
+        ("trades", "trades", "Trades & Positions", "Ctrl+T"),
+    ]
+
+    def _rail_section(self, text: str) -> QtWidgets.QLabel:
+        """A tiny SPACES/PANELS section caption for the icon rail (TradeLocker-style)."""
+        lbl = QtWidgets.QLabel(text)
+        lbl.setAlignment(QtCore.Qt.AlignHCenter)
+        lbl.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:8px;font-weight:700;letter-spacing:1px;border:none;"
+        )
+        return lbl
+
+    def _chip_tip(self, name: str, shortcut: str | None = None) -> str:
+        """Rich hover tooltip: the panel/space name + a shortcut 'chip' (TradeLocker-style)."""
+        if not shortcut:
+            return name
+        return (
+            f"<span style='color:{theme.TEXT};'>{name}</span> &nbsp;"
+            f"<span style='background:{theme.RAISE};color:{theme.TEXT2};"
+            f"font-family:{theme.FONT_MONO};'>&nbsp;{shortcut}&nbsp;</span>"
+        )
 
     def _build_icon_rail(self) -> QtWidgets.QWidget:
         rail = QtWidgets.QWidget()
@@ -225,15 +237,10 @@ class MainWindow(QtWidgets.QMainWindow):
         col.setContentsMargins(7, 10, 7, 10)
         col.setSpacing(6)
 
-        mark = QtWidgets.QLabel("V")
-        mark.setFixedSize(40, 40)
-        mark.setAlignment(QtCore.Qt.AlignCenter)
-        mark.setStyleSheet(
-            f"background:{theme.ACCENT};color:{theme.BG};font-weight:700;"
-            f"font-size:18px;border-radius:11px;"
-        )
-        col.addWidget(mark, 0, QtCore.Qt.AlignHCenter)
-        col.addSpacing(8)
+        # No brand mark here — the V now lives in the OS title bar (+ taskbar icon), so the rail
+        # opens straight at the SPACES section instead of duplicating the logo.
+        col.addWidget(self._rail_section("SPACES"), 0, QtCore.Qt.AlignHCenter)
+        col.addSpacing(2)
 
         self._rail_group = QtWidgets.QButtonGroup(self)
         self._rail_group.setExclusive(True)
@@ -245,8 +252,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         for i, (glyph, name) in enumerate(self._RAIL_ITEMS):
             b = QtWidgets.QToolButton()
-            b.setText(glyph)
-            b.setToolTip(name)
+            b.setIcon(icons.rail_icon(name.lower(), theme.TEXT3, theme.ACCENT, theme.TEXT2))
+            b.setIconSize(QtCore.QSize(22, 22))
+            b.setToolTip(self._chip_tip(name))
             b.setCheckable(True)
             b.setFixedSize(40, 40)
             b.setCursor(QtCore.Qt.PointingHandCursor)
@@ -255,6 +263,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self._rail_group.addButton(b, i)
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
         col.addStretch(1)
+
+        # PANELS section — independent show/hide toggles for the three docks (TradeLocker-style).
+        # Wired to the docks in _wire_panels_toggle() once _build_docks() has created them.
+        col.addWidget(self._rail_section("PANELS"), 0, QtCore.Qt.AlignHCenter)
+        col.addSpacing(2)
+        self._panel_btns: dict[str, QtWidgets.QToolButton] = {}
+        for key, icon_name, tip, sc in self._PANELS:
+            b = QtWidgets.QToolButton()
+            b.setIcon(icons.rail_icon(icon_name, theme.TEXT3, theme.ACCENT, theme.TEXT2))
+            b.setIconSize(QtCore.QSize(22, 22))
+            b.setToolTip(self._chip_tip(tip, sc))
+            b.setCheckable(True)
+            b.setChecked(True)
+            b.setFixedSize(40, 40)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.setStyleSheet(btn_qss)
+            self._panel_btns[key] = b
+            col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
+        col.addSpacing(6)
 
         demo = QtWidgets.QLabel("DEMO")
         demo.setAlignment(QtCore.Qt.AlignCenter)
@@ -283,13 +310,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self.foot_info = QtWidgets.QLabel("No data loaded")
         self.foot_info.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;padding:0 6px;")
         sb.addPermanentWidget(self.foot_info)
-        feed = QtWidgets.QLabel("● BINANCE")
-        feed.setStyleSheet(
+        self._feed_badge = QtWidgets.QLabel("● BINANCE")
+        self._feed_badge.setStyleSheet(
             f"color:{theme.UP};font-size:10px;background:{theme.BG};"
             f"border:1px solid {theme.BORDER};border-radius:20px;padding:3px 10px;margin-right:6px;"
         )
-        sb.addPermanentWidget(feed)
+        sb.addPermanentWidget(self._feed_badge)
+        # clock lives at the bottom-right now (moved out of the header)
+        self.clock = QtWidgets.QLabel("--:--:--")
+        self.clock.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;padding:0 6px;")
+        sb.addPermanentWidget(self.clock)
         return sb
+
+    def _feed_label(self, symbol: str) -> str:
+        """Provider for the feed badge — Binance for crypto, Yahoo/Dukascopy for forex.
+
+        Binance has no forex, so a forex symbol must not claim a Binance feed.
+        """
+        from ..data.sources import is_forex_symbol
+
+        return "YAHOO · DUKASCOPY" if is_forex_symbol(symbol) else "BINANCE"
+
+    def _update_feed_badge(self, *, live: bool = False) -> None:
+        prefix = "● LIVE · " if live else "● "
+        self._feed_badge.setText(f"{prefix}{self._feed_label(self._symbol)}")
 
     def _build_controls(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
@@ -370,20 +414,32 @@ class MainWindow(QtWidgets.QMainWindow):
         return d
 
     def _build_docks(self):
-        markets = self._dock("Markets", self.watchlist)
-        strat = self._dock("Strategy", self.strategy)
-        report = self._dock("Backtest Report", self._scroll(self.report))
-        trades = self._dock("Trades", self.trades)
-        history = self._dock("History", self.history)
+        # TradeLocker-style information architecture:
+        #   Strategies (left) · Chart (centre) · Market watch + Report (right) ·
+        #   Trades & Positions (full-width bottom).
+        # The bottom area owns both lower corners so the trades strip spans the full width,
+        # with the side docks sitting above it.
+        self.setCorner(QtCore.Qt.BottomLeftCorner, QtCore.Qt.BottomDockWidgetArea)
+        self.setCorner(QtCore.Qt.BottomRightCorner, QtCore.Qt.BottomDockWidgetArea)
 
-        self.addDockWidget(QtCore.Qt.LeftDockWidgetArea, markets)
-        self.splitDockWidget(markets, strat, QtCore.Qt.Vertical)
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, report)
-        self.splitDockWidget(report, trades, QtCore.Qt.Vertical)
-        self.tabifyDockWidget(trades, history)
-        trades.raise_()
-        self.resizeDocks([markets, report], [262, 380], QtCore.Qt.Horizontal)
-        self._docks = [markets, strat, report, trades, history]
+        market = self._dock("Market watch", self.watchlist)
+        strategies = self._dock("Strategies", self._build_strategies_panel())
+        trades = self._dock("Trades & Positions", self._build_trades_panel())
+
+        # RIGHT: Market watch on top, Strategies beneath it — both toggle from the rail.
+        # No "Backtest Report" panel: TradeLocker's trader screen has none, and backtest
+        # analysis (metrics/verdict) belongs to the Studio tab's ResultsPanel, not here.
+        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, market)
+        self.splitDockWidget(market, strategies, QtCore.Qt.Vertical)
+        # BOTTOM: Trades & Positions, spanning the full width.
+        self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, trades)
+
+        # rail PANELS toggle targets (key must match _PANELS)
+        self._market_dock = market
+        self._panel_dock_map = {"market": market, "strategies": strategies, "trades": trades}
+        self.resizeDocks([market], [300], QtCore.Qt.Horizontal)
+        self.resizeDocks([trades], [190], QtCore.Qt.Vertical)
+        self._docks = [market, strategies, trades]
 
     def _scroll(self, widget):
         sc = QtWidgets.QScrollArea()
@@ -392,17 +448,122 @@ class MainWindow(QtWidgets.QMainWindow):
         sc.setWidget(widget)
         return sc
 
+    def _build_strategies_panel(self) -> QtWidgets.QWidget:
+        """Strategies space (TradeLocker 'Active Bots / Historic Runs'): the active strategy
+        (name + params) on one tab, the persistent run history on another."""
+        tabs = QtWidgets.QTabWidget()
+        tabs.addTab(self.strategy, "Active")
+        tabs.addTab(self.history, "Historic")
+        return tabs
+
+    def _build_trades_panel(self) -> QtWidgets.QWidget:
+        """Trades & Positions: an account summary strip (balance/equity/PnL) over the trades."""
+        w = QtWidgets.QWidget()
+        v = QtWidgets.QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+
+        summary = QtWidgets.QWidget()
+        summary.setObjectName("acctbar")
+        summary.setStyleSheet(
+            f"#acctbar{{background:{theme.PANEL2};border-bottom:1px solid {theme.BORDER};}}"
+        )
+        row = QtWidgets.QHBoxLayout(summary)
+        row.setContentsMargins(12, 6, 12, 6)
+        row.setSpacing(26)
+        self._acct: dict[str, QtWidgets.QLabel] = {}
+        for key, label in [("balance", "Balance"), ("equity", "Equity"),
+                           ("pnl", "P&L"), ("ret", "Return")]:
+            cell = QtWidgets.QVBoxLayout()
+            cell.setSpacing(1)
+            cap = QtWidgets.QLabel(label.upper())
+            cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:.5px;border:none;")
+            val = QtWidgets.QLabel("—")
+            val.setStyleSheet(
+                f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-weight:700;border:none;"
+            )
+            self._acct[key] = val
+            cell.addWidget(cap)
+            cell.addWidget(val)
+            row.addLayout(cell)
+        row.addStretch(1)
+
+        v.addWidget(summary)
+        v.addWidget(self.trades, 1)
+        return w
+
+    def _update_account(self) -> None:
+        """Refresh the Trades & Positions summary strip from the current result."""
+        if not hasattr(self, "_acct"):
+            return
+        res = self._result
+        if res is None or not res.equity_curve:
+            for v in self._acct.values():
+                v.setText("—")
+            return
+        eq = res.equity_curve
+        initial, final = eq[0], res.final_equity
+        pnl = final - initial
+        ret = metrics.total_return(eq) * 100
+        self._acct["balance"].setText(f"${initial:,.2f}")
+        self._acct["equity"].setText(f"${final:,.2f}")
+        sign = "+" if pnl >= 0 else "−"
+        color = theme.UP if pnl >= 0 else theme.DOWN
+        self._acct["pnl"].setText(f"{sign}${abs(pnl):,.2f}")
+        self._acct["pnl"].setStyleSheet(
+            f"color:{color};font-family:{theme.FONT_MONO};font-weight:700;border:none;"
+        )
+        self._acct["ret"].setText(f"{ret:+.2f}%")
+        self._acct["ret"].setStyleSheet(
+            f"color:{color};font-family:{theme.FONT_MONO};font-weight:700;border:none;"
+        )
+
+    def _wire_panels_toggle(self) -> None:
+        """Wire each rail PANELS toggle (+ its Ctrl shortcut) to its dock — independently.
+
+        Docks have no close button, so each toggle button is the single source of truth for
+        "user wants this panel shown"; we never sync button<-dock (which would fight the
+        tab-driven hide on Studio/Tools). Intent per panel is remembered so switching back to
+        the Backtester restores whatever the user last chose.
+        """
+        self._panel_visible: dict[str, bool] = {}
+        for key, _glyph, _tip, shortcut in self._PANELS:
+            self._panel_visible[key] = True
+            self._panel_btns[key].toggled.connect(
+                lambda on, k=key: self._toggle_panel(k, on)
+            )
+            sc = QtGui.QShortcut(QtGui.QKeySequence(shortcut), self)
+            sc.activated.connect(self._panel_btns[key].toggle)
+
+    def _toggle_panel(self, key: str, on: bool) -> None:
+        self._panel_visible[key] = on
+        if self.tabs.currentWidget() is not self._backtester:
+            return
+        if key == "backtester":
+            # Hide the centre (chart + controls); QMainWindow expands the docks to fill.
+            self.tabs.setVisible(on)
+        else:
+            self._panel_dock_map[key].setVisible(on)
+
     def _on_tab_changed(self, index: int) -> None:
         """Show the Backtester docks only on the Backtester tab (Studio/Tools are full-width)."""
         on_backtester = self.tabs.currentWidget() is self._backtester
+        # The centre must be visible to show any non-Backtester space; on the Backtester space
+        # itself, honor the "backtester" hide toggle.
+        self.tabs.setVisible(
+            self._panel_visible.get("backtester", True) if on_backtester else True
+        )
         for d in self._docks:
             d.setVisible(on_backtester)
+        if on_backtester:  # honor each panel's manual hide when returning to the Backtester
+            for key, dock in getattr(self, "_panel_dock_map", {}).items():
+                dock.setVisible(self._panel_visible.get(key, True))
         btn = self._rail_group.button(index)  # keep the icon rail in sync with the tabs
         if btn is not None:
             btn.setChecked(True)
-        # the header tag is now the active-space indicator (the tab strip is hidden)
+        # the OS title bar is the active-space indicator now (tab strip + header chip are gone)
         if 0 <= index < len(self._RAIL_ITEMS):
-            self._mode_tag.setText(self._RAIL_ITEMS[index][1].upper())
+            self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
 
     def _wire_studio_agent(self) -> None:
         """Give the Studio a live Claude client iff an API key + the [ai] extra are present.
@@ -433,9 +594,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.price.set_data(bars, self._result.trades)
         self.price.set_overlays(self._strategy_factory().chart_overlays([b.close for b in bars]))
         self.equity.set_data(self._result.equity_curve)
-        self.report.update_stats(self._result)
         self.trades.update_trades(self._result.trades)
-        self.report.verdict.setVisible(False)
         self.slider.setMaximum(self._replay.last_index)
         self.slider.setValue(self._replay.last_index)
         if bars:
@@ -445,6 +604,8 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.foot_info.setText(f"{self._symbol} · {self._interval} · {len(bars):,} bars")
             self.foot_status.setText("Loaded")
+        self._update_feed_badge()
+        self._update_account()
         self._render_frame()
         if record and bars:
             self._save_run()
@@ -520,6 +681,45 @@ class MainWindow(QtWidgets.QMainWindow):
                 other.append(s)
         groups = [("Crypto", crypto), ("Forex", forex), ("Other", other)]
         self.watchlist.set_symbols([(g, syms) for g, syms in groups if syms])
+        self._start_price_fill(symbols)  # fill last price / forex bid-ask progressively
+
+    def _start_price_fill(self, symbols) -> None:
+        """Fill watchlist quotes on the MAIN thread, a few symbols per timer tick.
+
+        The Parquet/Catalog reader isn't safe for concurrent reads, so a background thread
+        would race with the user's data loads and crash (``data/`` is owned by the parallel
+        instance — read-only here). Reading on the main thread keeps it serialized with loads;
+        a QTimer chunks the work so first paint and clicks stay responsive while prices tick in.
+        """
+        from ..data.catalog import Catalog
+
+        self._price_cat = Catalog()
+        self._price_queue = list(symbols)
+        self._price_timer = QtCore.QTimer(self)
+        self._price_timer.timeout.connect(self._fill_price_chunk)
+        self._price_timer.start(10)
+
+    def _fill_price_chunk(self) -> None:
+        now = int(time.time() * 1000)
+        start = now - 3 * _DAY_MS  # a few days back to clear forex weekend gaps
+        chunk: dict[str, float] = {}
+        for _ in range(2):
+            if not self._price_queue:
+                self._price_timer.stop()
+                break
+            sym = self._price_queue.pop(0)
+            try:
+                bars = self._price_cat.query(sym, "1m", start, now)
+                if bars:
+                    last = bars[-1]
+                    cutoff = last.ts - _DAY_MS  # ~24h change reference
+                    ref = next((b for b in bars if b.ts >= cutoff), bars[0])
+                    chg = (last.close / ref.close - 1.0) if ref.close else 0.0
+                    chunk[sym] = (last.close, chg)
+            except Exception:  # noqa: BLE001 - a missing/locked file just yields no price
+                continue
+        if chunk:
+            self.watchlist.set_prices(chunk)
 
     def _load_symbol(self, symbol):
         """Load a symbol — cache-first (instant, no network) when the cache covers the window.
@@ -608,7 +808,15 @@ class MainWindow(QtWidgets.QMainWindow):
             report = build_overfit_report(
                 self._bars, self._strategy_factory.make, grid, n_splits=4, fee_rate=0.001
             )
-            self.report.show_verdict(report)
+            v = report.verdict
+            QtWidgets.QMessageBox.information(
+                self,
+                "Overfit check",
+                f"Overfit risk: {v.level.upper()}\n\n"
+                f"PBO {report.pbo:.0%}  ·  Deflated Sharpe {report.deflated_sharpe:.0%}  "
+                f"·  {report.n_trials} configs\n\n"
+                + "\n".join(f"• {r}" for r in v.reasons),
+            )
         finally:
             self.btn_validate.setEnabled(True)
             if self._bars:
@@ -697,6 +905,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fwd_bars = []
         self._set_backtest_controls_enabled(False)
         self.btn_forward.setText("■ Stop forward")
+        self._update_feed_badge(live=True)
 
         # Prefer the push WebSocket feed (lower latency) when the source has one;
         # forex has no push feed, so it falls straight through to REST polling.
@@ -753,7 +962,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.equity.set_data(res.equity_curve)
         self.price.show_upto(len(self._fwd_bars) - 1)
         self.equity.show_upto(len(res.equity_curve) - 1)
-        self.report.update_stats(res)
         self.trades.update_trades(res.trades)
         if self._fwd_bars:
             last = self._fwd_bars[-1].close
@@ -773,6 +981,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._forward = None
         self._feed = None
         self.btn_forward.setText("● Forward (paper)")
+        self._update_feed_badge(live=False)
         self._set_backtest_controls_enabled(True)
 
     def _set_backtest_controls_enabled(self, on: bool):
@@ -786,6 +995,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._stop_forward()  # never leave a feed thread running
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
+        if getattr(self, "_price_timer", None) is not None:
+            self._price_timer.stop()  # halt the watchlist price-fill ticks
         super().closeEvent(event)
 
     def _tick_clock(self):
@@ -797,6 +1008,16 @@ def main():
 
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(theme.stylesheet())
+    # Windows shows python.exe's icon in the title bar/taskbar unless the process claims its own
+    # AppUserModelID — then the OS uses *our* window icon (the brand V) instead.
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("vike.trader.app")
+        except Exception:  # noqa: BLE001 - non-fatal; the window icon is still set below
+            pass
+    app.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))
     win = MainWindow()
     win.show()
     sys.exit(app.exec())

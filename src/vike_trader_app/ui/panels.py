@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from PySide6 import QtCore, QtWidgets
 
 from ..analysis import metrics
-from . import theme
+from . import icons, theme
 from .tables import TRADE_HEADERS, trade_rows
 
 
@@ -76,14 +76,14 @@ class ReportPanel(QtWidgets.QWidget):
             "sharpe": "Sharpe (ann.)",
         }
         self._vals: dict[str, QtWidgets.QLabel] = {}
-        order = ["return", "equity", "trades", "winrate", "pf", "mdd"]
+        # Single column: the report dock is narrow (~260px), so a 2-column grid overflowed and
+        # clipped the right column ("Final equity", "Win rate", "Max drawdown"). One column per
+        # row always fits the dock width at any size.
+        order = ["return", "equity", "trades", "winrate", "pf", "mdd", "sharpe"]
         for i, key in enumerate(order):
             card, val = _card(labels[key])
             self._vals[key] = val
-            grid.addWidget(card, i // 2, i % 2)
-        card, val = _card(labels["sharpe"])  # full-width
-        self._vals["sharpe"] = val
-        grid.addWidget(card, 3, 0, 1, 2)
+            grid.addWidget(card, i, 0)
         root.addLayout(grid)
         root.addStretch(1)
 
@@ -161,8 +161,23 @@ class WatchlistPanel(QtWidgets.QListWidget):
 
     _DEMO = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
+    # instrument-badge colours (asset-free flag stand-ins)
+    _COIN_COLOR = {
+        "BTC": "#f7931a", "ETH": "#627eea", "SOL": "#14f195",
+        "DOGE": "#c2a633", "AVAX": "#e84142", "TON": "#0098ea",
+    }
+    _CCY_COLOR = {
+        "USD": "#3fb950", "EUR": "#58a6ff", "GBP": "#a855f7", "JPY": "#f85149",
+        "CHF": "#f0883e", "AUD": "#26c6da", "CAD": "#ec407a", "NZD": "#66bb6a",
+        "SGD": "#ffb000", "HKD": "#f85149", "MXN": "#3fb950", "ZAR": "#ffb000",
+        "TRY": "#f85149", "SEK": "#58a6ff", "NOK": "#58a6ff", "PLN": "#f85149",
+    }
+    _CCY_SYM = {"USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥"}
+
     def __init__(self):
         super().__init__()
+        self._price_labels: dict[str, QtWidgets.QLabel] = {}  # symbol -> price label
+        self._chg_labels: dict[str, QtWidgets.QLabel] = {}    # symbol -> change% label
         self.itemActivated.connect(self._chosen)
         self.itemClicked.connect(self._chosen)
         for sym in self._DEMO:
@@ -175,6 +190,8 @@ class WatchlistPanel(QtWidgets.QListWidget):
     def set_symbols(self, groups: list[tuple[str, list[str]]]) -> None:
         """Rebuild the list from ``[(group_name, [symbols]), ...]`` with section headers."""
         self.clear()
+        self._price_labels = {}  # repopulated by _add_row below
+        self._chg_labels = {}
         first: QtWidgets.QListWidgetItem | None = None
         for gname, syms in groups:
             if not syms:
@@ -197,6 +214,50 @@ class WatchlistPanel(QtWidgets.QListWidget):
             return sym[:3], "/" + sym[3:]
         return sym, ""
 
+    @staticmethod
+    def _is_forex(sym: str) -> bool:
+        s = sym.upper()
+        return len(s) == 6 and s.isalpha()
+
+    @classmethod
+    def _badge(cls, sym: str) -> tuple[str, str]:
+        """(label, colour) for the instrument badge — coin initial / currency symbol."""
+        if sym.endswith("USDT"):
+            base = sym[:-4]
+            return base[:1], cls._COIN_COLOR.get(base, theme.ACCENT)
+        if len(sym) == 6 and sym.isalpha():
+            base = sym[:3]
+            return cls._CCY_SYM.get(base, base[:1]), cls._CCY_COLOR.get(base, theme.BLUE)
+        return sym[:1], theme.TEXT3
+
+    def set_prices(self, prices: dict) -> None:
+        """Fill each row from ``{symbol: (last_close, change_frac)}``.
+
+        Crypto rows show the last price + 24h change%. Forex rows show bid/ask (mid ∓ ~1 pip)
+        + change% — the historical cache has no live quote/spread, so the spread is a nominal
+        display value, not a live quote. Called from a main-thread reader (startup-safe).
+        """
+        for sym, val in prices.items():
+            close, chg = val if isinstance(val, tuple) else (val, None)
+            pl = self._price_labels.get(sym)
+            cl = self._chg_labels.get(sym)
+            if pl is None or close is None:
+                continue
+            if self._is_forex(sym):
+                pip = 0.01 if sym.upper().endswith("JPY") else 0.0001
+                dp = 3 if pip == 0.01 else 5
+                bid, ask = close - pip, close + pip
+                pl.setText(
+                    f"<span style='color:{theme.DOWN}'>{bid:.{dp}f}</span>"
+                    f"<span style='color:{theme.TEXT3}'> / </span>"
+                    f"<span style='color:{theme.UP}'>{ask:.{dp}f}</span>"
+                )
+            else:
+                pl.setText(f"{close:,.2f}")
+            if cl is not None and chg is not None:
+                col = theme.UP if chg >= 0 else theme.DOWN
+                cl.setText(f"<span style='color:{col}'>{chg * 100:+.2f}%</span>")
+
     def _add_header(self, text: str) -> None:
         item = QtWidgets.QListWidgetItem(self)
         item.setFlags(QtCore.Qt.NoItemFlags)       # non-selectable, non-clickable divider
@@ -213,17 +274,45 @@ class WatchlistPanel(QtWidgets.QListWidget):
         item.setData(QtCore.Qt.UserRole, sym)
         w = QtWidgets.QWidget()
         lay = QtWidgets.QHBoxLayout(w)
-        lay.setContentsMargins(11, 6, 11, 6)
+        lay.setContentsMargins(10, 5, 11, 5)
+        lay.setSpacing(8)
+
+        # instrument badge (coin initial / currency symbol)
+        text, color = self._badge(sym)
+        badge = QtWidgets.QLabel()
+        badge.setPixmap(icons.avatar(text, color).scaled(
+            18, 18, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation))
+        badge.setFixedWidth(20)
+
         base, quote = self._pair_label(sym)
         name = QtWidgets.QLabel(
             f"{base}<span style='color:{theme.TEXT3};font-size:9px'>{quote}</span>"
         )
         name.setStyleSheet(f"color:{theme.TEXT};font-weight:600;border:none;")
-        chip = QtWidgets.QLabel("1m")
-        chip.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;border:none;")
+
+        # right column: price/bid-ask (top) + change% (bottom), right-aligned
+        vbox = QtWidgets.QVBoxLayout()
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+        price = QtWidgets.QLabel("")
+        price.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        price.setStyleSheet(
+            f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-size:10px;border:none;"
+        )
+        chg = QtWidgets.QLabel("")
+        chg.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        chg.setStyleSheet(
+            f"color:{theme.TEXT3};font-family:{theme.FONT_MONO};font-size:9px;border:none;"
+        )
+        vbox.addWidget(price)
+        vbox.addWidget(chg)
+        self._price_labels[sym] = price
+        self._chg_labels[sym] = chg
+
+        lay.addWidget(badge)
         lay.addWidget(name)
         lay.addStretch(1)
-        lay.addWidget(chip)
+        lay.addLayout(vbox)
         item.setSizeHint(w.sizeHint())
         self.setItemWidget(item, w)
         return item
