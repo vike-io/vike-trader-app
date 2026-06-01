@@ -23,6 +23,10 @@ ACCENT_HOVER = "#ff8534"
 BLUE = "#58a6ff"
 UP = "#3fb950"
 DOWN = "#f85149"
+# Candle body/wick colors sampled 1:1 from the live TradeLocker (TradingView) chart.
+# Softer than the semantic UP/DOWN above — those stay for trade markers / P&L / equity.
+CANDLE_UP = "#5bbd91"
+CANDLE_DOWN = "#da555a"
 FAST = "#58a6ff"
 SLOW = "#a855f7"
 WARN = "#ffb000"

@@ -4,14 +4,14 @@ reveal (`show_upto`) so the replay hides future bars like MT5's visual tester.
 """
 
 import pyqtgraph as pg
-from PySide6 import QtCore, QtGui
+from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QRectF
 
 from . import theme
-from .chartdata import follow_window, trade_markers, y_bounds
+from .chartdata import axis_time_label, follow_window, ohlc_legend_text, y_bounds
 
-_UP = theme.UP
-_DOWN = theme.DOWN
+_UP = theme.CANDLE_UP
+_DOWN = theme.CANDLE_DOWN
 _ENTRY = theme.UP
 _EXIT = theme.DOWN
 _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
@@ -66,11 +66,38 @@ class CandlestickItem(pg.GraphicsObject):
         return QRectF(-1, lo, len(self._bars) + 1, hi - lo)
 
 
+class TimeAxis(pg.AxisItem):
+    """Bottom axis that labels integer bar-index ticks with each bar's timestamp."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._bars = []
+
+    def set_bars(self, bars):
+        self._bars = bars
+        self.picture = None
+        self.update()
+
+    def tickStrings(self, values, scale, spacing):
+        return [axis_time_label(self._bars, v) for v in values]
+
+
+# TradeStation-style trade markers: buy = blue ▲ below the bar, sell = red ▼ above,
+# exit = white arrow above/below (opposite the entry), + a dotted entry→exit connector.
+_BUY = theme.BLUE
+_SELL = theme.DOWN
+_EXIT_C = "#ffffff"
+
+
 class PriceChart(pg.PlotWidget):
-    """Candles + entry/exit markers + indicator overlays + a replay cursor."""
+    """Candles + TradeStation-style trade markers + indicator overlays + a replay cursor,
+    with TradingView-style chrome: time axis, mouse crosshair, OHLC legend header, a
+    last-price line+badge, and vertical autoscale that fits the visible candles."""
 
     def __init__(self):
-        super().__init__()
+        axis = TimeAxis(orientation="bottom")
+        super().__init__(axisItems={"bottom": axis})
+        self._time_axis = axis
         self.setBackground(theme.BG)
         # Price scale on the RIGHT (TradingView / Lightweight-Charts convention).
         self.showAxis("right")
@@ -78,41 +105,107 @@ class PriceChart(pg.PlotWidget):
         self.getAxis("right").setTextPen(theme.TEXT3)
         self.getAxis("bottom").setTextPen(theme.TEXT3)
         self.showGrid(x=True, y=True, alpha=_GRID)
-        self.addLegend(offset=(10, 8), labelTextColor=theme.TEXT2)
+        self.addLegend(offset=(10, 30), labelTextColor=theme.TEXT2)
+
         self._bars = []
         self._window = 300  # default candles shown; user can mouse-zoom out
         self._follow = True  # keep the replay cursor in view
-        self._entries = []
-        self._exits = []
+        self._yauto = True   # vertical autoscale to the visible candles (TradingView default)
+        self._fitting = False  # guard against autoscale re-entrancy
+        self._title = ""     # "SYMBOL · interval" prefix for the OHLC header
+        self._markers = []   # [{x, price, below, symbol, color}] built from trades
+        self._conn = []      # [(entry_x, entry_price, exit_x, exit_price)] dotted connectors
         self._ts_index = {}  # bar timestamp -> index (for trade-row -> chart focus)
         self._overlays = {}  # label -> full series (aligned to bars)
         self._overlay_curves = {}  # label -> PlotDataItem
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
-        self._entry_scatter = pg.ScatterPlotItem(
-            symbol="t1", size=14, brush=pg.mkBrush(_ENTRY), pen=None, name="entry"
+        # dotted entry->exit connectors (under the candles); markers on top
+        self._conn_curve = self.plot(
+            [], [], pen=pg.mkPen(theme.TEXT3, width=1, style=QtCore.Qt.DotLine), connect="finite"
         )
-        self._exit_scatter = pg.ScatterPlotItem(
-            symbol="t", size=14, brush=pg.mkBrush(_EXIT), pen=None, name="exit"
-        )
-        self.addItem(self._entry_scatter)
-        self.addItem(self._exit_scatter)
+        self._marker_scatter = pg.ScatterPlotItem(pen=None)
+        self.addItem(self._marker_scatter)
+
+        # replay cursor (vertical, accent) — distinct from the mouse crosshair
         self._cursor = pg.InfiniteLine(angle=90, pen=pg.mkPen(theme.ACCENT, width=1))
         self.addItem(self._cursor)
         self._cursor.hide()
 
+        # last-price dashed line + badge
+        self._last_line = pg.InfiniteLine(
+            angle=0, movable=False, pen=pg.mkPen(theme.TEXT3, width=1, style=QtCore.Qt.DashLine)
+        )
+        self.addItem(self._last_line, ignoreBounds=True)
+        self._last_line.hide()
+        self._last_badge = pg.TextItem(color="#0e0e11", anchor=(0, 0.5), fill=pg.mkBrush(_UP))
+        self.addItem(self._last_badge, ignoreBounds=True)
+        self._last_badge.hide()
+
+        # mouse crosshair (dim dashed)
+        cx_pen = pg.mkPen(theme.TEXT2, width=1, style=QtCore.Qt.DashLine)
+        self._cx_v = pg.InfiniteLine(angle=90, movable=False, pen=cx_pen)
+        self._cx_h = pg.InfiniteLine(angle=0, movable=False, pen=cx_pen)
+        self.addItem(self._cx_v, ignoreBounds=True)
+        self.addItem(self._cx_h, ignoreBounds=True)
+        self._cx_v.hide()
+        self._cx_h.hide()
+
+        # OHLC legend header (top-left overlay)
+        self._ohlc_label = QtWidgets.QLabel(self)
+        self._ohlc_label.setTextFormat(QtCore.Qt.RichText)
+        self._ohlc_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._ohlc_label.setStyleSheet(
+            f"color:{theme.TEXT2};font-family:{theme.FONT_MONO};font-size:11px;background:transparent;"
+        )
+        self._ohlc_label.move(12, 6)
+
+        # "Auto" vertical-scale toggle (bottom-right) — on = fit visible candles
+        self._auto_btn = QtWidgets.QPushButton("Auto", self)
+        self._auto_btn.setCheckable(True)
+        self._auto_btn.setChecked(True)
+        self._auto_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._auto_btn.setToolTip("Auto-fit the price scale to the visible candles")
+        self._auto_btn.setStyleSheet(
+            f"QPushButton{{color:{theme.TEXT3};background:{theme.PANEL};border:1px solid {theme.BORDER};"
+            f"border-radius:4px;padding:1px 7px;font-size:10px;}}"
+            f"QPushButton:checked{{color:{theme.ACCENT};border-color:{theme.ACCENT};}}"
+        )
+        self._auto_btn.toggled.connect(self._toggle_autoscale)
+
+        self.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.getViewBox().sigXRangeChanged.connect(lambda *_: self._autoscale_y())
+
+    # --- data ---
+    def set_title(self, text: str):
+        """Set the 'SYMBOL · interval' prefix shown in the OHLC legend header."""
+        self._title = text or ""
+        self._show_last_ohlc()
+
     def set_data(self, bars, trades):
         self._bars = bars
+        self._time_axis.set_bars(bars)
         ts_index = {b.ts: i for i, b in enumerate(bars)}
         self._ts_index = ts_index
-        self._entries, self._exits = [], []
-        for m in trade_markers(trades):
-            idx = ts_index.get(m.ts)
-            if idx is None:
+        self._markers, self._conn = [], []
+        for t in trades:
+            ei = ts_index.get(t.entry_ts)
+            if ei is None:
                 continue
-            (self._entries if m.kind == "entry" else self._exits).append((idx, m.price))
-        # the view is set by show_upto -> the default lands on the last ``window`` bars
+            long = getattr(t, "size", 1) >= 0
+            if long:  # buy entry: blue ▲ below the bar
+                self._markers.append({"x": ei, "price": t.entry_price, "below": True,
+                                      "symbol": "arrow_up", "color": _BUY})
+            else:     # sell (short) entry: red ▼ above the bar
+                self._markers.append({"x": ei, "price": t.entry_price, "below": False,
+                                      "symbol": "arrow_down", "color": _SELL})
+            xi = ts_index.get(t.exit_ts)
+            if xi is not None:  # exit: white, opposite side from the entry
+                self._markers.append({"x": xi, "price": t.exit_price, "below": not long,
+                                      "symbol": "arrow_up" if not long else "arrow_down",
+                                      "color": _EXIT_C})
+                self._conn.append((ei, t.entry_price, xi, t.exit_price))
         self.show_upto(len(bars) - 1)
 
     def set_overlays(self, overlays: dict):
@@ -133,14 +226,16 @@ class PriceChart(pg.PlotWidget):
         if not self._bars:
             return
         self._candles.set_bars(self._bars[: index + 1])
-        self._entry_scatter.setData(
-            [i for i, _ in self._entries if i <= index],
-            [p for i, p in self._entries if i <= index],
-        )
-        self._exit_scatter.setData(
-            [i for i, _ in self._exits if i <= index],
-            [p for i, p in self._exits if i <= index],
-        )
+        # marker offset proportional to the visible price range, so buy/sell/exit arrows
+        # sit clearly off the candles on any instrument (BTC vs a 0.99 forex pair).
+        if self._follow:
+            lo, hi = follow_window(index, len(self._bars), self._window)
+        else:
+            (vx0, vx1), _ = self.getViewBox().viewRange()
+            lo, hi = max(0, int(vx0)), min(len(self._bars), int(vx1) + 1)
+        yb = y_bounds(self._bars, lo, min(hi, index + 1))
+        marker_off = (yb[1] - yb[0]) * 0.04 if yb and yb[1] > yb[0] else 0.0
+        self._render_markers(index, marker_off)
         for label, curve in self._overlay_curves.items():
             series = self._overlays.get(label, [])
             xs = [i for i in range(min(index + 1, len(series))) if series[i] is not None]
@@ -150,10 +245,31 @@ class PriceChart(pg.PlotWidget):
         self._cursor.setPos(index)
         if self._follow:
             lo, hi = follow_window(index, len(self._bars), self._window)
+            self._fitting = True
             self.setXRange(lo, hi, padding=0.02)
-            yb = y_bounds(self._bars, lo, min(hi, index + 1))
-            if yb:
-                self.setYRange(yb[0], yb[1], padding=0.06)
+            self._fitting = False
+        self._update_last()
+        self._autoscale_y()
+        if not self._cx_v.isVisible():
+            self._show_last_ohlc()
+
+    def _render_markers(self, index: int, off: float = 0.0):
+        """Draw revealed buy/sell/exit arrows (``off`` below/above the fill) + dotted connectors."""
+        spots = []
+        for m in self._markers:
+            if m["x"] > index:
+                continue
+            y = m["price"] - off if m["below"] else m["price"] + off
+            spots.append({"pos": (m["x"], y), "symbol": m["symbol"], "size": 14,
+                          "brush": pg.mkBrush(m["color"]), "pen": None})
+        self._marker_scatter.setData(spots)
+        xs, ys = [], []
+        for ex, ep, xx, xp in self._conn:
+            if xx > index:
+                continue
+            xs += [ex, xx, float("nan")]
+            ys += [ep, xp, float("nan")]
+        self._conn_curve.setData(xs, ys)
 
     def focus(self, index: int, span: int = 40):
         """Pan/zoom the price view to centre on bar ``index`` (driven by trade-row clicks)."""
@@ -162,10 +278,10 @@ class PriceChart(pg.PlotWidget):
         self._follow = False  # an explicit focus range should stick, not be overridden
         lo = max(0, index - span)
         hi = min(len(self._bars), index + span)
+        self._fitting = True
         self.setXRange(lo, hi, padding=0.05)
-        yb = y_bounds(self._bars, lo, hi)
-        if yb:
-            self.setYRange(yb[0], yb[1], padding=0.1)
+        self._fitting = False
+        self._autoscale_y()
         self._cursor.show()
         self._cursor.setPos(index)
 
@@ -174,6 +290,93 @@ class PriceChart(pg.PlotWidget):
         idx = self._ts_index.get(ts)
         if idx is not None:
             self.focus(idx, span)
+
+    # --- TradingView-style chrome ---
+    def _autoscale_y(self):
+        """Fit the Y range to the candles visible in the current X window (when Auto is on)."""
+        if self._fitting or not self._yauto or not self._bars:
+            return
+        (x0, x1), _ = self.getViewBox().viewRange()
+        lo = max(0, int(x0))
+        hi = min(len(self._bars), int(x1) + 1)
+        yb = y_bounds(self._bars, lo, hi)
+        if yb and yb[1] > yb[0]:
+            self._fitting = True
+            self.setYRange(yb[0], yb[1], padding=0.08)
+            self._fitting = False
+
+    def _toggle_autoscale(self, on: bool):
+        self._yauto = on
+        if on:
+            self._autoscale_y()
+
+    def _update_last(self):
+        bars = self._candles._bars
+        if not bars:
+            self._last_line.hide()
+            self._last_badge.hide()
+            return
+        i = len(bars) - 1
+        b = bars[i]
+        prev = bars[i - 1].close if i > 0 else b.open
+        col = _UP if b.close >= prev else _DOWN
+        self._last_line.setPen(pg.mkPen(col, width=1, style=QtCore.Qt.DashLine))
+        self._last_line.setPos(b.close)
+        self._last_line.show()
+        self._last_badge.setText(f"{b.close:g}")
+        self._last_badge.fill = pg.mkBrush(col)
+        self._last_badge.setPos(i, b.close)
+        self._last_badge.show()
+
+    def _set_ohlc(self, bar, prev_close=None):
+        if bar is None:
+            self._ohlc_label.setText(self._title)
+            self._ohlc_label.adjustSize()
+            return
+        up = prev_close is None or bar.close >= prev_close
+        col = theme.UP if up else theme.DOWN
+        prefix = (f"<span style='color:{theme.TEXT}'>{self._title}</span>&nbsp;&nbsp;"
+                  if self._title else "")
+        self._ohlc_label.setText(f"{prefix}<span style='color:{col}'>{ohlc_legend_text(bar, prev_close)}</span>")
+        self._ohlc_label.adjustSize()
+
+    def _show_last_ohlc(self):
+        bars = self._candles._bars
+        if not bars:
+            self._set_ohlc(None)
+            return
+        b = bars[-1]
+        prev = bars[-2].close if len(bars) > 1 else b.open
+        self._set_ohlc(b, prev)
+
+    def _on_mouse_moved(self, scene_pos):
+        if not self._bars:
+            return
+        vb = self.getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self._cx_v.hide()
+            self._cx_h.hide()
+            self._show_last_ohlc()
+            return
+        pt = vb.mapSceneToView(scene_pos)
+        self._cx_v.setPos(pt.x())
+        self._cx_h.setPos(pt.y())
+        self._cx_v.show()
+        self._cx_h.show()
+        i = int(round(pt.x()))
+        revealed = self._candles._bars
+        if 0 <= i < len(revealed):
+            prev = revealed[i - 1].close if i > 0 else revealed[i].open
+            self._set_ohlc(revealed[i], prev)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if hasattr(self, "_auto_btn"):
+            self._auto_btn.adjustSize()
+            self._auto_btn.move(
+                self.width() - self._auto_btn.width() - 8,
+                self.height() - self._auto_btn.height() - 6,
+            )
 
 
 class EquityChart(pg.PlotWidget):

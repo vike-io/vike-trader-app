@@ -591,6 +591,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for ch in (self.price, self.studio_price):
             ch.set_data(bars, self._result.trades)
             ch.set_overlays(overlays)
+            ch.set_title(f"{self._symbol} · {self._interval}")
         self.trades.update_trades(self._result.trades)
         self.slider.setMaximum(self._replay.last_index)
         self.slider.setValue(self._replay.last_index)
