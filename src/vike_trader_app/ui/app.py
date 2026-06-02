@@ -405,7 +405,7 @@ class MainWindow(QtWidgets.QMainWindow):
         svc.failed.connect(tab.set_status)
         self._options_all_expiries: list = []
         self._options_shown: list = []
-        groups = 6  # how many expiries to show as collapsible groups at once
+        groups_max = 12  # cap on simultaneous expiry groups (bounds the per-expiry fetch count)
 
         def _show(subset: list) -> None:
             if not subset:
@@ -414,10 +414,15 @@ class MainWindow(QtWidgets.QMainWindow):
             svc.set_strikes(tab.strikes_value())
             svc.start_polling_grouped(self._options_shown)
 
+        def _filtered() -> list:
+            days = tab.exp_range_days()
+            within = [e for e in self._options_all_expiries if days is None or e.dte <= days]
+            return (within or self._options_all_expiries)[:groups_max]
+
         def _on_expiries(expiries) -> None:
             self._options_all_expiries = list(expiries)
             tab.set_expiries(expiries)        # dropdown = jump-to-expiry
-            _show(expiries[:groups])          # default: nearest N as groups
+            _show(_filtered())                # default: expiries within the range filter
 
         svc.expiriesReady.connect(_on_expiries)
 
@@ -430,7 +435,7 @@ class MainWindow(QtWidgets.QMainWindow):
         def _jump(iso: str) -> None:  # selecting an expiry pages the groups to start there
             allx = self._options_all_expiries
             idx = next((i for i, e in enumerate(allx) if e.date == iso), 0)
-            _show(allx[idx:idx + groups])
+            _show(allx[idx:idx + groups_max])
 
         def _refresh() -> None:
             svc.set_strikes(tab.strikes_value())
@@ -439,6 +444,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         tab.underlyingChanged.connect(_load_underlying)
         tab.expiryChanged.connect(_jump)
+        tab.rangeChanged.connect(lambda: _show(_filtered()))
         tab.refreshRequested.connect(_refresh)
         self._load_options_underlying = _load_underlying
 
@@ -1570,6 +1576,13 @@ def _install_qt_log_filter():
 
 def main():
     import sys
+
+    try:  # honor .env so API keys / options-backend config are picked up (python-dotenv is a core dep)
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:  # noqa: BLE001 - missing .env / dotenv must never block launch
+        pass
 
     _install_qt_log_filter()
     app = QtWidgets.QApplication(sys.argv)

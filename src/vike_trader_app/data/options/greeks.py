@@ -9,11 +9,21 @@ the year basis is 365 calendar days (matching the per-day Θ denominator).
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import replace
 
 from .model import OptionQuote, _expiry_ms
 
-_RISK_FREE = 0.0  # v1 constant; later: configurable
+
+def _env_risk_free() -> float:
+    """Risk-free rate from `options_risk_free` (e.g. 0.04), else 0.0."""
+    try:
+        return float(os.environ.get("options_risk_free") or 0.0)
+    except ValueError:
+        return 0.0
+
+
+_RISK_FREE = _env_risk_free()   # resolved at import (after the app's load_dotenv())
 _MS_PER_YEAR = 365.0 * 86_400 * 1000
 
 

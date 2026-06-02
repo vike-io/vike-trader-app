@@ -43,8 +43,8 @@ def test_theor_uses_black_scholes_and_ann_is_annualized():
     q = _q()
     theor = cell_value("theor", q, 7600.75, 30)   # 30 DTE, iv 17.84% -> a positive BS price
     assert theor is not None and theor > 0
-    ann = cell_value("ann", q, 7600.75, 30)
-    assert ann == pytest.approx((13.6 / 7600.0) * (365.0 / 30), abs=1e-9)
+    assert cell_value("annbid", q, 7600.75, 30) == pytest.approx((13.6 / 7600.0) * (365.0 / 30), abs=1e-9)
+    assert cell_value("annask", q, 7600.75, 30) == pytest.approx((13.9 / 7600.0) * (365.0 / 30), abs=1e-9)
 
 
 def test_none_quote_and_missing_context_are_safe():

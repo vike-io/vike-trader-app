@@ -43,8 +43,8 @@ def test_chain_view_columns_and_atm_marker_row():
     tab.set_chain(_chain())
     # calls + [Strike, IV] + puts
     assert tab.table.columnCount() == 2 * len(C.CHAIN_FIELDS) + 2
-    for label in ("Theor", "Spread", "Distance", "Rel dist", "Bid %", "Ann %", "LTP",
-                  "Strike", "IV"):
+    for label in ("Theor", "Spread", "Distance", "Rel dist", "Bid %", "Ann bid %", "Ann ask %",
+                  "LTP", "Strike", "IV"):
         assert _cols(tab.table, label), f"missing column {label}"
     # 2 strikes + 1 spanned ATM marker row, inserted at the first strike >= spot (7605)
     assert tab.table.rowCount() == 3
@@ -98,6 +98,42 @@ def test_grouped_view_collapsible_expiry_sections():
     tab._on_cell_clicked(g1, 0)
     assert tab.table.isRowHidden(tab._group_rows[g1][0])
     assert "▸" in tab.table.item(g1, 0).text()
+
+
+def test_column_header_sort_reorders_and_drops_atm_marker():
+    _app()
+    tab = OptionsTab()
+    exp = Expiry(date="2026-07-02", dte=30, label="02 Jul")
+    rows = (  # call volumes deliberately NOT in strike order
+        StrikeRow(strike=100.0, call=OptionQuote(strike=100.0, type="C", volume=10)),
+        StrikeRow(strike=110.0, call=OptionQuote(strike=110.0, type="C", volume=99)),
+        StrikeRow(strike=120.0, call=OptionQuote(strike=120.0, type="C", volume=50)),
+    )
+    tab.set_chain(OptionChain("X", "equity", 105.0, exp, 1, "polygon", rows))
+    assert tab.table.rowCount() == 4  # 3 strikes + ATM marker (spot 105 between 100 and 110)
+    strike_col = _cols(tab.table, "Strike")[0]
+
+    tab._on_header_clicked(tab._bar.call_col)  # sort by call Volume (desc)
+    assert tab._sort[0] == "volume"
+    spanned = [r for r in range(tab.table.rowCount())
+               if tab.table.columnSpan(r, 0) == tab.table.columnCount()]
+    assert spanned == [] and tab.table.rowCount() == 3  # ATM marker dropped while sorted
+    assert [tab.table.item(r, strike_col).text() for r in range(3)] == ["110.00", "120.00", "100.00"]
+
+    tab._on_header_clicked(strike_col)  # back to strike order
+    assert tab._sort is None
+    assert any(tab.table.columnSpan(r, 0) == tab.table.columnCount()
+               for r in range(tab.table.rowCount()))  # ATM marker restored
+
+
+def test_exp_range_days_mapping():
+    _app()
+    tab = OptionsTab()
+    assert tab.exp_range_days() == 30  # default "Next 30d"
+    tab.exp_range.setCurrentText("All")
+    assert tab.exp_range_days() is None
+    tab.exp_range.setCurrentText("Next 90d")
+    assert tab.exp_range_days() == 90
 
 
 def test_status_message_no_modal():

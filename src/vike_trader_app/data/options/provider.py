@@ -6,6 +6,7 @@ import os
 from typing import Protocol, runtime_checkable
 
 from .deribit import DeribitOptionsProvider
+from .marketdata import MarketDataOptionsProvider
 from .model import Expiry, OptionChain
 from .polygon import PolygonOptionsProvider
 from .yfinance import YFinanceOptionsProvider
@@ -24,14 +25,14 @@ class OptionsProvider(Protocol):
 
 
 def _stock_provider() -> OptionsProvider:
-    """Equity/index backend: Polygon when explicitly opted in, else the free yfinance feed.
-
-    Polygon's free tier 403s on the options snapshot (no bid/ask/IV/greeks), so it is opt-in
-    via `options_stock_provider=polygon` (with `polygon_api_key` set) rather than auto-selected
-    by key presence — that keeps the working default on yfinance for free users.
+    """Equity/index backend, chosen by `options_stock_provider` (+ that backend's key):
+    'marketdata' (free delayed greeks), 'polygon' (paid Options entitlement), else the free
+    yfinance feed. Opt-in by flag rather than key-presence so the default stays on yfinance.
     """
-    if (os.environ.get("options_stock_provider", "").lower() == "polygon"
-            and os.environ.get("polygon_api_key")):
+    backend = os.environ.get("options_stock_provider", "").lower()
+    if backend == "marketdata" and os.environ.get("marketdata_api_key"):
+        return MarketDataOptionsProvider()
+    if backend == "polygon" and os.environ.get("polygon_api_key"):
         return PolygonOptionsProvider()
     return YFinanceOptionsProvider()
 

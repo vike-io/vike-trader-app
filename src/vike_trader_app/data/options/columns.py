@@ -14,20 +14,21 @@ from .model import OptionQuote
 # Per-side field order, CENTRE -> OUTER (i.e. the order on the puts side, left to right).
 # The calls side uses the reverse so the table mirrors around the central Strike/IV.
 CHAIN_FIELDS = ["volume", "distance", "reldist", "bid", "ask", "spread",
-                "theor", "ltp", "bidpct", "askpct", "ann"]
+                "theor", "ltp", "bidpct", "askpct", "annbid", "annask"]
 GREEKS_FIELDS = ["volume", "oi", "bid", "ask", "mark", "delta", "gamma", "theta", "vega"]
 
 HEADERS = {
     "volume": "Volume", "distance": "Distance", "reldist": "Rel dist", "bid": "Bid", "ask": "Ask",
     "spread": "Spread", "theor": "Theor", "ltp": "LTP", "bidpct": "Bid %", "askpct": "Ask %",
-    "ann": "Ann %", "oi": "OI", "mark": "Mark", "iv": "IV",
+    "annbid": "Ann bid %", "annask": "Ann ask %", "oi": "OI", "mark": "Mark", "iv": "IV",
     "delta": "Δ", "gamma": "Γ", "theta": "Θ", "vega": "V",
 }
 
 # value kind -> formatting; "bar" renders a magnitude bar behind an integer (volume).
 _KIND = {
     "volume": "bar", "oi": "int", "distance": "px", "reldist": "pct", "bid": "px", "ask": "px",
-    "spread": "pct", "theor": "px", "ltp": "px", "bidpct": "pct", "askpct": "pct", "ann": "pct",
+    "spread": "pct", "theor": "px", "ltp": "px", "bidpct": "pct", "askpct": "pct",
+    "annbid": "pct", "annask": "pct",
     "mark": "px", "iv": "pct", "delta": "g", "gamma": "g", "theta": "g", "vega": "g",
 }
 
@@ -73,11 +74,12 @@ def cell_value(field: str, q: OptionQuote | None, spot: float | None, dte: int) 
     if field == "theor":
         t = dte / 365.0
         return black_scholes_price(spot, q.strike, t, q.iv, q.type)
-    if field == "ann":
-        # annualized premium yield if sold at the bid: (bid / strike) * (365 / days)
-        if not q.bid or q.strike <= 0:
+    if field in ("annbid", "annask"):
+        # annualized premium yield: (premium / strike) * (365 / days)
+        premium = q.bid if field == "annbid" else q.ask
+        if not premium or q.strike <= 0:
             return None
-        return (q.bid / q.strike) * (365.0 / max(dte, 1))
+        return (premium / q.strike) * (365.0 / max(dte, 1))
     return None
 
 

@@ -57,6 +57,7 @@ class OptionsTab(QtWidgets.QWidget):
 
     underlyingChanged = QtCore.Signal(str)
     expiryChanged = QtCore.Signal(str)       # expiry ISO date
+    rangeChanged = QtCore.Signal()           # expiration-range filter changed
     refreshRequested = QtCore.Signal()
 
     def __init__(self, parent=None) -> None:
@@ -64,6 +65,8 @@ class OptionsTab(QtWidgets.QWidget):
         self._chain: OptionChain | None = None
         self._chains: list[OptionChain] | None = None   # grouped (multi-expiry) view
         self._group_rows: dict[int, list[int]] = {}      # header row -> its data/marker rows
+        self._col_field: dict[int, tuple[str, str | None]] = {}  # column -> (field, side)
+        self._sort: tuple | None = None                  # None=strike order; else (field, side, desc)
         self._view = "chain"
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -75,6 +78,8 @@ class OptionsTab(QtWidgets.QWidget):
         self.underlying.setEditable(True)
         self.underlying.addItems(["BTC", "ETH", "SOL", "^VIX", "SPY", "QQQ", "AAPL", "MSFT"])
         self.expiry = QtWidgets.QComboBox()
+        self.exp_range = QtWidgets.QComboBox()
+        self.exp_range.addItems(["Next 30d", "Next 60d", "Next 90d", "All"])
         self.strikes = QtWidgets.QComboBox()
         self.strikes.addItems(["±6", "±12", "All"])
         self.strikes.setCurrentText("±12")
@@ -85,7 +90,8 @@ class OptionsTab(QtWidgets.QWidget):
         self.status_label = QtWidgets.QLabel("—")
         self.status_label.setStyleSheet(f"color:{theme.TEXT3};border:none;")
         for w in (QtWidgets.QLabel("Symbol"), self.underlying, QtWidgets.QLabel("Expiry"),
-                  self.expiry, QtWidgets.QLabel("Strikes"), self.strikes,
+                  self.expiry, QtWidgets.QLabel("Range"), self.exp_range,
+                  QtWidgets.QLabel("Strikes"), self.strikes,
                   QtWidgets.QLabel("View"), self.view_toggle, self.refresh_btn):
             controls.addWidget(w)
         controls.addStretch(1)
@@ -107,9 +113,11 @@ class OptionsTab(QtWidgets.QWidget):
         self.underlying.lineEdit().returnPressed.connect(self._emit_underlying)
         self.expiry.activated.connect(self._emit_expiry)
         self.strikes.activated.connect(self.refreshRequested.emit)
+        self.exp_range.activated.connect(self.rangeChanged.emit)
         self.view_toggle.activated.connect(self._on_view_changed)
         self.refresh_btn.clicked.connect(self.refreshRequested.emit)
         self.table.cellClicked.connect(self._on_cell_clicked)
+        self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
 
     # --- signals out ---------------------------------------------------------
     def _emit_underlying(self) -> None:
@@ -130,6 +138,11 @@ class OptionsTab(QtWidgets.QWidget):
     # --- inputs --------------------------------------------------------------
     def strikes_value(self) -> int | None:
         return {"±6": 6, "±12": 12, "All": None}[self.strikes.currentText()]
+
+    def exp_range_days(self) -> int | None:
+        """Max DTE to show as groups, or None for all expiries."""
+        return {"Next 30d": 30, "Next 60d": 60, "Next 90d": 90, "All": None}[
+            self.exp_range.currentText()]
 
     def set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -168,6 +181,11 @@ class OptionsTab(QtWidgets.QWidget):
         strike_col = len(call_fields)
         self._bar.call_col = call_fields.index("volume")
         self._bar.put_col = strike_col + 2 + put_fields.index("volume")
+        # map each column to (field, side) so header clicks know what to sort on
+        self._col_field = {i: (f, "C") for i, f in enumerate(call_fields)}
+        self._col_field[strike_col] = ("strike", None)
+        self._col_field[strike_col + 1] = ("iv", None)
+        self._col_field.update({strike_col + 2 + i: (f, "P") for i, f in enumerate(put_fields)})
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(strike_col, QtWidgets.QHeaderView.Fixed)
@@ -179,6 +197,36 @@ class OptionsTab(QtWidgets.QWidget):
         vols = [q.volume for r in chain.rows for q in (r.call, r.put) if q and q.volume]
         return max(vols) if vols else 0.0
 
+    def _sorted_rows(self, chain: OptionChain) -> tuple[list[StrikeRow], bool]:
+        """Rows in the active sort order. Returns (rows, show_atm) — the ATM marker only makes
+        sense in strike order, so it's suppressed when sorting by another column."""
+        if self._sort is None:
+            return list(chain.rows), True
+        field, side, desc = self._sort
+        spot, dte = chain.underlying_price, chain.expiry.dte
+
+        def val(r: StrikeRow):
+            if field == "iv":
+                return (r.call.iv if r.call else None) or (r.put.iv if r.put else None)
+            return C.cell_value(field, r.call if side == "C" else r.put, spot, dte)
+
+        have = [r for r in chain.rows if val(r) is not None]
+        none = [r for r in chain.rows if val(r) is None]
+        have.sort(key=val, reverse=desc)
+        return have + none, False   # None-valued strikes always trail
+
+    def _on_header_clicked(self, col: int) -> None:
+        field, side = self._col_field.get(col, (None, None))
+        if field is None:
+            return
+        if field == "strike":
+            self._sort = None                       # back to the natural strike ladder
+        elif self._sort and self._sort[0] == field and self._sort[1] == side:
+            self._sort = (field, side, not self._sort[2])   # same column -> flip direction
+        else:
+            self._sort = (field, side, field in ("volume", "oi"))  # volume/OI default to desc
+        self._rerender()
+
     def _render(self) -> None:
         self._group_rows = {}
         call_fields, put_fields, ncols, strike_col = self._setup_columns()
@@ -186,11 +234,12 @@ class OptionsTab(QtWidgets.QWidget):
         if chain is None:
             return
         spot, dte, maxvol = chain.underlying_price, chain.expiry.dte, self._maxvol(chain)
-        self.table.setRowCount(len(chain.rows))
-        for ri, row in enumerate(chain.rows):
+        rows, show_atm = self._sorted_rows(chain)
+        self.table.setRowCount(len(rows))
+        for ri, row in enumerate(rows):
             self._fill_strike_row(ri, row, call_fields, put_fields, strike_col, spot, dte, maxvol)
-        if spot is not None:
-            pos = next((i for i, r in enumerate(chain.rows) if r.strike >= spot), len(chain.rows))
+        if show_atm and spot is not None:
+            pos = next((i for i, r in enumerate(rows) if r.strike >= spot), len(rows))
             self._marker_row(chain, ncols, pos)
 
     def _render_groups(self) -> None:
@@ -211,17 +260,18 @@ class OptionsTab(QtWidgets.QWidget):
                            put_fields: list[str], ncols: int, strike_col: int) -> list[int]:
         """Append one chain's strike rows (+ its ATM marker) to the table; return their indices."""
         spot, dte, maxvol = chain.underlying_price, chain.expiry.dte, self._maxvol(chain)
-        atm = (next((i for i, r in enumerate(chain.rows) if r.strike >= spot), len(chain.rows))
-               if spot is not None else -1)
+        srows, show_atm = self._sorted_rows(chain)
+        atm = (next((i for i, r in enumerate(srows) if r.strike >= spot), len(srows))
+               if (show_atm and spot is not None) else -1)
         rows: list[int] = []
-        for i, srow in enumerate(chain.rows):
+        for i, srow in enumerate(srows):
             if i == atm:
                 rows.append(self._marker_row(chain, ncols, self.table.rowCount()))
             r = self.table.rowCount()
             self.table.insertRow(r)
             self._fill_strike_row(r, srow, call_fields, put_fields, strike_col, spot, dte, maxvol)
             rows.append(r)
-        if atm >= len(chain.rows):  # spot above every strike -> marker after the last row
+        if show_atm and atm >= len(srows) and spot is not None:  # spot above every strike
             rows.append(self._marker_row(chain, ncols, self.table.rowCount()))
         return rows
 

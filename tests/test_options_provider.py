@@ -1,4 +1,5 @@
 from vike_trader_app.data.options.deribit import DeribitOptionsProvider
+from vike_trader_app.data.options.marketdata import MarketDataOptionsProvider
 from vike_trader_app.data.options.polygon import PolygonOptionsProvider
 from vike_trader_app.data.options.provider import select_provider
 from vike_trader_app.data.options.yfinance import YFinanceOptionsProvider
@@ -22,6 +23,13 @@ def test_stocks_route_to_polygon_when_opted_in(monkeypatch):
     monkeypatch.setenv("polygon_api_key", "test-key")
     assert isinstance(select_provider("MSFT"), PolygonOptionsProvider)
     # crypto still goes to Deribit regardless of the stock-backend flag
+    assert isinstance(select_provider("BTC"), DeribitOptionsProvider)
+
+
+def test_stocks_route_to_marketdata_when_opted_in(monkeypatch):
+    monkeypatch.setenv("options_stock_provider", "marketdata")
+    monkeypatch.setenv("marketdata_api_key", "test-key")
+    assert isinstance(select_provider("AAPL"), MarketDataOptionsProvider)
     assert isinstance(select_provider("BTC"), DeribitOptionsProvider)
 
 
