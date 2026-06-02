@@ -18,15 +18,30 @@ def test_no_key_returns_empty():
 
 
 def test_backfills_mapped_us_event():
-    # FRED series/observations JSON shape
+    # keyed by ForexFactory's title ("Non-Farm Employment Change", not "Non-Farm Payrolls")
     fake = {"observations": [{"date": "2026-06-01", "value": "272.4"}]}
     p = FredProvider(api_key="k", http=lambda url, **kw: fake)
-    out = p.backfill([_ev("Non-Farm Payrolls")])
-    ev_id = _ev("Non-Farm Payrolls").id
+    out = p.backfill([_ev("Non-Farm Employment Change")])
+    ev_id = _ev("Non-Farm Employment Change").id
     assert ev_id in out and out[ev_id].value == 272.4 and out[ev_id].source == "FRED"
+
+
+def test_uses_forexfactory_title_and_units_transform():
+    # CPI m/m must hit the CPI series with a percent-change transform, not the raw level
+    seen = {}
+
+    def fake(url, **kw):
+        seen["url"] = url
+        return {"observations": [{"value": "0.27"}]}
+
+    p = FredProvider(api_key="k", http=fake)
+    out = p.backfill([_ev("CPI m/m")])
+    ev_id = _ev("CPI m/m").id
+    assert "series_id=CPIAUCSL" in seen["url"] and "units=pch" in seen["url"]
+    assert out[ev_id].value == 0.3  # rounded to one decimal
 
 
 def test_ignores_unmapped_or_nonus_events():
     p = FredProvider(api_key="k", http=lambda url, **kw: {"observations": []})
     assert p.backfill([_ev("Mystery Indicator")]) == {}
-    assert p.backfill([_ev("Non-Farm Payrolls", currency="EUR")]) == {}
+    assert p.backfill([_ev("Non-Farm Employment Change", currency="EUR")]) == {}

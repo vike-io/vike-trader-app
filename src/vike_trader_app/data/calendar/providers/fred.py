@@ -15,17 +15,27 @@ from ..taxonomy import normalize_title
 
 OBS_URL = ("https://api.stlouisfed.org/fred/series/observations"
            "?series_id={series}&api_key={key}&file_type=json"
-           "&sort_order=desc&limit=1")
+           "&units={units}&sort_order=desc&limit=1")
 
-# normalized US event title → (FRED series id, unit)
-SERIES: dict[str, tuple[str, str]] = {
-    "non-farm payrolls": ("PAYEMS", "K"),
-    "unemployment rate": ("UNRATE", "%"),
-    "inflation rate": ("CPIAUCSL", "%"),
-    "core inflation rate": ("CPILFESL", "%"),
-    "gdp growth rate": ("A191RL1Q225SBEA", "%"),
-    "fed funds rate": ("FEDFUNDS", "%"),
-    "retail sales": ("RSAFS", "%"),
+# Keyed by the NORMALIZED ForexFactory event title (the schedule provider), NOT the
+# TradingView/TradingEconomics names — those differ ("Non-Farm Employment Change", not
+# "Non-Farm Payrolls"). normalize_title() strips adv/prelim/final, so all GDP vintages
+# collapse to "gdp q/q". Value → (FRED series, display unit, FRED `units` transform):
+#   lin = level · chg = period change · pch = % change (MoM) · pc1 = % change vs year ago.
+# The transform matters: ForexFactory reports the *change*/% (e.g. NFP ≈ +150K, CPI m/m
+# 0.2%), while raw FRED series are mostly levels.
+SERIES: dict[str, tuple[str, str, str]] = {
+    "non-farm employment change": ("PAYEMS", "K", "chg"),
+    "unemployment rate": ("UNRATE", "%", "lin"),
+    "cpi m/m": ("CPIAUCSL", "%", "pch"),
+    "cpi y/y": ("CPIAUCSL", "%", "pc1"),
+    "core cpi m/m": ("CPILFESL", "%", "pch"),
+    "core cpi y/y": ("CPILFESL", "%", "pc1"),
+    "average hourly earnings m/m": ("CES0500000003", "%", "pch"),
+    "retail sales m/m": ("RSAFS", "%", "pch"),
+    "core retail sales m/m": ("RSFSXMV", "%", "pch"),
+    "gdp q/q": ("A191RL1Q225SBEA", "%", "lin"),
+    "federal funds rate": ("DFEDTARU", "%", "lin"),
 }
 
 
@@ -46,13 +56,15 @@ class FredProvider:
             mapped = SERIES.get(normalize_title(ev.title))
             if not mapped:
                 continue
-            series, unit = mapped
+            series, unit, units = mapped
             try:
-                data = self._http(OBS_URL.format(series=series, key=self._key))
+                data = self._http(OBS_URL.format(series=series, key=self._key, units=units))
                 obs = data.get("observations") or []
                 if not obs or obs[0].get("value") in (None, ".", ""):
                     continue
-                out[ev.id] = ActualValue(float(obs[0]["value"]), unit, self.name)
+                # FRED change/percent transforms carry many decimals; ForexFactory prints
+                # one (0.2%, +139K), so round to keep the display faithful.
+                out[ev.id] = ActualValue(round(float(obs[0]["value"]), 1), unit, self.name)
             except Exception:  # noqa: BLE001 - a flaky source must never break the calendar
                 continue
         return out
