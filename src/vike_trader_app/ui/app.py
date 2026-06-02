@@ -16,14 +16,16 @@ from ..core.engine import BacktestEngine
 from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
-from ..data.cache import get_bars
+from ..data.cache import DEFAULT_ROOT, get_bars
 from ..data.live_update import closed_bars, feed_health, live_fetch_window, merge_live_bars
 from ..data.polling_feed import PollingBarFeed
+from ..data.rollup import load_pins, refresh_pinned
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
 from . import icons, theme
 from .bots_panel import BotsPanel
 from .chart import PriceChart
+from .datamanager import DataManagerTab
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .panels import (
     TradesTable,
@@ -53,6 +55,8 @@ _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
     "idle": (theme.TEXT3, "● "),
 }
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
+_PINS_PATH = "storage/pins.json"  # pinned (symbol, interval) series kept precomputed (rollups)
+_ROLLUP_REFRESH_MS = 60_000       # backstop: keep pinned rollups current (incremental, cheap)
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
 _FORWARD_FEE = 0.001
 _FORWARD_CASH = 10_000.0
@@ -219,6 +223,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_timer = QtCore.QTimer(self)  # auto-updates the chart for the live symbol
         self._live_timer.timeout.connect(self._live_tick)
 
+        self._rollup_timer = QtCore.QTimer(self)  # keep pinned rollups precomputed (main thread)
+        self._rollup_timer.timeout.connect(self._refresh_pinned_tick)
+        self._rollup_timer.start(_ROLLUP_REFRESH_MS)
+
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(60)
         self._timer.timeout.connect(self._on_tick)
@@ -353,6 +361,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.journal, "Journal")
         self.alerts = AlertsTab()
         self.tabs.addTab(self.alerts, "Alerts")
+        self.datamanager = DataManagerTab(pins_path=_PINS_PATH)
+        self.tabs.addTab(self.datamanager, "Data")
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
@@ -382,7 +392,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
-        ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
+        ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
     ]
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
@@ -829,6 +839,19 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tabs.setVisible(on)
         else:
             self._panel_dock_map[key].setVisible(on)
+
+    def _refresh_pinned_tick(self) -> None:
+        """Backstop timer: keep pinned rollups current (main thread — reads/writes Parquet).
+
+        No-ops in forward mode (that owns the network); pure no-op when nothing is pinned.
+        Errors are swallowed (no modal in a timer path — see the headless-CI hang note).
+        """
+        if self._forward is not None:
+            return
+        try:
+            refresh_pinned(DEFAULT_ROOT, load_pins(_PINS_PATH))
+        except Exception:  # noqa: BLE001 - transient read/write; retried next tick
+            pass
 
     def _on_tab_changed(self, index: int) -> None:
         """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width."""

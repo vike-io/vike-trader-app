@@ -2,6 +2,7 @@
 
 from vike_trader_app.core.model import Bar
 from vike_trader_app.data import cache
+from vike_trader_app.data import parquet_source as ps
 from vike_trader_app.data.binance_source import interval_ms
 
 STEP = 60_000
@@ -125,3 +126,55 @@ def test_get_bars_slices_subrange_from_cache(tmp_path):
     bars = cache.get_bars("BTCUSDT", "1m", 3 * STEP, 5 * STEP, root=root, fetcher=fetcher)
     assert [b.ts for b in bars] == [3 * STEP, 4 * STEP, 5 * STEP]
     assert calls == []
+
+
+# --- repair_gaps (user-triggered interior gap-fill, once, with backoff) ---
+
+
+def _noslp(_s):
+    return None
+
+
+def test_repair_gaps_fills_an_interior_hole(tmp_path):
+    root = str(tmp_path)
+    # 0,1, [hole 2,3], 4,5
+    ps.append_series([_bar(0), _bar(STEP), _bar(4 * STEP), _bar(5 * STEP)], root, "BTCUSDT", "1m")
+
+    def fetcher(symbol, interval, s, e, progress=None):  # noqa: ARG001
+        return [_bar(t) for t in range(s, e + 1, STEP)]
+
+    n = cache.repair_gaps("BTCUSDT", "1m", 0, 5 * STEP, root=root, fetcher=fetcher, sleep=_noslp)
+    assert n == 2  # 2*STEP and 3*STEP
+    assert [b.ts for b in ps.read_series(root, "BTCUSDT", "1m")] == [i * STEP for i in range(6)]
+
+
+def test_repair_gaps_no_fetch_when_contiguous(tmp_path):
+    root = str(tmp_path)
+    ps.append_series([_bar(i * STEP) for i in range(4)], root, "X", "1m")
+    calls = []
+    cache.repair_gaps("X", "1m", 0, 3 * STEP, root=root,
+                      fetcher=lambda *a, **k: (calls.append(1), [])[1], sleep=_noslp)
+    assert calls == []  # no interior gaps -> no fetch
+
+
+def test_repair_gaps_tolerates_empty_gap_fetch(tmp_path):
+    # A legitimate closed-market gap: the source returns nothing; the hole stays, no crash.
+    root = str(tmp_path)
+    ps.append_series([_bar(0), _bar(STEP), _bar(4 * STEP), _bar(5 * STEP)], root, "X", "1m")
+    n = cache.repair_gaps("X", "1m", 0, 5 * STEP, root=root, fetcher=lambda *a, **k: [], sleep=_noslp)
+    assert n == 0
+
+
+def test_repair_gaps_retries_a_transient_failure(tmp_path):
+    root = str(tmp_path)
+    ps.append_series([_bar(0), _bar(STEP), _bar(4 * STEP), _bar(5 * STEP)], root, "X", "1m")
+    state = {"i": 0}
+
+    def flaky(symbol, interval, s, e, progress=None):  # noqa: ARG001
+        state["i"] += 1
+        if state["i"] == 1:
+            raise ConnectionError("transient")
+        return [_bar(t) for t in range(s, e + 1, STEP)]
+
+    n = cache.repair_gaps("X", "1m", 0, 5 * STEP, root=root, fetcher=flaky, sleep=_noslp)
+    assert n == 2 and state["i"] == 2  # retried once, then succeeded

@@ -5,11 +5,14 @@ file and fetching only the parts not already cached (incremental fill). Cached h
 is assumed contiguous; gaps before/after the cached span are fetched and merged.
 """
 
+import time
 from pathlib import Path
 
 from ..core.model import Bar
 from .binance_source import fetch_bars_range, interval_ms
 from .parquet_source import append_series, read_series
+from .quality import find_gaps
+from .retry import with_backoff
 
 DEFAULT_ROOT = "storage/parquet"
 
@@ -82,3 +85,34 @@ def get_bars(
         cached = merge_bars(cached, fetched)
 
     return slice_bars(cached, start_ms, end_ms)
+
+
+def repair_gaps(
+    symbol: str,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    root: str = DEFAULT_ROOT,
+    fetcher=fetch_bars_range,
+    progress=None,
+    sleep=time.sleep,
+) -> int:
+    """Fetch interior holes in the cached series within ``[start, end]`` once, with backoff.
+
+    ``get_bars`` only fills before/after the cached span; interior holes (from a sparse fetch)
+    persist. This refetches each detected gap — with exponential backoff for transient errors —
+    and appends what comes back. **User-triggered, not run on every load:** many interior gaps are
+    legitimate (weekends/holidays/overnight), and the source simply returns nothing for them.
+    Returns the number of bars fetched into gaps.
+    """
+    sliced = slice_bars(read_series(root, symbol, interval), start_ms, end_ms)
+    step = interval_ms(interval)
+    filled = 0
+    for gs, ge in find_gaps(sliced, step):
+        bars = with_backoff(
+            lambda gs=gs, ge=ge: fetcher(symbol, interval, gs, ge, progress=progress), sleep=sleep
+        )
+        if bars:
+            append_series(bars, root, symbol, interval)
+            filled += len(bars)
+    return filled

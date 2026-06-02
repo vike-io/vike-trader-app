@@ -1,0 +1,206 @@
+"""Data Manager space — a TradeStation/NinjaTrader-style window over the local cache.
+
+Lists every cached ``(symbol, interval)`` series (bars, date range, on-disk size, pinned?) and
+drives the data engine: Download/Extend (``cache.get_bars``), Repair gaps (``cache.repair_gaps``),
+Pin/Unpin a precomputed rollup (``data.rollup``), Delete (``parquet_source.delete_series``).
+
+Self-contained like ScreenerTab/JournalTab; ``root``/``pins_path`` are injectable for tests.
+All data access runs on the main thread (the Parquet reader isn't thread-safe).
+"""
+
+import time
+
+from PySide6 import QtCore, QtWidgets
+
+from ..data.cache import DEFAULT_ROOT, get_bars, repair_gaps
+from ..data.catalog import Catalog
+from ..data.parquet_source import delete_series
+from ..data.rollup import load_pins, refresh_rollup, save_pins
+from ..data.sources import select_source
+from . import theme
+from .datamanager_data import row_cells, series_size_bytes
+
+_PINS_PATH = "storage/pins.json"
+_COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌"]
+_DAY_MS = 86_400_000
+_INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
+
+
+class DataManagerTab(QtWidgets.QWidget):
+    """Catalog table + toolbar over the local data cache."""
+
+    def __init__(self, root: str | None = None, pins_path: str | None = None, parent=None):
+        super().__init__(parent)
+        self._root = root or DEFAULT_ROOT
+        self._pins_path = pins_path or _PINS_PATH
+
+        root_layout = QtWidgets.QVBoxLayout(self)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(6)
+
+        bar = QtWidgets.QHBoxLayout()
+        bar.setSpacing(6)
+        self.btn_refresh = QtWidgets.QPushButton("↻ Refresh")
+        self.btn_download = QtWidgets.QPushButton("⤓ Download / Extend…")
+        self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
+        self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
+        self.btn_delete = QtWidgets.QPushButton("🗑 Delete")
+        self.btn_refresh.clicked.connect(self.refresh)
+        self.btn_download.clicked.connect(self._on_download)
+        self.btn_repair.clicked.connect(self._on_repair)
+        self.btn_pin.clicked.connect(self._on_pin)
+        self.btn_delete.clicked.connect(self._on_delete)
+        for b in (self.btn_refresh, self.btn_download, self.btn_repair, self.btn_pin, self.btn_delete):
+            bar.addWidget(b)
+        bar.addStretch(1)
+        self.count_label = QtWidgets.QLabel("")
+        self.count_label.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
+        bar.addWidget(self.count_label)
+        root_layout.addLayout(bar)
+
+        self._table = QtWidgets.QTableWidget(0, len(_COLS))
+        self._table.setHorizontalHeaderLabels(_COLS)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
+        self._table.setAlternatingRowColors(True)
+        self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self._table.doubleClicked.connect(lambda *_: self._on_repair())
+        root_layout.addWidget(self._table, 1)
+
+        self.refresh()
+
+    # --- table ---
+    def refresh(self) -> None:
+        """Repopulate the table from the catalog (+ pin state + on-disk size)."""
+        cat = Catalog(self._root)
+        pins = {tuple(p) for p in load_pins(self._pins_path)}
+        datasets = cat.list_datasets()
+        self._table.setRowCount(len(datasets))
+        for r, info in enumerate(datasets):
+            pinned = (info.symbol, info.interval) in pins
+            size = series_size_bytes(self._root, info.symbol, info.interval)
+            for c, val in enumerate(row_cells(info, pinned, size)):
+                item = QtWidgets.QTableWidgetItem(val)
+                if c >= 2:  # numeric / date / size / pin columns read right
+                    item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
+                self._table.setItem(r, c, item)
+        self.count_label.setText(f"{len(datasets)} series")
+
+    def _selected(self) -> tuple[str, str] | None:
+        """The selected row's ``(symbol, interval)``, or None."""
+        row = self._table.currentRow()
+        if row < 0 or self._table.item(row, 0) is None:
+            return None
+        return self._table.item(row, 0).text(), self._table.item(row, 1).text()
+
+    # --- actions (data engine) ---
+    def _on_pin(self) -> None:
+        sel = self._selected()
+        if sel is None:
+            return
+        pins = {tuple(p) for p in load_pins(self._pins_path)}
+        if sel in pins:
+            pins.discard(sel)
+        else:
+            pins.add(sel)
+            try:
+                refresh_rollup(self._root, sel[0], sel[1])  # materialise it now
+            except Exception:  # noqa: BLE001 - a transient read/write just defers the rollup
+                pass
+        save_pins(self._pins_path, list(pins))
+        self.refresh()
+
+    def _on_repair(self) -> None:
+        sel = self._selected()
+        if sel is None:
+            return
+        symbol, interval = sel
+        now = int(time.time() * 1000)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            n = repair_gaps(symbol, interval, 0, now, root=self._root,
+                            fetcher=select_source(symbol).fetch_bars_range)
+        except Exception as exc:  # noqa: BLE001 - report, no crash
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self.count_label.setText(f"Repair failed: {exc}")
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self.refresh()
+        self.count_label.setText(f"Repaired {symbol} {interval}: +{n} bar(s)")
+
+    def _on_download(self) -> None:
+        sel = self._selected()
+        dlg = _DownloadDialog(self, default=sel)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+        symbol, interval, days = dlg.values()
+        if not symbol:
+            return
+        now = int(time.time() * 1000)
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root,
+                     fetcher=select_source(symbol).fetch_bars_range)
+        except Exception as exc:  # noqa: BLE001 - report, no crash
+            QtWidgets.QApplication.restoreOverrideCursor()
+            self.count_label.setText(f"Download failed: {exc}")
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self.refresh()
+        self.count_label.setText(f"Downloaded {symbol} {interval}")
+
+    def _delete(self, symbol: str, interval: str) -> None:
+        """Remove a series' files (no prompt — the prompt lives in ``_on_delete``, so tests skip it)."""
+        delete_series(self._root, symbol, interval)
+        # a deleted series shouldn't stay pinned
+        pins = [p for p in load_pins(self._pins_path) if tuple(p) != (symbol, interval)]
+        save_pins(self._pins_path, pins)
+        self.refresh()
+
+    def _on_delete(self) -> None:
+        sel = self._selected()
+        if sel is None:
+            return
+        symbol, interval = sel
+        ok = QtWidgets.QMessageBox.question(
+            self, "Delete data",
+            f"Delete all cached {symbol} {interval} data? This can't be undone.",
+        )
+        if ok == QtWidgets.QMessageBox.Yes:
+            self._delete(symbol, interval)
+
+    def showEvent(self, event):  # noqa: N802 - Qt override: refresh when the space is opened
+        super().showEvent(event)
+        self.refresh()
+
+
+class _DownloadDialog(QtWidgets.QDialog):
+    """Pick a symbol/interval + how much history to fetch (prefilled from the selected row)."""
+
+    def __init__(self, parent=None, default: tuple[str, str] | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Download / Extend data")
+        form = QtWidgets.QFormLayout(self)
+        self._symbol = QtWidgets.QLineEdit(default[0] if default else "")
+        self._symbol.setPlaceholderText("e.g. BTCUSDT or EURUSD")
+        self._interval = QtWidgets.QComboBox()
+        self._interval.addItems(_INTERVALS)
+        if default:
+            self._interval.setCurrentText(default[1])
+        self._days = QtWidgets.QSpinBox()
+        self._days.setRange(1, 36500)
+        self._days.setValue(30)
+        form.addRow("Symbol", self._symbol)
+        form.addRow("Timeframe", self._interval)
+        form.addRow("Days back", self._days)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> tuple[str, str, int]:
+        return self._symbol.text().strip(), self._interval.currentText(), self._days.value()
