@@ -12,6 +12,35 @@ def test_http_module_exposes_getters():
     assert callable(http.http_get_text)
 
 
+def test_http_retries_on_429(monkeypatch):
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    calls = {"n": 0}
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            return b"ok"
+
+    def fake_urlopen(req, timeout=30):
+        calls["n"] += 1
+        if calls["n"] == 1:  # first attempt throttled, second succeeds
+            raise urllib.error.HTTPError(req.full_url, 429, "Too Many Requests", {}, None)
+        return _Resp()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(_time, "sleep", lambda s: None)
+    assert http.http_get_text("https://example.test", retries=2, backoff=0) == "ok"
+    assert calls["n"] == 2  # one retry after the 429
+
+
 # tests/test_calendar_forexfactory.py  (append)
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
