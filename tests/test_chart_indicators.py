@@ -17,6 +17,7 @@ from PySide6 import QtCore, QtWidgets  # noqa: E402
 from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.ui.chart import (  # noqa: E402
     _PICKER_TABS,
+    _DragGrip,
     _IndicatorPicker,
     _IndicatorSettings,
     _LegendRow,
@@ -186,13 +187,19 @@ def test_remove_via_pane_signal(app):
     assert ind.uid not in pc._indicators and split.count() == 1
 
 
-def test_set_data_clears_indicators(app):
+def test_set_data_persists_indicators(app):
     pc, split = _chart(app)
     pc.add_indicator("ema")
     pc.add_indicator("rsi")
-    pc.add_indicator("engulfing")
-    pc.set_data(_bars(40), [])
-    assert pc._indicators == {} and split.count() == 1
+    pc.set_data(_bars(50), [])  # new symbol/interval -> indicators recomputed + kept (TV-style)
+    assert len(pc._indicators) == 2 and split.count() == 2
+
+
+def test_set_data_drops_pairs(app):
+    pc, _ = _chart(app)
+    pc.add_pairs("spread_zscore", [b.close * 0.9 for b in pc._bars])
+    pc.set_data(_bars(50), [])  # benchmark was aligned to the old bars -> pairs drop
+    assert not any(i.kind == "pairs" for i in pc._indicators.values())
 
 
 # --- REVEAL (progressive) --------------------------------------------------------------------
@@ -331,6 +338,46 @@ def test_object_tree_lists_and_groups(app):
     # removing through the tree drops it from the chart and the tree rebuilds
     legend_rows[0].removeRequested.emit(legend_rows[0]._uid)
     assert len(pc._indicators) == 2
+
+
+# --- pin-to-scale ---------------------------------------------------------------------------
+def test_pin_overlay_to_own_scale(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc._indicator_action(ind.uid, "pin_own")
+    assert ind.own_scale is True and pc._vb2 is not None
+    assert all(c in pc._vb2.addedItems for c in ind.curves.values())  # curves moved off price vb
+    pc._indicator_action(ind.uid, "pin_price")
+    assert ind.own_scale is False
+    assert all(c not in pc._vb2.addedItems for c in ind.curves.values())
+
+
+# --- visibility on intervals ----------------------------------------------------------------
+def test_visibility_on_intervals(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("ema")
+    assert ind.intervals is None and ind.shown is True  # all timeframes by default
+    pc._toggle_interval_visibility(ind, "1m")            # hide on the current (1m) timeframe
+    assert ind.intervals is not None and "1m" not in ind.intervals
+    assert ind.shown is False
+    pc.set_timeframe("5m")                               # other timeframe -> shows again
+    assert ind.shown is True
+
+
+# --- drag-to-reorder ------------------------------------------------------------------------
+def test_pane_has_drag_grip(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert isinstance(ind.pane._grip, _DragGrip)
+
+
+def test_drag_reorder_moves_pane(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    pc._drag_pane(b.pane, -100000)  # cursor far above any neighbour centre -> move up
+    assert split.indexOf(b.pane) == 1 and split.indexOf(a.pane) == 2
 
 
 # --- the category picker (unchanged behaviour) -----------------------------------------------

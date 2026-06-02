@@ -419,7 +419,10 @@ class _Indicator:
         self.spec = spec
         self.params = dict(params)       # current input values (param name -> value)
         self.kind = kind                 # 'overlay' | 'oscillator' | 'pattern' | 'pairs'
-        self.visible = True
+        self.visible = True              # user hide/show toggle
+        self.intervals = None            # None = all timeframes; else the set it's visible on
+        self.shown = True                # effective visibility (visible AND interval-allowed)
+        self.own_scale = False           # overlay pinned to its own (independent) right scale
         self.benchmark = None            # aligned 2nd-symbol closes (pairs only)
         self.colors = list(_OVERLAY_COLORS[: max(1, len(spec.outputs))])  # per-output colour
         self.series = {}                 # computed: output label -> full series
@@ -583,6 +586,37 @@ def _eye_icon(open_: bool) -> QtGui.QIcon:
     return QtGui.QIcon(pm)
 
 
+class _DragGrip(QtWidgets.QLabel):
+    """A small ⠿ handle for drag-to-reorder of an oscillator pane. Emits the cursor's global y
+    while dragging so the chart can live-reorder the panes, and a signal on release."""
+
+    dragged = QtCore.Signal(int)   # cursor global y during a drag
+    released = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__("⠿", parent)
+        self.setCursor(QtCore.Qt.SizeVerCursor)
+        self.setToolTip("Drag to reorder pane")
+        self.setStyleSheet(f"QLabel{{color:{theme.TEXT3};background:transparent;font-size:13px;}}")
+        self._down = False
+
+    def mousePressEvent(self, e):  # noqa: N802 - Qt override
+        if e.button() == QtCore.Qt.LeftButton:
+            self._down = True
+            e.accept()
+
+    def mouseMoveEvent(self, e):  # noqa: N802 - Qt override
+        if self._down:
+            self.dragged.emit(int(e.globalPosition().y()))
+            e.accept()
+
+    def mouseReleaseEvent(self, e):  # noqa: N802 - Qt override
+        if self._down:
+            self._down = False
+            self.released.emit()
+            e.accept()
+
+
 class _LegendRow(QtWidgets.QWidget):
     """One indicator's legend entry: label (+ live value) with a quick eye (hide/show) toggle
     and a ⋯ menu (Settings / Move to / Hide / Remove). Reused on the price pane and in each
@@ -655,6 +689,19 @@ class _LegendRow(QtWidgets.QWidget):
             vo.addAction("Bring forward", lambda: self.actionRequested.emit(uid, "forward"))
             vo.addAction("Send backward", lambda: self.actionRequested.emit(uid, "backward"))
             vo.addAction("Send to back", lambda: self.actionRequested.emit(uid, "back"))
+            ps = m.addMenu("Pin to scale")
+            a_price = ps.addAction("Price (shared)", lambda: self.actionRequested.emit(uid, "pin_price"))
+            a_own = ps.addAction("Own scale", lambda: self.actionRequested.emit(uid, "pin_own"))
+            for a, on in ((a_price, not self._ind.own_scale), (a_own, self._ind.own_scale)):
+                a.setCheckable(True)
+                a.setChecked(on)
+        vis = m.addMenu("Visibility on intervals")  # per-timeframe show/hide
+        for _sec, items in _TIMEFRAMES:
+            for lbl, iv in items:
+                a = vis.addAction(lbl)
+                a.setCheckable(True)
+                a.setChecked(self._ind.intervals is None or iv in self._ind.intervals)
+                a.triggered.connect(lambda _c=False, i=iv: self.actionRequested.emit(uid, f"iv:{i}"))
         move = m.addMenu("Move to")
         move.addAction("New pane below", lambda: self.moveRequested.emit(uid, "new"))
         if kind in ("oscillator", "pairs"):
@@ -806,6 +853,8 @@ class OscillatorPane(pg.PlotWidget):
     hideToggled = QtCore.Signal(int)
     moveRequested = QtCore.Signal(int, str)
     actionRequested = QtCore.Signal(int, str)
+    dragMoved = QtCore.Signal(object, int)  # (pane, cursor global y) — drag-to-reorder
+    dragEnded = QtCore.Signal()
 
     def __init__(self, link_to: "PriceChart"):
         super().__init__(axisItems={"right": PriceAxis(orientation="right")})
@@ -832,11 +881,21 @@ class OscillatorPane(pg.PlotWidget):
         self.getViewBox().setMouseEnabled(x=False, y=False)  # driven by the price chart
         self.getViewBox().setXLink(link_to.getViewBox())     # follow the price x-range
 
-        self._header = QtWidgets.QWidget(self)  # stacked legend rows, top-left
+        self._header = QtWidgets.QWidget(self)  # grip + stacked legend rows, top-left
         self._header.setStyleSheet("background:transparent;")
-        self._hbox = QtWidgets.QVBoxLayout(self._header)
+        _hh = QtWidgets.QHBoxLayout(self._header)
+        _hh.setContentsMargins(0, 0, 0, 0)
+        _hh.setSpacing(4)
+        self._grip = _DragGrip(self._header)
+        self._grip.dragged.connect(lambda y: self.dragMoved.emit(self, y))
+        self._grip.released.connect(self.dragEnded)
+        _hh.addWidget(self._grip, 0, QtCore.Qt.AlignTop)
+        _rowscol = QtWidgets.QWidget(self._header)
+        _rowscol.setStyleSheet("background:transparent;")
+        self._hbox = QtWidgets.QVBoxLayout(_rowscol)
         self._hbox.setContentsMargins(0, 0, 0, 0)
         self._hbox.setSpacing(0)
+        _hh.addWidget(_rowscol)
         self._header.move(6, 3)
 
     @property
@@ -898,8 +957,8 @@ class OscillatorPane(pg.PlotWidget):
                 xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
                 ys = [series[k] for k in xs]
                 curve.setData(xs, ys)
-                curve.setVisible(ind.visible)
-                if ind.visible:
+                curve.setVisible(ind.shown)
+                if ind.shown:
                     all_ys += ys
                 if ys:
                     last = ys[-1]
@@ -962,6 +1021,8 @@ class PriceChart(pg.PlotWidget):
         self._price_legend = None  # _PaneLegend overlay listing the price-pane indicators
         self._marker_off = 0.0  # cached price-range marker offset (for pattern marker placement)
         self._z_top = 1.0  # running z for overlay visual-order (kept above the candles at z=0)
+        self._chart_interval = None  # current timeframe (for per-interval indicator visibility)
+        self._vb2 = None  # secondary ViewBox for overlays pinned to their own scale
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
@@ -1121,7 +1182,7 @@ class PriceChart(pg.PlotWidget):
 
     def set_data(self, bars, trades):
         self._bars = bars
-        self._clear_indicators()  # user indicators reset on a new symbol/interval
+        self._recompute_indicators()  # persist user indicators across symbol/interval (recompute)
         self._time_axis.set_bars(bars)
         ts_index = {b.ts: i for i, b in enumerate(bars)}
         self._ts_index = ts_index
@@ -1252,9 +1313,32 @@ class PriceChart(pg.PlotWidget):
         pane.hideToggled.connect(self._toggle_visible)
         pane.moveRequested.connect(self.move_indicator)
         pane.actionRequested.connect(self._indicator_action)
+        pane.dragMoved.connect(self._drag_pane)
         self._pane_host.addWidget(pane)
         self._resize_panes()
         return pane
+
+    def _drag_pane(self, pane, global_y: int):
+        """Live drag-to-reorder: swap with the neighbour once dragged past its vertical centre."""
+        host = self._pane_host
+        if host is None:
+            return
+        cur = host.indexOf(pane)
+        if cur < 1:
+            return
+        if cur > 1:  # try to move above the upper neighbour
+            up = host.widget(cur - 1)
+            ctr = up.mapToGlobal(QtCore.QPoint(0, up.height() // 2)).y()
+            if global_y < ctr:
+                host.insertWidget(cur - 1, pane)
+                self._resize_panes()
+                return
+        if cur < host.count() - 1:  # try to move below the lower neighbour
+            down = host.widget(cur + 1)
+            ctr = down.mapToGlobal(QtCore.QPoint(0, down.height() // 2)).y()
+            if global_y > ctr:
+                host.insertWidget(cur + 1, pane)
+                self._resize_panes()
 
     def _next_z(self) -> float:
         self._z_top += 1.0
@@ -1265,8 +1349,13 @@ class PriceChart(pg.PlotWidget):
             ind.curves = {}
             for i, lbl in enumerate(ind.series):
                 col = ind.colors[i % len(ind.colors)]
-                curve = self.plot([], [], pen=pg.mkPen(col, width=1))
-                curve.setZValue(self._next_z())  # overlays sit above the candles
+                curve = pg.PlotDataItem([], [], pen=pg.mkPen(col, width=1))
+                if ind.own_scale:                 # independent right scale (secondary viewbox)
+                    self._ensure_vb2()
+                    self._vb2.addItem(curve)
+                else:
+                    self.addItem(curve)
+                    curve.setZValue(self._next_z())  # overlays sit above the candles
                 ind.curves[lbl] = curve
         elif ind.kind in ("oscillator", "pairs"):
             if self._pane_host is None:
@@ -1284,7 +1373,10 @@ class PriceChart(pg.PlotWidget):
 
     def _unrender(self, ind: "_Indicator"):
         for c in ind.curves.values():
-            self.removeItem(c)
+            if ind.own_scale and self._vb2 is not None:
+                self._vb2.removeItem(c)
+            else:
+                self.removeItem(c)
         ind.curves = {}
         if ind.pane is not None:
             remaining = ind.pane.remove_ind(ind.uid)
@@ -1300,15 +1392,22 @@ class PriceChart(pg.PlotWidget):
     def _reveal_index(self) -> int:
         return (len(self._candles._bars) - 1) if self._candles._bars else len(self._bars) - 1
 
+    def _sync_shown(self, ind: "_Indicator"):
+        """Effective visibility = user toggle AND (no interval restriction OR current one allowed)."""
+        ind.shown = ind.visible and (
+            ind.intervals is None or self._chart_interval in ind.intervals
+        )
+
     def _reveal_indicator(self, ind: "_Indicator", index: int):
         if index < 0:
             return
+        self._sync_shown(ind)
         if ind.kind == "overlay":
             for lbl, curve in ind.curves.items():
                 series = ind.series.get(lbl, [])
                 xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
                 curve.setData(xs, [series[k] for k in xs])
-                curve.setVisible(ind.visible)
+                curve.setVisible(ind.shown)
         elif ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             ind.pane.reveal(index)
         elif ind.kind == "pattern" and ind.scatter is not None:
@@ -1319,7 +1418,7 @@ class PriceChart(pg.PlotWidget):
         off = self._marker_off
         label = _pretty_indicator(ind.name)
         spots = []
-        if ind.visible:
+        if ind.shown:
             for i in range(min(index + 1, len(series))):
                 v = series[i]
                 if not v:
@@ -1355,10 +1454,11 @@ class PriceChart(pg.PlotWidget):
         self._refresh_legends()
 
     def _apply_visibility(self, ind: "_Indicator"):
+        self._sync_shown(ind)
         for c in ind.curves.values():
-            c.setVisible(ind.visible)
+            c.setVisible(ind.shown)
         if ind.scatter is not None:
-            ind.scatter.setVisible(ind.visible)
+            ind.scatter.setVisible(ind.shown)
 
     def edit_indicator(self, uid: int):
         """Open the Settings dialog (Inputs + Style); apply -> recompute + re-render."""
@@ -1415,6 +1515,12 @@ class PriceChart(pg.PlotWidget):
             return
         if action == "tree":
             self.open_object_tree()
+            return
+        if action in ("pin_own", "pin_price"):
+            self._pin_overlay(ind, action == "pin_own")
+            return
+        if action.startswith("iv:"):  # toggle per-interval visibility for one timeframe
+            self._toggle_interval_visibility(ind, action[3:])
             return
         if ind.kind == "overlay" and ind.curves:  # visual order (z-stacking) for overlays
             zs = [c.zValue() for c in ind.curves.values()]
@@ -1494,6 +1600,72 @@ class PriceChart(pg.PlotWidget):
         self._indicators = {}
         self._refresh_legends()
 
+    def _recompute_indicators(self):
+        """Persist user indicators across a new symbol/interval by recomputing them on the new
+        bars (render handles + panes are kept). Pairs are dropped — their benchmark was aligned
+        to the previous bars. show_upto() (called next) reveals the refreshed series."""
+        for ind in list(self._indicators.values()):
+            if ind.kind == "pairs":
+                self._unrender(ind)
+                self._indicators.pop(ind.uid, None)
+                continue
+            self._compute(ind)
+        self._refresh_legends()
+
+    # --- pin-to-scale: overlays on an independent (own) right scale via a secondary ViewBox ---
+    def _ensure_vb2(self):
+        if self._vb2 is not None:
+            return
+        self._vb2 = pg.ViewBox()
+        self.scene().addItem(self._vb2)
+        self._vb2.setXLink(self.getViewBox())
+        self.getViewBox().sigResized.connect(self._sync_vb2)
+        self._sync_vb2()
+
+    def _sync_vb2(self):
+        if self._vb2 is not None:
+            self._vb2.setGeometry(self.getViewBox().sceneBoundingRect())
+
+    def _autorange_vb2(self):
+        """Fit the secondary viewbox to the visible data of all own-scale overlays."""
+        if self._vb2 is None:
+            return
+        idx = self._reveal_index()
+        ys = []
+        for ind in self._indicators.values():
+            if ind.kind == "overlay" and ind.own_scale and ind.shown:
+                for s in ind.series.values():
+                    ys += [s[k] for k in range(min(idx + 1, len(s))) if s[k] is not None]
+        if ys and max(ys) > min(ys):
+            self._vb2.setYRange(min(ys), max(ys), padding=0.1)
+
+    def _pin_overlay(self, ind: "_Indicator", own: bool):
+        if ind.kind != "overlay" or ind.own_scale == own:
+            return
+        ind.own_scale = own
+        for c in list(ind.curves.values()):
+            if own:
+                self.getPlotItem().removeItem(c)
+                self._ensure_vb2()
+                self._vb2.addItem(c)
+            else:
+                if self._vb2 is not None:
+                    self._vb2.removeItem(c)
+                self.getPlotItem().addItem(c)
+                c.setZValue(self._next_z())
+        self.show_upto(self._reveal_index())
+
+    def _toggle_interval_visibility(self, ind: "_Indicator", interval: str):
+        """Toggle whether ``ind`` shows on ``interval``. ``ind.intervals`` is None when it shows
+        on all timeframes; otherwise it's the explicit set of allowed timeframes."""
+        all_iv = [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+        cur = set(ind.intervals) if ind.intervals is not None else set(all_iv)
+        cur.discard(interval) if interval in cur else cur.add(interval)
+        ind.intervals = None if cur >= set(all_iv) else cur
+        self._apply_visibility(ind)
+        self._reveal_indicator(ind, self._reveal_index())
+        self._refresh_legends()
+
     def _resize_panes(self):
         """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked)."""
         host = self._pane_host
@@ -1559,6 +1731,7 @@ class PriceChart(pg.PlotWidget):
         self._show_last_ohlc()  # header is pinned to the latest candle (not the hovered bar)
         for ind in self._indicators.values():  # reveal user indicators (overlay/osc/pattern)
             self._reveal_indicator(ind, index)
+        self._autorange_vb2()  # fit own-scale overlays on their independent right axis
 
     def _add_marker(self, x, price, *, below, symbol, color, text):
         """Register a trade marker + its bold 'Buy'/'Sell' label (TradeStation style)."""
@@ -1753,9 +1926,15 @@ class PriceChart(pg.PlotWidget):
         self._position_price_legend()
 
     def set_timeframe(self, interval: str):
-        """Update the timeframe selector button label (e.g. '5m')."""
+        """Update the timeframe selector label + current interval, and refresh per-interval
+        indicator visibility (indicators restricted to other timeframes hide here)."""
+        self._chart_interval = interval
         if hasattr(self, "_tf_btn"):
             self._tf_btn.setText(interval)
+        if self._bars:
+            for ind in self._indicators.values():
+                self._sync_shown(ind)
+                self._reveal_indicator(ind, self._reveal_index())
 
 
 class EquityChart(pg.PlotWidget):
