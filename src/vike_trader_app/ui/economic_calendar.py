@@ -15,7 +15,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import theme
 from .calendar_delegate import importance_bar_pixmap, value_color
 from ..data.calendar.model import week_start_utc
-from ..data.calendar.taxonomy import CURRENCY_COUNTRY, currency_country
+from ..data.calendar.taxonomy import currency_country
 
 # Common display timezones for the selector (label, tzinfo|None=system local).
 _TZ_CHOICES = [
@@ -24,7 +24,6 @@ _TZ_CHOICES = [
     ("UTC+1", timezone(timedelta(hours=1))), ("UTC+3", timezone(timedelta(hours=3))),
     ("UTC+8", timezone(timedelta(hours=8))),
 ]
-_MAJORS = {"USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"}
 
 _FLAG_DIR = os.path.join(os.path.dirname(__file__), "resources", "flags")
 _COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
@@ -255,33 +254,20 @@ class EconomicCalendarTab(QtWidgets.QWidget):
     def _build_country_button(self) -> QtWidgets.QToolButton:
         btn = QtWidgets.QToolButton()
         btn.setText("Countries ▾")
-        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        menu = QtWidgets.QMenu(btn)
-        menu.addAction("All countries", lambda: self._apply_countries(None))
-        menu.addAction("Majors", lambda: self._apply_countries(set(_MAJORS)))
-        menu.addSeparator()
-        self._country_actions: dict[str, QtGui.QAction] = {}
-        for cur, (name, _iso) in sorted(CURRENCY_COUNTRY.items(), key=lambda kv: kv[1][0]):
-            act = menu.addAction(f"{name} ({cur})")
-            act.setCheckable(True)
-            act.toggled.connect(self._on_country_toggled)
-            self._country_actions[cur] = act
-        btn.setMenu(menu)
+        btn.clicked.connect(self._open_country_dialog)   # TV-style modal (not a checkbox menu)
         return btn
 
-    def _on_country_toggled(self, _checked: bool) -> None:
-        chosen = {cur for cur, a in self._country_actions.items() if a.isChecked()}
-        self._countries = chosen or None      # nothing checked => all
-        self._sync_country_button()
-        self._rebuild()
+    def _open_country_dialog(self) -> None:
+        from .country_dialog import SelectCountriesDialog
+        dlg = SelectCountriesDialog(self._countries, self)
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
+            self._countries = dlg.selected_countries()
+            self._sync_country_button()
+            self._rebuild()
 
     def _apply_countries(self, currencies: set[str] | None) -> None:
-        """Set the country filter from a preset and sync the checkboxes."""
-        for cur, act in self._country_actions.items():
-            act.blockSignals(True)
-            act.setChecked(bool(currencies) and cur in currencies)
-            act.blockSignals(False)
-        self._countries = currencies
+        """Set the country filter programmatically (None == all) and refresh."""
+        self._countries = set(currencies) if currencies else None
         self._sync_country_button()
         self._rebuild()
 

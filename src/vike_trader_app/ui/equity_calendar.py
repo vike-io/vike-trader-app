@@ -388,8 +388,8 @@ class CalendarSpace(QtWidgets.QWidget):
         pill_qss = (
             f"QPushButton{{background:transparent;border:none;color:{theme.TEXT3};"
             f"padding:6px 16px;border-radius:9px;font-size:13px;font-weight:600;}}"
-            f"QPushButton:hover{{color:{theme.TEXT2};}}"
-            f"QPushButton:checked{{background:{theme.RAISE};color:{theme.TEXT};}}")
+            f"QPushButton:hover{{color:{theme.TEXT2};background:{theme.HOVER};}}"
+            f"QPushButton:checked{{background:#2a2a2a;color:{theme.TEXT};}}")
         self._pills: list[QtWidgets.QPushButton] = []
         for i, (name, page) in enumerate(self._pages):
             self._stack.addWidget(page)
@@ -448,20 +448,37 @@ class CalendarSpace(QtWidgets.QWidget):
         btn.setStyleSheet(
             f"QToolButton{{color:{theme.TEXT2};background:{theme.RAISE};border:1px solid {theme.BORDER};"
             f"border-radius:8px;padding:7px 12px;font-size:13px;}}"
-            f"QToolButton:hover{{color:{theme.TEXT};}}"
+            f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             "QToolButton::menu-indicator{width:0px;}")
         menu = QtWidgets.QMenu(btn)
+        menu.setStyleSheet(
+            f"QMenu{{background:{theme.PANEL2};border:1px solid {theme.BORDER};border-radius:10px;"
+            f"padding:6px;}}"
+            f"QMenu::item{{color:{theme.TEXT2};padding:7px 28px 7px 14px;border-radius:7px;"
+            f"font-size:13px;}}"
+            f"QMenu::item:selected{{background:{theme.RAISE};color:{theme.TEXT};}}"
+            f"QMenu::item:checked{{color:{theme.TEXT};font-weight:600;}}"
+            "QMenu::indicator{width:0px;}")
+        self._cat_actions: dict[str, QtGui.QAction] = {}
+        grp = QtGui.QActionGroup(menu)
+        grp.setExclusive(True)
         for value, label in [("All", "All categories"), ("rates", "Rates"),
                              ("inflation", "Inflation"), ("employment", "Employment"),
                              ("gdp", "GDP"), ("trade", "Trade"), ("housing", "Housing"),
                              ("other", "Other")]:
-            menu.addAction(label, lambda v=value, lab=label: self._choose_category(v, lab))
+            act = menu.addAction(label, lambda v=value, lab=label: self._choose_category(v, lab))
+            act.setCheckable(True)
+            act.setChecked(value == "All")
+            grp.addAction(act)
+            self._cat_actions[value] = act
         btn.setMenu(menu)
         self._cat_btn = btn
         return btn
 
     def _choose_category(self, value: str, label: str) -> None:
         self._cat_btn.setText(("All categories" if value == "All" else label) + "  ▾")
+        if value in self._cat_actions:
+            self._cat_actions[value].setChecked(True)
         self.economic.set_category(value)
 
     # ---- TV day-card strip (aggregates all four calendars) ----
