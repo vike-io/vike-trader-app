@@ -116,3 +116,27 @@ def test_category_filter(app):
     assert t.visible_event_count() == 0
     t.set_category("All")
     assert t.visible_event_count() == 3
+
+
+# ---------------------------------------------------------------------------
+# Task 14 — background fetch worker + live countdown timer
+# ---------------------------------------------------------------------------
+from vike_trader_app.ui.economic_calendar import _CalendarFetchWorker
+
+
+def test_fetch_worker_emits_events(app, qtbot=None):
+    repo = _FakeRepo([_ev(TS_TUE, "USD", "CPI", 2, actual=3.2, forecast=3.1)])
+    worker = _CalendarFetchWorker(repo, WK)
+    got = {}
+    worker.eventsReady.connect(lambda evs: got.setdefault("evs", evs))
+    worker.run()                      # call run() directly (no thread) for a deterministic test
+    assert got["evs"][0].title == "CPI"
+
+
+def test_tick_refreshes_only_future_countdowns(app):
+    t = _tab(app)
+    t.set_now_ms(TS_WED - 2 * 60_000)         # 2 minutes before GDP
+    assert t.countdown_text(TS_WED) == "Coming in 0:02:00"
+    t.set_now_ms(TS_WED - 60_000)
+    t._tick()                                  # advance; should not raise, recomputes labels
+    assert t.countdown_text(TS_WED) == "Coming in 0:01:00"
