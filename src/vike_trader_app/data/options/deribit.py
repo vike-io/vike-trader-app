@@ -33,7 +33,7 @@ def parse_instrument_name(name: str) -> tuple[str, str, float, str] | None:
     if not m:
         return None
     cur, day, mon, yr, strike, typ = m.groups()
-    if mon not in _MONTHS:
+    if mon not in _MONTHS:  # regex allows any [A-Z]{3}; reject non-month tokens
         return None
     date_iso = f"20{yr}-{_MONTHS[mon]:02d}-{int(day):02d}"
     return cur, date_iso, float(strike), typ
@@ -88,7 +88,7 @@ def build_chain_from_summary(
 
 def _http_get_json(url: str, timeout: float = 10.0) -> dict:
     with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 - fixed https host
-        return json.loads(resp.read().decode("utf-8"))
+        return json.loads(resp.read())
 
 
 class DeribitOptionsProvider:

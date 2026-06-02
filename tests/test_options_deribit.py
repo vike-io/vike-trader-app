@@ -10,7 +10,7 @@ def _ms(y, m, d, h=8):
 
 
 def _summary():
-    # one expiry (27 Jun 2026), two strikes, call+put each
+    # two expiries (27 Jun + 25 Sep 2026); within 27 Jun: two strikes, call+put on the first
     return [
         {"instrument_name": "BTC-27JUN26-100000-C", "bid_price": 0.05, "ask_price": 0.06,
          "mark_price": 0.055, "mark_iv": 62.5, "open_interest": 120.0, "volume": 8.0,
@@ -20,6 +20,10 @@ def _summary():
          "underlying_price": 104000.0},
         {"instrument_name": "BTC-27JUN26-110000-C", "bid_price": 0.02, "ask_price": 0.03,
          "mark_price": 0.025, "mark_iv": 64.0, "open_interest": 50.0, "volume": 1.0,
+         "underlying_price": 104000.0},
+        # different expiry + distinct strike: must be excluded when building the 27 Jun chain
+        {"instrument_name": "BTC-25SEP26-120000-C", "bid_price": 0.01, "ask_price": 0.02,
+         "mark_price": 0.015, "mark_iv": 70.0, "open_interest": 10.0, "volume": 1.0,
          "underlying_price": 104000.0},
         {"instrument_name": "BTC-PERPETUAL", "mark_price": 104000.0},  # non-option, ignored
     ]
@@ -33,7 +37,7 @@ def test_parse_instrument_name():
 
 def test_list_expiries_from_summary():
     exps = list_expiries_from_summary(_summary(), _ms(2026, 6, 2))
-    assert [e.date for e in exps] == ["2026-06-27"]
+    assert [e.date for e in exps] == ["2026-06-27", "2026-09-25"]  # distinct, ascending
     assert exps[0].dte == 25
 
 
@@ -41,6 +45,7 @@ def test_build_chain_from_summary_groups_and_enriches():
     chain = build_chain_from_summary("BTC", _summary(), "2026-06-27", _ms(2026, 6, 2))
     assert chain.source == "deribit" and chain.asset_class == "crypto"
     assert chain.underlying_price == 104000.0
+    assert len(chain.rows) == 2  # the 25 Sep / 120000 row is filtered out
     assert [r.strike for r in chain.rows] == [100000.0, 110000.0]
     row = chain.rows[0]
     assert row.call.iv == 0.625 and row.put.iv == 0.61        # mark_iv % -> decimal
