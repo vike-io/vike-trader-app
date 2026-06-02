@@ -13,6 +13,7 @@ dependencies = [
 
 [project.optional-dependencies]
 ui = ["pyside6>=6.7", "pyqtgraph>=0.13"]
+options = ["yfinance>=0.2"]  # stock/index options chain backend (data/options/yfinance.py); lazy-imported
 cli = ["typer>=0.12"]
 analysis = ["skfolio>=0.6", "scikit-learn>=1.5"]
 fast = ["numba>=0.63"]  # compiled sweep fast-path (core/vectorized.py); numpy fallback when absent
