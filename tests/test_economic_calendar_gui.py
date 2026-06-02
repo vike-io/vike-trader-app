@@ -118,8 +118,13 @@ def test_week_nav_changes_week_and_reloads(app):
 
 
 def test_week_strip_has_seven_day_cards(app):
+    # The 7 day-cards moved to CalendarSpace (so they can aggregate Economic/Earnings/
+    # Dividends/IPO counts); the economic tab no longer owns its own strip.
+    from vike_trader_app.ui.equity_calendar import CalendarSpace
     t = _tab(app)
-    assert t.day_card_count() == 7
+    space = CalendarSpace(economic_tab=t)
+    assert len(space._day_cards) == 7
+    assert t.day_card_count() == 0
 
 
 def test_category_filter(app):

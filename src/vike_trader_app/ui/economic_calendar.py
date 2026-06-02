@@ -169,6 +169,8 @@ class _CalendarFetchWorker(QtCore.QThread):
 
 
 class EconomicCalendarTab(QtWidgets.QWidget):
+    eventsChanged = QtCore.Signal()   # emitted whenever the week's events change (load / nav)
+
     def __init__(self, repository=None, parent=None, tz=None):
         super().__init__(parent)
         if repository is None:
@@ -198,7 +200,9 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
         root.addWidget(self._build_toolbar())
-        root.addWidget(self._build_week_strip())
+        # (day-card strip now owned by CalendarSpace so it can show Economic/Earnings/
+        # Dividends/IPO counts together — this tab keeps _day_cards = [] so its
+        # _refresh_strip is a guarded no-op.)
         root.addWidget(self._status)
         root.addWidget(self._tree, 1)
 
@@ -414,6 +418,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             self._refresh_strip()
         if hasattr(self, "_lbl_range"):
             self._refresh_range_label()
+        self.eventsChanged.emit()
 
     def _now_marker(self, now: int) -> QtWidgets.QTreeWidgetItem:
         """A full-width red 'now' row (UserRole None, so it isn't treated as an event)."""
