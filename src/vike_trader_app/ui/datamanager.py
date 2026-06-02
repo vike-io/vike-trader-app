@@ -78,9 +78,16 @@ class DataManagerTab(QtWidgets.QWidget):
         root_layout.addWidget(self._table, 1)
 
         # operation log (downloads / repairs / inspect reports) — read-only, like QDM's log
+        log_header = QtWidgets.QLabel("ACTIVITY LOG")
+        log_header.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 2px 0;"
+        )
+        root_layout.addWidget(log_header)
         self._log_view = QtWidgets.QPlainTextEdit()
         self._log_view.setReadOnly(True)
-        self._log_view.setMaximumHeight(130)
+        self._log_view.setMinimumHeight(96)   # always visible, never squeezed to nothing
+        self._log_view.setMaximumHeight(150)
+        self._log_view.setPlaceholderText("Downloads, repairs and inspect reports appear here…")
         self._log_view.setStyleSheet(
             f"QPlainTextEdit{{background:{theme.PANEL2};color:{theme.TEXT2};border:1px solid "
             f"{theme.BORDER};border-radius:6px;font-family:{theme.FONT_MONO};font-size:11px;}}"
@@ -253,6 +260,9 @@ class DataManagerTab(QtWidgets.QWidget):
     def showEvent(self, event):  # noqa: N802 - Qt override: refresh when the space is opened
         super().showEvent(event)
         self.refresh()
+        if not self._log_view.toPlainText():  # one-time greeting so the log reads as a live panel
+            self._log(f"Ready — {self._table.rowCount()} cached series. "
+                      f"Select a row and Inspect, or Update all to refresh.")
 
 
 class _DownloadDialog(QtWidgets.QDialog):
