@@ -939,8 +939,12 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._push_watch_quote(symbol, cached)
                 self.crumb.setText(f"{symbol}: latest unavailable, showing cached · {exc}")
                 return
-            QtWidgets.QMessageBox.warning(self, "Load failed", f"{symbol}: {exc}")
-            self.crumb.setText("No data loaded")
+            # Report to the status line, NOT a modal: this path runs from the startup auto-load
+            # and the watchlist, where a modal would block a headless/CI event loop (no user to
+            # dismiss it) — the cause of the CI ui-test hang.
+            self.crumb.setText(f"{symbol}: load failed · {exc}")
+            if hasattr(self, "foot_info"):
+                self.foot_info.setText(f"{symbol} · load failed")
             return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
