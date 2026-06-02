@@ -5,25 +5,42 @@ time/importance/forecast/previous; `actual` is NOT in the feed (backfill layer f
 """
 from __future__ import annotations
 
+import time
+
 from ..http import http_get_json
 from ..model import (
-    CalendarEvent, impact_to_importance, iso_to_ts_utc, parse_value,
+    CalendarEvent, impact_to_importance, iso_to_ts_utc, parse_value, week_start_utc,
 )
 from ..taxonomy import categorize, currency_country
 
 THIS_WEEK = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 NEXT_WEEK = "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
 
+_WEEK_MS = 7 * 24 * 3600 * 1000
+
 
 class ForexFactoryProvider:
     name = "ForexFactory"
 
-    def __init__(self, http=http_get_json, *, url: str = THIS_WEEK):
+    def __init__(self, http=http_get_json, *, now_ms=None,
+                 this_week_url: str = THIS_WEEK, next_week_url: str = NEXT_WEEK):
         self._http = http
-        self._url = url
+        self._now = now_ms if now_ms is not None else (lambda: int(time.time() * 1000))
+        self._this_url = this_week_url
+        self._next_url = next_week_url
 
-    def fetch_week(self, week_start_utc: int) -> list[CalendarEvent]:
-        records = self._http(self._url)
+    def fetch_week(self, week_start_ms: int) -> list[CalendarEvent]:
+        # ForexFactory publishes ONLY the current and next week as static files. For any
+        # other week there is no file, so return nothing (the calendar shows "no data")
+        # rather than mis-filing the current week's events under the requested week.
+        this_week = week_start_utc(self._now())
+        if week_start_ms == this_week:
+            url = self._this_url
+        elif week_start_ms == this_week + _WEEK_MS:
+            url = self._next_url
+        else:
+            return []
+        records = self._http(url)
         return [self._to_event(r) for r in records]
 
     @staticmethod

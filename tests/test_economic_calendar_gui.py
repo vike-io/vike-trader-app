@@ -236,3 +236,18 @@ def test_country_and_time_dedup_within_date(app):
     assert rows[0].text(0) == "12:30" and rows[0].text(1) == "United States"   # first of run: shown
     assert rows[1].text(0) == "" and rows[1].text(1) == ""                     # same ts+country: blanked
     assert rows[2].text(0) == "13:30" and rows[2].text(1) == "United States"   # time changed: shown again
+
+
+# ---------------------------------------------------------------------------
+# Task 21 — empty week shows a "no data" hint (ForexFactory covers this/next week)
+# ---------------------------------------------------------------------------
+def test_empty_week_shows_no_data_hint(app):
+    t = EconomicCalendarTab(repository=_FakeRepo([]))
+    t.load_week(WK)
+    assert t.visible_event_count() == 0
+    assert "no data" in t._status.text().lower()
+
+
+def test_non_empty_week_clears_status(app):
+    t = _tab(app)   # _tab loads 3 events
+    assert t._status.text() == ""

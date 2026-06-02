@@ -196,6 +196,12 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._week_start = week_start_ms
         self._events = self._repo.get_week(week_start_ms)
         self._rebuild()
+        self._update_status()
+
+    _NO_DATA = "No data for this week — ForexFactory provides the current and next week only."
+
+    def _update_status(self) -> None:
+        self._status.setText("" if self._events else self._NO_DATA)
 
     def _passes(self, ev) -> bool:
         if self._high_only and ev.importance < 2:
@@ -295,8 +301,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     def _on_events(self, events) -> None:
         self._events = events
-        self._status.setText("")
         self._rebuild()
+        self._update_status()
 
     def _tick(self) -> None:
         # cheap: only touch rows that show a countdown (future, no actual)
