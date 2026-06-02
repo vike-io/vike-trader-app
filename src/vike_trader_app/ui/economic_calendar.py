@@ -7,7 +7,7 @@ live countdown and the now-line are computed against an injectable `now_ms`.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
