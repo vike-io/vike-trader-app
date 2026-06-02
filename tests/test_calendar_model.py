@@ -25,8 +25,8 @@ def test_actual_value_holds_number_unit_source():
 
 
 # tests/test_calendar_model.py  (append)
-import pytest
-from vike_trader_app.data.calendar.model import (
+import pytest  # noqa: E402
+from vike_trader_app.data.calendar.model import (  # noqa: E402
     parse_value, impact_to_importance, iso_to_ts_utc, week_start_utc,
 )
 
@@ -66,7 +66,7 @@ def test_week_start_utc_is_monday_midnight():
 
 
 # tests/test_calendar_model.py  (append)
-from vike_trader_app.data.calendar.taxonomy import (
+from vike_trader_app.data.calendar.taxonomy import (  # noqa: E402
     normalize_title, categorize, currency_country,
 )
 

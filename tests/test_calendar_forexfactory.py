@@ -13,11 +13,11 @@ def test_http_module_exposes_getters():
 
 
 # tests/test_calendar_forexfactory.py  (append)
-import json
-from pathlib import Path
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
 
-from vike_trader_app.data.calendar.providers.forexfactory import ForexFactoryProvider
-from vike_trader_app.data.calendar.model import week_start_utc, iso_to_ts_utc
+from vike_trader_app.data.calendar.providers.forexfactory import ForexFactoryProvider  # noqa: E402
+from vike_trader_app.data.calendar.model import week_start_utc, iso_to_ts_utc  # noqa: E402
 
 FIXTURE = json.loads(
     (Path(__file__).parent / "fixtures" / "ff_calendar_thisweek.json").read_text("utf-8"))

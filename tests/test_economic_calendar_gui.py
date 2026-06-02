@@ -30,8 +30,8 @@ def test_value_color_beat_miss(app):
 # ---------------------------------------------------------------------------
 # Task 12 — EconomicCalendarTab
 # ---------------------------------------------------------------------------
-from vike_trader_app.ui.economic_calendar import EconomicCalendarTab
-from vike_trader_app.data.calendar.model import CalendarEvent, iso_to_ts_utc, week_start_utc
+from vike_trader_app.ui.economic_calendar import EconomicCalendarTab  # noqa: E402
+from vike_trader_app.data.calendar.model import CalendarEvent, iso_to_ts_utc, week_start_utc  # noqa: E402
 
 TS_TUE = iso_to_ts_utc("2026-06-02T12:30:00+00:00")
 TS_WED = iso_to_ts_utc("2026-06-03T08:00:00+00:00")
@@ -121,7 +121,7 @@ def test_category_filter(app):
 # ---------------------------------------------------------------------------
 # Task 14 — background fetch worker + live countdown timer
 # ---------------------------------------------------------------------------
-from vike_trader_app.ui.economic_calendar import _CalendarFetchWorker
+from vike_trader_app.ui.economic_calendar import _CalendarFetchWorker  # noqa: E402
 
 
 def test_fetch_worker_emits_events(app, qtbot=None):
