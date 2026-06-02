@@ -7,7 +7,7 @@ live countdown and the now-line are computed against an injectable `now_ms`.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -16,6 +16,23 @@ from .calendar_delegate import importance_bar_pixmap, value_color
 from ..data.calendar.model import week_start_utc
 
 _COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
+
+
+class _CalendarFetchWorker(QtCore.QThread):
+    """Off-thread week fetch (network + JSON only — safe off the UI thread, like
+    app._LiveFetchWorker). Results marshal back via signals; the UI never blocks."""
+    eventsReady = QtCore.Signal(object)   # list[CalendarEvent]
+    failed = QtCore.Signal(str)
+
+    def __init__(self, repo, week_start_ms: int, *, force: bool = False):
+        super().__init__()
+        self._repo, self._ws, self._force = repo, week_start_ms, force
+
+    def run(self):
+        try:
+            self.eventsReady.emit(self._repo.get_week(self._ws, force=self._force))
+        except Exception as exc:  # noqa: BLE001 - surfaced to a status label, never a modal
+            self.failed.emit(str(exc))
 
 
 class EconomicCalendarTab(QtWidgets.QWidget):
@@ -30,6 +47,9 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._countries: set[str] | None = None      # None = all
         self._now = lambda: int(time.time() * 1000)
         self._week_start = week_start_utc(self._now())
+        # defaults must be set BEFORE _build_toolbar() which can trigger _rebuild
+        self._category = "All"
+        self._day_cards: list = []
 
         root = QtWidgets.QVBoxLayout(self)
         self._status = QtWidgets.QLabel("")
@@ -41,8 +61,98 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._tree.setIndentation(0)
         self._tree.setAlternatingRowColors(False)
         self._tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
+        root.addWidget(self._build_toolbar())
+        root.addWidget(self._build_week_strip())
         root.addWidget(self._status)
         root.addWidget(self._tree, 1)
+
+        self._timer = QtCore.QTimer(self)
+        self._timer.setInterval(1000)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start()
+        self._worker = None
+
+    # ---- toolbar ----
+    def _build_toolbar(self) -> QtWidgets.QWidget:
+        bar = QtWidgets.QWidget()
+        h = QtWidgets.QHBoxLayout(bar)
+        h.setContentsMargins(0, 0, 0, 0)
+        self._btn_today = QtWidgets.QPushButton("Today")
+        self._btn_today.clicked.connect(self.go_today)
+        prev = QtWidgets.QPushButton("‹")
+        prev.clicked.connect(self.go_prev_week)
+        nxt = QtWidgets.QPushButton("›")
+        nxt.clicked.connect(self.go_next_week)
+        self._lbl_range = QtWidgets.QLabel("")
+        self._chk_high = QtWidgets.QCheckBox("High only")
+        self._chk_high.toggled.connect(self.set_high_only)
+        self._cmb_cat = QtWidgets.QComboBox()
+        self._cmb_cat.addItems(
+            ["All", "rates", "inflation", "employment", "gdp", "trade", "housing", "other"]
+        )
+        self._cmb_cat.currentTextChanged.connect(self.set_category)
+        for w in (self._btn_today, prev, nxt, self._lbl_range):
+            h.addWidget(w)
+        h.addStretch(1)
+        h.addWidget(self._chk_high)
+        h.addWidget(self._cmb_cat)
+        return bar
+
+    # ---- week strip ----
+    def _build_week_strip(self) -> QtWidgets.QWidget:
+        self._strip = QtWidgets.QWidget()
+        self._strip_layout = QtWidgets.QHBoxLayout(self._strip)
+        self._strip_layout.setContentsMargins(0, 0, 0, 0)
+        self._day_cards = []          # list[tuple[QFrame, QLabel title, QLabel count]]
+        for _ in range(7):
+            card = QtWidgets.QFrame()
+            card.setProperty("class", "Panel")
+            v = QtWidgets.QVBoxLayout(card)
+            title = QtWidgets.QLabel("")
+            title.setStyleSheet(f"color:{theme.TEXT};font-weight:600;")
+            count = QtWidgets.QLabel("")
+            count.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;")
+            v.addWidget(title)
+            v.addWidget(count)
+            self._day_cards.append((card, title, count))
+            self._strip_layout.addWidget(card)
+        return self._strip
+
+    def day_card_count(self) -> int:
+        return len(self._day_cards)
+
+    def _refresh_strip(self) -> None:
+        """Fill the 7 day-cards with weekday+date and that day's event count."""
+        day_ms = 24 * 3600 * 1000
+        for i, (_card, title, count) in enumerate(self._day_cards):
+            start = self._week_start + i * day_ms
+            dt = datetime.fromtimestamp(start / 1000, tz=timezone.utc)
+            n = sum(1 for e in self._events if start <= e.ts_utc < start + day_ms)
+            title.setText(f"{dt.strftime('%a')} {dt.day}")
+            count.setText(f"Economic {n}")
+
+    def _refresh_range_label(self) -> None:
+        a = datetime.fromtimestamp(self._week_start / 1000, tz=timezone.utc)
+        b = datetime.fromtimestamp(
+            (self._week_start + 6 * 24 * 3600 * 1000) / 1000, tz=timezone.utc
+        )
+        self._lbl_range.setText(
+            f"{a.strftime('%b')} {a.day} — {b.strftime('%b')} {b.day}, {b.year}"
+        )
+
+    # ---- week navigation ----
+    def current_week_start(self) -> int:
+        return self._week_start
+
+    def go_today(self) -> None:
+        self.load_week(week_start_utc(self._now()))
+
+    def go_prev_week(self) -> None:
+        self.load_week(self._week_start - 7 * 24 * 3600 * 1000)
+
+    def go_next_week(self) -> None:
+        self.load_week(self._week_start + 7 * 24 * 3600 * 1000)
 
     # ---- data ----
     def load_week(self, week_start_ms: int) -> None:
@@ -54,6 +164,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         if self._high_only and ev.importance < 2:
             return False
         if self._countries is not None and ev.currency not in self._countries:
+            return False
+        if self._category != "All" and ev.category != self._category:
             return False
         return True
 
@@ -75,6 +187,10 @@ class EconomicCalendarTab(QtWidgets.QWidget):
                 parent.setExpanded(True)
                 groups[day] = parent
             parent.addChild(self._row(ev))
+        if self._day_cards:
+            self._refresh_strip()
+        if hasattr(self, "_lbl_range"):
+            self._refresh_range_label()
 
     def _row(self, ev) -> QtWidgets.QTreeWidgetItem:
         t = "" if ev.all_day else self._hhmm(ev.ts_utc)
@@ -84,18 +200,21 @@ class EconomicCalendarTab(QtWidgets.QWidget):
                                         ev.forecast_display or "—", ev.previous_display or "—"])
         it.setData(0, QtCore.Qt.UserRole, ev.id)
         it.setIcon(2, QtGui.QIcon(importance_bar_pixmap(ev.importance)))
-        it.setForeground(4, QtGui.QColor(value_color(ev.actual, ev.forecast)))
-        if ev.actual is None and ev.ts_utc > self._now():
-            it.setForeground(4, QtGui.QColor(theme.DOWN))   # red "Coming in …"
+        color = theme.DOWN if (ev.actual is None and ev.ts_utc > self._now()) else value_color(ev.actual, ev.forecast)
+        it.setForeground(4, QtGui.QColor(color))
         return it
 
-    # ---- filters (return nothing; trigger a rebuild) ----
+    # ---- filters ----
     def set_high_only(self, on: bool) -> None:
         self._high_only = on
         self._rebuild()
 
     def set_countries(self, currencies: set[str] | None) -> None:
         self._countries = currencies
+        self._rebuild()
+
+    def set_category(self, cat: str) -> None:
+        self._category = cat
         self._rebuild()
 
     def visible_event_count(self) -> int:
@@ -114,6 +233,53 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         h, rem = divmod(secs, 3600)
         m, s = divmod(rem, 60)
         return f"Coming in {h}:{m:02d}:{s:02d}"
+
+    # ---- async load ----
+    def refresh_async(self, *, force: bool = False) -> None:
+        self._status.setText("Loading…")
+        self._worker = _CalendarFetchWorker(self._repo, self._week_start, force=force)
+        self._worker.eventsReady.connect(self._on_events)
+        self._worker.failed.connect(lambda msg: self._status.setText(f"Calendar error: {msg}"))
+        self._worker.start()
+
+    def _on_events(self, events) -> None:
+        self._events = events
+        self._status.setText("")
+        self._rebuild()
+
+    def _tick(self) -> None:
+        # cheap: only touch rows that show a countdown (future, no actual)
+        now = self._now()
+        for i in range(self._tree.topLevelItemCount()):
+            top = self._tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                row = top.child(j)
+                ev_id = row.data(0, QtCore.Qt.UserRole)
+                ev = next((e for e in self._events if e.id == ev_id), None)
+                if ev and ev.actual is None and ev.ts_utc > now:
+                    row.setText(4, self.countdown_text(ev.ts_utc))
+
+    # ---- detail row ----
+    def _toggle_detail(self, row) -> None:
+        ev_id = row.data(0, QtCore.Qt.UserRole)
+        if ev_id is None:                      # date header or a detail node itself
+            return
+        if row.childCount():
+            row.takeChildren()
+            return
+        ev = next((e for e in self._events if e.id == ev_id), None)
+        if ev is None:
+            return
+        text = (f"{ev.title} · {ev.country}  |  "
+                f"Actual {ev.actual_display or '—'} · "
+                f"Forecast {ev.forecast_display or '—'} · "
+                f"Prior {ev.previous_display or '—'}"
+                + (f"  ·  actual via {ev.actual_source}" if ev.actual_source else ""))
+        detail = QtWidgets.QTreeWidgetItem([text])
+        detail.setFirstColumnSpanned(True)
+        detail.setForeground(0, QtGui.QColor(theme.TEXT2))
+        row.addChild(detail)
+        row.setExpanded(True)
 
     @staticmethod
     def _date_header(ts_utc: int) -> str:

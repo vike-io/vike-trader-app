@@ -90,3 +90,29 @@ def test_countdown_text_for_future_event(app):
     # pin "now" 90 minutes before the Wednesday GDP event
     t.set_now_ms(TS_WED - 90 * 60_000)
     assert t.countdown_text(TS_WED) == "Coming in 1:30:00"
+
+
+# ---------------------------------------------------------------------------
+# Task 13 — toolbar + week strip
+# ---------------------------------------------------------------------------
+def test_week_nav_changes_week_and_reloads(app):
+    t = _tab(app)
+    start = t.current_week_start()
+    t.go_next_week()
+    assert t.current_week_start() == start + 7 * 24 * 3600 * 1000
+    t.go_today()
+    assert t.current_week_start() == week_start_utc(t._now())
+
+
+def test_week_strip_has_seven_day_cards(app):
+    t = _tab(app)
+    assert t.day_card_count() == 7
+
+
+def test_category_filter(app):
+    t = _tab(app)                  # GDP event has category "other" in the fixture builder
+    t.set_category("inflation")
+    # only events categorized inflation remain; fixture builder uses "other", so expect 0
+    assert t.visible_event_count() == 0
+    t.set_category("All")
+    assert t.visible_event_count() == 3
