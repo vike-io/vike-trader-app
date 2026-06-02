@@ -17,7 +17,7 @@ from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
 from ..data.cache import get_bars
-from ..data.live_update import closed_bars, feed_health, merge_live_bars
+from ..data.live_update import closed_bars, feed_health, live_fetch_window, merge_live_bars
 from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
@@ -540,10 +540,13 @@ class MainWindow(QtWidgets.QMainWindow):
         symbol, interval = self._symbol, self._interval
         now = int(time.time() * 1000)
         step = interval_ms(interval)
+        # Gap-aware: normally the last few bars, but stretch back to bridge a pause (e.g. after
+        # a long Forward run) so a returning session doesn't tear a hole in the series.
+        start, end = live_fetch_window(
+            self._bars[-1].ts if self._bars else None, now, step, lookback=_LIVE_LOOKBACK
+        )
         try:
-            fetched = select_source(symbol).fetch_bars_range(
-                symbol, interval, now - _LIVE_LOOKBACK * step, now
-            )
+            fetched = select_source(symbol).fetch_bars_range(symbol, interval, start, end)
         except Exception:  # noqa: BLE001 - transient fetch failure -> watchdog backs off, retries
             self._live_fail_streak += 1
             self._update_feed_health()

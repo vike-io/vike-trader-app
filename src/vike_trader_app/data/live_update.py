@@ -80,3 +80,26 @@ def closed_bars(bars: list[Bar], interval_ms: int, now: int) -> list[Bar]:
     if bars and now < bars[-1].ts + interval_ms:
         return bars[:-1]
     return list(bars)
+
+
+def live_fetch_window(
+    last_ts: int | None,
+    now: int,
+    interval_ms: int,
+    *,
+    lookback: int = 5,
+    max_bars: int = 1500,
+) -> tuple[int, int]:
+    """Return ``(start, now)`` for a live tick's fetch — gap-aware so a pause doesn't tear a hole.
+
+    Steady polling fetches the last ``lookback`` bars (the forming candle + a couple closed
+    ones for tick-replace). After a quiet stretch (e.g. a long Forward run that paused the
+    updater) the window stretches back to bridge the gap — plus 2 bars of margin to re-fetch
+    the last closed bar and the forming one — capped at ``max_bars`` so a huge catch-up stays
+    bounded (anything older is healed by the cache on the next ``_load_symbol``).
+    """
+    if last_ts is None:
+        return now - lookback * interval_ms, now
+    needed = (now - last_ts) // interval_ms + 2
+    bars = max(lookback, min(needed, max_bars))
+    return now - bars * interval_ms, now

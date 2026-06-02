@@ -10,7 +10,12 @@ Both are Qt-free and network-free, so the whole thing is deterministic and unit-
 """
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.data.live_update import closed_bars, feed_health, merge_live_bars
+from vike_trader_app.data.live_update import (
+    closed_bars,
+    feed_health,
+    live_fetch_window,
+    merge_live_bars,
+)
 
 _MIN = 60_000  # 1m interval in ms
 
@@ -133,3 +138,31 @@ def test_closed_bars_empty_input():
 
 def test_closed_bars_single_forming_bar_becomes_empty():
     assert closed_bars([_bar(0)], _MIN, now=30_000) == []
+
+
+# --- live_fetch_window (gap-aware fetch range) ------------------------------
+
+def test_live_fetch_window_no_history_uses_lookback():
+    now = 1_000_000_000
+    assert live_fetch_window(None, now, _MIN, lookback=5) == (now - 5 * _MIN, now)
+
+
+def test_live_fetch_window_small_gap_clamps_up_to_lookback():
+    # Normal steady polling: only a bar or two elapsed -> still fetch the lookback window
+    # (so the forming candle + a couple closed bars come back for tick-replace).
+    now = 1_000_000_000
+    assert live_fetch_window(now - 2 * _MIN, now, _MIN, lookback=5) == (now - 5 * _MIN, now)
+
+
+def test_live_fetch_window_extends_to_cover_a_gap():
+    # After a pause (e.g. a long Forward session) the window stretches back to bridge the gap,
+    # +2 bars of margin to re-fetch the last closed bar and the forming one.
+    now = 1_000_000_000
+    assert live_fetch_window(now - 50 * _MIN, now, _MIN, lookback=5) == (now - 52 * _MIN, now)
+
+
+def test_live_fetch_window_caps_at_max_bars():
+    now = 1_000_000_000
+    assert live_fetch_window(now - 5_000 * _MIN, now, _MIN, lookback=5, max_bars=1_500) == (
+        now - 1_500 * _MIN, now
+    )
