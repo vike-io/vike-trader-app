@@ -30,8 +30,11 @@ class ForexFactoryProvider:
     def _to_event(r: dict) -> CalendarEvent:
         currency = r.get("country", "")            # ForexFactory puts the code in `country`
         country, _iso = currency_country(currency)
-        ts = iso_to_ts_utc(r["date"])
-        all_day = r["date"].endswith("00:00:00+03:00") and r.get("impact") == "Holiday"
+        raw_date = r.get("date", "")
+        ts = iso_to_ts_utc(raw_date)
+        is_holiday = r.get("impact") == "Holiday"
+        all_day = is_holiday and "T00:00:00" in raw_date
+        # ForexFactory feed is published in GMT+3; we only key off the local midnight + Holiday flag.
         fval, funit = parse_value(r.get("forecast", ""))
         pval, punit = parse_value(r.get("previous", ""))
         title = r.get("title", "")
