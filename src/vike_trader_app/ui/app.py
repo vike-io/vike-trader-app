@@ -49,6 +49,7 @@ from .screener import ScreenerTab
 # this import, its addTab below, and the ("⚙", "Tools") entry in _RAIL_ITEMS.
 # from .tools import ToolsTab
 from .economic_calendar import EconomicCalendarTab
+from .equity_calendar import CalendarSpace
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -379,7 +380,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.news = NewsTab()
         self.tabs.addTab(self.news, "News")
         self.economic_calendar = EconomicCalendarTab()
-        self.tabs.addTab(self.economic_calendar, "Calendar")
+        self.calendar_space = CalendarSpace(economic_tab=self.economic_calendar)
+        self.tabs.addTab(self.calendar_space, "Calendar")
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
