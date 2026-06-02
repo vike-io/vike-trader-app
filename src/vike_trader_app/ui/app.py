@@ -44,7 +44,9 @@ from .studio import StudioTab
 from .alerts import AlertsTab
 from .journal import JournalTab
 from .screener import ScreenerTab
-from .tools import ToolsTab
+# Tools tab (standalone calculators) hidden per user request — restore by uncommenting
+# this import, its addTab below, and the ("⚙", "Tools") entry in _RAIL_ITEMS.
+# from .tools import ToolsTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -361,8 +363,9 @@ class MainWindow(QtWidgets.QMainWindow):
         _cb.addWidget(_scrubber)
         self.studio.mount_chart(_chart_block)
         self.tabs.addTab(self.studio, "Studio")
-        self.tools = ToolsTab()
-        self.tabs.addTab(self.tools, "Tools")
+        # Tools tab hidden per user request (see import note above).
+        # self.tools = ToolsTab()
+        # self.tabs.addTab(self.tools, "Tools")
         self.screener = ScreenerTab()
         self.tabs.addTab(self.screener, "Screener")
         self.journal = JournalTab()
@@ -399,7 +402,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rules.raise_()
 
     _RAIL_ITEMS = [
-        ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
+        ("▤", "Chart"), ("✦", "Studio"),  # ("⚙", "Tools") — hidden per user request
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
     ]
 
