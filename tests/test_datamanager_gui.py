@@ -30,6 +30,7 @@ def _seed(root: str):
 def test_datamanager_lists_cached_series(app, tmp_path):
     _seed(str(tmp_path))
     tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()  # populates lazily (normally on first show)
     assert tab._table.rowCount() == 1
     assert tab._table.item(0, 0).text() == "BTCUSDT"
     assert tab._table.item(0, 1).text() == "1m"
@@ -41,6 +42,7 @@ def test_datamanager_pin_toggle_persists_and_marks_row(app, tmp_path):
     _seed(str(tmp_path))
     pins = str(tmp_path / "pins.json")
     tab = DataManagerTab(root=str(tmp_path), pins_path=pins)
+    tab.refresh()
     tab._table.setCurrentCell(0, 0)
     tab._on_pin()
     assert load_pins(pins) == [["BTCUSDT", "1m"]]
@@ -53,6 +55,7 @@ def test_datamanager_pin_toggle_persists_and_marks_row(app, tmp_path):
 def test_datamanager_delete_removes_series(app, tmp_path):
     _seed(str(tmp_path))
     tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
     assert tab._table.rowCount() == 1
     tab._delete("BTCUSDT", "1m")           # the no-prompt path used by the confirm dialog
     assert tab._table.rowCount() == 0

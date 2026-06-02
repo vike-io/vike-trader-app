@@ -32,7 +32,7 @@ class DataManagerTab(QtWidgets.QWidget):
         super().__init__(parent)
         self._root = root or DEFAULT_ROOT
         self._pins_path = pins_path or _PINS_PATH
-        self._cat = self._make_catalog()  # DuckDB (fast Parquet-stats metadata) or Polars fallback
+        self._cat = None  # built lazily on first refresh — don't read the catalog at app startup
 
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -68,8 +68,8 @@ class DataManagerTab(QtWidgets.QWidget):
         self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._table.doubleClicked.connect(lambda *_: self._on_repair())
         root_layout.addWidget(self._table, 1)
-
-        self.refresh()
+        # No refresh() here: the table populates lazily on first show (showEvent), so app startup
+        # never reads the catalog for a tab the user may not open.
 
     def _make_catalog(self):
         """Prefer the DuckDB catalog — it answers count/min/max from Parquet *statistics* without
@@ -85,11 +85,16 @@ class DataManagerTab(QtWidgets.QWidget):
 
             return Catalog(self._root)
 
+    def _catalog(self):
+        if self._cat is None:
+            self._cat = self._make_catalog()
+        return self._cat
+
     # --- table ---
     def refresh(self) -> None:
         """Repopulate the table from the catalog (+ pin state + on-disk size)."""
         pins = {tuple(p) for p in load_pins(self._pins_path)}
-        datasets = self._cat.list_datasets()
+        datasets = self._catalog().list_datasets()
         self._table.setRowCount(len(datasets))
         for r, info in enumerate(datasets):
             pinned = (info.symbol, info.interval) in pins
