@@ -17,6 +17,7 @@ from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
 from ..data.cache import get_bars
+from ..data.live_update import closed_bars, feed_health, merge_live_bars
 from ..data.polling_feed import PollingBarFeed
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
@@ -44,6 +45,13 @@ _WATCHLIST_DAYS = 7  # history pulled when clicking a watchlist symbol
 _INTERVAL_LOOKBACK = {"1m": 7, "3m": 7, "5m": 10, "15m": 21, "30m": 30,
                       "1h": 90, "2h": 120, "4h": 240, "1d": 1825, "1w": 3650}
 _WATCHLIST_FRESH_MS = 5 * 60_000  # cache-first: reuse cached bars if the last one is this fresh
+_LIVE_LOOKBACK = 5  # bars (incl. the forming candle) pulled per live chart tick
+_FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
+    "live": (theme.UP, "● LIVE · "),
+    "stale": (theme.WARN, "● STALE · "),
+    "down": (theme.DOWN, "● RECONNECTING · "),
+    "idle": (theme.TEXT3, "● "),
+}
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
 _FORWARD_FEE = 0.001
@@ -141,6 +149,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_timer = None  # round-robin live quote refresh (started after cache fill)
         self._refresh_q = []        # crypto symbols cycled by the quote refresh
 
+        # live chart auto-updater + connection watchdog (main-thread polling, look-ahead-safe)
+        self._live_fail_streak = 0
+        self._live_base_ms = 10_000
+
         # widgets
         self.price = PriceChart()         # Chart space — clean standalone viewer
         self.studio_price = PriceChart()  # Studio workspace chart — same data, driven in lockstep
@@ -175,6 +187,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._fwd_timer = QtCore.QTimer(self)
         self._fwd_timer.timeout.connect(self._forward_poll_tick)
+
+        self._live_timer = QtCore.QTimer(self)  # auto-updates the chart for the live symbol
+        self._live_timer.timeout.connect(self._live_tick)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(60)
@@ -457,8 +472,97 @@ class MainWindow(QtWidgets.QMainWindow):
         return "YAHOO · DUKASCOPY" if is_forex_symbol(symbol) else "BINANCE"
 
     def _update_feed_badge(self, *, live: bool = False) -> None:
-        prefix = "● LIVE · " if live else "● "
+        """Back-compat shim: route the old badge call through the health-based renderer."""
+        self._set_feed_health("live" if live else "idle")
+
+    def _set_feed_health(self, state: str) -> None:
+        """Paint the feed badge for ``state`` and re-tune the live poll cadence.
+
+        live → steady base cadence; stale → slow 30s poll (quiet/closed market); down →
+        exponential backoff capped at 30s (REST is stateless, so the feed self-recovers).
+        Replaces the old static "● BINANCE" label, which was a provider name wearing a
+        "connected" disguise — it never reflected whether data was actually flowing.
+        """
+        color, prefix = _FEED_STATES.get(state, _FEED_STATES["idle"])
         self._feed_badge.setText(f"{prefix}{self._feed_label(self._symbol)}")
+        self._feed_badge.setStyleSheet(
+            f"color:{color};font-size:10px;background:transparent;border:none;"
+            f"padding:3px 6px;margin-right:6px;"
+        )
+        if not self._live_timer.isActive():
+            return
+        if state == "live":
+            self._live_timer.setInterval(self._live_base_ms)
+        elif state == "stale":
+            self._live_timer.setInterval(30_000)
+        else:  # down -> back off, but keep retrying
+            self._live_timer.setInterval(min(self._live_base_ms * 2 ** self._live_fail_streak, 30_000))
+
+    def _update_feed_health(self) -> None:
+        """Classify the live feed (data freshness + failure streak) and repaint the badge."""
+        if self._forward is not None:
+            self._set_feed_health("live")  # forward mode runs its own (genuinely live) feed
+            return
+        now = int(time.time() * 1000)
+        newest = self._bars[-1].ts if self._bars else None
+        self._set_feed_health(
+            feed_health(now, newest, interval_ms(self._interval), self._live_fail_streak)
+        )
+
+    def _arm_live_updates(self) -> None:
+        """(Re)start the live chart updater for the current symbol/interval (idempotent).
+
+        Cadence polls a few times per candle (≈5s for 1m), capped at 10s. Recorded-run and
+        hand-loaded views call ``_stop_live_updates`` instead, so live polling stays scoped to
+        the live-symbol path.
+        """
+        if self._forward is not None:
+            return
+        self._live_fail_streak = 0
+        self._live_base_ms = max(2_000, min(interval_ms(self._interval) // 12, 10_000))
+        self._live_timer.start(self._live_base_ms)
+        self._update_feed_health()
+
+    def _stop_live_updates(self) -> None:
+        self._live_timer.stop()
+        self._set_feed_health("idle")
+
+    def _live_tick(self) -> None:
+        """Pull the last few bars (incl. the forming candle), merge, and repaint the live edge.
+
+        No-ops in forward mode (that feed owns the network). A fetch error grows the failure
+        streak so the watchdog backs the poll off (and flips the badge to RECONNECTING); a
+        success merges via ``merge_live_bars`` and only repaints-to-live when you're viewing the
+        latest bar, so it never yanks the view while you've scrolled back into history.
+        """
+        if self._forward is not None or not self._bars:
+            return
+        symbol, interval = self._symbol, self._interval
+        now = int(time.time() * 1000)
+        step = interval_ms(interval)
+        try:
+            fetched = select_source(symbol).fetch_bars_range(
+                symbol, interval, now - _LIVE_LOOKBACK * step, now
+            )
+        except Exception:  # noqa: BLE001 - transient fetch failure -> watchdog backs off, retries
+            self._live_fail_streak += 1
+            self._update_feed_health()
+            return
+        self._live_fail_streak = 0
+        merged, appended, replaced_last = merge_live_bars(self._bars, fetched)
+        if appended or replaced_last:
+            was_at_end = self._replay.at_end
+            self._bars = merged
+            self._replay.n_bars = len(merged)
+            self.slider.setMaximum(self._replay.last_index)
+            overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
+            for ch in (self.price, self.studio_price):
+                ch.apply_live(merged, overlays, repaint=False)
+            if was_at_end:  # following the live edge -> advance the cursor and repaint
+                self._replay.seek(self._replay.last_index)
+                self._render_frame()
+                self.foot_info.setText(f"{symbol} · {interval} · {len(merged):,} bars")
+        self._update_feed_health()
 
     def _build_controls(self):
         """Replay/data controls for the Studio chart: a 2-column button strip docked at the
@@ -724,7 +828,7 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.foot_info.setText(f"{self._symbol} · {self._interval} · {len(bars):,} bars")
             self.foot_status.setText("Loaded")
-        self._update_feed_badge()
+        self._update_feed_health()
         self._update_account()
         self._render_frame()
         if record and bars:
@@ -738,7 +842,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._bars:
             self._open_load_dialog()
             return
-        self.load_bars(self._bars, record=True)
+        # backtests are closed-bar-only: drop the still-forming live candle if present.
+        bars = closed_bars(self._bars, interval_ms(self._interval), int(time.time() * 1000))
+        self.load_bars(bars, record=True)
 
     def _save_run(self):
         """Persist the just-finished backtest to the history store."""
@@ -781,6 +887,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._symbol = rec.symbol
         self._interval = rec.interval
         self.load_bars(bars, record=False)
+        self._stop_live_updates()  # a recorded run is a fixed past window, not the live edge
 
     def _open_load_dialog(self):
         dlg = LoadDataDialog(self)
@@ -788,6 +895,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._symbol = dlg.symbol.text().strip() or self._symbol
             self._interval = dlg.interval.currentText()
             self.load_bars(dlg.bars)
+            self._stop_live_updates()  # a hand-loaded dataset isn't the live symbol feed
 
     def _populate_watchlist(self):
         """Fill the watchlist from the local cache so every row maps to loadable data.
@@ -909,6 +1017,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._symbol, self._interval = symbol, interval     # fresh -> paint instantly
             self.load_bars(cached)
             self._push_watch_quote(symbol, cached)
+            self._arm_live_updates()
             return
 
         self.crumb.setText(f"Loading {symbol}…")
@@ -923,6 +1032,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.load_bars(cached)
                 self._push_watch_quote(symbol, cached)
                 self.crumb.setText(f"{symbol}: latest unavailable, showing cached · {exc}")
+                self._arm_live_updates()  # keep retrying; the watchdog shows reconnecting/stale
                 return
             QtWidgets.QMessageBox.warning(self, "Load failed", f"{symbol}: {exc}")
             self.crumb.setText("No data loaded")
@@ -933,6 +1043,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._interval = interval
         self.load_bars(bars)
         self._push_watch_quote(symbol, bars)
+        self._arm_live_updates()
 
     def _on_interval_chosen(self, interval: str):
         """Timeframe dropdown -> reload the current symbol at the chosen interval."""

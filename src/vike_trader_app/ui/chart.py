@@ -478,6 +478,30 @@ class PriceChart(pg.PlotWidget):
             )
         self.show_upto(len(self._bars) - 1 if self._bars else 0)
 
+    def apply_live(self, bars, overlays=None, *, repaint=True):
+        """Refresh the series in place for a live tick — candles/axis/timestamps + overlays.
+
+        Unlike ``set_data`` this keeps existing trade markers and any user-picked indicators
+        (it *merges* ``overlays`` rather than replacing the lot), so a per-tick refresh never
+        wipes the chart the user has set up. Live ticks only append at the tail, so existing
+        markers' bar-indices stay valid. With ``repaint`` (default) it paints to the live edge;
+        pass ``repaint=False`` to update the data only — e.g. while the user has scrolled back
+        into history, the caller repaints via its own replay cursor instead of yanking the view.
+        """
+        self._bars = bars
+        self._time_axis.set_bars(bars)
+        self._ts_index = {b.ts: i for i, b in enumerate(bars)}
+        if overlays:
+            for label in overlays:
+                if label not in self._overlay_curves:
+                    color = _OVERLAY_COLORS[len(self._overlay_curves) % len(_OVERLAY_COLORS)]
+                    self._overlay_curves[label] = self.plot(
+                        [], [], pen=pg.mkPen(color, width=1), name=label
+                    )
+            self._overlays = {**self._overlays, **overlays}
+        if repaint:
+            self.show_upto(len(bars) - 1)
+
     # --- indicators (TradingView-style: pick from the catalog, overlay on the chart) ---
     def _open_indicator_picker(self):
         dlg = _IndicatorPicker(self)
