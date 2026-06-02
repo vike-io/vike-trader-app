@@ -61,6 +61,27 @@ def test_datamanager_inspect_logs_quality_report(app, tmp_path):
     log = tab._log_view.toPlainText()
     assert "Inspect BTCUSDT 1m" in log
     assert "clean" in log  # 5 contiguous valid bars
+    assert "instrument:" in log and "Binance" in log  # self-describing spec line
+
+
+def test_datamanager_shows_instrument_spec_column(app, tmp_path):
+    _seed(str(tmp_path))
+    tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    last = tab._table.columnCount() - 1
+    assert tab._table.horizontalHeaderItem(last).text() == "Instrument"
+    assert tab._table.item(0, last).text() == "crypto · tick 0.01"
+
+
+def test_datamanager_refresh_seeds_broker_presets(app, tmp_path):
+    from vike_trader_app.data.instruments import list_profiles
+
+    _seed(str(tmp_path))
+    tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    assert set(list_profiles(str(tmp_path))) == {
+        "Binance", "Bybit", "Coinbase", "US Equities", "Generic",
+    }
 
 
 def test_datamanager_update_all_extends_each_series(app, tmp_path, monkeypatch):

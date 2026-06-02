@@ -14,14 +14,21 @@ from PySide6 import QtCore, QtWidgets
 
 from ..data.binance_source import interval_ms
 from ..data.cache import DEFAULT_ROOT, get_bars, repair_gaps
+from ..data.instruments import ensure_presets, profile_for_symbol, spec_for_symbol
 from ..data.parquet_source import delete_series
 from ..data.rollup import load_pins, refresh_rollup, save_pins
 from ..data.sources import select_source
 from . import theme
-from .datamanager_data import quality_summary, row_cells, series_size_bytes
+from .datamanager_data import (
+    instrument_detail,
+    instrument_label,
+    quality_summary,
+    row_cells,
+    series_size_bytes,
+)
 
 _PINS_PATH = "storage/pins.json"
-_COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌"]
+_COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌", "Instrument"]
 _DAY_MS = 86_400_000
 _INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
 
@@ -34,6 +41,7 @@ class DataManagerTab(QtWidgets.QWidget):
         self._root = root or DEFAULT_ROOT
         self._pins_path = pins_path or _PINS_PATH
         self._cat = None  # built lazily on first refresh — don't read the catalog at app startup
+        self._presets_ready = False  # broker-profile presets seeded lazily on first refresh
 
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -121,7 +129,13 @@ class DataManagerTab(QtWidgets.QWidget):
 
     # --- table ---
     def refresh(self) -> None:
-        """Repopulate the table from the catalog (+ pin state + on-disk size)."""
+        """Repopulate the table from the catalog (+ pin state + on-disk size + instrument spec)."""
+        if not self._presets_ready:  # seed the 5 broker-profile presets once (idempotent)
+            try:
+                ensure_presets(self._root)
+            except Exception:  # noqa: BLE001 - a read-only/locked storage dir just defers presets
+                pass
+            self._presets_ready = True
         pins = {tuple(p) for p in load_pins(self._pins_path)}
         datasets = self._catalog().list_datasets()
         self._table.setRowCount(len(datasets))
@@ -133,6 +147,10 @@ class DataManagerTab(QtWidgets.QWidget):
                 if c >= 2:  # numeric / date / size / pin columns read right
                     item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
                 self._table.setItem(r, c, item)
+            spec = spec_for_symbol(info.symbol, self._root)  # self-describing: tick/decimals
+            cell = QtWidgets.QTableWidgetItem(instrument_label(spec))
+            cell.setForeground(QtWidgets.QApplication.palette().mid())
+            self._table.setItem(r, len(_COLS) - 1, cell)
         self.count_label.setText(f"{len(datasets)} series")
 
     def _selected(self) -> tuple[str, str] | None:
@@ -191,6 +209,8 @@ class DataManagerTab(QtWidgets.QWidget):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self._log(f"Inspect {symbol} {interval}: {quality_summary(bars, interval_ms(interval))}")
+        spec = spec_for_symbol(symbol, self._root)
+        self._log(f"  instrument: {instrument_detail(spec, profile_for_symbol(symbol))}")
 
     def _on_update_all(self) -> None:
         """Fetch up-to-now for every cached series (TradeStation/NinjaTrader 'Update all')."""
