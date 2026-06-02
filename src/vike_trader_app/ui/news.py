@@ -13,17 +13,88 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..data.news.aggregator import apply_filter, merge
-from ..data.news.fetch import fetch_all
+from ..data.news.fetch import fetch_iter
 from ..data.news.feeds_store import SavedFeed, SavedFeedStore
 from ..data.news.models import NewsFilter, NewsItem
 from ..data.news.providers import PROVIDERS
-from . import theme
+from . import icons, theme
 
 _MARKETS = {"All": None, "Crypto": "crypto", "Forex": "forex", "Stocks": "stocks"}
 
+# Deterministic provider-badge palette (no real logos — colored initials, like Market watch).
+_AV_COLORS = ["#3fe08a", "#f0a93f", "#3f9be0", "#e0643f", "#b06fe0", "#3fe0c8", "#e03f8a", "#9be03f"]
+_av_cache: dict[str, "QtGui.QPixmap"] = {}
+
+
+def _avatar_for(source: str, size: int = 30) -> "QtGui.QPixmap":
+    """A small circular provider badge (first initial on a stable per-source colour)."""
+    key = f"{source}@{size}"
+    pm = _av_cache.get(key)
+    if pm is None:
+        color = _AV_COLORS[sum(map(ord, source)) % len(_AV_COLORS)]
+        pm = icons.avatar((source or "?")[:1].upper(), color).scaled(
+            size, size, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+        _av_cache[key] = pm
+    return pm
+
+
+def _ago(ms: int) -> str:
+    """Relative timestamp like TradingView ('just now', '5m ago', '3h ago', '2d ago')."""
+    if not ms:
+        return ""
+    secs = max(0, int(time.time() * 1000) - ms) // 1000
+    if secs < 60:
+        return "just now"
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
+
+
+class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
+    """TradingView-style two-line row: provider badge · relative time, then a bold headline."""
+
+    def sizeHint(self, opt, idx):
+        return QtCore.QSize(opt.rect.width(), 56)
+
+    def paint(self, p, opt, idx):
+        it = idx.data(QtCore.Qt.UserRole)
+        if not isinstance(it, NewsItem):
+            super().paint(p, opt, idx)           # empty-state placeholder → default text paint
+            return
+        p.save()
+        r = opt.rect
+        if opt.state & QtWidgets.QStyle.State_Selected:
+            bg = QtGui.QColor(theme.ACCENT)
+            bg.setAlpha(30)
+            p.fillRect(r, bg)
+            p.fillRect(QtCore.QRect(r.left(), r.top(), 2, r.height()), QtGui.QColor(theme.ACCENT))
+        elif opt.state & QtWidgets.QStyle.State_MouseOver:
+            p.fillRect(r, QtGui.QColor(theme.RAISE))
+        p.drawPixmap(r.left() + 12, r.top() + 13, _avatar_for(it.source))
+        x = r.left() + 52
+        right = r.right() - 12
+        meta_font = p.font()
+        meta_font.setPixelSize(11)
+        p.setFont(meta_font)
+        p.setPen(QtGui.QColor(theme.TEXT3))
+        chip = f"  ·  {it.symbols[0]}" if it.symbols else ""
+        p.drawText(x, r.top() + 21, f"{it.source}  ·  {_ago(it.published_ms)}{chip}")
+        title_font = p.font()
+        title_font.setPixelSize(13)
+        title_font.setBold(True)
+        p.setFont(title_font)
+        p.setPen(QtGui.QColor(theme.TEXT))
+        title = QtGui.QFontMetrics(title_font).elidedText(it.title, QtCore.Qt.ElideRight, right - x)
+        p.drawText(x, r.top() + 41, title)
+        p.setPen(QtGui.QColor(theme.BORDER))
+        p.drawLine(x, r.bottom(), right, r.bottom())
+        p.restore()
+
 
 class _NewsWorker(QtCore.QThread):
-    """Polls all enabled providers off the UI thread; emits parsed batches."""
+    """Polls all enabled providers off the UI thread; emits each feed's items as it lands."""
 
     itemsReceived = QtCore.Signal(object)   # list[NewsItem]
     failed = QtCore.Signal(str)
@@ -56,9 +127,14 @@ class _NewsWorker(QtCore.QThread):
         while not self._stop:
             try:
                 sym = self._symbol if self._follow_chart else None
-                items = fetch_all(self._specs, sym)
-                if not self._stop:
-                    self.itemsReceived.emit(items)
+                gen = fetch_iter(self._specs, sym)
+                try:
+                    for chunk in gen:          # emit each feed as it completes → progressive paint
+                        if self._stop:
+                            break
+                        self.itemsReceived.emit(chunk)
+                finally:
+                    gen.close()                # shut the pool down promptly if we broke out early
             except Exception as exc:  # noqa: BLE001 - surfaced to the UI thread
                 self.failed.emit(str(exc))
             self._wake.wait(self._poll)
@@ -84,7 +160,10 @@ class NewsTab(QtWidgets.QWidget):
 
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._list = QtWidgets.QListWidget()
-        self._list.setAlternatingRowColors(True)
+        self._list.setItemDelegate(_NewsRowDelegate(self._list))   # TV-style two-line rows
+        self._list.setMouseTracking(True)                          # hover highlight
+        self._list.setStyleSheet(
+            f"QListWidget{{background:{theme.CHART_BG};border:none;outline:none;}}")
         self._list.currentRowChanged.connect(self._on_row_changed)
         split.addWidget(self._list)
         split.addWidget(self._build_reader())
@@ -95,6 +174,7 @@ class NewsTab(QtWidgets.QWidget):
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
         root.addWidget(self._status)
+        self._last_update = ""
         self._reload_feed_combo()
 
     # ---- construction helpers ----
@@ -147,21 +227,43 @@ class NewsTab(QtWidgets.QWidget):
     def _build_reader(self) -> QtWidgets.QWidget:
         w = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(w)
-        v.setContentsMargins(10, 6, 6, 6)
+        v.setContentsMargins(18, 14, 14, 12)
+        v.setSpacing(8)
+        head = QtWidgets.QHBoxLayout()
+        head.setSpacing(8)
+        self._reader_av = QtWidgets.QLabel()
+        self._reader_av.setFixedSize(26, 26)
+        self._source_lbl = QtWidgets.QLabel("")
+        self._source_lbl.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;font-weight:600;")
+        head.addWidget(self._reader_av)
+        head.addWidget(self._source_lbl)
+        head.addStretch(1)
+        v.addLayout(head)
         self._title = QtWidgets.QLabel("Select a headline")
         self._title.setWordWrap(True)
-        self._title.setStyleSheet(f"color:{theme.TEXT};font-size:15px;font-weight:700;")
+        self._title.setStyleSheet(f"color:{theme.TEXT};font-size:18px;font-weight:700;")
         self._meta = QtWidgets.QLabel("")
         self._meta.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
+        self._chips = QtWidgets.QLabel("")
+        self._chips.setTextFormat(QtCore.Qt.RichText)
+        self._chips.setVisible(False)
         self._body = QtWidgets.QTextBrowser()
         self._body.setOpenExternalLinks(False)
+        self._body.setStyleSheet(
+            f"QTextBrowser{{border:none;background:transparent;color:{theme.TEXT2};font-size:13px;}}")
         self._open_btn = QtWidgets.QPushButton("↗ Open original")
         self._open_btn.clicked.connect(self._open_original)
         self._open_btn.setEnabled(False)
-        for x in (self._title, self._meta, self._body, self._open_btn):
+        for x in (self._title, self._meta, self._chips, self._body, self._open_btn):
             v.addWidget(x)
         v.setStretchFactor(self._body, 1)
         return w
+
+    def _chip_html(self, it: NewsItem) -> str:
+        tags = ([it.market.capitalize()] if it.market else []) + list(it.symbols)
+        cell = (f"<span style='background:{theme.RAISE};color:{theme.TEXT2};"
+                f"padding:3px 9px;margin-right:6px;font-size:11px;'>&nbsp;{{t}}&nbsp;</span>")
+        return "".join(cell.format(t=t) for t in tags)
 
     # ---- feed lifecycle ----
     def start_feed(self, symbol: str | None = None) -> None:
@@ -191,8 +293,8 @@ class NewsTab(QtWidgets.QWidget):
     # ---- slots ----
     def on_items_received(self, items) -> None:
         self._items = merge(self._items, list(items))
+        self._last_update = time.strftime("%H:%M:%S")
         self._refresh_list()
-        self._status.setText(f"{len(self._items)} headlines · updated {time.strftime('%H:%M:%S')}")
 
     def _on_failed(self, message: str) -> None:
         self._status.setText(f"Feed error: {message}")     # status line, never a modal
@@ -206,9 +308,13 @@ class NewsTab(QtWidgets.QWidget):
         it = self._current_item()
         if it is None:
             return
+        self._reader_av.setPixmap(_avatar_for(it.source, 26))
+        self._source_lbl.setText(it.source)
         self._title.setText(it.title)
-        when = time.strftime("%Y-%m-%d %H:%M", time.localtime(it.published_ms / 1000)) if it.published_ms else ""
-        self._meta.setText(f"{it.source} · {when}" + (f" · {', '.join(it.symbols)}" if it.symbols else ""))
+        when = time.strftime("%b %d, %Y · %H:%M", time.localtime(it.published_ms / 1000)) if it.published_ms else ""
+        self._meta.setText(f"{when}  ·  {_ago(it.published_ms)}" if when else "")
+        self._chips.setText(self._chip_html(it))
+        self._chips.setVisible(bool(it.market or it.symbols))
         self._body.setPlainText(it.summary or "(no summary — open the original)")
         self._open_btn.setEnabled(bool(it.url))
 
@@ -227,13 +333,33 @@ class NewsTab(QtWidgets.QWidget):
     def _refresh_list(self) -> None:
         self._list.blockSignals(True)
         self._list.clear()
-        for it in apply_filter(self._items, self._current_filter()):
-            when = time.strftime("%H:%M", time.localtime(it.published_ms / 1000)) if it.published_ms else "--:--"
-            chip = f"  [{it.symbols[0]}]" if it.symbols else ""
-            qi = QtWidgets.QListWidgetItem(f"{when}  {it.source} — {it.title}{chip}")
+        filtered = apply_filter(self._items, self._current_filter())
+        for it in filtered:
+            qi = QtWidgets.QListWidgetItem(it.title)   # text is a fallback; _NewsRowDelegate paints
             qi.setData(QtCore.Qt.UserRole, it)
             self._list.addItem(qi)
+        if not filtered and self._items:
+            ph = QtWidgets.QListWidgetItem(self._empty_hint())   # non-selectable explainer row
+            ph.setFlags(QtCore.Qt.NoItemFlags)                   # no UserRole data → _current_item stays None
+            self._list.addItem(ph)
         self._list.blockSignals(False)
+        self._update_status(len(filtered))
+
+    def _empty_hint(self) -> str:
+        """Explain *why* the list is empty (e.g. Follow-chart scoping) — not just a blank pane."""
+        f = self._current_filter()
+        scope = f"{self._market.currentText()} " if f.market else ""
+        if f.symbol:
+            return (f"No {scope}headlines mention {f.symbol}. "
+                    f"Turn off “⊕ Follow chart” to see all {scope}news.")
+        if f.query:
+            return f"No headlines match “{f.query}”."
+        return f"No {scope}headlines right now."
+
+    def _update_status(self, shown: int) -> None:
+        total = len(self._items)
+        head = f"{total} headlines" if shown == total else f"{shown} of {total} headlines"
+        self._status.setText(head + (f" · updated {self._last_update}" if self._last_update else ""))
 
     def _current_item(self) -> NewsItem | None:
         qi = self._list.currentItem()

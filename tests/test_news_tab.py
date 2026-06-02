@@ -61,3 +61,28 @@ def test_set_symbol_with_follow_filters(app, tmp_path):
     tab._follow.setChecked(True)
     tab.set_symbol("BTCUSDT")
     assert tab._list.count() == 1                    # only the BTC item matches
+
+
+def test_empty_filter_shows_actionable_placeholder_and_honest_count(app, tmp_path):
+    from PySide6 import QtCore
+
+    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+    tab.on_items_received(_items())                  # 1 crypto(BTC) + 1 forex
+    tab._follow.setChecked(True)
+    tab.set_symbol("BTCUSDT")
+    tab._market.setCurrentText("Forex")              # Forex AND the BTC symbol = nothing
+
+    # honest count — not a misleading "2 headlines" while the list is empty
+    assert "0 of 2" in tab._status.text()
+    # one non-selectable placeholder explains *why* (the Follow-chart scoping)
+    assert tab._list.count() == 1
+    ph = tab._list.item(0)
+    assert ph.data(QtCore.Qt.UserRole) is None       # placeholder, not a NewsItem
+    assert "Follow chart" in ph.text() and "Forex" in ph.text()
+    tab._list.setCurrentRow(0)
+    assert tab._current_item() is None               # placeholder can't be selected
+
+    # following the hint (turn off Follow chart) reveals the Forex item
+    tab._follow.setChecked(False)
+    assert tab._list.count() == 1
+    assert tab._list.item(0).data(QtCore.Qt.UserRole) is not None   # a real item now, no placeholder
