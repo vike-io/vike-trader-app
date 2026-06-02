@@ -36,6 +36,9 @@ def test_grid_renders_rows_and_columns():
     # a missing value renders as the em-dash placeholder
     put_bid_col = len(CALL_COLS) + 1 + COLS[len(CALL_COLS) + 1:].index("Bid")
     assert tab.table.item(1, put_bid_col).text() == "—"
+    # a present quote with an unset greek (row-0 put has no theta) also shows the placeholder
+    put_theta_col = len(CALL_COLS) + 1 + COLS[len(CALL_COLS) + 1:].index("Θ")
+    assert tab.table.item(0, put_theta_col).text() == "—"
 
 
 def test_call_and_put_cells_are_colored():

@@ -14,6 +14,8 @@ from . import theme
 
 # per-side columns (center is "Strike")
 _SIDE_COLS = ["Bid", "Ask", "Mark", "IV", "Δ", "Γ", "Θ", "V", "OI", "Vol"]
+# Calls and puts show the same columns; kept as separate lists so the two sides can
+# diverge later without reshuffling indices. Don't mutate these in place.
 CALL_COLS = list(_SIDE_COLS)
 PUT_COLS = list(_SIDE_COLS)
 COLS = CALL_COLS + ["Strike"] + PUT_COLS
@@ -80,13 +82,22 @@ class OptionsTab(QtWidgets.QWidget):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        # 21 narrow columns: fit each to its content, pin the central strike column.
+        hh = self.table.horizontalHeader()
+        hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hh.setSectionResizeMode(_STRIKE_COL, QtWidgets.QHeaderView.Fixed)
+        self.table.setColumnWidth(_STRIKE_COL, 76)
         root.addWidget(self.table, 1)
 
-        self.underlying.activated.connect(
-            lambda: self.underlyingChanged.emit(self.underlying.currentText())
-        )
+        # Picking a preset fires `activated`; typing a custom ticker + Enter fires
+        # the line-edit's `returnPressed` (activated alone misses novel text).
+        self.underlying.activated.connect(self._emit_underlying)
+        self.underlying.lineEdit().returnPressed.connect(self._emit_underlying)
         self.expiry.activated.connect(self._emit_expiry)
         self.refresh_btn.clicked.connect(self.refreshRequested.emit)
+
+    def _emit_underlying(self) -> None:
+        self.underlyingChanged.emit(self.underlying.currentText())
 
     def _emit_expiry(self) -> None:
         iso = self.expiry.currentData()
@@ -115,7 +126,7 @@ class OptionsTab(QtWidgets.QWidget):
         px = "—" if chain.underlying_price is None else f"{chain.underlying_price:,.2f}"
         self.set_status(f"{chain.underlying} {px}  ·  {chain.source}  ·  {chain.expiry.label}")
 
-    def _fill_side(self, r: int, q: OptionQuote | None, cols, base: int, color: str) -> None:
+    def _fill_side(self, r: int, q: OptionQuote | None, cols: list[str], base: int, color: str) -> None:
         for i, name in enumerate(cols):
             attr, kind = _FIELD[name]
             text = _DASH if q is None else _fmt(getattr(q, attr), kind)
