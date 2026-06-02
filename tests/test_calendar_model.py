@@ -63,3 +63,30 @@ def test_week_start_utc_is_monday_midnight():
     tue = iso_to_ts_utc("2026-06-02T12:30:00+00:00")
     mon = iso_to_ts_utc("2026-06-01T00:00:00+00:00")
     assert week_start_utc(tue) == mon
+
+
+# tests/test_calendar_model.py  (append)
+from vike_trader_app.data.calendar.taxonomy import (
+    normalize_title, categorize, currency_country,
+)
+
+
+def test_normalize_title_strips_qualifiers_and_case():
+    assert normalize_title("Inflation Rate YoY Flash") == "inflation rate"
+    assert normalize_title("Core Inflation Rate MoM Prel") == "core inflation rate"
+    assert normalize_title("GDP Growth Rate QoQ Final") == "gdp growth rate"
+
+
+def test_categorize_buckets_known_events():
+    assert categorize("Non-Farm Payrolls") == "employment"
+    assert categorize("Inflation Rate YoY") == "inflation"
+    assert categorize("Fed Interest Rate Decision") == "rates"
+    assert categorize("GDP Growth Rate QoQ") == "gdp"
+    assert categorize("Balance of Trade") == "trade"
+    assert categorize("Some Random Auction") == "other"
+
+
+def test_currency_country_maps_and_falls_back():
+    assert currency_country("USD") == ("United States", "us")
+    assert currency_country("EUR") == ("European Union", "eu")
+    assert currency_country("ZZZ") == ("ZZZ", "")   # unknown → echo code, no iso
