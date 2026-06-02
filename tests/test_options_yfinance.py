@@ -27,3 +27,13 @@ def test_build_chain_from_records():
     assert r0.call.delta is not None              # greeks enriched
     assert r0.put.bid == 0.3
     assert chain.rows[1].put is None              # no 25 put
+
+
+def test_build_chain_without_spot_leaves_greeks_none():
+    # v1 degradation contract: no underlying price -> greeks can't be computed, chain still builds
+    calls = [{"strike": 100.0, "bid": 1.0, "ask": 1.1, "lastPrice": 1.05,
+              "impliedVolatility": 0.30, "openInterest": 10, "volume": 5, "inTheMoney": False}]
+    chain = build_chain_from_records("SPY", "2026-07-02", calls, [], None, _ms(2026, 6, 2))
+    assert chain.underlying_price is None
+    assert chain.rows[0].call.iv == 0.30          # raw fields still populated
+    assert chain.rows[0].call.delta is None       # but greeks stay None

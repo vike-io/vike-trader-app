@@ -8,6 +8,7 @@ tested without yfinance or pandas.
 
 from __future__ import annotations
 
+import math
 import time
 
 from .greeks import enrich_quote, years_to_expiry
@@ -74,7 +75,8 @@ class YFinanceOptionsProvider:
         tk = self._ticker(underlying)
         oc = tk.option_chain(expiry.date)
         try:
-            spot = float(tk.fast_info["lastPrice"])
+            _v = float(tk.fast_info["lastPrice"])
+            spot = _v if math.isfinite(_v) else None  # after-hours can yield NaN -> drop it
         except Exception:  # noqa: BLE001 - fast_info shape varies; spot is optional
             spot = None
         chain = build_chain_from_records(
