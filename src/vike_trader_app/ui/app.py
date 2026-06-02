@@ -39,6 +39,7 @@ from .alerts import AlertsTab
 from .journal import JournalTab
 from .screener import ScreenerTab
 from .tools import ToolsTab
+from .economic_calendar import EconomicCalendarTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -363,6 +364,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.alerts, "Alerts")
         self.datamanager = DataManagerTab(pins_path=_PINS_PATH)
         self.tabs.addTab(self.datamanager, "Data")
+        self.economic_calendar = EconomicCalendarTab()
+        self.tabs.addTab(self.economic_calendar, "Calendar")
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
@@ -393,6 +396,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
+        ("▦", "Calendar"),
     ]
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).

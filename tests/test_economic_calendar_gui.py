@@ -155,3 +155,14 @@ def test_clicking_event_toggles_detail_child(app):
     assert "Forecast" in row.child(0).text(0) or row.child(0).text(0) != ""
     t._toggle_detail(row)
     assert row.childCount() == 0            # collapses again
+
+
+# ---------------------------------------------------------------------------
+# Task 16 — MainWindow rail wiring
+# ---------------------------------------------------------------------------
+def test_mainwindow_registers_calendar_rail_item():
+    # Class-attribute check — no MainWindow construction (which loads symbols and can be
+    # flaky offscreen). Verifies the rail wiring; the actual addTab is checked manually
+    # (Task 18) and guarded by the rail-count == tab-count invariant in the app.
+    from vike_trader_app.ui.app import MainWindow
+    assert ("▦", "Calendar") in MainWindow._RAIL_ITEMS
