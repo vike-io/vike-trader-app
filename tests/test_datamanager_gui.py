@@ -102,6 +102,32 @@ def test_datamanager_update_all_extends_each_series(app, tmp_path, monkeypatch):
     assert "Update all: done" in tab._log_view.toPlainText()
 
 
+def test_datamanager_import_csv_adds_series(app, tmp_path):
+    tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    csv = tmp_path / "eur.csv"
+    csv.write_text("time,open,high,low,close,volume\n"
+                   "2024-01-02 15:04:00,1.10,1.20,1.00,1.15,100\n"
+                   "2024-01-02 15:05:00,1.15,1.25,1.10,1.20,80\n")
+    n = tab.import_csv_file(str(csv), "EURUSD")          # no dialog (detected 1m)
+    assert n == 2
+    assert ps.read_series(str(tmp_path), "EURUSD", "1m")  # series written to cache
+    assert "Imported EURUSD 1m" in tab._log_view.toPlainText()
+
+
+def test_datamanager_import_csv_aggregates_to_target(app, tmp_path):
+    tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    rows = ["time,open,high,low,close,volume"]
+    for i in range(5):
+        rows.append(f"2024-01-02 15:0{i}:00,{i},{i + 1},{i - 1},{i},1")
+    csv = tmp_path / "agg.csv"
+    csv.write_text("\n".join(rows))
+    n = tab.import_csv_file(str(csv), "BTCUSDT", target_interval="5m")
+    assert n == 1                                        # five 1m -> one 5m
+    assert len(ps.read_series(str(tmp_path), "BTCUSDT", "5m")) == 1
+
+
 def test_datamanager_delete_removes_series(app, tmp_path):
     _seed(str(tmp_path))
     tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
