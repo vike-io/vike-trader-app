@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from typing import Literal
 
 _MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
@@ -16,7 +17,7 @@ _MONTH_ABBR = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
 @dataclass(frozen=True)
 class OptionQuote:
     strike: float
-    type: str                       # "C" | "P"
+    type: Literal["C", "P"]
     bid: float | None = None
     ask: float | None = None
     last: float | None = None
@@ -27,7 +28,7 @@ class OptionQuote:
     delta: float | None = None
     gamma: float | None = None
     theta: float | None = None      # per calendar day
-    vega: float | None = None       # per 1 vol-point
+    vega: float | None = None       # per 1pp change in IV (0.01 decimal)
     in_the_money: bool | None = None
 
 
@@ -48,7 +49,7 @@ class StrikeRow:
 @dataclass(frozen=True)
 class OptionChain:
     underlying: str                 # "BTC", "^VIX"
-    asset_class: str                # "crypto" | "equity"
+    asset_class: Literal["crypto", "equity"]
     underlying_price: float | None
     expiry: Expiry
     asof_ms: int                    # snapshot epoch ms (UTC)
@@ -72,8 +73,9 @@ def make_expiry(date_iso: str, now_ms: int) -> Expiry:
 
 def limit_strikes(chain: OptionChain, n: int | None) -> OptionChain:
     """Return a chain trimmed to the `n` strikes nearest the underlying (ATM-centered)."""
-    if n is None or chain.underlying_price is None or len(chain.rows) <= n:
+    if n is None or n <= 0 or chain.underlying_price is None or len(chain.rows) <= n:
         return chain
     spot = chain.underlying_price
+    # Stable sort: equidistant strikes keep `rows`' ascending order, so the lower strike wins ties.
     nearest = sorted(chain.rows, key=lambda r: abs(r.strike - spot))[:n]
     return replace(chain, rows=tuple(sorted(nearest, key=lambda r: r.strike)))

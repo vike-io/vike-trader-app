@@ -1,7 +1,10 @@
+import dataclasses
 from datetime import datetime, timezone
 
+import pytest
+
 from vike_trader_app.data.options.model import (
-    Expiry, OptionChain, OptionQuote, StrikeRow, limit_strikes, make_expiry,
+    OptionChain, OptionQuote, StrikeRow, limit_strikes, make_expiry,
 )
 
 
@@ -12,11 +15,8 @@ def _ms(y, m, d, h=8):
 def test_optionquote_is_frozen():
     q = OptionQuote(strike=100.0, type="C", bid=1.0, ask=1.2)
     assert q.strike == 100.0 and q.type == "C"
-    try:
+    with pytest.raises(dataclasses.FrozenInstanceError):
         q.strike = 1.0  # type: ignore[misc]
-        assert False, "OptionQuote must be frozen"
-    except Exception:
-        pass
 
 
 def test_make_expiry_dte_and_label():
