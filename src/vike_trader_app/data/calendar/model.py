@@ -7,7 +7,9 @@ parsed (value, unit) drives beat/miss coloring and any future charting.
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 
 
 @dataclass(frozen=True)
@@ -49,9 +51,6 @@ class CalendarEvent:
     def from_dict(cls, d: dict) -> "CalendarEvent":
         return cls(**d)
 
-
-import re
-from datetime import datetime, timezone, timedelta
 
 _NUM_RE = re.compile(r"[-+]?\d[\d,]*\.?\d*")
 
