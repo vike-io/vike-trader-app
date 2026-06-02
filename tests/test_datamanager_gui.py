@@ -128,6 +128,44 @@ def test_datamanager_import_csv_aggregates_to_target(app, tmp_path):
     assert len(ps.read_series(str(tmp_path), "BTCUSDT", "5m")) == 1
 
 
+def test_datamanager_download_series_routes_to_chosen_provider(app, tmp_path, monkeypatch):
+    import vike_trader_app.ui.datamanager as dm
+
+    captured = {}
+
+    class _Src:
+        name = "bybit"
+
+        def fetch_bars_range(self, *a, **k):
+            return []
+
+    def fake_select(symbol, provider=None):
+        captured["provider"] = provider
+        return _Src()
+
+    monkeypatch.setattr(dm, "select_source", fake_select)
+    monkeypatch.setattr(dm, "get_bars", lambda *a, **k: [])
+    tab = dm.DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    tab.download_series("BTCUSDT", "1m", 5, provider="bybit")
+    assert captured["provider"] == "bybit"
+    assert "via bybit" in tab._log_view.toPlainText()
+
+
+def test_datamanager_download_dataset_iterates_symbols(app, tmp_path, monkeypatch):
+    import vike_trader_app.ui.datamanager as dm
+    from vike_trader_app.data.datasets import DataSet
+
+    calls = []
+    monkeypatch.setattr(dm.DataManagerTab, "download_series",
+                        lambda self, s, i, d, p=None: calls.append((s, i, d, p)))
+    tab = dm.DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    n = tab.download_dataset(DataSet("X", ["BTCUSDT", "ETHUSDT"], provider="bybit", interval="5m"), 10)
+    assert n == 2
+    assert ("BTCUSDT", "5m", 10, "bybit") in calls
+
+
 def test_datamanager_delete_removes_series(app, tmp_path):
     _seed(str(tmp_path))
     tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
