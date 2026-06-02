@@ -54,6 +54,14 @@ class _FakeRepo:
     def get_week(self, ws, *, force=False): return list(self._evs)
 
 
+def _drain(tab, app):
+    """Wait for an async fetch worker to finish and deliver its queued eventsReady signal."""
+    w = getattr(tab, "_worker", None)
+    if w is not None:
+        w.wait(3000)
+    app.processEvents()
+
+
 def _tab(app):
     repo = _FakeRepo([
         _ev(TS_TUE, "USD", "JOLTs Job Openings", 2, actual=6.82, forecast=6.9),
@@ -99,8 +107,10 @@ def test_week_nav_changes_week_and_reloads(app):
     t = _tab(app)
     start = t.current_week_start()
     t.go_next_week()
+    _drain(t, app)
     assert t.current_week_start() == start + 7 * 24 * 3600 * 1000
     t.go_today()
+    _drain(t, app)
     assert t.current_week_start() == week_start_utc(t._now())
 
 
@@ -188,8 +198,19 @@ def test_show_event_loads_week_once(app):
     assert t.visible_event_count() == 0          # nothing loaded before shown
     from PySide6 import QtGui
     t.showEvent(QtGui.QShowEvent())
+    _drain(t, app)
     assert t.visible_event_count() == 1          # loaded on first show
     # second show must NOT reload (swap to an empty repo; count stays)
     t._repo = _FakeRepo([])
     t.showEvent(QtGui.QShowEvent())
     assert t.visible_event_count() == 1          # load-once guard held
+
+
+# ---------------------------------------------------------------------------
+# Task 19 — calendar rail icon is registered
+# ---------------------------------------------------------------------------
+def test_calendar_rail_icon_registered(app):
+    from vike_trader_app.ui import icons
+    assert "calendar" in icons._DRAW
+    pm = icons._pixmap("calendar", "#ffffff")
+    assert not pm.isNull()

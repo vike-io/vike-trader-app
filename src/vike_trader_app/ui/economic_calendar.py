@@ -1,8 +1,8 @@
 """TradingView-style Economic Calendar tab.
 
 A grouped QTreeWidget (Date header → event rows) fed by a CalendarRepository. Pure-Qt,
-dependency-injected repository (tests pass a fake; no network, no modals). Filters,
-live countdown and the now-line are computed against an injectable `now_ms`.
+dependency-injected repository (tests pass a fake; no network, no modals).
+Filters and the live countdown are computed against an injectable `now_ms`.
 """
 from __future__ import annotations
 
@@ -174,19 +174,22 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         return self._week_start
 
     def go_today(self) -> None:
-        self.load_week(week_start_utc(self._now()))
+        self._week_start = week_start_utc(self._now())
+        self.refresh_async()
 
     def go_prev_week(self) -> None:
-        self.load_week(self._week_start - 7 * 24 * 3600 * 1000)
+        self._week_start -= 7 * 24 * 3600 * 1000
+        self.refresh_async()
 
     def go_next_week(self) -> None:
-        self.load_week(self._week_start + 7 * 24 * 3600 * 1000)
+        self._week_start += 7 * 24 * 3600 * 1000
+        self.refresh_async()
 
     def showEvent(self, event):  # noqa: N802 - Qt override: load the week when the space is first opened
         super().showEvent(event)
         if not self._loaded:
             self._loaded = True
-            self.load_week(self._week_start)
+            self.refresh_async()
 
     # ---- data ----
     def load_week(self, week_start_ms: int) -> None:
@@ -272,6 +275,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     # ---- async load ----
     def refresh_async(self, *, force: bool = False) -> None:
+        if self._worker is not None and self._worker.isRunning():
+            return  # a fetch is already in flight; the repository rate-limit handles freshness
         self._status.setText("Loading…")
         self._worker = _CalendarFetchWorker(self._repo, self._week_start, force=force)
         self._worker.eventsReady.connect(self._on_events)
