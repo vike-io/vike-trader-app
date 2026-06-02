@@ -62,6 +62,8 @@ class OptionsTab(QtWidgets.QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._chain: OptionChain | None = None
+        self._chains: list[OptionChain] | None = None   # grouped (multi-expiry) view
+        self._group_rows: dict[int, list[int]] = {}      # header row -> its data/marker rows
         self._view = "chain"
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(14, 14, 14, 14)
@@ -107,6 +109,7 @@ class OptionsTab(QtWidgets.QWidget):
         self.strikes.activated.connect(self.refreshRequested.emit)
         self.view_toggle.activated.connect(self._on_view_changed)
         self.refresh_btn.clicked.connect(self.refreshRequested.emit)
+        self.table.cellClicked.connect(self._on_cell_clicked)
 
     # --- signals out ---------------------------------------------------------
     def _emit_underlying(self) -> None:
@@ -119,7 +122,10 @@ class OptionsTab(QtWidgets.QWidget):
 
     def _on_view_changed(self) -> None:
         self._view = "greeks" if self.view_toggle.currentText() == "Greeks" else "chain"
-        self._render()  # re-render the last chain with the new column set
+        self._rerender()  # redraw with the new column set, in whichever mode is active
+
+    def _rerender(self) -> None:
+        self._render_groups() if self._chains is not None else self._render()
 
     # --- inputs --------------------------------------------------------------
     def strikes_value(self) -> int | None:
@@ -136,40 +142,95 @@ class OptionsTab(QtWidgets.QWidget):
         self.expiry.blockSignals(False)
 
     def set_chain(self, chain: OptionChain) -> None:
-        self._chain = chain
+        """Single-expiry view (flat grid)."""
+        self._chain, self._chains = chain, None
         self._render()
         px = "—" if chain.underlying_price is None else f"{chain.underlying_price:,.2f}"
         self.set_status(f"{chain.underlying} {px}  ·  {chain.source}  ·  {chain.expiry.label}")
 
+    def set_chains(self, chains: list[OptionChain]) -> None:
+        """Grouped view: each expiry as a collapsible section (first expanded)."""
+        self._chains = chains
+        self._render_groups()
+        if chains:
+            c = chains[0]
+            px = "—" if c.underlying_price is None else f"{c.underlying_price:,.2f}"
+            self.set_status(f"{c.underlying} {px}  ·  {c.source}  ·  {len(chains)} expiries")
+
     # --- rendering -----------------------------------------------------------
-    def _render(self) -> None:
-        chain = self._chain
+    def _setup_columns(self) -> tuple[list[str], list[str], int, int]:
+        """Reset the table to the active view's columns -> (call_fields, put_fields, ncols, strike_col)."""
         call_fields, put_fields, headers = _columns(self._view)
         self.table.clearSpans()
         self.table.setRowCount(0)
         self.table.setColumnCount(len(headers))
         self.table.setHorizontalHeaderLabels(headers)
         strike_col = len(call_fields)
-        ncols = len(headers)
         self._bar.call_col = call_fields.index("volume")
         self._bar.put_col = strike_col + 2 + put_fields.index("volume")
         hh = self.table.horizontalHeader()
         hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         hh.setSectionResizeMode(strike_col, QtWidgets.QHeaderView.Fixed)
         self.table.setColumnWidth(strike_col, 76)
+        return call_fields, put_fields, len(headers), strike_col
+
+    @staticmethod
+    def _maxvol(chain: OptionChain) -> float:
+        vols = [q.volume for r in chain.rows for q in (r.call, r.put) if q and q.volume]
+        return max(vols) if vols else 0.0
+
+    def _render(self) -> None:
+        self._group_rows = {}
+        call_fields, put_fields, ncols, strike_col = self._setup_columns()
+        chain = self._chain
         if chain is None:
             return
-
-        spot, dte = chain.underlying_price, chain.expiry.dte
-        vols = [q.volume for r in chain.rows for q in (r.call, r.put) if q and q.volume]
-        maxvol = max(vols) if vols else 0.0
-
+        spot, dte, maxvol = chain.underlying_price, chain.expiry.dte, self._maxvol(chain)
         self.table.setRowCount(len(chain.rows))
         for ri, row in enumerate(chain.rows):
-            self._fill_side(ri, row, call_fields, 0, "C", spot, dte, maxvol)
-            self._strike_iv(ri, row, strike_col)
-            self._fill_side(ri, row, put_fields, strike_col + 2, "P", spot, dte, maxvol)
-        self._insert_atm_row(chain, ncols)
+            self._fill_strike_row(ri, row, call_fields, put_fields, strike_col, spot, dte, maxvol)
+        if spot is not None:
+            pos = next((i for i, r in enumerate(chain.rows) if r.strike >= spot), len(chain.rows))
+            self._marker_row(chain, ncols, pos)
+
+    def _render_groups(self) -> None:
+        self._group_rows = {}
+        call_fields, put_fields, ncols, strike_col = self._setup_columns()
+        for gi, chain in enumerate(self._chains or []):
+            hdr = self.table.rowCount()
+            self.table.insertRow(hdr)
+            self.table.setSpan(hdr, 0, 1, ncols)
+            self._set_group_header(hdr, chain, expanded=(gi == 0))
+            rows = self._append_chain_rows(chain, call_fields, put_fields, ncols, strike_col)
+            self._group_rows[hdr] = rows
+            if gi != 0:  # collapse all but the nearest expiry by default
+                for r in rows:
+                    self.table.setRowHidden(r, True)
+
+    def _append_chain_rows(self, chain: OptionChain, call_fields: list[str],
+                           put_fields: list[str], ncols: int, strike_col: int) -> list[int]:
+        """Append one chain's strike rows (+ its ATM marker) to the table; return their indices."""
+        spot, dte, maxvol = chain.underlying_price, chain.expiry.dte, self._maxvol(chain)
+        atm = (next((i for i, r in enumerate(chain.rows) if r.strike >= spot), len(chain.rows))
+               if spot is not None else -1)
+        rows: list[int] = []
+        for i, srow in enumerate(chain.rows):
+            if i == atm:
+                rows.append(self._marker_row(chain, ncols, self.table.rowCount()))
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            self._fill_strike_row(r, srow, call_fields, put_fields, strike_col, spot, dte, maxvol)
+            rows.append(r)
+        if atm >= len(chain.rows):  # spot above every strike -> marker after the last row
+            rows.append(self._marker_row(chain, ncols, self.table.rowCount()))
+        return rows
+
+    def _fill_strike_row(self, ri: int, row: StrikeRow, call_fields: list[str],
+                         put_fields: list[str], strike_col: int, spot: float | None, dte: int,
+                         maxvol: float) -> None:
+        self._fill_side(ri, row, call_fields, 0, "C", spot, dte, maxvol)
+        self._strike_iv(ri, row, strike_col)
+        self._fill_side(ri, row, put_fields, strike_col + 2, "P", spot, dte, maxvol)
 
     def _fill_side(self, ri: int, row: StrikeRow, fields: list[str], base: int, side: str,
                    spot: float | None, dte: int, maxvol: float) -> None:
@@ -203,14 +264,11 @@ class OptionsTab(QtWidgets.QWidget):
         iv_item.setForeground(QtGui.QColor(theme.TEXT2))
         self.table.setItem(ri, strike_col + 1, iv_item)
 
-    def _insert_atm_row(self, chain: OptionChain, ncols: int) -> None:
-        spot = chain.underlying_price
-        if spot is None:
-            return
-        pos = next((i for i, r in enumerate(chain.rows) if r.strike >= spot), len(chain.rows))
+    def _marker_row(self, chain: OptionChain, ncols: int, pos: int) -> int:
+        """Insert the full-width ATM underlying-price marker row at `pos`; return its index."""
         self.table.insertRow(pos)
         self.table.setSpan(pos, 0, 1, ncols)
-        marker = QtWidgets.QTableWidgetItem(f"{chain.underlying}   {spot:,.2f}")
+        marker = QtWidgets.QTableWidgetItem(f"{chain.underlying}   {chain.underlying_price:,.2f}")
         marker.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignCenter)
         marker.setForeground(QtGui.QColor(theme.ACCENT))   # accent text on a dark strip (TV-style)
         marker.setBackground(QtGui.QColor(theme.PANEL2))
@@ -218,3 +276,31 @@ class OptionsTab(QtWidgets.QWidget):
         font.setBold(True)
         marker.setFont(font)
         self.table.setItem(pos, 0, marker)
+        return pos
+
+    def _set_group_header(self, hdr: int, chain: OptionChain, expanded: bool) -> None:
+        glyph = "▾" if expanded else "▸"
+        item = QtWidgets.QTableWidgetItem(
+            f"   {glyph}   {chain.expiry.label}   ·   {chain.expiry.dte}DTE   ·   {chain.source}")
+        item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
+        item.setForeground(QtGui.QColor(theme.TEXT))
+        item.setBackground(QtGui.QColor(theme.RAISE))
+        font = item.font()
+        font.setBold(True)
+        item.setFont(font)
+        self.table.setItem(hdr, 0, item)
+
+    def _on_cell_clicked(self, row: int, _col: int) -> None:
+        if row in self._group_rows:   # clicking an expiry header toggles its section
+            self._toggle_group(row)
+
+    def _toggle_group(self, hdr: int) -> None:
+        rows = self._group_rows.get(hdr) or []
+        if not rows:
+            return
+        hide = not self.table.isRowHidden(rows[0])
+        for r in rows:
+            self.table.setRowHidden(r, hide)
+        item = self.table.item(hdr, 0)
+        if item:
+            item.setText(item.text().replace("▾", "▸") if hide else item.text().replace("▸", "▾"))

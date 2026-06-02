@@ -79,3 +79,23 @@ def test_fetch_now_silent_when_not_configured():
     svc.failed.connect(fired.append)
     svc.fetch_now()  # prerequisites absent -> must not emit anything (no thread, no hang)
     assert fired == []
+
+
+def test_chains_worker_collects_all_expiries():
+    _app()
+    from vike_trader_app.data.options.service import _ChainsWorker
+    exp1 = _chain().expiry
+    exp2 = Expiry(date="2026-08-01", dte=60, label="01 Aug")
+    worker = _ChainsWorker(_StubProvider(chain=_chain()), "BTC", [exp1, exp2], 12)
+    got = []
+    worker.done.connect(got.append)
+    worker.run()  # run synchronously (no thread) -> emits to the connected slot directly
+    assert len(got) == 1 and len(got[0]) == 2  # one emission carrying both expiries' chains
+
+
+def test_load_chains_skips_when_busy():
+    _app()
+    svc = OptionsService(provider_factory=lambda u: _StubProvider(chain=_chain()))
+    svc.set_underlying("BTC")
+    svc._busy = True
+    assert svc.load_chains([_chain().expiry]) is False

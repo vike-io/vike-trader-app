@@ -50,8 +50,32 @@ class _ExpWorker(QtCore.QThread):
             self.err.emit(f"{self._provider.name}: {exc}")
 
 
+class _ChainsWorker(QtCore.QThread):
+    """Fetch several expiries' chains in one off-thread pass (for the grouped view)."""
+
+    done = QtCore.Signal(object)   # list[OptionChain]
+    fail = QtCore.Signal(str)
+
+    def __init__(self, provider: OptionsProvider, underlying: str, expiries: list[Expiry],
+                 strikes: int | None, parent=None) -> None:
+        super().__init__(parent)
+        self._p, self._u, self._exps, self._s = provider, underlying, list(expiries), strikes
+
+    def run(self) -> None:
+        chains = []
+        try:
+            for expiry in self._exps:
+                chains.append(self._p.fetch_chain(self._u, expiry, self._s))
+        except Exception as exc:  # noqa: BLE001 - deliver whatever fetched; surface a total failure
+            if not chains:
+                self.fail.emit(f"{self._p.name}: {exc}")
+                return
+        self.done.emit(chains)
+
+
 class OptionsService(QtCore.QObject):
-    chainReady = QtCore.Signal(object)    # OptionChain
+    chainReady = QtCore.Signal(object)     # OptionChain (single-expiry view)
+    chainsReady = QtCore.Signal(object)    # list[OptionChain] (grouped view)
     expiriesReady = QtCore.Signal(object)  # list[Expiry]
     failed = QtCore.Signal(str)
 
@@ -63,11 +87,13 @@ class OptionsService(QtCore.QObject):
         self._underlying: str | None = None
         self._expiry: Expiry | None = None
         self._strikes: int | None = 12
+        self._group_expiries: list[Expiry] = []
         self._busy = False
         self._worker: _FetchWorker | None = None
+        self._chains_worker: _ChainsWorker | None = None
         self._exp_worker: _ExpWorker | None = None
         self._timer = QtCore.QTimer(self)
-        self._timer.timeout.connect(self.refresh)
+        self._timer.timeout.connect(self._poll)
 
     # --- configuration -------------------------------------------------------
     def set_underlying(self, underlying: str) -> None:
@@ -129,6 +155,26 @@ class OptionsService(QtCore.QObject):
         self._worker.start()
         return True
 
+    # --- grouped (multi-expiry) fetch ----------------------------------------
+    def load_chains(self, expiries: list[Expiry]) -> bool:
+        """Fetch several expiries' chains off-thread for the grouped view (False if busy)."""
+        if self._busy or not (self._provider and self._underlying and expiries):
+            return False
+        if self._exp_worker is not None and self._exp_worker.isRunning():
+            self._exp_worker.wait(2000)
+        self._group_expiries = list(expiries)
+        self._busy = True
+        self._chains_worker = _ChainsWorker(
+            self._provider, self._underlying, expiries, self._strikes, self)
+        self._chains_worker.done.connect(self._on_chains)
+        self._chains_worker.fail.connect(self._on_fail)
+        self._chains_worker.finished.connect(self._clear_busy)
+        self._chains_worker.start()
+        return True
+
+    def _on_chains(self, chains: list[OptionChain]) -> None:
+        self.chainsReady.emit(chains)
+
     def _on_done(self, chain: OptionChain) -> None:
         self.chainReady.emit(chain)
 
@@ -137,15 +183,30 @@ class OptionsService(QtCore.QObject):
 
     def _clear_busy(self) -> None:
         self._busy = False
-        if self._worker is not None:
-            self._worker.deleteLater()
-            self._worker = None
+        for attr in ("_worker", "_chains_worker"):
+            worker = getattr(self, attr)
+            if worker is not None and not worker.isRunning():
+                worker.deleteLater()
+                setattr(self, attr, None)
 
     # --- polling -------------------------------------------------------------
+    def _poll(self) -> None:
+        """Timer tick: re-fetch the grouped expiries if set, else the single expiry."""
+        if self._group_expiries:
+            self.load_chains(self._group_expiries)
+        else:
+            self.refresh()
+
     def start_polling(self) -> None:
         ac = self._provider.asset_class if self._provider else "equity"
         self._timer.start(_POLL_MS.get(ac, 15_000))
         self.refresh()
+
+    def start_polling_grouped(self, expiries: list[Expiry]) -> None:
+        ac = self._provider.asset_class if self._provider else "equity"
+        self._group_expiries = list(expiries)
+        self._timer.start(_POLL_MS.get(ac, 15_000))
+        self.load_chains(expiries)
 
     def stop_polling(self) -> None:
         self._timer.stop()
@@ -154,6 +215,6 @@ class OptionsService(QtCore.QObject):
         """Stop polling and wait out any in-flight workers (call from the window's closeEvent
         to avoid 'QThread destroyed while still running')."""
         self._timer.stop()
-        for worker in (self._worker, self._exp_worker):
+        for worker in (self._worker, self._chains_worker, self._exp_worker):
             if worker is not None and worker.isRunning():
                 worker.wait(2000)

@@ -40,7 +40,6 @@ from .journal import JournalTab
 from .screener import ScreenerTab
 from .tools import ToolsTab
 from .options_tab import OptionsTab
-from ..data.options.model import make_expiry
 from ..data.options.service import OptionsService
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
@@ -402,16 +401,23 @@ class MainWindow(QtWidgets.QMainWindow):
         """Connect the Options tab <-> service. Fetching only starts when the tab is first
         shown (keeps startup + headless tests network-free)."""
         tab, svc = self.options, self._options_svc
-        svc.chainReady.connect(tab.set_chain)
+        svc.chainsReady.connect(tab.set_chains)   # grouped (multi-expiry) view
         svc.failed.connect(tab.set_status)
+        self._options_all_expiries: list = []
+        self._options_shown: list = []
+        groups = 6  # how many expiries to show as collapsible groups at once
+
+        def _show(subset: list) -> None:
+            if not subset:
+                return
+            self._options_shown = list(subset)
+            svc.set_strikes(tab.strikes_value())
+            svc.start_polling_grouped(self._options_shown)
 
         def _on_expiries(expiries) -> None:
-            # populate the dropdown, then auto-pick the nearest expiry so a chain loads
-            # immediately (otherwise the user faces an empty grid after picking a symbol).
-            tab.set_expiries(expiries)
-            if expiries:
-                tab.expiry.setCurrentIndex(0)
-                tab.expiryChanged.emit(expiries[0].date)
+            self._options_all_expiries = list(expiries)
+            tab.set_expiries(expiries)        # dropdown = jump-to-expiry
+            _show(expiries[:groups])          # default: nearest N as groups
 
         svc.expiriesReady.connect(_on_expiries)
 
@@ -421,22 +427,27 @@ class MainWindow(QtWidgets.QMainWindow):
             svc.set_strikes(tab.strikes_value())
             svc.load_expiries()
 
-        def _load_expiry(iso: str) -> None:
-            svc.set_expiry(make_expiry(iso, int(time.time() * 1000)))
+        def _jump(iso: str) -> None:  # selecting an expiry pages the groups to start there
+            allx = self._options_all_expiries
+            idx = next((i for i, e in enumerate(allx) if e.date == iso), 0)
+            _show(allx[idx:idx + groups])
+
+        def _refresh() -> None:
             svc.set_strikes(tab.strikes_value())
-            svc.start_polling()
+            if self._options_shown:
+                svc.load_chains(self._options_shown)
 
         tab.underlyingChanged.connect(_load_underlying)
-        tab.expiryChanged.connect(_load_expiry)
-        tab.refreshRequested.connect(svc.refresh)
+        tab.expiryChanged.connect(_jump)
+        tab.refreshRequested.connect(_refresh)
         self._load_options_underlying = _load_underlying
 
     def _maybe_start_options(self) -> None:
         if not self._options_started:
             self._options_started = True
             self._load_options_underlying(self.options.underlying.currentText())
-        else:
-            self._options_svc.start_polling()  # resume the poll we paused on leaving the tab
+        elif self._options_shown:
+            self._options_svc.start_polling_grouped(self._options_shown)  # resume on re-open
 
     # Order MUST match the addTab() order in _build_central — rail buttons map to tab
     # index by position here. Append new spaces last to keep existing indices stable.

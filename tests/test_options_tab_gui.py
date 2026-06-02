@@ -78,6 +78,28 @@ def test_greeks_toggle_switches_column_set():
         assert _cols(tab.table, label), f"missing column {label}"
 
 
+def test_grouped_view_collapsible_expiry_sections():
+    _app()
+    tab = OptionsTab()
+    ch1 = _chain()  # 02 Jul, 2 strikes
+    ch2 = OptionChain("ES", "equity", 7600.75, Expiry("2026-08-01", 60, "01 Aug"), 1, "polygon",
+                      (StrikeRow(strike=7600.0,
+                                 call=OptionQuote(strike=7600.0, type="C", bid=20.0, ask=21.0,
+                                                  iv=0.20, volume=100)),))
+    tab.set_chains([ch1, ch2])
+    # two group headers, each a full-width spanned row tracked in _group_rows
+    assert len(tab._group_rows) == 2
+    g1, g2 = sorted(tab._group_rows)
+    assert tab.table.columnSpan(g1, 0) == tab.table.columnCount()
+    # first expiry expanded, the rest collapsed by default
+    assert not tab.table.isRowHidden(tab._group_rows[g1][0])
+    assert tab.table.isRowHidden(tab._group_rows[g2][0])
+    # clicking the first header collapses its section
+    tab._on_cell_clicked(g1, 0)
+    assert tab.table.isRowHidden(tab._group_rows[g1][0])
+    assert "▸" in tab.table.item(g1, 0).text()
+
+
 def test_status_message_no_modal():
     _app()
     tab = OptionsTab()
