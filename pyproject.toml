@@ -23,7 +23,7 @@ mcp = ["mcp>=1.2"]
 ai = ["fastembed>=0.3", "rank-bm25>=0.2", "anthropic>=0.40"]
 
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-timeout>=2", "ruff>=0.6"]
 
 [project.scripts]
 vike-trader-app = "vike_trader_app.cli.main:app"      # CLI — implemented in Phase 2
@@ -43,3 +43,6 @@ line-length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Dump every thread's traceback if a single test hangs >120s (built-in faulthandler) — turns a
+# silent CI hang into a pinpointed stack. pytest-timeout (dev) also fails the test itself.
+faulthandler_timeout = 120

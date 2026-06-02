@@ -10,6 +10,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # fail fast instead of hanging to GitHub's 6h ceiling
     steps:
       - uses: actions/checkout@v6
 
@@ -26,7 +27,7 @@ jobs:
 
       - name: Run test suite (non-UI)
         run: >
-          uv run pytest -q
+          uv run pytest -q --timeout=120 --timeout-method=thread
           --ignore=tests/test_chartdata.py
           --ignore=tests/test_dashboard_data.py
           --ignore=tests/test_forward_ui.py
@@ -38,6 +39,7 @@ jobs:
 
   ui-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20  # fail fast instead of hanging to GitHub's 6h ceiling
     env:
       # Headless Qt — no xvfb needed. The UI tests already opt into this platform; we set it
       # job-wide so every UI test (and PySide6 import) runs without a display.
@@ -62,8 +64,12 @@ jobs:
       # tests here so CI actually exercises them.
       - name: Run UI test suite (offscreen)
         run: >
-          uv run pytest -q
+          uv run pytest -q --timeout=120 --timeout-method=thread
           tests/test_chartdata.py
+          tests/test_chart_indicators.py
+          tests/test_chart_markers.py
+          tests/test_chart_space.py
+          tests/test_bots_panel.py
           tests/test_dashboard_data.py
           tests/test_forward_ui.py
           tests/test_overlays.py
