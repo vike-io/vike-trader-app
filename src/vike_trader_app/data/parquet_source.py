@@ -6,12 +6,13 @@ append-only layout — month partitions under ``<symbol>/<interval>/<YYYY-MM>.pa
 the month(s) that changed (and migrates a legacy file into partitions on first append).
 """
 
+import shutil
 from pathlib import Path
 
 import polars as pl
 
 from ..core.model import Bar
-from .partition import partition_by_month
+from .partition import month_key, partition_by_month
 
 
 def bars_to_dataframe(bars: list[Bar]) -> pl.DataFrame:
@@ -87,6 +88,26 @@ def read_series(root: str, symbol: str, interval: str) -> list[Bar]:
     return _merge([], parts) if parts else []
 
 
+def read_series_since(root: str, symbol: str, interval: str, start_ms: int) -> list[Bar]:
+    """Bars with ``ts >= start_ms``, reading only the month partitions that can contain them.
+
+    Month files are named ``YYYY-MM`` (lexical order == chronological), so any partition whose
+    month is before ``start_ms``'s month is skipped — an incremental refresh reads the tail, not
+    the whole base. A legacy single file (not partitioned) is read in full, then filtered.
+    """
+    start_month = month_key(start_ms)
+    parts: list[Bar] = []
+    legacy = legacy_path(root, symbol, interval)
+    if legacy.exists():
+        parts.extend(read_bars_parquet(legacy))
+    d = series_dir(root, symbol, interval)
+    if d.is_dir():
+        for f in sorted(d.glob("*.parquet")):
+            if f.stem >= start_month:
+                parts.extend(read_bars_parquet(f))
+    return [b for b in _merge([], parts) if b.ts >= start_ms]
+
+
 def _migrate_legacy(root: str, symbol: str, interval: str) -> None:
     """Split a legacy single file into month partitions, then remove it (one-time, on first append)."""
     legacy = legacy_path(root, symbol, interval)
@@ -110,3 +131,13 @@ def append_series(new_bars: list[Bar], root: str, symbol: str, interval: str) ->
         path = d / f"{month}.parquet"
         existing = read_bars_parquet(path) if path.exists() else []
         write_bars_parquet(_merge(existing, month_bars), path)
+
+
+def delete_series(root: str, symbol: str, interval: str) -> None:
+    """Remove a cached series — the legacy single file and the whole month-partition directory."""
+    legacy = legacy_path(root, symbol, interval)
+    if legacy.exists():
+        legacy.unlink()
+    d = series_dir(root, symbol, interval)
+    if d.is_dir():
+        shutil.rmtree(d)

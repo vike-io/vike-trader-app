@@ -129,11 +129,18 @@ def _draw_news(p, c):  # newspaper
         p.drawLine(QtCore.QLineF(15, y, 23, y))  # lines below masthead
 
 
+def _draw_data(p, c):  # database cylinder: 3 stacked disks + side walls
+    for y in (11, 21, 31):
+        p.drawEllipse(_R(13, y, 22, 7))
+    p.drawLine(QtCore.QLineF(13, 14, 13, 34))
+    p.drawLine(QtCore.QLineF(35, 14, 35, 34))
+
+
 _DRAW = {
     "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
     "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
-    "chart": _draw_chart, "news": _draw_news,
+    "chart": _draw_chart, "news": _draw_news, "data": _draw_data,
 }
 
 

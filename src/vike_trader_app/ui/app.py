@@ -16,14 +16,22 @@ from ..core.engine import BacktestEngine
 from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
-from ..data.cache import get_bars
-from ..data.live_update import closed_bars, feed_health, live_fetch_window, merge_live_bars
+from ..data.cache import DEFAULT_ROOT, get_bars
+from ..data.live_update import (
+    closed_bars,
+    feed_health,
+    fetch_in_flight,
+    live_fetch_window,
+    merge_live_bars,
+)
 from ..data.polling_feed import PollingBarFeed
+from ..data.rollup import load_pins, refresh_pinned
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
 from . import icons, theme
 from .bots_panel import BotsPanel
 from .chart import PriceChart
+from .datamanager import DataManagerTab
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .panels import (
     TradesTable,
@@ -37,7 +45,9 @@ from .alerts import AlertsTab
 from .journal import JournalTab
 from .news import NewsTab
 from .screener import ScreenerTab
-from .tools import ToolsTab
+# Tools tab (standalone calculators) hidden per user request — restore by uncommenting
+# this import, its addTab below, and the ("⚙", "Tools") entry in _RAIL_ITEMS.
+# from .tools import ToolsTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -47,6 +57,7 @@ _INTERVAL_LOOKBACK = {"1m": 7, "3m": 7, "5m": 10, "15m": 21, "30m": 30,
                       "1h": 90, "2h": 120, "4h": 240, "1d": 1825, "1w": 3650}
 _WATCHLIST_FRESH_MS = 5 * 60_000  # cache-first: reuse cached bars if the last one is this fresh
 _LIVE_LOOKBACK = 5  # bars (incl. the forming candle) pulled per live chart tick
+_LIVE_FETCH_TIMEOUT_MS = 60_000  # a live fetch running longer than this is presumed stuck (self-heal)
 _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
     "live": (theme.UP, "● LIVE · "),
     "stale": (theme.WARN, "● STALE · "),
@@ -54,6 +65,8 @@ _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
     "idle": (theme.TEXT3, "● "),
 }
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
+_PINS_PATH = "storage/pins.json"  # pinned (symbol, interval) series kept precomputed (rollups)
+_ROLLUP_REFRESH_MS = 60_000       # backstop: keep pinned rollups current (incremental, cheap)
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
 _FORWARD_FEE = 0.001
 _FORWARD_CASH = 10_000.0
@@ -177,6 +190,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_fail_streak = 0
         self._live_base_ms = 10_000
         self._live_worker = None        # in-flight _LiveFetchWorker (kept ref'd so it isn't GC'd)
+        self._live_worker_started = 0   # when it started (ms) -> abandon if it runs too long
         self._live_fetch_for = None     # (symbol, interval) the in-flight fetch is for
 
         # widgets
@@ -219,6 +233,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._live_timer = QtCore.QTimer(self)  # auto-updates the chart for the live symbol
         self._live_timer.timeout.connect(self._live_tick)
+
+        self._rollup_timer = QtCore.QTimer(self)  # keep pinned rollups precomputed (main thread)
+        self._rollup_timer.timeout.connect(self._refresh_pinned_tick)
+        self._rollup_timer.start(_ROLLUP_REFRESH_MS)
 
         self._timer = QtCore.QTimer(self)
         self._timer.setInterval(60)
@@ -346,14 +364,17 @@ class MainWindow(QtWidgets.QMainWindow):
         _cb.addWidget(_scrubber)
         self.studio.mount_chart(_chart_block)
         self.tabs.addTab(self.studio, "Studio")
-        self.tools = ToolsTab()
-        self.tabs.addTab(self.tools, "Tools")
+        # Tools tab hidden per user request (see import note above).
+        # self.tools = ToolsTab()
+        # self.tabs.addTab(self.tools, "Tools")
         self.screener = ScreenerTab()
         self.tabs.addTab(self.screener, "Screener")
         self.journal = JournalTab()
         self.tabs.addTab(self.journal, "Journal")
         self.alerts = AlertsTab()
         self.tabs.addTab(self.alerts, "Alerts")
+        self.datamanager = DataManagerTab(pins_path=_PINS_PATH)
+        self.tabs.addTab(self.datamanager, "Data")
         self.news = NewsTab()
         self.tabs.addTab(self.news, "News")
 
@@ -385,8 +406,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rules.raise_()
 
     _RAIL_ITEMS = [
-        ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
-        ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
+        ("▤", "Chart"), ("✦", "Studio"),  # ("⚙", "Tools") — hidden per user request
+        ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
         ("📰", "News"),
     ]
 
@@ -572,6 +593,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_base_ms = max(2_000, min(interval_ms(self._interval) // 12, 10_000))
         self._live_timer.start(self._live_base_ms)
         self._update_feed_health()
+        # Poll promptly on arm at the base cadence even if the loaded cache reads STALE: otherwise
+        # _update_feed_health would have just slowed the very first poll to the 30s STALE cadence,
+        # leaving a freshly-loaded chart sitting STALE for 30s before it catches up to the edge.
+        self._live_timer.setInterval(self._live_base_ms)
 
     def _stop_live_updates(self) -> None:
         self._live_timer.stop()
@@ -584,25 +609,34 @@ class MainWindow(QtWidgets.QMainWindow):
         flight. The fetch runs on a worker thread so the poll never stutters the UI; the merge
         and repaint happen back on the main thread in ``_on_live_fetched``.
         """
-        if self._forward is not None or not self._bars or self._live_worker is not None:
+        if self._forward is not None or not self._bars:
+            return
+        now = int(time.time() * 1000)
+        # Skip only while a fetch is *genuinely* in flight. A worker running longer than the
+        # timeout is presumed stuck (hung connection / a 'finished' we never saw) — abandon it and
+        # fetch afresh, so one bad fetch can't freeze the feed at STALE forever.
+        if fetch_in_flight(self._live_worker, self._live_worker_started, now, _LIVE_FETCH_TIMEOUT_MS):
             return
         symbol, interval = self._symbol, self._interval
-        now = int(time.time() * 1000)
         step = interval_ms(interval)
         # Gap-aware: normally the last few bars, but stretch back to bridge a pause (e.g. after
         # a long Forward run) so a returning session doesn't tear a hole in the series.
         start, end = live_fetch_window(self._bars[-1].ts, now, step, lookback=_LIVE_LOOKBACK)
         self._live_fetch_for = (symbol, interval)
-        self._live_worker = _LiveFetchWorker(
+        worker = self._live_worker = _LiveFetchWorker(
             select_source(symbol).fetch_bars_range, symbol, interval, start, end
         )
-        self._live_worker.fetched.connect(self._on_live_fetched)
-        self._live_worker.failed.connect(self._on_live_fetch_failed)
-        self._live_worker.finished.connect(self._clear_live_worker)
-        self._live_worker.start()
+        self._live_worker_started = now
+        worker.fetched.connect(self._on_live_fetched)
+        worker.failed.connect(self._on_live_fetch_failed)
+        worker.finished.connect(lambda w=worker: self._clear_live_worker(w))
+        worker.start()
 
-    def _clear_live_worker(self) -> None:
-        self._live_worker = None  # frees the in-flight guard so the next tick can fetch
+    def _clear_live_worker(self, worker=None) -> None:
+        # Only the *current* worker clears the guard — a late-finishing abandoned worker must not
+        # clear a fetch we've since started.
+        if worker is None or worker is self._live_worker:
+            self._live_worker = None
 
     def _on_live_fetched(self, fetched) -> None:
         """Main thread: merge the fetched bars and repaint the live edge (if we're viewing it)."""
@@ -840,6 +874,19 @@ class MainWindow(QtWidgets.QMainWindow):
         else:
             self._panel_dock_map[key].setVisible(on)
 
+    def _refresh_pinned_tick(self) -> None:
+        """Backstop timer: keep pinned rollups current (main thread — reads/writes Parquet).
+
+        No-ops in forward mode (that owns the network); pure no-op when nothing is pinned.
+        Errors are swallowed (no modal in a timer path — see the headless-CI hang note).
+        """
+        if self._forward is not None:
+            return
+        try:
+            refresh_pinned(DEFAULT_ROOT, load_pins(_PINS_PATH))
+        except Exception:  # noqa: BLE001 - transient read/write; retried next tick
+            pass
+
     def _on_tab_changed(self, index: int) -> None:
         """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width."""
         on_backtester = self.tabs.currentWidget() is self._backtester
@@ -890,7 +937,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for ch in (self.price, self.studio_price):
             ch.set_data(bars, self._result.trades)
             ch.set_overlays(overlays)
-            ch.set_title(f"{self._symbol} · {self._interval}")
+            ch.set_title(self._symbol)  # symbol-only; far-left toolbar label (no "· interval")
             ch.set_timeframe(self._interval)
         self.trades.update_trades(self._result.trades)
         self.slider.setMaximum(self._replay.last_index)

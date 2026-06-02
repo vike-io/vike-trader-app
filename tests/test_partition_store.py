@@ -75,3 +75,29 @@ def test_append_series_migrates_legacy_then_appends(tmp_path):
 
 def test_read_series_missing_returns_empty(tmp_path):
     assert ps.read_series(str(tmp_path), "NOPE", "1m") == []
+
+
+# --- read_series_since: partition-pruned tail read (for incremental rollup refresh) ---
+
+def test_read_series_since_prunes_older_month_partitions(tmp_path, monkeypatch):
+    root = str(tmp_path)
+    ps.append_series([_bar(NOV)], root, "X", "1m")  # 2023-11 partition
+    ps.append_series([_bar(DEC)], root, "X", "1m")  # 2023-12 partition
+    reads: list[str] = []
+    orig = ps.read_bars_parquet
+    monkeypatch.setattr(ps, "read_bars_parquet",
+                        lambda p: (reads.append(str(p)), orig(p))[1])
+    out = ps.read_series_since(root, "X", "1m", DEC)
+    assert [b.ts for b in out] == [DEC]
+    assert all("2023-11" not in r for r in reads)  # the older month partition was not read
+
+
+def test_read_series_since_filters_within_the_boundary_month(tmp_path):
+    root = str(tmp_path)
+    ps.append_series([_bar(DEC), _bar(DEC + 60_000)], root, "X", "1m")  # both in 2023-12
+    out = ps.read_series_since(root, "X", "1m", DEC + 60_000)
+    assert [b.ts for b in out] == [DEC + 60_000]  # boundary-month partition read, then filtered
+
+
+def test_read_series_since_missing_returns_empty(tmp_path):
+    assert ps.read_series_since(str(tmp_path), "NOPE", "1m", 0) == []

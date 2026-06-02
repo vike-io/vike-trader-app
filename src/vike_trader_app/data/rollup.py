@@ -17,8 +17,11 @@ and an on-the-fly derive always agree. Pin only timeframes the source doesn't se
 a pinned interval shares the ``<symbol>/<interval>/`` series with any native fetch of it.
 """
 
+import json
+from pathlib import Path
+
 from ..core.timeframe import parse_timeframe, resample
-from .parquet_source import append_series, read_series
+from .parquet_source import append_series, read_series, read_series_since
 
 
 def rollup_refresh_start(watermark_ts: int | None, target_ms: int) -> int:
@@ -43,9 +46,31 @@ def refresh_rollup(root: str, symbol: str, interval: str, base: str = "1m") -> i
     target_ms = parse_timeframe(interval)
     existing = read_series(root, symbol, interval)
     start = rollup_refresh_start(existing[-1].ts if existing else None, target_ms)
-    base_bars = [b for b in read_series(root, symbol, base) if b.ts >= start]
+    base_bars = read_series_since(root, symbol, base, start)  # partition-pruned: reads only the tail
     if not base_bars:
         return 0
     rolled = resample(base_bars, target_ms)
     append_series(rolled, root, symbol, interval)  # dedup by ts -> reopens the last bucket, idempotent
     return len(rolled)
+
+
+# --- pin registry: which (symbol, interval) series to keep precomputed ---------------------
+
+def load_pins(path: str) -> list[list[str]]:
+    """Load pinned ``[symbol, interval]`` pairs from ``path`` (``[]`` if the file is absent)."""
+    p = Path(path)
+    if not p.exists():
+        return []
+    return [list(pair) for pair in json.loads(p.read_text())]
+
+
+def save_pins(path: str, pins: list) -> None:
+    """Persist pinned ``(symbol, interval)`` pairs to ``path`` (deduped, sorted)."""
+    uniq = sorted({(s, i) for s, i in pins})
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps([[s, i] for s, i in uniq]))
+
+
+def refresh_pinned(root: str, pins: list) -> dict:
+    """Refresh every pinned rollup; returns ``{"symbol/interval": bars_written}``."""
+    return {f"{s}/{i}": refresh_rollup(root, s, i) for s, i in pins}
