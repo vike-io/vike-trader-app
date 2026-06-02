@@ -33,6 +33,8 @@ ENV/
 # profiles) — per-user data, recreated on demand. `**` covers nested dirs too
 # (e.g. storage/parquet/profiles/*.json); it subsumes the old storage/*.json rule.
 storage/**/*.json
+# cached source favicons for the News space (fetched on demand, per-user)
+storage/news_logos/
 
 # ---- Test / coverage ----
 .pytest_cache/

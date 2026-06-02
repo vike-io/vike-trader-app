@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .classify import classify
 from .models import NewsFilter, NewsItem
 from .providers import _CRYPTO_NAME, NormalizedSymbol, normalize
 
@@ -27,10 +28,14 @@ def _matches_symbol(item: NewsItem, n: NormalizedSymbol) -> bool:
 
 def apply_filter(items: list[NewsItem], flt: NewsFilter) -> list[NewsItem]:
     out = items
-    if flt.market:
+    if flt.markets:
+        out = [it for it in out if it.market in flt.markets]
+    elif flt.market:
         out = [it for it in out if it.market == flt.market]
     if flt.providers:
         out = [it for it in out if it.source in flt.providers]
+    if flt.categories:
+        out = [it for it in out if classify(it) in flt.categories]
     if flt.symbol:
         n = normalize(flt.symbol)
         out = [it for it in out if _matches_symbol(it, n)]
