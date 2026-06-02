@@ -163,6 +163,25 @@ def test_country_dialog_quickpicks_and_selection(app):
     assert all(it.checkState() == QtCore.Qt.Unchecked for it in dlg._items.values())
 
 
+def test_day_cards_bucket_economic_by_display_tz(app):
+    # A macro print at 23:30Z lands on the NEXT local day under UTC+8 — the day-card strip
+    # must bucket/title it by the display tz (like the Economic tree), not by UTC midnight.
+    from datetime import timedelta
+
+    from vike_trader_app.data.calendar.model import iso_to_ts_utc
+    from vike_trader_app.ui.equity_calendar import CalendarSpace
+    ts = iso_to_ts_utc("2026-06-02T23:30:00+00:00")        # Tue 23:30 UTC == Wed 07:30 at UTC+8
+    repo = _FakeRepo([_ev(ts, "USD", "Late Print", 2)])
+    t = EconomicCalendarTab(repository=repo, tz=timezone(timedelta(hours=8)))
+    t.load_week(WK)                                         # week of Mon Jun 1 .. Sun Jun 7
+    space = CalendarSpace(economic_tab=t)
+    space.refresh_day_counts()
+    wed, tue = space._day_cards[2], space._day_cards[1]
+    assert "Wed 3" in wed._title.text() and "Tue 2" in tue._title.text()
+    assert wed._rows["economic"][1].text() == "1"          # counted on Wednesday (local)
+    assert tue._rows["economic"][1].text() != "1"          # NOT on Tuesday (the UTC day)
+
+
 def test_category_filter(app):
     t = _tab(app)                  # GDP event has category "other" in the fixture builder
     t.set_category("inflation")

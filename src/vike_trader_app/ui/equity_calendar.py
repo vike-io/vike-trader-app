@@ -22,15 +22,6 @@ _CARD_CATS = [("economic", "Economic"), ("earnings", "Earnings"),
               ("dividends", "Dividends"), ("ipo", "IPO")]
 
 
-def _ymd_to_day_ms(ymd: str) -> int:
-    """'YYYY-MM-DD' -> epoch ms at that date's UTC midnight (for day-bucketing)."""
-    try:
-        dt = datetime.strptime(ymd, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1000)
-    except (ValueError, TypeError):
-        return -1
-
-
 class _DayCard(QtWidgets.QFrame):
     """One day's card (TV-style): weekday+day title, then one row per NON-ZERO category."""
 
@@ -558,19 +549,19 @@ class CalendarSpace(QtWidgets.QWidget):
     def refresh_day_counts(self) -> None:
         origin = self.economic.current_week_start()
         for i, card in enumerate(self._day_cards):
-            start = origin + i * _DAY_MS
-            end = start + _DAY_MS
-            dt = datetime.fromtimestamp(start / 1000, tz=timezone.utc)
-            card.set_title(f"{dt.strftime('%a')} {dt.day}")
+            # Title + bucket by the Economic tab's DISPLAY timezone, so the cards line up with
+            # the day-group headers in the Economic tree (which groups its rows by local date).
+            # A macro print at 23:30Z under UTC+8 belongs to the next local day in BOTH places.
+            day = self.economic._local(origin + i * _DAY_MS).date()
+            card.set_title(f"{day.strftime('%a')} {day.day}")
             counts: dict = {"economic": sum(1 for e in self.economic._events
-                                            if start <= e.ts_utc < end)}
+                                            if self.economic._local(e.ts_utc).date() == day)}
             for key, tab in (("earnings", self.earnings), ("dividends", self.dividends),
                              ("ipo", self.ipo)):
                 if tab._loading_week is not None and not tab._events:
                     counts[key] = None             # still loading, nothing yet -> '…'
                 else:
-                    counts[key] = sum(1 for e in tab._events
-                                      if start <= _ymd_to_day_ms(tab._date_of(e)) < end)
+                    counts[key] = sum(1 for e in tab._events if tab._date_of(e) == day.isoformat())
             card.set_counts(counts)
             card.set_selected(i == self._selected_day)
 
