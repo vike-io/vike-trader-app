@@ -1236,6 +1236,8 @@ class PriceChart(pg.PlotWidget):
         into history, the caller repaints via its own replay cursor instead of yanking the view.
         """
         self._bars = bars
+        if self._indicators:  # extend user-picked indicators to the live edge (skip churn if none)
+            self._recompute_indicators()
         self._time_axis.set_bars(bars)
         self._ts_index = {b.ts: i for i, b in enumerate(bars)}
         if overlays:
