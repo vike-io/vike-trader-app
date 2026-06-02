@@ -71,3 +71,18 @@ def test_rate_limit_skips_refetch_when_fresh(tmp_path):
     repo.get_week(WK)
     repo.get_week(WK)            # within the 10-min window → no second fetch
     assert calls["n"] == 1
+
+
+def test_force_refetches_within_window(tmp_path):
+    store = CalendarStore(str(tmp_path))
+    calls = {"n": 0}
+    class Counting(_Sched):
+        def fetch_week(self, ws):
+            calls["n"] += 1
+            return super().fetch_week(ws)
+    sched = Counting([_sched_ev("CPI")])
+    repo = CalendarRepository(sched, [], store, now_ms=lambda: TS,
+                              min_refetch_ms=10 * 60_000)
+    repo.get_week(WK)
+    repo.get_week(WK, force=True)     # force bypasses the fresh window
+    assert calls["n"] == 2

@@ -71,12 +71,13 @@ class CalendarRepository:
             except Exception:  # noqa: BLE001
                 filled = {}
             for ev_id, av in filled.items():
-                ev = cached[ev_id]
-                if ev.actual is None and av.value is not None:
-                    ev.actual = av.value
-                    ev.unit = ev.unit or av.unit
-                    ev.actual_display = f"{_fmt(av.value)}{av.unit}"
-                    ev.actual_source = av.source
+                ev = cached.get(ev_id)
+                if ev is None or ev.actual is not None or av.value is None:
+                    continue
+                ev.actual = av.value
+                ev.unit = ev.unit or av.unit
+                ev.actual_display = f"{_fmt(av.value)}{ev.unit}"
+                ev.actual_source = av.source
             pending = [e for e in pending if e.actual is None]
 
 
