@@ -58,6 +58,8 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_inspect = QtWidgets.QPushButton("🔍 Inspect")
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
+        self.btn_profiles = QtWidgets.QPushButton("⚙ Instruments…")
+        self.btn_profiles.setToolTip("Edit broker profiles & instrument specs (tick / pip / step / size)")
         self.btn_delete = QtWidgets.QPushButton("🗑 Delete")
         self.btn_update_all.setToolTip("Fetch up-to-now for every cached series")
         self.btn_inspect.setToolTip("Check the selected series for gaps / OHLC anomalies")
@@ -68,9 +70,10 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_inspect.clicked.connect(self._on_inspect)
         self.btn_repair.clicked.connect(self._on_repair)
         self.btn_pin.clicked.connect(self._on_pin)
+        self.btn_profiles.clicked.connect(self._on_profiles)
         self.btn_delete.clicked.connect(self._on_delete)
         for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_import,
-                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_delete):
+                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_profiles, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
         self.count_label = QtWidgets.QLabel("")
@@ -298,6 +301,13 @@ class DataManagerTab(QtWidgets.QWidget):
             self._log(f"Import {symbol} failed: {exc}")
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
+
+    def _on_profiles(self) -> None:
+        """Open the broker-profile / instrument editor; refresh after (specs may have changed)."""
+        from .profile_editor import ProfileEditorDialog
+
+        ProfileEditorDialog(self._root, self).exec()
+        self.refresh()
 
     def _delete(self, symbol: str, interval: str) -> None:
         """Remove a series' files (no prompt — the prompt lives in ``_on_delete``, so tests skip it)."""

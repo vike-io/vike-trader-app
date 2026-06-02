@@ -240,6 +240,33 @@ def ensure_presets(root: str) -> list[str]:
     return sorted(written)
 
 
+def with_instrument(profile: BrokerProfile, spec: InstrumentSpec) -> BrokerProfile:
+    """A copy of ``profile`` with ``spec`` added (or replacing the existing entry for its symbol)."""
+    instruments = dict(profile.instruments)
+    instruments[spec.symbol.upper()] = spec
+    return replace(profile, instruments=instruments)
+
+
+def without_instrument(profile: BrokerProfile, symbol: str) -> BrokerProfile:
+    """A copy of ``profile`` with ``symbol`` removed (no-op if absent)."""
+    instruments = {k: v for k, v in profile.instruments.items() if k != symbol.upper()}
+    return replace(profile, instruments=instruments)
+
+
+# Numeric/text fields the editor (and bulk edit) may change on a spec.
+EDITABLE_FIELDS = ("asset_class", "tick_size", "pip_size", "volume_step", "contract_size",
+                   "price_decimals")
+
+
+def mass_edit_specs(specs: list[InstrumentSpec], changes: dict) -> list[InstrumentSpec]:
+    """Apply ``changes`` (a subset of :data:`EDITABLE_FIELDS`) to every spec — QDM 'mass edit'.
+
+    Returns new frozen specs; ignores keys outside :data:`EDITABLE_FIELDS`.
+    """
+    safe = {k: v for k, v in changes.items() if k in EDITABLE_FIELDS}
+    return [replace(s, **safe) for s in specs]
+
+
 def resolve_spec(symbol: str, profile_name: str, root: str) -> InstrumentSpec:
     """Resolve ``symbol`` to its spec under the stored profile ``profile_name``.
 
