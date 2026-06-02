@@ -40,6 +40,7 @@ from .journal import JournalTab
 from .screener import ScreenerTab
 from .tools import ToolsTab
 from .options_tab import OptionsTab
+from ..data.options.model import make_expiry
 from ..data.options.service import OptionsService
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
@@ -402,8 +403,17 @@ class MainWindow(QtWidgets.QMainWindow):
         shown (keeps startup + headless tests network-free)."""
         tab, svc = self.options, self._options_svc
         svc.chainReady.connect(tab.set_chain)
-        svc.expiriesReady.connect(tab.set_expiries)
         svc.failed.connect(tab.set_status)
+
+        def _on_expiries(expiries) -> None:
+            # populate the dropdown, then auto-pick the nearest expiry so a chain loads
+            # immediately (otherwise the user faces an empty grid after picking a symbol).
+            tab.set_expiries(expiries)
+            if expiries:
+                tab.expiry.setCurrentIndex(0)
+                tab.expiryChanged.emit(expiries[0].date)
+
+        svc.expiriesReady.connect(_on_expiries)
 
         def _load_underlying(sym: str) -> None:
             svc.stop_polling()
@@ -412,8 +422,6 @@ class MainWindow(QtWidgets.QMainWindow):
             svc.load_expiries()
 
         def _load_expiry(iso: str) -> None:
-            from ..data.options.model import make_expiry
-            import time
             svc.set_expiry(make_expiry(iso, int(time.time() * 1000)))
             svc.set_strikes(tab.strikes_value())
             svc.start_polling()
@@ -427,7 +435,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._options_started:
             self._options_started = True
             self._load_options_underlying(self.options.underlying.currentText())
+        else:
+            self._options_svc.start_polling()  # resume the poll we paused on leaving the tab
 
+    # Order MUST match the addTab() order in _build_central — rail buttons map to tab
+    # index by position here. Append new spaces last to keep existing indices stable.
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
