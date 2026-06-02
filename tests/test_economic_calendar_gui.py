@@ -5,6 +5,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import pytest
 pytest.importorskip("PySide6")
 
+from datetime import timezone  # noqa: E402
+
 from PySide6 import QtWidgets, QtGui
 from vike_trader_app.ui.calendar_delegate import importance_bar_pixmap, value_color
 
@@ -68,8 +70,9 @@ def _tab(app):
         _ev(TS_TUE, "EUR", "Inflation Rate YoY", 1, actual=3.2, forecast=3.2),
         _ev(TS_WED, "USD", "GDP Growth Rate QoQ", 2, forecast=0.5),
     ])
-    t = EconomicCalendarTab(repository=repo)
+    t = EconomicCalendarTab(repository=repo, tz=timezone.utc)  # pin UTC for deterministic times
     t.load_week(WK)
+    t.set_now_ms(WK + 8 * 24 * 3600 * 1000)   # now after the week => no "now" marker row
     return t
 
 
@@ -228,8 +231,9 @@ def test_country_and_time_dedup_within_date(app):
         _ev(same, "USD", "BBB Event", 1, forecast=2.0),   # same ts + country as AAA
         _ev(later, "USD", "CCC Event", 1, forecast=3.0),  # later time, same country
     ])
-    t = EconomicCalendarTab(repository=repo)
+    t = EconomicCalendarTab(repository=repo, tz=timezone.utc)  # pin UTC for deterministic times
     t.load_week(WK)
+    t.set_now_ms(later + 3600_000)       # now after all events => no "now" marker shifts indices
     top = t._tree.topLevelItem(0)        # single date header
     rows = [top.child(i) for i in range(top.childCount())]
     # sorted by (ts, country, title): AAA, BBB (same ts), then CCC
@@ -251,3 +255,74 @@ def test_empty_week_shows_no_data_hint(app):
 def test_non_empty_week_clears_status(app):
     t = _tab(app)   # _tab loads 3 events
     assert t._status.text() == ""
+
+
+# ---------------------------------------------------------------------------
+# Task 22 — async week-nav: immediate header update + latest-nav-wins (QA fixes)
+# ---------------------------------------------------------------------------
+def test_nav_updates_range_label_immediately(app):
+    t = _tab(app)
+    before = t._lbl_range.text()
+    t.go_next_week()                       # refresh_async -> _show_loading updates label NOW
+    assert t._lbl_range.text() != before   # advanced synchronously, before the async load
+    assert t._status.text() == "Loading…"
+    _drain(t, app)                         # let the worker settle so teardown is clean
+
+
+def test_stale_worker_result_is_ignored(app):
+    t = _tab(app)                          # loaded current week (WK), 3 events
+    t._loading_week = WK - 7 * 24 * 3600 * 1000   # pretend a worker is loading an OLD week
+    t._events = []
+    t._on_events([_ev(TS_TUE, "USD", "Stale", 2)])   # result for a week != current
+    assert t._events == []                 # stale result dropped (latest-nav-wins)
+
+
+def test_matching_worker_result_is_applied(app):
+    t = _tab(app)
+    t._loading_week = t._week_start
+    t._on_events([_ev(TS_TUE, "USD", "Fresh", 2)])
+    assert len(t._events) == 1 and t._events[0].title == "Fresh"
+
+
+def test_stop_workers_runs_cleanly(app):
+    t = _tab(app)
+    t.refresh_async()
+    t._stop_workers()                      # must not raise; waits any running fetch
+    _drain(t, app)
+
+
+# ---------------------------------------------------------------------------
+# Task 23 — parity: country selector, timezone selector, now marker
+# ---------------------------------------------------------------------------
+def test_country_button_filter(app):
+    t = _tab(app)                          # 2 USD + 1 EUR events
+    assert t.visible_event_count() == 3
+    t._apply_countries({"USD"})
+    assert t.visible_event_count() == 2
+    t._apply_countries(None)               # "All countries"
+    assert t.visible_event_count() == 3
+
+
+def test_set_timezone_shifts_displayed_time(app):
+    from datetime import timedelta
+    repo = _FakeRepo([_ev(TS_TUE, "USD", "X", 2, forecast=1.0)])
+    t = EconomicCalendarTab(repository=repo, tz=timezone.utc)
+    t.load_week(WK)
+    t.set_now_ms(TS_TUE + 7200_000)        # after the event => no marker
+    assert t._tree.topLevelItem(0).child(0).text(0) == "12:30"
+    t.set_timezone(timezone(timedelta(hours=3)))
+    assert t._tree.topLevelItem(0).child(0).text(0) == "15:30"
+
+
+def test_now_marker_inserted_within_week(app):
+    repo = _FakeRepo([
+        _ev(TS_TUE, "USD", "Past", 2, actual=1.0, forecast=1.0),       # 12:30
+        _ev(TS_TUE + 7200_000, "USD", "Future", 2, forecast=2.0),      # 14:30
+    ])
+    t = EconomicCalendarTab(repository=repo, tz=timezone.utc)
+    t.load_week(WK)
+    t.set_now_ms(TS_TUE + 3600_000)        # 13:30 — between the two events
+    top = t._tree.topLevelItem(0)
+    texts = [top.child(i).text(0) for i in range(top.childCount())]
+    assert any("now" in x for x in texts)            # marker present
+    assert t.visible_event_count() == 2              # marker not counted as an event
