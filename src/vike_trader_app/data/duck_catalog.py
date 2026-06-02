@@ -39,31 +39,56 @@ class DuckCatalog:
         self._con = duckdb.connect(database=":memory:")
 
     def symbols(self) -> list[str]:
-        """Symbols that have at least one cached interval, sorted."""
+        """Symbols that have at least one cached interval, sorted (legacy or partitioned)."""
         if not self.root.exists():
             return []
-        return sorted(p.name for p in self.root.iterdir() if p.is_dir() and any(p.glob("*.parquet")))
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir() and any(p.glob("**/*.parquet")))
 
     def intervals(self, symbol: str) -> list[str]:
-        """Cached intervals for ``symbol`` (file stems), sorted."""
+        """Cached intervals for ``symbol``, sorted — legacy file stems + partition dirs."""
         d = self.root / symbol
-        return sorted(p.stem for p in d.glob("*.parquet")) if d.exists() else []
+        if not d.is_dir():
+            return []
+        out = {p.stem for p in d.glob("*.parquet")}
+        out |= {sub.name for sub in d.iterdir() if sub.is_dir() and any(sub.glob("*.parquet"))}
+        return sorted(out)
+
+    def _files(self, symbol: str, interval: str) -> list[str]:
+        """All Parquet files backing ``(symbol, interval)`` — legacy single file + month partitions."""
+        files: list[str] = []
+        legacy = self.root / symbol / f"{interval}.parquet"
+        if legacy.exists():
+            files.append(legacy.as_posix())
+        d = self.root / symbol / interval
+        if d.is_dir():
+            files += [p.as_posix() for p in sorted(d.glob("*.parquet"))]
+        return files
+
+    def _src(self, symbol: str, interval: str) -> str | None:
+        """A DuckDB ``read_parquet([...])`` source over the series' files, or None if none exist.
+
+        Paths come from controlled symbol/interval/month names (no quotes), so inlining the file
+        list as a SQL literal is safe — and lets DuckDB prune partitions/row-groups across them.
+        """
+        files = self._files(symbol, interval)
+        if not files:
+            return None
+        return "read_parquet([" + ", ".join("'" + f + "'" for f in files) + "])"
 
     def info(self, symbol: str, interval: str) -> DatasetInfo | None:
         """Metadata for one dataset, or None if it isn't cached / is empty.
 
-        Answers count + min/max ts straight from the Parquet file via DuckDB (statistics +
-        metadata), without reading the full series into Python — the O(1)-ish metadata win.
+        Answers count + min/max ts straight from Parquet statistics via DuckDB (across all the
+        series' partitions), without reading the full series into Python — the O(1)-ish win.
         """
-        path = self.root / symbol / f"{interval}.parquet"
-        if not path.exists():
+        src = self._src(symbol, interval)
+        if src is None:
             return None
-        n, lo, hi = self._con.execute(
-            "SELECT count(*), min(ts), max(ts) FROM read_parquet(?)", [path.as_posix()]
-        ).fetchone()
+        n, lo, hi = self._con.execute(f"SELECT count(*), min(ts), max(ts) FROM {src}").fetchone()
         if not n:
             return None
-        return DatasetInfo(symbol, interval, int(n), int(lo), int(hi), str(path))
+        return DatasetInfo(symbol, interval, int(n), int(lo), int(hi),
+                           str(self.root / symbol / interval))
 
     def list_datasets(self) -> list[DatasetInfo]:
         """Every cached dataset's metadata, sorted by (symbol, interval)."""
@@ -79,14 +104,14 @@ class DuckCatalog:
         """Bars for ``symbol``/``interval`` in ``[start, end]`` (inclusive); ``[]`` if absent."""
         from ..core.model import Bar
 
-        path = self.root / symbol / f"{interval}.parquet"
-        if not path.exists():
+        src = self._src(symbol, interval)
+        if src is None:
             return []
         lo = start if start is not None else _I64_MIN
         hi = end if end is not None else _I64_MAX
         rows = self._con.execute(
-            f"SELECT {_COLS} FROM read_parquet(?) WHERE ts BETWEEN ? AND ? ORDER BY ts",
-            [path.as_posix(), lo, hi],
+            f"SELECT {_COLS} FROM {src} WHERE ts BETWEEN ? AND ? ORDER BY ts",
+            [lo, hi],
         ).fetchall()
         return [Bar(ts=int(r[0]), open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
                 for r in rows]
@@ -101,9 +126,9 @@ class DuckCatalog:
         """
         if interval == base:
             return self.query(symbol, base, start, end)
-        if (self.root / symbol / f"{interval}.parquet").exists():
+        if self._files(symbol, interval):
             return self.query(symbol, interval, start, end)
-        if (self.root / symbol / f"{base}.parquet").exists():
+        if self._files(symbol, base):
             from ..core.timeframe import parse_timeframe
 
             return self.resample(symbol, base, parse_timeframe(interval), start, end)
@@ -120,16 +145,16 @@ class DuckCatalog:
         """
         from ..core.model import Bar
 
-        path = self.root / symbol / f"{base_interval}.parquet"
-        if not path.exists():
+        src = self._src(symbol, base_interval)
+        if src is None:
             return []
         lo = start if start is not None else _I64_MIN
         hi = end if end is not None else _I64_MAX
         rows = self._con.execute(
-            "SELECT (ts - ts % ?) AS bucket, arg_min(open, ts), max(high), min(low), "
-            "arg_max(close, ts), sum(volume) FROM read_parquet(?) "
-            "WHERE ts BETWEEN ? AND ? GROUP BY bucket ORDER BY bucket",
-            [target_ms, path.as_posix(), lo, hi],
+            f"SELECT (ts - ts % ?) AS bucket, arg_min(open, ts), max(high), min(low), "
+            f"arg_max(close, ts), sum(volume) FROM {src} "
+            f"WHERE ts BETWEEN ? AND ? GROUP BY bucket ORDER BY bucket",
+            [target_ms, lo, hi],
         ).fetchall()
         return [Bar(ts=int(r[0]), open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
                 for r in rows]

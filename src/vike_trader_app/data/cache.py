@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..core.model import Bar
 from .binance_source import fetch_bars_range, interval_ms
-from .parquet_source import read_bars_parquet, write_bars_parquet
+from .parquet_source import append_series, read_series
 
 DEFAULT_ROOT = "storage/parquet"
 
@@ -64,9 +64,13 @@ def get_bars(
     fetcher=fetch_bars_range,
     progress=None,
 ) -> list[Bar]:
-    """Return bars for ``[start_ms, end_ms]``, fetching only what isn't already cached."""
-    path = cache_path(root, symbol, interval)
-    cached = read_bars_parquet(path) if path.exists() else []
+    """Return bars for ``[start_ms, end_ms]``, fetching only what isn't already cached.
+
+    Append-only (Phase 2b): newly fetched bars are written via ``append_series``, which rewrites
+    only the month partition(s) they fall in — not the whole series. Reads merge legacy single
+    files with month partitions, so pre-Phase-2b caches keep working (and migrate on first append).
+    """
+    cached = read_series(root, symbol, interval)
     step = interval_ms(interval)
 
     fetched: list[Bar] = []
@@ -74,7 +78,7 @@ def get_bars(
         fetched.extend(fetcher(symbol, interval, s, e, progress=progress))
 
     if fetched:
+        append_series(fetched, root, symbol, interval)  # writes only the touched months
         cached = merge_bars(cached, fetched)
-        write_bars_parquet(cached, path)
 
     return slice_bars(cached, start_ms, end_ms)

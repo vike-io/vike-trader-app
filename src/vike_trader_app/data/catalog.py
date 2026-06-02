@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cache import DEFAULT_ROOT, slice_bars
-from .parquet_source import read_bars_parquet
+from .parquet_source import read_series
 
 
 @dataclass
@@ -32,25 +32,31 @@ class Catalog:
         self.root = Path(root)
 
     def symbols(self) -> list[str]:
-        """Symbols that have at least one cached interval, sorted."""
+        """Symbols that have at least one cached interval, sorted.
+
+        ``**/*.parquet`` matches both the legacy ``<symbol>/<interval>.parquet`` and the
+        partitioned ``<symbol>/<interval>/<YYYY-MM>.parquet`` layouts.
+        """
         if not self.root.exists():
             return []
-        return sorted(p.name for p in self.root.iterdir() if p.is_dir() and any(p.glob("*.parquet")))
+        return sorted(p.name for p in self.root.iterdir() if p.is_dir() and any(p.glob("**/*.parquet")))
 
     def intervals(self, symbol: str) -> list[str]:
-        """Cached intervals for ``symbol`` (file stems), sorted."""
+        """Cached intervals for ``symbol``, sorted — legacy file stems + partition dirs."""
         d = self.root / symbol
-        return sorted(p.stem for p in d.glob("*.parquet")) if d.exists() else []
+        if not d.is_dir():
+            return []
+        out = {p.stem for p in d.glob("*.parquet")}  # legacy single files
+        out |= {sub.name for sub in d.iterdir() if sub.is_dir() and any(sub.glob("*.parquet"))}
+        return sorted(out)
 
     def info(self, symbol: str, interval: str) -> DatasetInfo | None:
         """Metadata for one dataset, or None if it isn't cached."""
-        path = self.root / symbol / f"{interval}.parquet"
-        if not path.exists():
-            return None
-        bars = read_bars_parquet(path)
+        bars = read_series(str(self.root), symbol, interval)
         if not bars:
             return None
-        return DatasetInfo(symbol, interval, len(bars), bars[0].ts, bars[-1].ts, str(path))
+        return DatasetInfo(symbol, interval, len(bars), bars[0].ts, bars[-1].ts,
+                           str(self.root / symbol / interval))
 
     def list_datasets(self) -> list[DatasetInfo]:
         """Every cached dataset's metadata, sorted by (symbol, interval)."""
@@ -64,12 +70,11 @@ class Catalog:
 
     def query(self, symbol: str, interval: str, start: int | None = None, end: int | None = None):
         """Bars for ``symbol``/``interval`` in ``[start, end]`` (inclusive); ``[]`` if absent."""
-        path = self.root / symbol / f"{interval}.parquet"
-        if not path.exists():
+        bars = read_series(str(self.root), symbol, interval)
+        if not bars:
             return []
-        bars = read_bars_parquet(path)
         if start is None and end is None:
             return bars
-        lo = start if start is not None else (bars[0].ts if bars else 0)
-        hi = end if end is not None else (bars[-1].ts if bars else 0)
+        lo = start if start is not None else bars[0].ts
+        hi = end if end is not None else bars[-1].ts
         return slice_bars(bars, lo, hi)
