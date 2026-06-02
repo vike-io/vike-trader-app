@@ -177,3 +177,19 @@ def test_country_cell_shows_iso_chip_when_no_flag_asset(app):
     assert not pm.isNull()
     pm2 = country_chip_pixmap("")          # unknown → still returns a (blank) pixmap, no crash
     assert pm2 is not None
+
+
+# ---------------------------------------------------------------------------
+# Task 18 — showEvent loads the current week exactly once
+# ---------------------------------------------------------------------------
+def test_show_event_loads_week_once(app):
+    repo = _FakeRepo([_ev(TS_TUE, "USD", "CPI", 2, actual=3.2, forecast=3.1)])
+    t = EconomicCalendarTab(repository=repo)
+    assert t.visible_event_count() == 0          # nothing loaded before shown
+    from PySide6 import QtGui
+    t.showEvent(QtGui.QShowEvent())
+    assert t.visible_event_count() == 1          # loaded on first show
+    # second show must NOT reload (swap to an empty repo; count stays)
+    t._repo = _FakeRepo([])
+    t.showEvent(QtGui.QShowEvent())
+    assert t.visible_event_count() == 1          # load-once guard held

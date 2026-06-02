@@ -74,6 +74,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._countries: set[str] | None = None      # None = all
         self._now = lambda: int(time.time() * 1000)
         self._week_start = week_start_utc(self._now())
+        self._loaded = False
         # defaults must be set BEFORE _build_toolbar() which can trigger _rebuild
         self._category = "All"
         self._day_cards: list = []
@@ -180,6 +181,12 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     def go_next_week(self) -> None:
         self.load_week(self._week_start + 7 * 24 * 3600 * 1000)
+
+    def showEvent(self, event):  # noqa: N802 - Qt override: load the week when the space is first opened
+        super().showEvent(event)
+        if not self._loaded:
+            self._loaded = True
+            self.load_week(self._week_start)
 
     # ---- data ----
     def load_week(self, week_start_ms: int) -> None:
