@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 
+import pytest
+
 from vike_trader_app.data.options.yfinance import build_chain_from_records
 
 
@@ -37,3 +39,15 @@ def test_build_chain_without_spot_leaves_greeks_none():
     assert chain.underlying_price is None
     assert chain.rows[0].call.iv == 0.30          # raw fields still populated
     assert chain.rows[0].call.delta is None       # but greeks stay None
+
+
+def test_degenerate_iv_inferred_from_price_and_mark_uses_last():
+    # Yahoo after-hours: bid/ask 0 + stale ~0 IV, but a real lastPrice. We use last as the
+    # mark and infer IV from it so greeks are meaningful (ATM, ~1y -> price 7.97 => iv ~0.20).
+    calls = [{"strike": 100.0, "bid": 0.0, "ask": 0.0, "lastPrice": 7.97,
+              "impliedVolatility": 0.02, "openInterest": 10, "volume": 5, "inTheMoney": False}]
+    chain = build_chain_from_records("MSFT", "2027-06-02", calls, [], 100.0, _ms(2026, 6, 2))
+    q = chain.rows[0].call
+    assert q.mark == 7.97                          # bid/ask are 0 -> fall back to last trade
+    assert q.iv == pytest.approx(0.20, abs=0.02)   # inferred from the price, not Yahoo's 1e-5
+    assert q.delta is not None                     # greeks now meaningful

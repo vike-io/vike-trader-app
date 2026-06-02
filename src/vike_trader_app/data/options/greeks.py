@@ -51,6 +51,58 @@ def black_scholes_greeks(
     return (delta, gamma, theta / 365.0, vega / 100.0)
 
 
+def black_scholes_price(
+    S: float | None, K: float | None, t: float | None, sigma: float | None,
+    kind: str, r: float = _RISK_FREE,
+) -> float | None:
+    """Black–Scholes option price, or None if inputs invalid."""
+    if S is None or K is None or t is None or sigma is None:
+        return None
+    if S <= 0 or K <= 0 or t <= 0 or sigma <= 0:
+        return None
+    sqrt_t = math.sqrt(t)
+    d1 = (math.log(S / K) + (r + 0.5 * sigma * sigma) * t) / (sigma * sqrt_t)
+    d2 = d1 - sigma * sqrt_t
+    disc = math.exp(-r * t)
+    if kind == "C":
+        return S * _norm_cdf(d1) - K * disc * _norm_cdf(d2)
+    if kind == "P":
+        return K * disc * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+    raise ValueError(f"kind must be 'C' or 'P', got {kind!r}")
+
+
+def implied_vol(
+    price: float | None, S: float | None, K: float | None, t: float | None,
+    kind: str, r: float = _RISK_FREE,
+) -> float | None:
+    """Invert Black–Scholes for sigma via bisection (sigma in [1e-4, 5.0]).
+
+    Returns None when price/inputs are invalid or the price is outside the no-arbitrage
+    band (e.g. below intrinsic) — i.e. not solvable.
+    """
+    if price is None or S is None or K is None or t is None:
+        return None
+    if price <= 0 or S <= 0 or K <= 0 or t <= 0:
+        return None
+    lo, hi = 1e-4, 5.0
+    p_lo = black_scholes_price(S, K, t, lo, kind, r)
+    p_hi = black_scholes_price(S, K, t, hi, kind, r)
+    if p_lo is None or p_hi is None or not (p_lo <= price <= p_hi):
+        return None
+    for _ in range(64):
+        mid = 0.5 * (lo + hi)
+        pm = black_scholes_price(S, K, t, mid, kind, r)
+        if pm is None:
+            return None
+        if abs(pm - price) < 1e-6:
+            return mid
+        if pm < price:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
 def years_to_expiry(expiry_iso: str, now_ms: int) -> float:
     """Time to expiry in years (clamped to >= 0), expiry assumed ~08:00 UTC."""
     return max((_expiry_ms(expiry_iso) - now_ms) / _MS_PER_YEAR, 0.0)

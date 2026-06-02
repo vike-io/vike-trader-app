@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from vike_trader_app.data.options.greeks import (
-    black_scholes_greeks, enrich_quote, years_to_expiry,
+    black_scholes_greeks, black_scholes_price, enrich_quote, implied_vol, years_to_expiry,
 )
 from vike_trader_app.data.options.model import OptionQuote
 
@@ -41,6 +41,26 @@ def test_invalid_inputs_return_none():
 def test_invalid_kind_raises():
     with pytest.raises(ValueError):
         black_scholes_greeks(100.0, 100.0, 1.0, 0.20, "X")
+
+
+def test_black_scholes_price_atm_reference():
+    # S=K=100, t=1, sigma=0.20, r=0 -> call == put ~= 7.9656
+    c = black_scholes_price(100.0, 100.0, 1.0, 0.20, "C")
+    p = black_scholes_price(100.0, 100.0, 1.0, 0.20, "P")
+    assert c == pytest.approx(7.9656, abs=1e-3)
+    assert p == pytest.approx(7.9656, abs=1e-3)
+    assert black_scholes_price(100.0, 100.0, 1.0, 0.0, "C") is None
+
+
+def test_implied_vol_roundtrips_with_price():
+    price = black_scholes_price(100.0, 100.0, 1.0, 0.20, "C")
+    assert implied_vol(price, 100.0, 100.0, 1.0, "C") == pytest.approx(0.20, abs=1e-3)
+
+
+def test_implied_vol_unsolvable_returns_none():
+    assert implied_vol(5.0, 120.0, 100.0, 1.0, "C") is None   # 5 < intrinsic (~20)
+    assert implied_vol(0.0, 100.0, 100.0, 1.0, "C") is None
+    assert implied_vol(None, 100.0, 100.0, 1.0, "C") is None
 
 
 def test_years_to_expiry_30_days():
