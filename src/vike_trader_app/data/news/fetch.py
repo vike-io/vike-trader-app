@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .models import NewsItem
 from .providers import build_url
@@ -33,8 +34,8 @@ def fetch_feed(url: str, *, timeout: float = _TIMEOUT) -> bytes | None:
         return None
 
 
-def fetch_all(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> list[NewsItem]:
-    """Fetch every enabled, resolvable provider concurrently and return parsed items."""
+def _resolve_jobs(specs, symbol):
+    """(spec, url) for every enabled provider whose URL resolves for ``symbol``."""
     jobs = []
     for spec in specs:
         if not spec.enabled:
@@ -42,20 +43,39 @@ def fetch_all(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> lis
         url = build_url(spec, symbol)
         if url:
             jobs.append((spec, url))
-    if not jobs:
+    return jobs
+
+
+def _fetch_parse(spec, url, fetcher) -> list[NewsItem]:
+    """One feed: fetch + parse, isolated — any failure yields [] (logged), never raises."""
+    try:
+        data = fetcher(url)
+        return parse_feed(data, source=spec.name, market=spec.market) if data else []
+    except Exception as exc:  # noqa: BLE001 - never let one feed kill the batch
+        log.warning("news parse failed %s: %s", spec.name, exc)
         return []
 
-    def _one(job):
-        spec, url = job
-        try:
-            data = fetcher(url)
-            return parse_feed(data, source=spec.name, market=spec.market) if data else []
-        except Exception as exc:  # noqa: BLE001 - never let one feed kill the batch
-            log.warning("news parse failed %s: %s", spec.name, exc)
-            return []
 
-    items: list[NewsItem] = []
+def fetch_iter(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> Iterator[list[NewsItem]]:
+    """Yield each feed's parsed items **as soon as that feed completes** (incremental render).
+
+    Feeds still run concurrently; results arrive in completion order so the UI can paint the
+    first feed without waiting for the slowest. Empty/dead feeds yield nothing.
+    """
+    jobs = _resolve_jobs(specs, symbol)
+    if not jobs:
+        return
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        for result in ex.map(_one, jobs):
-            items.extend(result)
+        futures = [ex.submit(_fetch_parse, spec, url, fetcher) for spec, url in jobs]
+        for fut in as_completed(futures):
+            items = fut.result()
+            if items:
+                yield items
+
+
+def fetch_all(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> list[NewsItem]:
+    """Eager variant: every feed's items flattened into one list (one-shot callers/tests)."""
+    items: list[NewsItem] = []
+    for chunk in fetch_iter(specs, symbol, fetcher=fetcher, max_workers=max_workers):
+        items.extend(chunk)
     return items

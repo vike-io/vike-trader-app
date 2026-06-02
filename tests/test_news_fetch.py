@@ -1,4 +1,4 @@
-from vike_trader_app.data.news.fetch import fetch_all
+from vike_trader_app.data.news.fetch import fetch_all, fetch_iter
 from vike_trader_app.data.news.providers import ProviderSpec
 
 RSS = b"""<rss version="2.0"><channel>
@@ -43,3 +43,32 @@ def test_fetch_all_skips_symbol_feeds_when_no_symbol():
     called = []
     fetch_all(specs, None, fetcher=lambda u: called.append(u))
     assert called == []                          # build_url → None → not fetched
+
+
+def test_fetch_iter_yields_one_chunk_per_feed_incrementally():
+    specs = [
+        ProviderSpec("A", "crypto", "https://a/rss", "broad"),
+        ProviderSpec("B", "crypto", "https://b/rss", "broad"),
+    ]
+    chunks = list(fetch_iter(specs, None, fetcher=lambda u: RSS))
+    assert len(chunks) == 2                       # one chunk per feed (incremental, not one batch)
+    assert all(len(c) == 1 for c in chunks)       # each chunk is that feed's parsed items
+    assert {c[0].source for c in chunks} == {"A", "B"}
+
+
+def test_fetch_iter_skips_dead_and_empty_feeds():
+    specs = [
+        ProviderSpec("Good", "crypto", "https://good/rss", "broad"),
+        ProviderSpec("Dead", "crypto", "https://dead/rss", "broad"),
+    ]
+    chunks = list(fetch_iter(specs, None, fetcher=lambda u: RSS if "good" in u else None))
+    assert len(chunks) == 1 and chunks[0][0].source == "Good"   # no empty chunk for the dead feed
+
+
+def test_fetch_all_equals_iter_aggregate():
+    specs = [
+        ProviderSpec("A", "crypto", "https://a/rss", "broad"),
+        ProviderSpec("B", "crypto", "https://b/rss", "broad"),
+    ]
+    flat = [it for chunk in fetch_iter(specs, None, fetcher=lambda u: RSS) for it in chunk]
+    assert len(fetch_all(specs, None, fetcher=lambda u: RSS)) == len(flat) == 2
