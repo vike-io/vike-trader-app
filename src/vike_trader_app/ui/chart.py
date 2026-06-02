@@ -1084,6 +1084,16 @@ class PriceChart(pg.PlotWidget):
             ln.setStyleSheet(f"color:{theme.BORDER};")
             return ln
 
+        # symbol name at the FAR LEFT, before the timeframe selector (TradingView-style)
+        self._symbol_label = QtWidgets.QLabel("", self._top_bar)
+        self._symbol_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._symbol_label.setStyleSheet(
+            f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-size:14px;"
+            f"font-weight:700;background:transparent;padding:0 2px;"
+        )
+        _tb.addWidget(self._symbol_label, 0, QtCore.Qt.AlignVCenter)
+        _tb.addWidget(_divider())
+
         # timeframe selector (grouped dropdown) -> emits intervalChosen
         self._tf_btn = QtWidgets.QPushButton("1m", self._top_bar)
         self._tf_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -1176,8 +1186,9 @@ class PriceChart(pg.PlotWidget):
 
     # --- data ---
     def set_title(self, text: str):
-        """Set the 'SYMBOL · interval' prefix shown in the OHLC legend header."""
+        """Set the symbol shown at the far left of the toolbar (before the timeframe selector)."""
         self._title = text or ""
+        self._symbol_label.setText(self._title)
         self._show_last_ohlc()
 
     def set_data(self, bars, trades):
@@ -1870,7 +1881,7 @@ class PriceChart(pg.PlotWidget):
 
     def _set_ohlc(self, bar, prev_close=None):
         if bar is None:
-            self._ohlc_label.setText(self._title)
+            self._ohlc_label.setText("")  # symbol lives in the far-left toolbar label now
             self._ohlc_label.adjustSize()
             return
         up = prev_close is None or bar.close >= prev_close
@@ -1890,9 +1901,7 @@ class PriceChart(pg.PlotWidget):
             s = "+" if chg >= 0 else ""
             body += (f"&nbsp;&nbsp;<span style='color:{col}'>"
                      f"{s}{fmt_price(chg, ref)} ({s}{pct:.2f}%)</span>")
-        prefix = (f"<span style='color:{theme.TEXT}'>{self._title}</span>&nbsp;&nbsp;"
-                  if self._title else "")
-        self._ohlc_label.setText(prefix + body)
+        self._ohlc_label.setText(body)  # no symbol/interval prefix — symbol is the far-left label
         self._ohlc_label.adjustSize()
 
     def _show_last_ohlc(self):
