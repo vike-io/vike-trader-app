@@ -52,6 +52,35 @@ def test_datamanager_pin_toggle_persists_and_marks_row(app, tmp_path):
     assert tab._table.item(0, 6).text() == ""
 
 
+def test_datamanager_inspect_logs_quality_report(app, tmp_path):
+    _seed(str(tmp_path))
+    tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    tab._table.setCurrentCell(0, 0)
+    tab._on_inspect()
+    log = tab._log_view.toPlainText()
+    assert "Inspect BTCUSDT 1m" in log
+    assert "clean" in log  # 5 contiguous valid bars
+
+
+def test_datamanager_update_all_extends_each_series(app, tmp_path, monkeypatch):
+    import vike_trader_app.ui.datamanager as dm
+
+    _seed(str(tmp_path))  # one series: BTCUSDT 1m
+    calls = []
+
+    def fake_get_bars(symbol, interval, start, end, root=None, fetcher=None, progress=None):  # noqa: ARG001
+        calls.append((symbol, interval))
+        return []  # pretend nothing new (no network)
+
+    monkeypatch.setattr(dm, "get_bars", fake_get_bars)
+    tab = dm.DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    tab._on_update_all()
+    assert ("BTCUSDT", "1m") in calls
+    assert "Update all: done" in tab._log_view.toPlainText()
+
+
 def test_datamanager_delete_removes_series(app, tmp_path):
     _seed(str(tmp_path))
     tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
