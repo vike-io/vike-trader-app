@@ -90,3 +90,28 @@ class DuckCatalog:
         ).fetchall()
         return [Bar(ts=int(r[0]), open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
                 for r in rows]
+
+    def resample(self, symbol: str, base_interval: str, target_ms: int,
+                 start: int | None = None, end: int | None = None):
+        """Aggregate the ``base_interval`` series into ``target_ms`` buckets straight from Parquet.
+
+        Derives any timeframe from one stored base (the "1m base, derive the rest" pattern)
+        without materialising the base series into Python. Epoch-aligned and **byte-identical to
+        ``core.timeframe.resample``**: open=first, high=max, low=min, close=last, volume=sum, and
+        the final (possibly partial) bucket is included. ``[]`` if the base isn't cached.
+        """
+        from ..core.model import Bar
+
+        path = self.root / symbol / f"{base_interval}.parquet"
+        if not path.exists():
+            return []
+        lo = start if start is not None else _I64_MIN
+        hi = end if end is not None else _I64_MAX
+        rows = self._con.execute(
+            "SELECT (ts - ts % ?) AS bucket, arg_min(open, ts), max(high), min(low), "
+            "arg_max(close, ts), sum(volume) FROM read_parquet(?) "
+            "WHERE ts BETWEEN ? AND ? GROUP BY bucket ORDER BY bucket",
+            [target_ms, path.as_posix(), lo, hi],
+        ).fetchall()
+        return [Bar(ts=int(r[0]), open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
+                for r in rows]

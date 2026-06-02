@@ -13,9 +13,16 @@ import pytest
 pytest.importorskip("duckdb")
 
 from vike_trader_app.core.model import Bar  # noqa: E402
+from vike_trader_app.core.timeframe import resample  # noqa: E402
 from vike_trader_app.data.catalog import Catalog  # noqa: E402
 from vike_trader_app.data.duck_catalog import DuckCatalog  # noqa: E402
 from vike_trader_app.data.parquet_source import write_bars_parquet  # noqa: E402
+
+_HOUR = 3_600_000
+
+
+def _tuples(bars):
+    return [(b.ts, b.open, b.high, b.low, b.close, b.volume) for b in bars]
 
 
 def _bars(n, base_ts=0):
@@ -79,3 +86,38 @@ def test_duck_catalog_matches_polars_catalog(tmp_path):
 
     di, pi = duck.info("BTCUSDT", "1m"), poll.info("BTCUSDT", "1m")
     assert (di.n_bars, di.start_ts, di.end_ts) == (pi.n_bars, pi.start_ts, pi.end_ts)
+
+
+# --- resample (Phase 1: derive a timeframe straight from the Parquet base) --------------
+
+def test_duck_resample_is_byte_identical_to_core_timeframe(tmp_path):
+    base = 1_700_000_000_000
+    # 120 one-minute bars (2h) with varying OHLCV so first/max/min/last/sum all matter.
+    bars = [Bar(ts=base + i * 60_000, open=100 + i, high=110 + i, low=90 - i,
+                close=100 + (i % 7), volume=i + 1.0) for i in range(120)]
+    _seed(tmp_path, "BTCUSDT", "1m", bars)
+    got = DuckCatalog(str(tmp_path)).resample("BTCUSDT", "1m", _HOUR)
+    assert _tuples(got) == _tuples(resample(bars, _HOUR))
+
+
+def test_duck_resample_includes_partial_final_bucket(tmp_path):
+    # 90 1m bars = 1.5h -> two buckets, the second partial (30 bars) but present.
+    bars = [Bar(ts=i * 60_000, open=1, high=1, low=1, close=1, volume=1.0) for i in range(90)]
+    _seed(tmp_path, "X", "1m", bars)
+    got = DuckCatalog(str(tmp_path)).resample("X", "1m", _HOUR)
+    assert [b.ts for b in got] == [0, _HOUR]
+    assert got[1].volume == 30.0
+
+
+def test_duck_resample_sliced_matches_core_on_same_slice(tmp_path):
+    bars = [Bar(ts=i * 60_000, open=100 + i, high=200 + i, low=i, close=100 + i, volume=1.0)
+            for i in range(180)]
+    _seed(tmp_path, "X", "1m", bars)
+    duck, poll = DuckCatalog(str(tmp_path)), Catalog(str(tmp_path))
+    s, e = _HOUR, 2 * _HOUR + 59 * 60_000
+    assert _tuples(duck.resample("X", "1m", _HOUR, s, e)) == \
+           _tuples(resample(poll.query("X", "1m", s, e), _HOUR))
+
+
+def test_duck_resample_missing_dataset_returns_empty(tmp_path):
+    assert DuckCatalog(str(tmp_path)).resample("NOPE", "1m", _HOUR) == []
