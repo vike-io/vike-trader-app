@@ -166,3 +166,14 @@ def test_mainwindow_registers_calendar_rail_item():
     # (Task 18) and guarded by the rail-count == tab-count invariant in the app.
     from vike_trader_app.ui.app import MainWindow
     assert ("▦", "Calendar") in MainWindow._RAIL_ITEMS
+
+
+# ---------------------------------------------------------------------------
+# Task 17 — flag/ISO country chips
+# ---------------------------------------------------------------------------
+def test_country_cell_shows_iso_chip_when_no_flag_asset(app):
+    from vike_trader_app.ui.economic_calendar import country_chip_pixmap
+    pm = country_chip_pixmap("us")
+    assert not pm.isNull()
+    pm2 = country_chip_pixmap("")          # unknown → still returns a (blank) pixmap, no crash
+    assert pm2 is not None

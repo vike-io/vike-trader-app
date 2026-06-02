@@ -6,6 +6,7 @@ live countdown and the now-line are computed against an injectable `now_ms`.
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timezone
 
@@ -14,8 +15,34 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import theme
 from .calendar_delegate import importance_bar_pixmap, value_color
 from ..data.calendar.model import week_start_utc
+from ..data.calendar.taxonomy import currency_country
 
+_FLAG_DIR = os.path.join(os.path.dirname(__file__), "resources", "flags")
 _COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
+
+
+def country_chip_pixmap(iso2: str) -> QtGui.QPixmap:
+    """Return a flag pixmap for *iso2* (e.g. 'us') if a PNG asset exists under
+    resources/flags/, otherwise paint a small rounded chip with the ISO code.
+    Never crashes on empty/unknown iso — returns a blank transparent pixmap."""
+    if iso2:
+        path = os.path.join(_FLAG_DIR, f"{iso2}.png")
+        if os.path.exists(path):
+            pm = QtGui.QPixmap(path)
+            if not pm.isNull():
+                return pm.scaledToHeight(14, QtCore.Qt.SmoothTransformation)
+    pm = QtGui.QPixmap(20, 14)
+    pm.fill(QtCore.Qt.transparent)
+    if iso2:
+        p = QtGui.QPainter(pm)
+        p.setPen(QtGui.QColor(theme.TEXT3))
+        p.drawRoundedRect(0, 0, 19, 13, 3, 3)
+        f = p.font()
+        f.setPointSize(6)
+        p.setFont(f)
+        p.drawText(pm.rect(), QtCore.Qt.AlignCenter, iso2.upper())
+        p.end()
+    return pm
 
 
 class _CalendarFetchWorker(QtCore.QThread):
@@ -199,6 +226,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         it = QtWidgets.QTreeWidgetItem([t, ev.country, "", ev.title, actual,
                                         ev.forecast_display or "—", ev.previous_display or "—"])
         it.setData(0, QtCore.Qt.UserRole, ev.id)
+        _country, iso = currency_country(ev.currency)
+        it.setIcon(1, QtGui.QIcon(country_chip_pixmap(iso)))
         it.setIcon(2, QtGui.QIcon(importance_bar_pixmap(ev.importance)))
         color = theme.DOWN if (ev.actual is None and ev.ts_utc > self._now()) else value_color(ev.actual, ev.forecast)
         it.setForeground(4, QtGui.QColor(color))
