@@ -48,3 +48,49 @@ class CalendarEvent:
     @classmethod
     def from_dict(cls, d: dict) -> "CalendarEvent":
         return cls(**d)
+
+
+import re
+from datetime import datetime, timezone, timedelta
+
+_NUM_RE = re.compile(r"[-+]?\d[\d,]*\.?\d*")
+
+
+def parse_value(raw: str) -> tuple[float | None, str]:
+    """Split a ForexFactory display string into (number, unit).
+
+    Handles unicode minus, magnitude letters (K/M/B), and currency/percent units.
+    Returns (None, "") for blanks and em/en dashes.
+    """
+    if raw is None:
+        return None, ""
+    s = raw.strip().replace("−", "-")  # unicode minus → ascii
+    if s in ("", "—", "–", "-"):
+        return None, ""
+    m = _NUM_RE.search(s)
+    if not m:
+        return None, ""
+    value = float(m.group(0).replace(",", ""))
+    unit = (s[: m.start()] + s[m.end():]).strip()
+    return value, unit
+
+
+def impact_to_importance(impact: str) -> int:
+    return {"high": 2, "medium": 1, "low": 0}.get((impact or "").strip().lower(), 0)
+
+
+def iso_to_ts_utc(iso: str) -> int:
+    """ISO-8601 (with offset, or trailing 'Z') → epoch ms UTC."""
+    s = iso.strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def week_start_utc(ts_utc: int) -> int:
+    """Monday 00:00:00 UTC of the ISO week containing ts_utc (epoch ms)."""
+    dt = datetime.fromtimestamp(ts_utc / 1000, tz=timezone.utc)
+    monday = (dt - timedelta(days=dt.weekday())).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    return int(monday.timestamp() * 1000)
