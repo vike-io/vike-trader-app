@@ -82,6 +82,18 @@ def closed_bars(bars: list[Bar], interval_ms: int, now: int) -> list[Bar]:
     return list(bars)
 
 
+def fetch_in_flight(worker, started_ms: int, now_ms: int, timeout_ms: int) -> bool:
+    """Whether a live fetch is genuinely still in flight (so the next tick should skip).
+
+    A worker running longer than ``timeout_ms`` is presumed **stuck** (a hung connection, or a
+    ``finished`` signal that never arrived) and reported as NOT in flight — so the caller abandons
+    it and fetches afresh. This is the self-heal that stops one hung fetch from freezing the live
+    feed permanently at STALE (the in-flight guard used to clear *only* on the worker's
+    ``finished``, so a lost/hung worker meant every later tick skipped and the badge never moved).
+    """
+    return worker is not None and (now_ms - started_ms) < timeout_ms
+
+
 def live_fetch_window(
     last_ts: int | None,
     now: int,

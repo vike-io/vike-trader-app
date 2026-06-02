@@ -12,6 +12,7 @@ Both are Qt-free and network-free, so the whole thing is deterministic and unit-
 from vike_trader_app.core.model import Bar
 from vike_trader_app.data.live_update import (
     closed_bars,
+    fetch_in_flight,
     feed_health,
     live_fetch_window,
     merge_live_bars,
@@ -166,3 +167,24 @@ def test_live_fetch_window_caps_at_max_bars():
     assert live_fetch_window(now - 5_000 * _MIN, now, _MIN, lookback=5, max_bars=1_500) == (
         now - 1_500 * _MIN, now
     )
+
+
+# --- fetch_in_flight (self-healing in-flight guard) ------------------------
+
+_TO = 60_000  # presume a fetch stuck after this long
+
+
+def test_fetch_in_flight_none_worker_is_free():
+    assert fetch_in_flight(None, 0, 999_999_999, _TO) is False
+
+
+def test_fetch_in_flight_recent_worker_blocks_a_new_fetch():
+    w = object()
+    assert fetch_in_flight(w, 1_000_000, 1_000_000 + 5_000, _TO) is True  # 5s in -> genuinely busy
+
+
+def test_fetch_in_flight_overdue_worker_is_presumed_stuck_and_freed():
+    # A worker running longer than the timeout is treated as NOT in flight, so the caller can
+    # abandon it and re-fetch — the self-heal that stops a hung fetch freezing the feed at STALE.
+    w = object()
+    assert fetch_in_flight(w, 1_000_000, 1_000_000 + 70_000, _TO) is False
