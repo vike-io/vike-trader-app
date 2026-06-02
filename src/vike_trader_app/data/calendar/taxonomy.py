@@ -62,3 +62,18 @@ CURRENCY_COUNTRY: dict[str, tuple[str, str]] = {
 
 def currency_country(currency: str) -> tuple[str, str]:
     return CURRENCY_COUNTRY.get((currency or "").upper(), (currency, ""))
+
+
+# Region grouping for the country picker (TV "Select countries" modal).
+COUNTRY_REGIONS: dict[str, list[str]] = {
+    "North America": ["USD", "CAD", "MXN"],
+    "Europe": ["EUR", "GBP", "CHF", "SEK", "NOK", "RUB", "TRY"],
+    "Asia-Pacific": ["JPY", "CNY", "AUD", "NZD", "INR", "KRW", "IDR", "SGD", "HKD"],
+    "Middle East & Africa": ["SAR", "ZAR"],
+    "South America": ["BRL"],
+}
+TOP20_ECONOMIES: set[str] = {
+    "USD", "EUR", "CNY", "JPY", "GBP", "INR", "CAD", "AUD", "KRW", "BRL",
+    "MXN", "CHF", "RUB", "TRY", "ZAR", "SAR", "SEK", "NOK", "SGD", "HKD",
+}
+ALL_CURRENCIES: set[str] = set(CURRENCY_COUNTRY)

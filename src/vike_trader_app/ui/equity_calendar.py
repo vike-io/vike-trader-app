@@ -17,6 +17,73 @@ from . import theme
 _DAY_MS = 24 * 3600 * 1000
 _HOUR_LABEL = {"bmo": "Pre-mkt", "amc": "After-hrs", "dmh": "Mid-day"}
 
+# TV day-card categories (row order + label).
+_CARD_CATS = [("economic", "Economic"), ("earnings", "Earnings"),
+              ("dividends", "Dividends"), ("ipo", "IPO")]
+
+
+class _DayCard(QtWidgets.QFrame):
+    """One day's card (TV-style): weekday+day title, then one row per NON-ZERO category."""
+
+    clicked = QtCore.Signal(int)   # day index 0..6
+
+    def __init__(self, index: int, parent=None):
+        super().__init__(parent)
+        self._index = index
+        self.setProperty("class", "Panel")          # .Panel QSS: PANEL bg, BORDER, radius 10
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        v = QtWidgets.QVBoxLayout(self)
+        v.setContentsMargins(12, 9, 12, 9)
+        v.setSpacing(3)
+        self._title = QtWidgets.QLabel("")
+        self._title.setStyleSheet(f"color:{theme.TEXT};font-weight:600;font-size:13px;border:none;")
+        v.addWidget(self._title)
+        self._rows: dict = {}
+        for key, label in _CARD_CATS:
+            row = QtWidgets.QWidget()
+            rl = QtWidgets.QHBoxLayout(row)
+            rl.setContentsMargins(0, 0, 0, 0)
+            rl.setSpacing(6)
+            lbl = QtWidgets.QLabel(label)
+            lbl.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;border:none;")
+            num = QtWidgets.QLabel("")
+            num.setStyleSheet(f"color:{theme.TEXT};font-size:12px;font-weight:600;border:none;")
+            num.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            rl.addWidget(lbl)
+            rl.addStretch(1)
+            rl.addWidget(num)
+            v.addWidget(row)
+            self._rows[key] = (row, num)
+        v.addStretch(1)
+
+    def set_title(self, text: str) -> None:
+        self._title.setText(text)
+
+    def set_counts(self, counts: dict) -> None:
+        """int -> show row + number; 0 -> hide row; None -> '…' (still loading)."""
+        for key, _label in _CARD_CATS:
+            row, num = self._rows[key]
+            n = counts.get(key)
+            if n is None:
+                row.setVisible(True)
+                num.setText("…")
+            elif n > 0:
+                row.setVisible(True)
+                num.setText(str(n))
+            else:
+                row.setVisible(False)
+
+    def set_selected(self, on: bool) -> None:
+        self.setStyleSheet(
+            f".Panel{{border:1px solid {theme.ACCENT};border-radius:10px;background:{theme.PANEL};}}"
+            if on else "")
+        self._title.setStyleSheet(
+            f"color:{theme.ACCENT if on else theme.TEXT};font-weight:600;font-size:13px;border:none;")
+
+    def mousePressEvent(self, e):  # noqa: N802 - Qt override
+        self.clicked.emit(self._index)
+        super().mousePressEvent(e)
+
 
 def _fmt(v, suffix="") -> str:
     if v is None:
@@ -107,6 +174,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
     a list of typed events; `row_fn` maps an event to cell texts; `date_of` returns the
     event's grouping date (YYYY-MM-DD)."""
 
+    eventsChanged = QtCore.Signal()   # emitted after a week's events land (for day-card counts)
+
     def __init__(self, *, fetch, columns, row_fn, date_of,
                  sort_key=None, covered_of=None, color_of=None, parent=None):
         super().__init__(parent)
@@ -156,7 +225,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._search.setPlaceholderText("Filter symbol…")
         self._search.setMaximumWidth(160)
         self._search.textChanged.connect(self._on_filter)
-        for w in (btn_today, prev, nxt, self._lbl_range):
+        self._nav_widgets = [btn_today, prev, nxt, self._lbl_range]
+        for w in self._nav_widgets:
             h.addWidget(w)
         h.addStretch(1)
         if self._covered_of is not None:
@@ -211,6 +281,7 @@ class EquityCalendarTab(QtWidgets.QWidget):
         if self._loading_week == self._week_start:
             self._events = events
             self._rebuild()
+            self.eventsChanged.emit()
 
     def _on_finished(self) -> None:
         self._workers.discard(self.sender())
@@ -305,27 +376,199 @@ class CalendarSpace(QtWidgets.QWidget):
                        ("Dividends", self.dividends), ("IPO", self.ipo)]
         pills = QtWidgets.QHBoxLayout()
         pills.setContentsMargins(0, 0, 0, 0)
+        pills.setSpacing(4)
+        pill_qss = (
+            f"QPushButton{{background:transparent;border:none;color:{theme.TEXT3};"
+            f"padding:6px 16px;border-radius:9px;font-size:13px;font-weight:600;}}"
+            f"QPushButton:hover{{color:{theme.TEXT2};background:{theme.HOVER};}}"
+            f"QPushButton:checked{{background:#2a2a2a;color:{theme.TEXT};}}")
         self._pills: list[QtWidgets.QPushButton] = []
         for i, (name, page) in enumerate(self._pages):
             self._stack.addWidget(page)
             b = QtWidgets.QPushButton(name)
             b.setCheckable(True)
+            b.setStyleSheet(pill_qss)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
             b.clicked.connect(lambda _c, idx=i: self.set_page(idx))
             pills.addWidget(b)
             self._pills.append(b)
         pills.addStretch(1)
+        pills.addWidget(self._build_category_dropdown())   # TV "All categories", right side
+        self.economic._cmb_cat.setVisible(False)           # de-dupe: this dropdown replaces it
+
+        # TV-style day-card strip (Economic/Earnings/Dividends/IPO counts), ABOVE the pills.
+        self._selected_day = -1
+        self._primed = False
+        self._day_cards: list[_DayCard] = []
+        strip = QtWidgets.QWidget()
+        sl = QtWidgets.QHBoxLayout(strip)
+        sl.setContentsMargins(0, 0, 0, 0)
+        sl.setSpacing(8)
+        for i in range(7):
+            card = _DayCard(i)
+            card.clicked.connect(self._on_day_clicked)
+            self._day_cards.append(card)
+            sl.addWidget(card)
 
         root = QtWidgets.QVBoxLayout(self)
+        root.setSpacing(10)
+        root.addWidget(self._build_topnav())   # TV: date-nav row ABOVE the day-cards
+        root.addWidget(strip)
         bar = QtWidgets.QWidget()
         bar.setLayout(pills)
         root.addWidget(bar)
         root.addWidget(self._stack, 1)
+        # the shared top date-nav drives the week for every page (all tabs follow economic),
+        # so hide each sub-tab's own date-nav + economic's timezone selector to avoid dupes.
+        for tab in (self.economic, self.earnings, self.dividends, self.ipo):
+            for w in getattr(tab, "_nav_widgets", []):
+                w.setVisible(False)
+        self.economic._cmb_tz.setVisible(False)
         self.set_page(0)
+        self._sync_range()
+
+        # recount day-cards whenever any source's data changes
+        self.economic.eventsChanged.connect(self._on_economic_changed)
+        for tab in (self.earnings, self.dividends, self.ipo):
+            tab.eventsChanged.connect(self.refresh_day_counts)
 
     def set_page(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)
         for i, b in enumerate(self._pills):
             b.setChecked(i == idx)
+        if hasattr(self, "_cat_btn"):
+            self._cat_btn.setVisible(idx == 0)   # category filter only applies to Economic
+
+    # ---- TV "All categories" dropdown (filters the Economic page) ----
+    def _build_category_dropdown(self) -> QtWidgets.QToolButton:
+        btn = QtWidgets.QToolButton()
+        btn.setText("All categories  ▾")
+        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setStyleSheet(
+            f"QToolButton{{color:{theme.TEXT2};background:{theme.RAISE};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:7px 12px;font-size:13px;}}"
+            f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
+            "QToolButton::menu-indicator{width:0px;}")
+        menu = QtWidgets.QMenu(btn)
+        menu.setStyleSheet(
+            f"QMenu{{background:{theme.PANEL2};border:1px solid {theme.BORDER};border-radius:10px;"
+            f"padding:6px;}}"
+            f"QMenu::item{{color:{theme.TEXT2};padding:7px 28px 7px 14px;border-radius:7px;"
+            f"font-size:13px;}}"
+            f"QMenu::item:selected{{background:{theme.RAISE};color:{theme.TEXT};}}"
+            f"QMenu::item:checked{{color:{theme.TEXT};font-weight:600;}}"
+            "QMenu::indicator{width:0px;}")
+        self._cat_actions: dict[str, QtGui.QAction] = {}
+        grp = QtGui.QActionGroup(menu)
+        grp.setExclusive(True)
+        for value, label in [("All", "All categories"), ("rates", "Rates"),
+                             ("inflation", "Inflation"), ("employment", "Employment"),
+                             ("gdp", "GDP"), ("trade", "Trade"), ("housing", "Housing"),
+                             ("other", "Other")]:
+            act = menu.addAction(label, lambda v=value, lab=label: self._choose_category(v, lab))
+            act.setCheckable(True)
+            act.setChecked(value == "All")
+            grp.addAction(act)
+            self._cat_actions[value] = act
+        btn.setMenu(menu)
+        self._cat_btn = btn
+        return btn
+
+    def _choose_category(self, value: str, label: str) -> None:
+        self._cat_btn.setText(("All categories" if value == "All" else label) + "  ▾")
+        if value in self._cat_actions:
+            self._cat_actions[value].setChecked(True)
+        self.economic.set_category(value)
+
+    # ---- TV day-card strip (aggregates all four calendars) ----
+    def showEvent(self, event):  # noqa: N802 - prime equity fetches when the space first opens
+        super().showEvent(event)
+        if not self._primed:
+            self._primed = True
+            self._prime_equity()
+            self.refresh_day_counts()
+
+    def _prime_equity(self) -> None:
+        """Kick the equity fetches so the cards can count all categories without opening pills."""
+        origin = self.economic.current_week_start()
+        for tab in (self.earnings, self.dividends, self.ipo):
+            tab._week_start = origin
+            tab._loaded = True
+            tab.refresh_async()
+
+    def _on_economic_changed(self) -> None:
+        origin = self.economic.current_week_start()
+        for tab in (self.earnings, self.dividends, self.ipo):
+            if tab._week_start != origin:          # economic navigated -> follow so counts align
+                tab._week_start = origin
+                if tab._loaded:
+                    tab.refresh_async()
+        self.refresh_day_counts()
+        self._sync_range()
+
+    # ---- shared top date-nav (TV-style, drives the week for every page) ----
+    def _build_topnav(self) -> QtWidgets.QWidget:
+        bar = QtWidgets.QWidget()
+        bar.setStyleSheet(
+            f"QPushButton{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:6px 13px;color:{theme.TEXT2};font-size:13px;}}"
+            f"QPushButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
+            f"QComboBox{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}")
+        h = QtWidgets.QHBoxLayout(bar)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        btn_today = QtWidgets.QPushButton("Today")
+        btn_today.setCursor(QtCore.Qt.PointingHandCursor)
+        btn_today.clicked.connect(lambda: (self.economic.go_today(), self._sync_range()))
+        prev = QtWidgets.QPushButton("‹")
+        prev.clicked.connect(lambda: (self.economic.go_prev_week(), self._sync_range()))
+        nxt = QtWidgets.QPushButton("›")
+        nxt.clicked.connect(lambda: (self.economic.go_next_week(), self._sync_range()))
+        self._range_lbl = QtWidgets.QLabel("")
+        self._range_lbl.setStyleSheet(
+            f"color:{theme.TEXT};font-size:16px;font-weight:600;border:none;padding-left:6px;")
+        for w in (btn_today, prev, nxt):
+            h.addWidget(w)
+        h.addWidget(self._range_lbl)
+        h.addStretch(1)
+        self._tz = QtWidgets.QComboBox()
+        self._tz.setCursor(QtCore.Qt.PointingHandCursor)
+        self._tz.addItems([self.economic._cmb_tz.itemText(i)
+                           for i in range(self.economic._cmb_tz.count())])
+        self._tz.setCurrentIndex(self.economic._cmb_tz.currentIndex())
+        self._tz.currentIndexChanged.connect(self.economic._cmb_tz.setCurrentIndex)
+        h.addWidget(self._tz)
+        return bar
+
+    def _sync_range(self) -> None:
+        if hasattr(self, "_range_lbl"):
+            self._range_lbl.setText(self.economic._lbl_range.text())
+
+    def refresh_day_counts(self) -> None:
+        origin = self.economic.current_week_start()
+        for i, card in enumerate(self._day_cards):
+            # Title + bucket by the Economic tab's DISPLAY timezone, so the cards line up with
+            # the day-group headers in the Economic tree (which groups its rows by local date).
+            # A macro print at 23:30Z under UTC+8 belongs to the next local day in BOTH places.
+            day = self.economic._local(origin + i * _DAY_MS).date()
+            card.set_title(f"{day.strftime('%a')} {day.day}")
+            counts: dict = {"economic": sum(1 for e in self.economic._events
+                                            if self.economic._local(e.ts_utc).date() == day)}
+            for key, tab in (("earnings", self.earnings), ("dividends", self.dividends),
+                             ("ipo", self.ipo)):
+                if tab._loading_week is not None and not tab._events:
+                    counts[key] = None             # still loading, nothing yet -> '…'
+                else:
+                    counts[key] = sum(1 for e in tab._events if tab._date_of(e) == day.isoformat())
+            card.set_counts(counts)
+            card.set_selected(i == self._selected_day)
+
+    def _on_day_clicked(self, index: int) -> None:
+        self._selected_day = index
+        for i, card in enumerate(self._day_cards):
+            card.set_selected(i == index)
 
 
 # ---- week helpers (UTC week, like the Economic calendar's nav unit) ----
