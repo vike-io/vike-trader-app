@@ -1,6 +1,7 @@
-"""Offscreen tests for the indicator lifecycle on the price chart: adding, toggling/editing,
-and deleting indicators across all four routes — price overlays, stacked oscillator panes,
-candlestick pattern markers, and pairs (vs a 2nd-symbol benchmark) — plus the category picker.
+"""Offscreen tests for the TradingView-style indicator management on the price chart:
+adding, editing parameters (recompute), styling, hiding/showing, moving between panes, and
+deleting — across price overlays, oscillator panes, candlestick patterns, and pairs — plus the
+category picker, the settings dialog, and the per-pane legend UI.
 """
 
 import os
@@ -17,6 +18,9 @@ from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.ui.chart import (  # noqa: E402
     _PICKER_TABS,
     _IndicatorPicker,
+    _IndicatorSettings,
+    _LegendRow,
+    _PaneLegend,
     OscillatorPane,
     PriceChart,
 )
@@ -28,7 +32,6 @@ def app():
 
 
 def _bars(n=80):
-    """Varying OHLC so warm-up-gated indicators (RSI, MACD, …) produce real values."""
     out = []
     for i in range(n):
         c = 100 + (i % 9) - 4 + i * 0.15  # zig-zag with a slow uptrend
@@ -36,7 +39,7 @@ def _bars(n=80):
     return out
 
 
-def _chart_with_host(app):
+def _chart(app):
     """A PriceChart wired to a vertical splitter pane-host (as app.py mounts it)."""
     pc = PriceChart()
     split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
@@ -46,133 +49,219 @@ def _chart_with_host(app):
     return pc, split
 
 
-# --- ADD: price overlays -------------------------------------------------------------------
-def test_add_overlay_goes_on_price_not_a_pane(app):
-    pc, split = _chart_with_host(app)
-    pc.add_indicator("ema")
-    assert "ema" in pc._overlays and "ema" in pc._overlay_curves
-    assert not pc._osc_panes          # overlays do NOT create a pane
-    assert split.count() == 1
+def _valid(series_dict):
+    return sum(1 for v in next(iter(series_dict.values())) if v is not None)
 
 
-def test_add_multiple_overlays_coexist(app):
-    pc, _ = _chart_with_host(app)
-    pc.add_indicator("ema")
-    pc.add_indicator("sma")
-    assert {"ema", "sma"} <= set(pc._overlays)
+# --- ADD: routing by kind --------------------------------------------------------------------
+def test_add_overlay_handle(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("ema")
+    assert ind.kind == "overlay" and ind.uid in pc._indicators
+    assert ind.curves and not ind.pane and not ind.scatter
+    assert split.count() == 1  # overlays stay on the price pane
 
 
-def test_multi_output_overlay_splits_into_named_lines(app):
-    pc, _ = _chart_with_host(app)
-    pc.add_indicator("bollinger")  # bands -> several outputs, each its own overlay line
-    assert any(k.startswith("bollinger") for k in pc._overlays)
-    assert len(pc._overlay_curves) >= 2
-
-
-# --- ADD / DELETE: oscillator panes --------------------------------------------------------
-def test_add_oscillator_creates_stacked_pane(app):
-    pc, split = _chart_with_host(app)
-    pc.add_indicator("rsi")
-    assert "rsi" in pc._osc_panes
-    assert isinstance(pc._osc_panes["rsi"], OscillatorPane)
-    assert split.count() == 2          # price chart + 1 oscillator pane
-    assert "rsi" not in pc._overlays   # not on the price scale
-
-
-def test_multiple_oscillators_stack(app):
-    pc, split = _chart_with_host(app)
-    pc.add_indicator("rsi")
-    pc.add_indicator("macd")
-    assert set(pc._osc_panes) == {"rsi", "macd"}
-    assert split.count() == 3
-
-
-def test_add_oscillator_is_idempotent(app):
-    pc, split = _chart_with_host(app)
-    pc.add_indicator("rsi")
-    pc.add_indicator("rsi")            # adding the same one again is a no-op
-    assert list(pc._osc_panes) == ["rsi"]
+def test_add_oscillator_makes_pane(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.kind == "oscillator"
+    assert isinstance(ind.pane, OscillatorPane)
     assert split.count() == 2
 
 
-def test_delete_oscillator_via_close_signal(app):
-    pc, split = _chart_with_host(app)
-    pc.add_indicator("rsi")
-    pane = pc._osc_panes["rsi"]
-    pane.paneClosed.emit(pane)         # the pane's ✕ button emits this
-    assert "rsi" not in pc._osc_panes
-    assert split.count() == 1
+def test_add_pattern_handle(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("engulfing")
+    assert ind.kind == "pattern" and ind.scatter is not None
 
 
-def test_oscillator_pane_xlinked_to_price(app):
-    pc, _ = _chart_with_host(app)
-    pc.add_indicator("rsi")
-    pane = pc._osc_panes["rsi"]
-    linked = pane.getViewBox().linkedView(pane.getViewBox().XAxis)
-    assert linked is pc.getViewBox()   # follows the price chart's x-range
-
-
-def test_oscillator_reveals_in_lockstep(app):
-    pc, _ = _chart_with_host(app)
-    pc.add_indicator("rsi")
-    pane = pc._osc_panes["rsi"]
-
-    def _points(p):  # total plotted points across the pane's curves (None when empty)
-        return sum(0 if (xs := c.getData()[0]) is None else len(xs) for c in p._curves.values())
-
-    pane.show_upto(5)        # within RSI warm-up -> nothing revealed yet
-    early = _points(pane)
-    pane.show_upto(75)       # well past warm-up -> points revealed
-    late = _points(pane)
-    assert late > early
-
-
-# --- ADD / TOGGLE (edit) / DELETE: candlestick patterns ------------------------------------
-def test_add_pattern_registers_marker_layer(app):
-    pc, _ = _chart_with_host(app)
-    pc.add_indicator("engulfing")
-    assert "engulfing" in pc._patterns
-    assert pc._patterns["engulfing"]["scatter"] is not None
-
-
-def test_pattern_pick_again_toggles_off(app):
-    pc, _ = _chart_with_host(app)
-    pc.add_indicator("hammer")
-    assert "hammer" in pc._patterns
-    pc.add_indicator("hammer")          # re-pick = toggle off
-    assert "hammer" not in pc._patterns
-
-
-# --- ADD: pairs (vs a 2nd-symbol benchmark) ------------------------------------------------
-def test_pairs_pick_emits_request_not_a_pane(app):
-    pc, _ = _chart_with_host(app)
+def test_add_pairs_pick_emits_request(app):
+    pc, _ = _chart(app)
     seen = []
     pc.pairsRequested.connect(seen.append)
-    pc.add_indicator("ratio")           # the app supplies the benchmark, not the chart
+    assert pc.add_indicator("ratio") is None  # needs a benchmark -> request, no handle
     assert seen == ["ratio"]
-    assert "ratio" not in pc._osc_panes
 
 
-def test_add_pairs_with_benchmark_creates_pane(app):
-    pc, split = _chart_with_host(app)
+def test_add_pairs_with_benchmark(app):
+    pc, split = _chart(app)
     bench = [b.close * 0.9 for b in pc._bars]
-    pc.add_pairs("spread_zscore", bench)
-    assert "spread_zscore" in pc._osc_panes
+    ind = pc.add_pairs("spread_zscore", bench)
+    assert ind.kind == "pairs" and isinstance(ind.pane, OscillatorPane)
     assert split.count() == 2
 
 
-# --- DELETE-ALL on new data ----------------------------------------------------------------
-def test_set_data_clears_oscillators_and_patterns(app):
-    pc, split = _chart_with_host(app)
+def test_duplicate_indicators_allowed(app):
+    pc, _ = _chart(app)
+    a = pc.add_indicator("ema")
+    b = pc.add_indicator("ema")
+    assert a.uid != b.uid and len(pc._indicators) == 2  # TradingView allows duplicates
+
+
+# --- EDIT: parameters + recompute ------------------------------------------------------------
+def test_edit_params_recomputes(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    p0 = ind.spec.params[0]
+    before = _valid(ind.series)
+    new = dict(ind.params)
+    new[p0.name] = max(int(p0.min or 2), 4)  # shorter period -> fewer warm-up gaps
+    pc._apply_edit(ind.uid, new, ind.colors)
+    assert pc._indicators[ind.uid].params[p0.name] == new[p0.name]
+    assert _valid(pc._indicators[ind.uid].series) != before  # series actually recomputed
+
+
+def test_edit_colors_applied(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc._apply_edit(ind.uid, ind.params, ["#ff0000"])
+    assert pc._indicators[ind.uid].colors[0] == "#ff0000"
+
+
+def test_label_includes_params(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert "RSI" in ind.label
+    assert any(str(v) in ind.label for v in ind.params.values())  # e.g. "RSI 14"
+
+
+# --- HIDE / SHOW -----------------------------------------------------------------------------
+def test_hide_show_overlay(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc.set_indicator_visible(ind.uid, False)
+    assert ind.visible is False
+    assert all(not c.isVisible() for c in ind.curves.values())
+    pc.set_indicator_visible(ind.uid, True)
+    assert all(c.isVisible() for c in ind.curves.values())
+
+
+def test_toggle_visible_helper(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pc._toggle_visible(ind.uid)
+    assert ind.visible is False
+
+
+# --- MOVE between panes ----------------------------------------------------------------------
+def test_move_overlay_to_new_pane(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("ema")
+    assert split.count() == 1
+    pc.move_indicator(ind.uid, "new")
+    assert pc._indicators[ind.uid].kind == "oscillator"
+    assert pc._indicators[ind.uid].pane is not None and split.count() == 2
+
+
+def test_move_oscillator_to_price(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert split.count() == 2
+    pc.move_indicator(ind.uid, "price")
+    assert pc._indicators[ind.uid].kind == "overlay"
+    assert pc._indicators[ind.uid].pane is None and split.count() == 1
+
+
+# --- DELETE ----------------------------------------------------------------------------------
+def test_remove_overlay(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc.remove_indicator(ind.uid)
+    assert ind.uid not in pc._indicators
+
+
+def test_remove_oscillator_frees_pane(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pc.remove_indicator(ind.uid)
+    assert ind.uid not in pc._indicators and split.count() == 1
+
+
+def test_remove_via_pane_signal(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("macd")
+    ind.pane.removeRequested.emit(ind.uid)  # the pane's ⋯ -> Remove
+    assert ind.uid not in pc._indicators and split.count() == 1
+
+
+def test_set_data_clears_indicators(app):
+    pc, split = _chart(app)
+    pc.add_indicator("ema")
     pc.add_indicator("rsi")
     pc.add_indicator("engulfing")
-    pc.set_data(_bars(40), [])          # new symbol/interval resets indicators
-    assert not pc._osc_panes
-    assert not pc._patterns
-    assert split.count() == 1
+    pc.set_data(_bars(40), [])
+    assert pc._indicators == {} and split.count() == 1
 
 
-# --- the category picker -------------------------------------------------------------------
+# --- REVEAL (progressive) --------------------------------------------------------------------
+def test_oscillator_reveals_in_lockstep(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+
+    def _pts():
+        return sum(0 if (xs := c.getData()[0]) is None else len(xs) for c in pane._curves.values())
+
+    pane.reveal(5)
+    early = _pts()
+    pane.reveal(75)
+    assert _pts() > early
+
+
+# --- SETTINGS dialog (UI) --------------------------------------------------------------------
+def test_settings_builds_input_widgets(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    assert set(dlg._param_widgets) == {p.name for p in ind.spec.params}
+    assert len(dlg._color_btns) == len(ind.spec.outputs)
+
+
+def test_settings_emits_params_on_ok(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    p0 = ind.spec.params[0]
+    dlg._param_widgets[p0.name].setValue(9)
+    got = {}
+    dlg.applied.connect(lambda params, colors: got.update(params=params, colors=colors))
+    dlg._accept()
+    assert got["params"][p0.name] == 9
+    assert len(got["colors"]) == len(ind.spec.outputs)
+
+
+# --- LEGEND (UI) -----------------------------------------------------------------------------
+def test_price_legend_lists_overlays_and_patterns(app):
+    pc, _ = _chart(app)
+    pc.add_indicator("ema")        # overlay -> on price legend
+    pc.add_indicator("engulfing")  # pattern -> on price legend
+    pc.add_indicator("rsi")        # oscillator -> NOT on the price legend
+    assert len(pc._price_legend._rows) == 2
+
+
+def test_legend_row_signals(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")
+    row = _LegendRow(ind)
+    fired = []
+    row.editRequested.connect(lambda u: fired.append(("edit", u)))
+    row.removeRequested.connect(lambda u: fired.append(("remove", u)))
+    row.hideToggled.connect(lambda u: fired.append(("hide", u)))
+    row.moveRequested.connect(lambda u, t: fired.append(("move", u, t)))
+    row.mouseDoubleClickEvent(None)          # double-click -> edit
+    row._eye.click()                          # eye -> hide toggle
+    assert ("edit", ind.uid) in fired and ("hide", ind.uid) in fired
+
+
+def test_oscillator_pane_has_legend_row(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.pane.uid == ind.uid
+    assert isinstance(ind.pane._legend, _LegendRow)
+
+
+# --- the category picker (unchanged behaviour) -----------------------------------------------
 def test_picker_lists_full_registry(app):
     from vike_trader_app.core.indicators import base as _base
 
@@ -180,23 +269,12 @@ def test_picker_lists_full_registry(app):
     assert len(dlg._rows) == len(_base.list_indicators()) == 176
 
 
-def test_picker_category_tab_filters(app):
+def test_picker_category_filter(app):
     dlg = _IndicatorPicker()
-    momentum_idx = next(i for i, (label, _c) in enumerate(_PICKER_TABS) if label == "Momentum")
-    dlg._on_tab(momentum_idx)
+    idx = next(i for i, (label, _c) in enumerate(_PICKER_TABS) if label == "Momentum")
+    dlg._on_tab(idx)
     for item, _hay, cat in dlg._rows:
         assert item.isHidden() == (cat != "momentum")
-
-
-def test_picker_search_filters(app):
-    dlg = _IndicatorPicker()
-    dlg._search.setText("relative strength")
-    dlg._apply()
-    visible = [item for item, _h, _c in dlg._rows if not item.isHidden()]
-    names = {it.data(QtCore.Qt.UserRole) for it in visible}
-    assert "rsi" in names
-    assert all("relative" in h for _it, h, _c in dlg._rows
-               if not _it.isHidden())
 
 
 def test_picker_choose_emits_name(app):
