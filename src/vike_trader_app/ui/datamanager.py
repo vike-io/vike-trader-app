@@ -36,12 +36,28 @@ _INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
 PROVIDER_CHOICES = [*CRYPTO_PROVIDERS, "yahoo", "dukascopy"]
 
 
+def config_root_for(data_root: str) -> str:
+    """Where user-facing config (broker profiles, DataSets) lives, given the bar-data root.
+
+    Profiles/DataSets are config humans edit — they belong *beside* the parquet cache, not inside
+    it. So the default ``storage/parquet`` data root maps to ``storage``; any other root (e.g. a
+    test tmp dir, not named ``parquet``) is used as-is.
+    """
+    from pathlib import Path
+
+    p = Path(data_root)
+    return str(p.parent) if p.name == "parquet" else str(p)
+
+
 class DataManagerTab(QtWidgets.QWidget):
     """Catalog table + toolbar over the local data cache."""
 
-    def __init__(self, root: str | None = None, pins_path: str | None = None, parent=None):
+    def __init__(self, root: str | None = None, pins_path: str | None = None,
+                 config_root: str | None = None, parent=None):
         super().__init__(parent)
         self._root = root or DEFAULT_ROOT
+        # profiles/DataSets live beside the parquet cache (storage/), not inside it
+        self._config_root = config_root or config_root_for(self._root)
         self._pins_path = pins_path or _PINS_PATH
         self._cat = None  # built lazily on first refresh — don't read the catalog at app startup
         self._presets_ready = False  # broker-profile presets seeded lazily on first refresh
@@ -145,7 +161,7 @@ class DataManagerTab(QtWidgets.QWidget):
         """Repopulate the table from the catalog (+ pin state + on-disk size + instrument spec)."""
         if not self._presets_ready:  # seed the 5 broker-profile presets once (idempotent)
             try:
-                ensure_presets(self._root)
+                ensure_presets(self._config_root)
             except Exception:  # noqa: BLE001 - a read-only/locked storage dir just defers presets
                 pass
             self._presets_ready = True
@@ -160,7 +176,7 @@ class DataManagerTab(QtWidgets.QWidget):
                 if c >= 2:  # numeric / date / size / pin columns read right
                     item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
                 self._table.setItem(r, c, item)
-            spec = spec_for_symbol(info.symbol, self._root)  # self-describing: tick/decimals
+            spec = spec_for_symbol(info.symbol, self._config_root)  # self-describing: tick/decimals
             cell = QtWidgets.QTableWidgetItem(instrument_label(spec))
             cell.setForeground(QtWidgets.QApplication.palette().mid())
             self._table.setItem(r, len(_COLS) - 1, cell)
@@ -222,7 +238,7 @@ class DataManagerTab(QtWidgets.QWidget):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self._log(f"Inspect {symbol} {interval}: {quality_summary(bars, interval_ms(interval))}")
-        spec = spec_for_symbol(symbol, self._root)
+        spec = spec_for_symbol(symbol, self._config_root)
         self._log(f"  instrument: {instrument_detail(spec, profile_for_symbol(symbol))}")
 
     def _on_update_all(self) -> None:
@@ -322,7 +338,7 @@ class DataManagerTab(QtWidgets.QWidget):
         """Open the broker-profile / instrument editor; refresh after (specs may have changed)."""
         from .profile_editor import ProfileEditorDialog
 
-        ProfileEditorDialog(self._root, self).exec()
+        ProfileEditorDialog(self._config_root, self).exec()
         self.refresh()
 
     def download_dataset(self, dataset, days: int) -> int:
@@ -350,7 +366,7 @@ class DataManagerTab(QtWidgets.QWidget):
         """Open the DataSets manager; its 'Download all' runs through :meth:`download_dataset`."""
         from .dataset_editor import DataSetEditorDialog
 
-        DataSetEditorDialog(self._root, on_download=self.download_dataset, parent=self).exec()
+        DataSetEditorDialog(self._config_root, on_download=self.download_dataset, parent=self).exec()
         self.refresh()
 
     def _delete(self, symbol: str, interval: str) -> None:

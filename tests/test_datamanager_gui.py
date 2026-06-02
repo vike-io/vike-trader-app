@@ -174,3 +174,21 @@ def test_datamanager_delete_removes_series(app, tmp_path):
     tab._delete("BTCUSDT", "1m")           # the no-prompt path used by the confirm dialog
     assert tab._table.rowCount() == 0
     assert ps.read_series(str(tmp_path), "BTCUSDT", "1m") == []
+
+
+def test_config_root_for_maps_parquet_to_sibling():
+    from pathlib import Path
+
+    from vike_trader_app.ui.datamanager import config_root_for
+
+    assert Path(config_root_for(str(Path("storage") / "parquet"))) == Path("storage")
+    assert Path(config_root_for(str(Path("data") / "custom"))) == Path("data") / "custom"
+
+
+def test_datamanager_profiles_live_beside_parquet_not_inside(app, tmp_path):
+    data_root = tmp_path / "parquet"
+    data_root.mkdir()
+    tab = DataManagerTab(root=str(data_root), pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()  # seeds presets at the config root
+    assert (tmp_path / "profiles").is_dir()          # storage/profiles — beside the cache
+    assert not (data_root / "profiles").exists()     # not storage/parquet/profiles
