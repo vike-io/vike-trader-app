@@ -1,10 +1,9 @@
 """Threaded options-chain fetch service.
 
-The synchronous `fetch_now()` (used in tests + the polling tick on the GUI thread is
-avoided) and a `QThread`-backed `refresh()` both run a provider's `fetch_chain`
-(network I/O — not a Parquet read, so off-thread is safe). Results/expiries/errors
-are delivered via Qt signals on the GUI thread. Never raises into the UI; never shows
-a modal.
+The synchronous `fetch_now()` is used in tests; `refresh()` runs the same provider
+call off-thread via a `_FetchWorker` QThread (network I/O — not a Parquet read, so
+off-thread is safe). Results/expiries/errors are delivered via Qt signals on the GUI
+thread. Never raises into the UI; never shows a modal.
 """
 
 from __future__ import annotations
@@ -36,6 +35,21 @@ class _FetchWorker(QtCore.QThread):
             self.fail.emit(f"{self._p.name}: {exc}")
 
 
+class _ExpWorker(QtCore.QThread):
+    ok = QtCore.Signal(object)   # list[Expiry]
+    err = QtCore.Signal(str)
+
+    def __init__(self, provider: OptionsProvider, underlying: str, parent=None) -> None:
+        super().__init__(parent)
+        self._provider, self._underlying = provider, underlying
+
+    def run(self) -> None:
+        try:
+            self.ok.emit(self._provider.list_expiries(self._underlying))
+        except Exception as exc:  # noqa: BLE001 - all failures surface via the signal
+            self.err.emit(f"{self._provider.name}: {exc}")
+
+
 class OptionsService(QtCore.QObject):
     chainReady = QtCore.Signal(object)    # OptionChain
     expiriesReady = QtCore.Signal(object)  # list[Expiry]
@@ -51,6 +65,7 @@ class OptionsService(QtCore.QObject):
         self._strikes: int | None = 12
         self._busy = False
         self._worker: _FetchWorker | None = None
+        self._exp_worker: _ExpWorker | None = None
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.refresh)
 
@@ -69,19 +84,15 @@ class OptionsService(QtCore.QObject):
     def load_expiries(self) -> None:
         if not (self._provider and self._underlying):
             return
-        provider, underlying = self._provider, self._underlying
-
-        class _ExpWorker(QtCore.QThread):
-            ok = QtCore.Signal(object)
-            err = QtCore.Signal(str)
-
-            def run(self) -> None:
-                try:
-                    self.ok.emit(provider.list_expiries(underlying))
-                except Exception as exc:  # noqa: BLE001
-                    self.err.emit(f"{provider.name}: {exc}")
-
-        self._exp_worker = _ExpWorker(self)
+        # latest-wins: drop a prior in-flight worker's signals so it can't deliver
+        # stale expiries for a previous underlying (it runs to completion harmlessly).
+        if self._exp_worker is not None:
+            try:
+                self._exp_worker.ok.disconnect()
+                self._exp_worker.err.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        self._exp_worker = _ExpWorker(self._provider, self._underlying, self)
         self._exp_worker.ok.connect(self.expiriesReady.emit)
         self._exp_worker.err.connect(self.failed.emit)
         self._exp_worker.start()
@@ -120,6 +131,9 @@ class OptionsService(QtCore.QObject):
 
     def _clear_busy(self) -> None:
         self._busy = False
+        if self._worker is not None:
+            self._worker.deleteLater()
+            self._worker = None
 
     # --- polling -------------------------------------------------------------
     def start_polling(self) -> None:

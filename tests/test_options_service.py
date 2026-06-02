@@ -61,3 +61,13 @@ def test_refresh_skips_when_busy():
     svc.set_expiry(_chain().expiry)
     svc._busy = True  # simulate in-flight fetch
     assert svc.refresh() is False  # guarded, no new worker
+
+
+def test_fetch_now_silent_when_not_configured():
+    _app()
+    svc = OptionsService()
+    fired = []
+    svc.chainReady.connect(fired.append)
+    svc.failed.connect(fired.append)
+    svc.fetch_now()  # prerequisites absent -> must not emit anything (no thread, no hang)
+    assert fired == []
