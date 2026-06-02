@@ -384,15 +384,25 @@ class CalendarSpace(QtWidgets.QWidget):
                        ("Dividends", self.dividends), ("IPO", self.ipo)]
         pills = QtWidgets.QHBoxLayout()
         pills.setContentsMargins(0, 0, 0, 0)
+        pills.setSpacing(4)
+        pill_qss = (
+            f"QPushButton{{background:transparent;border:none;color:{theme.TEXT3};"
+            f"padding:6px 16px;border-radius:9px;font-size:13px;font-weight:600;}}"
+            f"QPushButton:hover{{color:{theme.TEXT2};}}"
+            f"QPushButton:checked{{background:{theme.RAISE};color:{theme.TEXT};}}")
         self._pills: list[QtWidgets.QPushButton] = []
         for i, (name, page) in enumerate(self._pages):
             self._stack.addWidget(page)
             b = QtWidgets.QPushButton(name)
             b.setCheckable(True)
+            b.setStyleSheet(pill_qss)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
             b.clicked.connect(lambda _c, idx=i: self.set_page(idx))
             pills.addWidget(b)
             self._pills.append(b)
         pills.addStretch(1)
+        pills.addWidget(self._build_category_dropdown())   # TV "All categories", right side
+        self.economic._cmb_cat.setVisible(False)           # de-dupe: this dropdown replaces it
 
         # TV-style day-card strip (Economic/Earnings/Dividends/IPO counts), ABOVE the pills.
         self._selected_day = -1
@@ -426,6 +436,33 @@ class CalendarSpace(QtWidgets.QWidget):
         self._stack.setCurrentIndex(idx)
         for i, b in enumerate(self._pills):
             b.setChecked(i == idx)
+        if hasattr(self, "_cat_btn"):
+            self._cat_btn.setVisible(idx == 0)   # category filter only applies to Economic
+
+    # ---- TV "All categories" dropdown (filters the Economic page) ----
+    def _build_category_dropdown(self) -> QtWidgets.QToolButton:
+        btn = QtWidgets.QToolButton()
+        btn.setText("All categories  ▾")
+        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        btn.setCursor(QtCore.Qt.PointingHandCursor)
+        btn.setStyleSheet(
+            f"QToolButton{{color:{theme.TEXT2};background:{theme.RAISE};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:7px 12px;font-size:13px;}}"
+            f"QToolButton:hover{{color:{theme.TEXT};}}"
+            "QToolButton::menu-indicator{width:0px;}")
+        menu = QtWidgets.QMenu(btn)
+        for value, label in [("All", "All categories"), ("rates", "Rates"),
+                             ("inflation", "Inflation"), ("employment", "Employment"),
+                             ("gdp", "GDP"), ("trade", "Trade"), ("housing", "Housing"),
+                             ("other", "Other")]:
+            menu.addAction(label, lambda v=value, lab=label: self._choose_category(v, lab))
+        btn.setMenu(menu)
+        self._cat_btn = btn
+        return btn
+
+    def _choose_category(self, value: str, label: str) -> None:
+        self._cat_btn.setText(("All categories" if value == "All" else label) + "  ▾")
+        self.economic.set_category(value)
 
     # ---- TV day-card strip (aggregates all four calendars) ----
     def showEvent(self, event):  # noqa: N802 - prime equity fetches when the space first opens
