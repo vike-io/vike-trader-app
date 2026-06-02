@@ -198,7 +198,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._tree.setAlternatingRowColors(False)
         self._tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
-        root.addWidget(self._build_toolbar())
+        self._toolbar = self._build_toolbar()
+        root.addWidget(self._toolbar)   # hidden when embedded in CalendarSpace (controls move to top nav)
         # (day-card strip now owned by CalendarSpace so it can show Economic/Earnings/
         # Dividends/IPO counts together — this tab keeps _day_cards = [] so its
         # _refresh_strip is a guarded no-op.)

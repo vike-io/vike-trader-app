@@ -17,6 +17,9 @@ from . import theme
 
 _CALL_BAR = "#4c9ffe"   # TradingView-ish blue for call volume bars
 _PUT_BAR = theme.DOWN   # red for put volume bars
+# TV's options chain renders cell values bright (#dbdbdb) at 14px on ~41px rows. theme.TEXT2
+# (#9aa4b1) reads too dim/cramped next to it, so the chain uses a brighter cell tone + taller rows.
+_CELL = "#c9d1d9"
 
 
 class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
@@ -81,28 +84,47 @@ class OptionsTab(QtWidgets.QWidget):
         self.exp_range = QtWidgets.QComboBox()
         self.exp_range.addItems(["Next 30d", "Next 60d", "Next 90d", "All"])
         self.strikes = QtWidgets.QComboBox()
-        self.strikes.addItems(["±6", "±12", "All"])
-        self.strikes.setCurrentText("±12")
+        self.strikes.addItem("±6 strikes", 6)        # self-labeling like TV's "±6 strikes ▾"
+        self.strikes.addItem("±12 strikes", 12)
+        self.strikes.addItem("All strikes", None)
+        self.strikes.setCurrentText("±12 strikes")
         self.view_toggle = QtWidgets.QComboBox()
         self.view_toggle.addItems(["Chain", "Greeks"])
         self.refresh_btn = QtWidgets.QToolButton()
         self.refresh_btn.setText("Refresh")
         self.status_label = QtWidgets.QLabel("—")
-        self.status_label.setStyleSheet(f"color:{theme.TEXT3};border:none;")
-        for w in (QtWidgets.QLabel("Symbol"), self.underlying, QtWidgets.QLabel("Expiry"),
-                  self.expiry, QtWidgets.QLabel("Range"), self.exp_range,
-                  QtWidgets.QLabel("Strikes"), self.strikes,
-                  QtWidgets.QLabel("View"), self.view_toggle, self.refresh_btn):
+        self.status_label.setStyleSheet(f"color:{theme.TEXT3};border:none;background:transparent;")
+        # TV-style: self-labeling dropdowns, left-aligned, no separate text labels.
+        for w in (self.underlying, self.expiry, self.exp_range, self.strikes,
+                  self.view_toggle, self.refresh_btn):
             controls.addWidget(w)
         controls.addStretch(1)
         controls.addWidget(self.status_label)
-        root.addLayout(controls)
+        barw = QtWidgets.QWidget()
+        barw.setObjectName("optbar")
+        barw.setStyleSheet(
+            "#optbar QComboBox, #optbar QToolButton {"
+            f" background:{theme.RAISE}; color:{theme.TEXT2}; border:1px solid {theme.BORDER};"
+            " border-radius:8px; padding:6px 12px; font-size:13px; }"
+            "#optbar QComboBox:hover, #optbar QToolButton:hover {"
+            f" color:{theme.TEXT}; border-color:{theme.TEXT3}; }}"
+            "#optbar QComboBox::drop-down { border:none; width:18px; }")
+        barw.setLayout(controls)
+        root.addWidget(barw)
 
         self.table = QtWidgets.QTableWidget(0, 0)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setShowGrid(False)
+        # Match TV's options chain type scale: 13px cells (vs the global 12px), ~32px airy rows
+        # (vs ~24px), and a normal-case 12px/600 header (vs the global tiny 10px uppercase).
+        self.table.setStyleSheet(
+            "QTableView{font-size:13px;}"
+            f"QHeaderView::section{{background:{theme.CHART_BG};color:{theme.TEXT2};"
+            "font-size:12px;font-weight:600;text-transform:none;letter-spacing:0;"
+            f"padding:6px 8px;border:none;border-bottom:1px solid {theme.BORDER};}}")
+        self.table.verticalHeader().setDefaultSectionSize(32)
         self._bar = _VolumeBarDelegate(self.table)
         self.table.setItemDelegate(self._bar)
         root.addWidget(self.table, 1)
@@ -137,7 +159,7 @@ class OptionsTab(QtWidgets.QWidget):
 
     # --- inputs --------------------------------------------------------------
     def strikes_value(self) -> int | None:
-        return {"±6": 6, "±12": 12, "All": None}[self.strikes.currentText()]
+        return self.strikes.currentData()       # data carries the int window (6/12) or None=All
 
     def exp_range_days(self) -> int | None:
         """Max DTE to show as groups, or None for all expiries."""
@@ -306,7 +328,7 @@ class OptionsTab(QtWidgets.QWidget):
                 item.setData(QtCore.Qt.UserRole, (raw / maxvol) if (raw and maxvol) else 0.0)
                 item.setForeground(QtGui.QColor(_CALL_BAR if side == "C" else _PUT_BAR))
             else:
-                item.setForeground(QtGui.QColor(theme.TEXT2))
+                item.setForeground(QtGui.QColor(_CELL))   # bright like TV, not dim TEXT2
             if itm:
                 item.setBackground(QtGui.QBrush(QtGui.QColor(theme.PANEL2), QtCore.Qt.BDiagPattern))
             self.table.setItem(ri, base + i, item)
@@ -322,7 +344,7 @@ class OptionsTab(QtWidgets.QWidget):
             iv = row.put.iv
         iv_item = QtWidgets.QTableWidgetItem(C.fmt(iv, "iv"))
         iv_item.setTextAlignment(QtCore.Qt.AlignCenter)
-        iv_item.setForeground(QtGui.QColor(theme.TEXT2))
+        iv_item.setForeground(QtGui.QColor(_CELL))
         self.table.setItem(ri, strike_col + 1, iv_item)
 
     def _marker_row(self, chain: OptionChain, ncols: int, pos: int) -> int:
