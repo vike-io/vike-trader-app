@@ -125,11 +125,20 @@ def _draw_data(p, c):  # database cylinder: 3 stacked disks + side walls
     p.drawLine(QtCore.QLineF(35, 14, 35, 34))
 
 
+def _draw_options(p, c):  # option payoff hockey-stick + strike tick
+    path = QtGui.QPainterPath()
+    path.moveTo(9, 30)
+    path.lineTo(24, 30)
+    path.lineTo(39, 13)
+    p.drawPath(path)
+    p.drawLine(QtCore.QLineF(24, 34, 24, 22))  # strike marker at the kink
+
+
 _DRAW = {
     "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
     "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
-    "chart": _draw_chart, "data": _draw_data,
+    "chart": _draw_chart, "data": _draw_data, "options": _draw_options,
 }
 
 
