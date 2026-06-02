@@ -1,19 +1,27 @@
 # src/vike_trader_app/data/calendar/providers/census.py
-"""US Census actuals: retail sales, housing starts/permits. Needs free CENSUS_API_KEY."""
+"""US Census EITS actuals: retail sales m/m. Needs a (free, activated) CENSUS_API_KEY —
+the EITS data API has no keyless tier. Verified against api.census.gov (MARTS MPCSM = the
+seasonally-adjusted month-over-month percent change, matching ForexFactory's reported %)."""
 from __future__ import annotations
 
 import os
+from datetime import datetime, timezone
 
 from ..http import http_get_json
 from ..model import ActualValue, CalendarEvent
 from ..taxonomy import normalize_title
 
+# Fetch the program's series from last year onward, then filter the rows here. `time` is a
+# predicate (not a get-variable); the response carries it back as a column.
 URL = ("https://api.census.gov/data/timeseries/eits/{program}"
-       "?get=cell_value,time_slot_id&key={key}&category_code={cat}")
-# normalized title → (program, category_code, unit)
-SERIES: dict[str, tuple[str, str, str]] = {
-    "retail sales": ("marts", "44000", "%"),
-    "building permits": ("ressales", "PERMIT", "K"),
+       "?get=cell_value,category_code,seasonally_adj,data_type_code"
+       "&time=from+{since}&key={key}")  # `time` is a predicate; response returns it as a column
+# normalized ForexFactory USD title → (program, category_code, data_type_code, unit)
+# MPCSM = Monthly Percent Change, Seasonally adjusted. 44X72 = retail & food services,
+# 44Y72 = retail ex-autos ("core").
+SERIES: dict[str, tuple[str, str, str, str]] = {
+    "retail sales m/m": ("marts", "44X72", "MPCSM", "%"),
+    "core retail sales m/m": ("marts", "44Y72", "MPCSM", "%"),
 }
 
 
@@ -34,12 +42,20 @@ class CensusProvider:
             mapped = SERIES.get(normalize_title(ev.title))
             if not mapped:
                 continue
-            program, cat, unit = mapped
+            program, cat, dtype, unit = mapped
             try:
-                rows = self._http(URL.format(program=program, key=self._key, cat=cat))
-                # rows[0] is the header; rows[-1] the latest data row, col 0 = cell_value
-                if len(rows) > 1:
-                    out[ev.id] = ActualValue(float(rows[-1][0]), unit, self.name)
+                year = datetime.fromtimestamp(ev.ts_utc / 1000, tz=timezone.utc).year
+                rows = self._http(URL.format(program=program, since=year - 1, key=self._key))
+                col = {name: i for i, name in enumerate(rows[0])}
+                picks = [r for r in rows[1:]
+                         if r[col["category_code"]] == cat
+                         and r[col["data_type_code"]] == dtype
+                         and r[col["seasonally_adj"]] == "yes"
+                         and r[col["cell_value"]] not in (None, "", ".")]
+                if picks:
+                    latest = max(picks, key=lambda r: r[col["time"]])  # 'YYYY-MM' sorts chronologically
+                    out[ev.id] = ActualValue(round(float(latest[col["cell_value"]]), 1),
+                                             unit, self.name)
             except Exception:  # noqa: BLE001
                 continue
         return out

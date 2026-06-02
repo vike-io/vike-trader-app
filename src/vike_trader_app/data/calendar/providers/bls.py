@@ -12,11 +12,12 @@ from ..model import ActualValue, CalendarEvent
 from ..taxonomy import normalize_title
 
 URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+# Keyed by normalized ForexFactory USD titles. Only "unemployment rate" is shipped: BLS
+# returns the rate itself (%), a clean match (verified keyless). CPI/NFP from BLS are index
+# LEVELS, not the m/m change ForexFactory reports, so they're left to FRED (which applies the
+# right change/percent transform). BLS is a keyless fallback for when FRED has no key.
 SERIES: dict[str, tuple[str, str]] = {
-    "inflation rate": ("CUUR0000SA0", "%"),
-    "core inflation rate": ("CUUR0000SA0L1E", "%"),
     "unemployment rate": ("LNS14000000", "%"),
-    "non-farm payrolls": ("CES0000000001", "K"),
 }
 
 

@@ -15,34 +15,42 @@ def _ev(title, currency):
         actual_display="", forecast_display="", previous_display="")
 
 
-def test_bls_backfills_cpi():
-    fake = {"Results": {"series": [{"data": [{"value": "317.6"}]}]}}
+def test_bls_backfills_unemployment():
+    # ForexFactory "Unemployment Rate"; BLS returns the rate itself (%)
+    fake = {"Results": {"series": [{"data": [{"value": "4.3"}]}]}}
     p = BlsProvider(api_key="k", http=lambda url, **kw: fake)
-    ev = _ev("Inflation Rate YoY", "USD")
+    ev = _ev("Unemployment Rate", "USD")
     out = p.backfill([ev])
-    assert out[ev.id].value == 317.6 and out[ev.id].source == "BLS"
+    assert out[ev.id].value == 4.3 and out[ev.id].source == "BLS"
 
 
 def test_bea_backfills_gdp():
     fake = {"BEAAPI": {"Results": {"Data": [{"DataValue": "2.7"}]}}}
     p = BeaProvider(api_key="k", http=lambda url, **kw: fake)
-    ev = _ev("GDP Growth Rate QoQ", "USD")
+    ev = _ev("Advance GDP q/q", "USD")   # normalizes to "gdp q/q"
     assert p.backfill([ev])[ev.id].value == 2.7
 
 
 def test_census_backfills_retail():
-    fake = [["cell_value", "time"], ["712345", "2026-05"]]
+    # EITS rows: header + data; pick MPCSM / 44X72 / SA, latest by time. 0.53 -> 0.5
+    fake = [
+        ["cell_value", "category_code", "seasonally_adj", "data_type_code", "time"],
+        ["0.20", "44X72", "yes", "MPCSM", "2026-03"],
+        ["0.53", "44X72", "yes", "MPCSM", "2026-04"],
+        ["757085", "44X72", "yes", "SM", "2026-04"],   # level row must be ignored
+    ]
     p = CensusProvider(api_key="k", http=lambda url, **kw: fake)
-    ev = _ev("Retail Sales MoM", "USD")
-    assert p.backfill([ev])[ev.id].source == "Census"
+    ev = _ev("Retail Sales m/m", "USD")
+    out = p.backfill([ev])
+    assert out[ev.id].value == 0.5 and out[ev.id].source == "Census"
 
 
 def test_ecb_needs_no_key_and_backfills_eu():
-    fake = {"dataSets": [{"series": {"0:0:0": {"observations": {"0": [2.5]}}}}]}
+    fake = {"dataSets": [{"series": {"0:0:0": {"observations": {"0": [2.53]}}}}]}
     p = EcbProvider(http=lambda url, **kw: fake)
-    ev = _ev("Inflation Rate YoY Flash", "EUR")
+    ev = _ev("CPI Estimate y/y", "EUR")   # ForexFactory's euro-area HICP title
     out = p.backfill([ev])
-    assert out[ev.id].value == 2.5 and out[ev.id].source == "ECB"
+    assert out[ev.id].value == 2.5 and out[ev.id].source == "ECB"   # rounded to one decimal
 
 
 def test_all_skip_unmapped():

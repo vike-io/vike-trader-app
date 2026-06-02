@@ -10,10 +10,12 @@ from ..taxonomy import normalize_title
 
 URL = ("https://apps.bea.gov/api/data?UserID={key}&method=GetData&ResultFormat=JSON"
        "&datasetname=NIPA&TableName={table}&Frequency=Q&Year=LAST5")
-# normalized title → (BEA NIPA table, unit)
+# Keyed by normalized ForexFactory USD titles ("Advance/Prelim/Final GDP q/q" all normalize
+# to "gdp q/q"). T10101 is "Percent Change From Preceding Period in Real GDP" (the reported
+# annualized rate). NEEDS a free BEA_API_KEY — unverified here (no key on hand) and redundant
+# with FRED's GDP (which runs first), so this is a fallback only.
 TABLES: dict[str, tuple[str, str]] = {
-    "gdp growth rate": ("T10101", "%"),
-    "pce price index": ("T20804", "%"),
+    "gdp q/q": ("T10101", "%"),
 }
 
 
