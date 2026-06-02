@@ -62,6 +62,7 @@ Thumbs.db
 
 # ---- Claude Code (local tooling config, not shared) ----
 .claude/
+.superpowers/
 
 # ---- Private notes / design docs (NOT shared publicly) ----
 docs/
