@@ -8,40 +8,146 @@ from __future__ import annotations
 
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
 from .calendar_delegate import importance_bar_pixmap, value_color
 from ..data.calendar.model import week_start_utc
-from ..data.calendar.taxonomy import currency_country
+from ..data.calendar.taxonomy import CURRENCY_COUNTRY, currency_country
+
+# Common display timezones for the selector (label, tzinfo|None=system local).
+_TZ_CHOICES = [
+    ("Local", None), ("UTC", timezone.utc),
+    ("UTC-8", timezone(timedelta(hours=-8))), ("UTC-5", timezone(timedelta(hours=-5))),
+    ("UTC+1", timezone(timedelta(hours=1))), ("UTC+3", timezone(timedelta(hours=3))),
+    ("UTC+8", timezone(timedelta(hours=8))),
+]
+_MAJORS = {"USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "CNY"}
 
 _FLAG_DIR = os.path.join(os.path.dirname(__file__), "resources", "flags")
 _COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
 
 
+# Simple recognizable flag drawings (no bundled assets): iso2 -> ('h'|'v', [hex bands]).
+# Stripe flags are exact; a few iconic ones get a custom painter (below). Anything not here
+# falls back to an ISO-code chip — and the Country column always shows the full name too.
+_FLAG_BANDS = {
+    "de": ("h", ["#000000", "#dd0000", "#ffce00"]),
+    "fr": ("v", ["#002395", "#ffffff", "#ed2939"]),
+    "it": ("v", ["#009246", "#ffffff", "#ce2b37"]),
+    "in": ("h", ["#ff9933", "#ffffff", "#138808"]),
+    "ru": ("h", ["#ffffff", "#0039a6", "#d52b1e"]),
+    "mx": ("v", ["#006847", "#ffffff", "#ce1126"]),
+    "ca": ("v", ["#d52b1e", "#ffffff", "#d52b1e"]),
+    "id": ("h", ["#e70011", "#ffffff"]),
+    "sg": ("h", ["#ef3340", "#ffffff"]),
+    "za": ("h", ["#007a4d", "#ffffff", "#de3831"]),
+    "cn": ("h", ["#de2910"]),
+    "sa": ("h", ["#006c35"]),
+    "hk": ("h", ["#de2910"]),
+    "tr": ("h", ["#e30a17"]),
+    "au": ("h", ["#012169"]),
+    "nz": ("h", ["#012169"]),
+}
+
+
+def _flag_jp(p, w, h):
+    p.fillRect(QtCore.QRectF(0, 0, w, h), QtGui.QColor("#ffffff"))
+    p.setBrush(QtGui.QColor("#bc002d"))
+    p.setPen(QtCore.Qt.NoPen)
+    p.drawEllipse(QtCore.QPointF(w / 2, h / 2), h * 0.3, h * 0.3)
+
+
+def _flag_us(p, w, h):
+    p.fillRect(QtCore.QRectF(0, 0, w, h), QtGui.QColor("#b22234"))
+    p.setPen(QtCore.Qt.NoPen)
+    p.setBrush(QtGui.QColor("#ffffff"))
+    for i in range(1, 7, 2):
+        p.drawRect(QtCore.QRectF(0, i * h / 7, w, h / 7))
+    p.fillRect(QtCore.QRectF(0, 0, w * 0.45, h * 0.54), QtGui.QColor("#3c3b6e"))
+
+
+def _flag_eu(p, w, h):
+    p.fillRect(QtCore.QRectF(0, 0, w, h), QtGui.QColor("#003399"))
+    p.setBrush(QtGui.QColor("#ffcc00"))
+    p.setPen(QtCore.Qt.NoPen)
+    p.drawEllipse(QtCore.QPointF(w / 2, h / 2), 2.0, 2.0)
+
+
+def _flag_gb(p, w, h):
+    p.fillRect(QtCore.QRectF(0, 0, w, h), QtGui.QColor("#012169"))
+    pen = QtGui.QPen(QtGui.QColor("#ffffff"))
+    pen.setWidthF(2.4)
+    p.setPen(pen)
+    p.drawLine(QtCore.QLineF(0, 0, w, h))
+    p.drawLine(QtCore.QLineF(0, h, w, 0))
+    p.drawLine(QtCore.QLineF(w / 2, 0, w / 2, h))
+    p.drawLine(QtCore.QLineF(0, h / 2, w, h / 2))
+    pen2 = QtGui.QPen(QtGui.QColor("#c8102e"))
+    pen2.setWidthF(1.1)
+    p.setPen(pen2)
+    p.drawLine(QtCore.QLineF(w / 2, 0, w / 2, h))
+    p.drawLine(QtCore.QLineF(0, h / 2, w, h / 2))
+
+
+def _flag_ch(p, w, h):
+    p.fillRect(QtCore.QRectF(0, 0, w, h), QtGui.QColor("#d52b1e"))
+    p.setBrush(QtGui.QColor("#ffffff"))
+    p.setPen(QtCore.Qt.NoPen)
+    p.drawRect(QtCore.QRectF(w / 2 - 1.1, h * 0.28, 2.2, h * 0.44))
+    p.drawRect(QtCore.QRectF(w * 0.33, h / 2 - 1.1, w * 0.34, 2.2))
+
+
+_FLAG_SPECIAL = {"jp": _flag_jp, "us": _flag_us, "eu": _flag_eu, "gb": _flag_gb, "ch": _flag_ch}
+
+
+def _draw_flag(p: QtGui.QPainter, iso: str, w: int, h: int) -> bool:
+    """Paint a recognizable flag for *iso*; return False if we don't have one."""
+    bands = _FLAG_BANDS.get(iso)
+    if bands:
+        orient, colors = bands
+        n = len(colors)
+        for i, c in enumerate(colors):
+            r = (QtCore.QRectF(0, i * h / n, w, h / n) if orient == "h"
+                 else QtCore.QRectF(i * w / n, 0, w / n, h))
+            p.fillRect(r, QtGui.QColor(c))
+        return True
+    fn = _FLAG_SPECIAL.get(iso)
+    if fn:
+        fn(p, w, h)
+        return True
+    return False
+
+
 def country_chip_pixmap(iso2: str) -> QtGui.QPixmap:
-    """Return a flag pixmap for *iso2* (e.g. 'us') if a PNG asset exists under
-    resources/flags/, otherwise paint a small rounded chip with the ISO code.
-    Never crashes on empty/unknown iso — returns a blank transparent pixmap."""
+    """A small flag pixmap for *iso2* (e.g. 'us'): a bundled PNG if present, else a
+    drawn flag, else a rounded chip with the ISO code. Never crashes on empty/unknown."""
+    w, h = 20, 14
     if iso2:
         path = os.path.join(_FLAG_DIR, f"{iso2}.png")
         if os.path.exists(path):
             pm = QtGui.QPixmap(path)
             if not pm.isNull():
-                return pm.scaledToHeight(14, QtCore.Qt.SmoothTransformation)
-    pm = QtGui.QPixmap(20, 14)
+                return pm.scaledToHeight(h, QtCore.Qt.SmoothTransformation)
+    pm = QtGui.QPixmap(w, h)
     pm.fill(QtCore.Qt.transparent)
-    if iso2:
-        p = QtGui.QPainter(pm)
+    if not iso2:
+        return pm
+    p = QtGui.QPainter(pm)
+    if _draw_flag(p, iso2.lower(), w, h):
+        p.setPen(QtGui.QColor(0, 0, 0, 50))      # subtle border around the flag
+        p.setBrush(QtCore.Qt.NoBrush)
+        p.drawRect(0, 0, w - 1, h - 1)
+    else:
         p.setPen(QtGui.QColor(theme.TEXT3))
-        p.drawRoundedRect(0, 0, 19, 13, 3, 3)
+        p.drawRoundedRect(0, 0, w - 1, h - 1, 3, 3)
         f = p.font()
         f.setPointSize(6)
         p.setFont(f)
         p.drawText(pm.rect(), QtCore.Qt.AlignCenter, iso2.upper())
-        p.end()
+    p.end()
     return pm
 
 
@@ -63,7 +169,7 @@ class _CalendarFetchWorker(QtCore.QThread):
 
 
 class EconomicCalendarTab(QtWidgets.QWidget):
-    def __init__(self, repository=None, parent=None):
+    def __init__(self, repository=None, parent=None, tz=None):
         super().__init__(parent)
         if repository is None:
             from ..data.calendar.repository import default_repository
@@ -72,6 +178,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._events: list = []
         self._high_only = False
         self._countries: set[str] | None = None      # None = all
+        self._tz = tz or datetime.now().astimezone().tzinfo  # display tz (default: system local)
         self._now = lambda: int(time.time() * 1000)
         self._week_start = week_start_utc(self._now())
         self._loaded = False
@@ -99,7 +206,15 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._timer.setInterval(1000)
         self._timer.timeout.connect(self._tick)
         self._timer.start()
+        # async-load state: one worker at a time; `_loading_week` is what it's fetching.
         self._worker = None
+        self._workers: set = set()
+        self._loading_week: int | None = None
+        # Wait for any in-flight fetch before the app tears down — a running QThread that is
+        # destroyed crashes the process (0xC0000409). aboutToQuit fires before widget teardown.
+        _app = QtWidgets.QApplication.instance()
+        if _app is not None:
+            _app.aboutToQuit.connect(self._stop_workers)
 
     # ---- toolbar ----
     def _build_toolbar(self) -> QtWidgets.QWidget:
@@ -120,12 +235,63 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             ["All", "rates", "inflation", "employment", "gdp", "trade", "housing", "other"]
         )
         self._cmb_cat.currentTextChanged.connect(self.set_category)
+        self._btn_countries = self._build_country_button()
+        self._cmb_tz = QtWidgets.QComboBox()
+        self._cmb_tz.addItems([name for name, _tz in _TZ_CHOICES])
+        self._cmb_tz.currentIndexChanged.connect(self._on_tz_changed)
         for w in (self._btn_today, prev, nxt, self._lbl_range):
             h.addWidget(w)
         h.addStretch(1)
         h.addWidget(self._chk_high)
         h.addWidget(self._cmb_cat)
+        h.addWidget(self._btn_countries)
+        h.addWidget(self._cmb_tz)
         return bar
+
+    def _build_country_button(self) -> QtWidgets.QToolButton:
+        btn = QtWidgets.QToolButton()
+        btn.setText("Countries ▾")
+        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        menu = QtWidgets.QMenu(btn)
+        menu.addAction("All countries", lambda: self._apply_countries(None))
+        menu.addAction("Majors", lambda: self._apply_countries(set(_MAJORS)))
+        menu.addSeparator()
+        self._country_actions: dict[str, QtGui.QAction] = {}
+        for cur, (name, _iso) in sorted(CURRENCY_COUNTRY.items(), key=lambda kv: kv[1][0]):
+            act = menu.addAction(f"{name} ({cur})")
+            act.setCheckable(True)
+            act.toggled.connect(self._on_country_toggled)
+            self._country_actions[cur] = act
+        btn.setMenu(menu)
+        return btn
+
+    def _on_country_toggled(self, _checked: bool) -> None:
+        chosen = {cur for cur, a in self._country_actions.items() if a.isChecked()}
+        self._countries = chosen or None      # nothing checked => all
+        self._sync_country_button()
+        self._rebuild()
+
+    def _apply_countries(self, currencies: set[str] | None) -> None:
+        """Set the country filter from a preset and sync the checkboxes."""
+        for cur, act in self._country_actions.items():
+            act.blockSignals(True)
+            act.setChecked(bool(currencies) and cur in currencies)
+            act.blockSignals(False)
+        self._countries = currencies
+        self._sync_country_button()
+        self._rebuild()
+
+    def _sync_country_button(self) -> None:
+        n = len(self._countries) if self._countries else 0
+        self._btn_countries.setText("Countries ▾" if not n else f"Countries ({n}) ▾")
+
+    def _on_tz_changed(self, idx: int) -> None:
+        self.set_timezone(_TZ_CHOICES[idx][1])
+
+    def set_timezone(self, tz) -> None:
+        self._tz = tz or datetime.now().astimezone().tzinfo
+        self._refresh_range_label()
+        self._rebuild()
 
     # ---- week strip ----
     def _build_week_strip(self) -> QtWidgets.QWidget:
@@ -155,16 +321,14 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         day_ms = 24 * 3600 * 1000
         for i, (_card, title, count) in enumerate(self._day_cards):
             start = self._week_start + i * day_ms
-            dt = datetime.fromtimestamp(start / 1000, tz=timezone.utc)
+            dt = self._local(start)
             n = sum(1 for e in self._events if start <= e.ts_utc < start + day_ms)
             title.setText(f"{dt.strftime('%a')} {dt.day}")
             count.setText(f"Economic {n}")
 
     def _refresh_range_label(self) -> None:
-        a = datetime.fromtimestamp(self._week_start / 1000, tz=timezone.utc)
-        b = datetime.fromtimestamp(
-            (self._week_start + 6 * 24 * 3600 * 1000) / 1000, tz=timezone.utc
-        )
+        a = self._local(self._week_start)
+        b = self._local(self._week_start + 6 * 24 * 3600 * 1000)
         self._lbl_range.setText(
             f"{a.strftime('%b')} {a.day} — {b.strftime('%b')} {b.day}, {b.year}"
         )
@@ -216,6 +380,11 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._tree.clear()
         groups: dict[str, QtWidgets.QTreeWidgetItem] = {}
         prev: dict[str, tuple[str, str]] = {}  # day -> (last time str, last currency)
+        now = self._now()
+        week_end = self._week_start + 7 * 24 * 3600 * 1000
+        # a red "now" marker is shown once, before the first not-yet-happened event,
+        # but only when the current time falls inside the displayed week (like TradingView)
+        now_done = not (self._week_start <= now < week_end)
         for ev in sorted(self._events, key=lambda e: (e.ts_utc, e.country, e.title)):
             if not self._passes(ev):
                 continue
@@ -230,6 +399,9 @@ class EconomicCalendarTab(QtWidgets.QWidget):
                 self._tree.addTopLevelItem(parent)
                 parent.setExpanded(True)
                 groups[day] = parent
+            if not now_done and ev.ts_utc >= now:
+                parent.addChild(self._now_marker(now))
+                now_done = True
             # TradingView-exact: show Time once per time-run and the Country flag+name
             # once per consecutive same-country run within the date (blank on continuation).
             t = "" if ev.all_day else self._hhmm(ev.ts_utc)
@@ -242,6 +414,17 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             self._refresh_strip()
         if hasattr(self, "_lbl_range"):
             self._refresh_range_label()
+
+    def _now_marker(self, now: int) -> QtWidgets.QTreeWidgetItem:
+        """A full-width red 'now' row (UserRole None, so it isn't treated as an event)."""
+        it = QtWidgets.QTreeWidgetItem([f"●  now  {self._hhmm(now)}"])
+        it.setFirstColumnSpanned(True)
+        it.setData(0, QtCore.Qt.UserRole, None)
+        it.setForeground(0, QtGui.QColor(theme.DOWN))
+        f = it.font(0)
+        f.setBold(True)
+        it.setFont(0, f)
+        return it
 
     def _row(self, ev, *, show_time: bool = True, show_country: bool = True) -> QtWidgets.QTreeWidgetItem:
         t = "" if ev.all_day else self._hhmm(ev.ts_utc)
@@ -275,7 +458,10 @@ class EconomicCalendarTab(QtWidgets.QWidget):
     def visible_event_count(self) -> int:
         n = 0
         for i in range(self._tree.topLevelItemCount()):
-            n += self._tree.topLevelItem(i).childCount()
+            top = self._tree.topLevelItem(i)
+            for j in range(top.childCount()):
+                if top.child(j).data(0, QtCore.Qt.UserRole) is not None:
+                    n += 1     # count event rows only, not the "now" marker
         return n
 
     # ---- time helpers ----
@@ -291,18 +477,64 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     # ---- async load ----
     def refresh_async(self, *, force: bool = False) -> None:
-        if self._worker is not None and self._worker.isRunning():
-            return  # a fetch is already in flight; the repository rate-limit handles freshness
-        self._status.setText("Loading…")
-        self._worker = _CalendarFetchWorker(self._repo, self._week_start, force=force)
-        self._worker.eventsReady.connect(self._on_events)
-        self._worker.failed.connect(lambda msg: self._status.setText(f"Calendar error: {msg}"))
-        self._worker.start()
+        # Reflect the target week IMMEDIATELY (range label, day-card dates, empty table,
+        # "Loading…") so navigation feels instant, then fetch off-thread. Only one worker
+        # runs at a time; if the user navigates again mid-load, the finished handler picks
+        # up the newest week (latest-nav-wins).
+        self._show_loading()
+        self._force = force
+        if self._loading_week is None:
+            self._start_worker()
+
+    def _start_worker(self) -> None:
+        self._loading_week = self._week_start
+        worker = _CalendarFetchWorker(self._repo, self._week_start, force=getattr(self, "_force", False))
+        worker.eventsReady.connect(self._on_events)
+        worker.failed.connect(self._on_failed)
+        worker.finished.connect(self._on_worker_finished)
+        self._worker = worker
+        self._workers.add(worker)
+        worker.start()
 
     def _on_events(self, events) -> None:
-        self._events = events
-        self._rebuild()
-        self._update_status()
+        # apply only if the fetched week is still the one the user is looking at
+        if self._loading_week == self._week_start:
+            self._events = events
+            self._rebuild()
+            self._update_status()
+
+    def _on_failed(self, msg) -> None:
+        if self._loading_week == self._week_start:
+            self._status.setText(f"Calendar error: {msg}")
+
+    def _on_worker_finished(self) -> None:
+        self._workers.discard(self.sender())
+        done = self._loading_week
+        self._loading_week = None
+        if done != self._week_start:          # user navigated during the load → fetch the new week
+            self._start_worker()
+
+    def _show_loading(self) -> None:
+        self._refresh_range_label()
+        day_ms = 24 * 3600 * 1000
+        for i, (_card, title, count) in enumerate(self._day_cards):
+            dt = self._local(self._week_start + i * day_ms)
+            title.setText(f"{dt.strftime('%a')} {dt.day}")
+            count.setText("…")
+        self._tree.clear()
+        self._status.setText("Loading…")
+
+    def _local(self, ts_ms: int) -> datetime:
+        """Epoch ms → datetime in the selected display timezone (default: system local)."""
+        return datetime.fromtimestamp(ts_ms / 1000, tz=self._tz)
+
+    def _stop_workers(self) -> None:
+        for w in list(self._workers):
+            try:
+                if w.isRunning():
+                    w.wait(5000)
+            except RuntimeError:
+                pass
 
     def _tick(self) -> None:
         # cheap: only touch rows that show a countdown (future, no actual)
@@ -338,12 +570,10 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         row.addChild(detail)
         row.setExpanded(True)
 
-    @staticmethod
-    def _date_header(ts_utc: int) -> str:
+    def _date_header(self, ts_utc: int) -> str:
         # NB: %-d / %#d are not portable across OSes — build the day number manually.
-        dt = datetime.fromtimestamp(ts_utc / 1000, tz=timezone.utc)
+        dt = self._local(ts_utc)
         return f"{dt.strftime('%A, %B')} {dt.day}"
 
-    @staticmethod
-    def _hhmm(ts_utc: int) -> str:
-        return datetime.fromtimestamp(ts_utc / 1000, tz=timezone.utc).strftime("%H:%M")
+    def _hhmm(self, ts_utc: int) -> str:
+        return self._local(ts_utc).strftime("%H:%M")
