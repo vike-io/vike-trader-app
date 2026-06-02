@@ -118,11 +118,22 @@ def _draw_trades(p, c):  # table
     p.drawLine(QtCore.QLineF(10, 28, 38, 28))
 
 
+def _draw_news(p, c):  # newspaper
+    p.drawRoundedRect(_R(11, 13, 26, 24), 3, 3)
+    p.setBrush(c)
+    p.drawRect(_R(15, 17, 8, 6))                 # masthead block
+    p.setBrush(QtCore.Qt.NoBrush)
+    for y in (18, 22, 26):
+        p.drawLine(QtCore.QLineF(26, y, 33, y))  # right column lines
+    for y in (27, 31):
+        p.drawLine(QtCore.QLineF(15, y, 23, y))  # lines below masthead
+
+
 _DRAW = {
     "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
     "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
-    "chart": _draw_chart,
+    "chart": _draw_chart, "news": _draw_news,
 }
 
 
