@@ -60,7 +60,7 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
     height, hairline separator inset to the text column.
     """
 
-    ROW_H = 68
+    ROW_H = 78
     AV = 32
 
     def sizeHint(self, opt, idx):
@@ -74,32 +74,29 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
         p.save()
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
         r = opt.rect
+        # Neutral selection/hover (TV uses no colour accent on the row — just a lighter strip).
         if opt.state & QtWidgets.QStyle.State_Selected:
-            bg = QtGui.QColor(theme.ACCENT)
-            bg.setAlpha(28)
-            p.fillRect(r, bg)
-            p.fillRect(QtCore.QRect(r.left(), r.top(), 2, r.height()), QtGui.QColor(theme.ACCENT))
-        elif opt.state & QtWidgets.QStyle.State_MouseOver:
             p.fillRect(r, QtGui.QColor(theme.RAISE))
+        elif opt.state & QtWidgets.QStyle.State_MouseOver:
+            p.fillRect(r, QtGui.QColor(theme.HOVER))
         p.drawPixmap(r.left() + 16, r.top() + (self.ROW_H - self.AV) // 2, _avatar_for(it.source, self.AV))
         x = r.left() + 16 + self.AV + 12
         right = r.right() - 16
 
         meta_font = QtGui.QFont(p.font())
-        meta_font.setPixelSize(12)
+        meta_font.setPixelSize(13)
         meta_font.setWeight(QtGui.QFont.Weight.Normal)
         p.setFont(meta_font)
         p.setPen(QtGui.QColor(theme.TEXT3))
-        chip = f"  ·  {it.symbols[0]}" if it.symbols else ""
-        p.drawText(x, r.top() + 25, f"{it.source}  ·  {_ago(it.published_ms)}{chip}")
+        p.drawText(x, r.top() + 28, f"{_ago(it.published_ms)}  ·  {it.source}")   # TV order: time · source
 
         title_font = QtGui.QFont(p.font())
-        title_font.setPixelSize(14)
-        title_font.setWeight(QtGui.QFont.Weight.DemiBold)   # TV headline weight (~600), not full 700
+        title_font.setPixelSize(16)                          # TV headline size
+        title_font.setWeight(QtGui.QFont.Weight.Medium)      # ~500, lighter than bold (TV look)
         p.setFont(title_font)
         p.setPen(QtGui.QColor(theme.TEXT))
         title = QtGui.QFontMetrics(title_font).elidedText(it.title, QtCore.Qt.ElideRight, right - x)
-        p.drawText(x, r.top() + 47, title)
+        p.drawText(x, r.top() + 54, title)
 
         sep = QtGui.QColor(theme.BORDER)
         sep.setAlpha(140)
@@ -171,7 +168,7 @@ class NewsTab(QtWidgets.QWidget):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
-        root.addLayout(self._build_toolbar())
+        root.addWidget(self._build_toolbar())
 
         split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._list = QtWidgets.QListWidget()
@@ -193,9 +190,22 @@ class NewsTab(QtWidgets.QWidget):
         self._reload_feed_combo()
 
     # ---- construction helpers ----
-    def _build_toolbar(self) -> QtWidgets.QHBoxLayout:
-        bar = QtWidgets.QHBoxLayout()
-        bar.setSpacing(6)
+    def _build_toolbar(self) -> QtWidgets.QWidget:
+        wrap = QtWidgets.QWidget()
+        wrap.setObjectName("newsbar")
+        wrap.setStyleSheet(
+            "#newsbar QComboBox, #newsbar QToolButton, #newsbar QPushButton, #newsbar QLineEdit {"
+            f"  background:{theme.RAISE}; color:{theme.TEXT2}; border:1px solid {theme.BORDER};"
+            "   border-radius:16px; padding:6px 14px; font-size:13px; }"
+            "#newsbar QLineEdit {" f" color:{theme.TEXT}; " "}"
+            "#newsbar QComboBox:hover, #newsbar QToolButton:hover, #newsbar QPushButton:hover {"
+            f"  color:{theme.TEXT}; }}"
+            "#newsbar QToolButton:checked {" f" color:{theme.ACCENT}; border-color:{theme.ACCENT}; }}"
+            f"#newsbar QLabel {{ color:{theme.TEXT3}; font-size:13px; background:transparent; border:none; }}"
+            "#newsbar QComboBox::drop-down { border:none; width:18px; }")
+        bar = QtWidgets.QHBoxLayout(wrap)
+        bar.setContentsMargins(2, 2, 2, 4)
+        bar.setSpacing(8)
 
         self._market = QtWidgets.QComboBox()
         self._market.addItems(list(_MARKETS.keys()))
@@ -237,7 +247,7 @@ class NewsTab(QtWidgets.QWidget):
                   self._save_btn, self._del_btn, self._refresh_btn):
             bar.addWidget(w)
         bar.setStretchFactor(self._search, 1)
-        return bar
+        return wrap
 
     def _build_reader(self) -> QtWidgets.QWidget:
         w = QtWidgets.QWidget()
@@ -257,7 +267,7 @@ class NewsTab(QtWidgets.QWidget):
         self._title = QtWidgets.QLabel("Select a headline")
         self._title.setWordWrap(True)
         self._title.setStyleSheet(
-            f"color:{theme.TEXT};font-size:24px;font-weight:700;line-height:130%;")
+            f"color:{theme.TEXT};font-size:26px;font-weight:700;line-height:128%;")
         self._meta = QtWidgets.QLabel("")
         self._meta.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;")
         self._chips = QtWidgets.QLabel("")
@@ -332,7 +342,7 @@ class NewsTab(QtWidgets.QWidget):
         self._chips.setVisible(bool(it.market or it.symbols))
         summary = html.escape(it.summary or "(no summary — open the original)").replace("\n", "<br>")
         self._body.setHtml(
-            f"<div style='color:{theme.TEXT2};font-size:15px;line-height:165%;'>{summary}</div>")
+            f"<div style='color:{theme.TEXT2};font-size:16px;line-height:170%;'>{summary}</div>")
         self._open_btn.setEnabled(bool(it.url))
 
     def _open_original(self) -> None:
