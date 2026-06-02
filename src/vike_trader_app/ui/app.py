@@ -81,6 +81,29 @@ class _LiveFeedWorker(QtCore.QThread):
         self._stop = True
 
 
+class _LiveFetchWorker(QtCore.QThread):
+    """One-shot off-thread fetch of the latest bars for the live chart updater.
+
+    Keeps the ~100-200ms REST call off the UI thread so the chart never micro-stutters on a
+    poll. Safe off-thread because it only hits the network — it does NOT read Parquet/Catalog
+    (the thread-unsafe path). Results marshal back to the main thread via signals.
+    """
+
+    fetched = QtCore.Signal(object)  # list[Bar]
+    failed = QtCore.Signal(str)
+
+    def __init__(self, fetch, symbol, interval, start, end):
+        super().__init__()
+        self._fetch, self._symbol, self._interval = fetch, symbol, interval
+        self._start, self._end = start, end
+
+    def run(self):
+        try:
+            self.fetched.emit(self._fetch(self._symbol, self._interval, self._start, self._end))
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI thread (no modal)
+            self.failed.emit(str(exc))
+
+
 class _RuleOverlay(QtWidgets.QWidget):
     """Transparent, click-through overlay that paints the two separator hairlines (under the
     title bar + above the status bar) in **device-pixel space**.
@@ -152,6 +175,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # live chart auto-updater + connection watchdog (main-thread polling, look-ahead-safe)
         self._live_fail_streak = 0
         self._live_base_ms = 10_000
+        self._live_worker = None        # in-flight _LiveFetchWorker (kept ref'd so it isn't GC'd)
+        self._live_fetch_for = None     # (symbol, interval) the in-flight fetch is for
 
         # widgets
         self.price = PriceChart()         # Chart space — clean standalone viewer
@@ -543,28 +568,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self._set_feed_health("idle")
 
     def _live_tick(self) -> None:
-        """Pull the last few bars (incl. the forming candle), merge, and repaint the live edge.
+        """Spawn an off-thread fetch of the latest bars for the live symbol (non-blocking).
 
-        No-ops in forward mode (that feed owns the network). A fetch error grows the failure
-        streak so the watchdog backs the poll off (and flips the badge to RECONNECTING); a
-        success merges via ``merge_live_bars`` and only repaints-to-live when you're viewing the
-        latest bar, so it never yanks the view while you've scrolled back into history.
+        No-ops in forward mode (that feed owns the network) or while a fetch is already in
+        flight. The fetch runs on a worker thread so the poll never stutters the UI; the merge
+        and repaint happen back on the main thread in ``_on_live_fetched``.
         """
-        if self._forward is not None or not self._bars:
+        if self._forward is not None or not self._bars or self._live_worker is not None:
             return
         symbol, interval = self._symbol, self._interval
         now = int(time.time() * 1000)
         step = interval_ms(interval)
         # Gap-aware: normally the last few bars, but stretch back to bridge a pause (e.g. after
         # a long Forward run) so a returning session doesn't tear a hole in the series.
-        start, end = live_fetch_window(
-            self._bars[-1].ts if self._bars else None, now, step, lookback=_LIVE_LOOKBACK
+        start, end = live_fetch_window(self._bars[-1].ts, now, step, lookback=_LIVE_LOOKBACK)
+        self._live_fetch_for = (symbol, interval)
+        self._live_worker = _LiveFetchWorker(
+            select_source(symbol).fetch_bars_range, symbol, interval, start, end
         )
-        try:
-            fetched = select_source(symbol).fetch_bars_range(symbol, interval, start, end)
-        except Exception:  # noqa: BLE001 - transient fetch failure -> watchdog backs off, retries
-            self._live_fail_streak += 1
-            self._update_feed_health()
+        self._live_worker.fetched.connect(self._on_live_fetched)
+        self._live_worker.failed.connect(self._on_live_fetch_failed)
+        self._live_worker.finished.connect(self._clear_live_worker)
+        self._live_worker.start()
+
+    def _clear_live_worker(self) -> None:
+        self._live_worker = None  # frees the in-flight guard so the next tick can fetch
+
+    def _on_live_fetched(self, fetched) -> None:
+        """Main thread: merge the fetched bars and repaint the live edge (if we're viewing it)."""
+        # Discard if state moved on while the fetch ran (symbol/interval switched, or Forward began).
+        if self._forward is not None or not self._bars:
+            return
+        if self._live_fetch_for != (self._symbol, self._interval):
             return
         self._live_fail_streak = 0
         merged, appended, replaced_last = merge_live_bars(self._bars, fetched)
@@ -579,7 +614,18 @@ class MainWindow(QtWidgets.QMainWindow):
             if was_at_end:  # following the live edge -> advance the cursor and repaint
                 self._replay.seek(self._replay.last_index)
                 self._render_frame()
-                self.foot_info.setText(f"{symbol} · {interval} · {len(merged):,} bars")
+                self.foot_info.setText(
+                    f"{self._symbol} · {self._interval} · {len(merged):,} bars"
+                )
+        self._update_feed_health()
+
+    def _on_live_fetch_failed(self, _message: str) -> None:
+        """Main thread: a transient fetch failure -> watchdog backs off and keeps retrying.
+
+        Silent by design (no modal): this fires off a background timer, and a modal here would
+        hang the headless UI test (see the ci-headless-hangs note).
+        """
+        self._live_fail_streak += 1
         self._update_feed_health()
 
     def _build_controls(self):
@@ -1336,8 +1382,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._forward = None
         self._feed = None
         self.btn_forward.setText("● Forward (paper)")
-        self._update_feed_badge(live=False)
         self._set_backtest_controls_enabled(True)
+        # Resume live polling for the symbol; A1's gap-aware fetch bridges the Forward pause so
+        # the chart returns to a current, continuous live view (no modal — runs off a timer).
+        self._arm_live_updates()
 
     def _set_backtest_controls_enabled(self, on: bool):
         """Lock backtest/replay controls while forward mode owns the charts (and vice-versa)."""
