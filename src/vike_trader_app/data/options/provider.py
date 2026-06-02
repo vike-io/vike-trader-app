@@ -9,6 +9,7 @@ from .deribit import DeribitOptionsProvider
 from .marketdata import MarketDataOptionsProvider
 from .model import Expiry, OptionChain
 from .polygon import PolygonOptionsProvider
+from .tradier import TradierOptionsProvider
 from .yfinance import YFinanceOptionsProvider
 
 CRYPTO_UNDERLYINGS = {"BTC", "ETH", "SOL"}
@@ -25,11 +26,14 @@ class OptionsProvider(Protocol):
 
 
 def _stock_provider() -> OptionsProvider:
-    """Equity/index backend, chosen by `options_stock_provider` (+ that backend's key):
-    'marketdata' (free delayed greeks), 'polygon' (paid Options entitlement), else the free
-    yfinance feed. Opt-in by flag rather than key-presence so the default stays on yfinance.
+    """Equity/index backend, chosen by `options_stock_provider` (+ that backend's key/token):
+    'tradier' (free sandbox, real delayed greeks), 'marketdata' (30-day trial), 'polygon' (paid
+    Options entitlement), else the free yfinance feed. Opt-in by flag rather than key-presence so
+    the default stays on yfinance.
     """
     backend = os.environ.get("options_stock_provider", "").lower()
+    if backend == "tradier" and os.environ.get("tradier_token"):
+        return TradierOptionsProvider()
     if backend == "marketdata" and os.environ.get("marketdata_api_key"):
         return MarketDataOptionsProvider()
     if backend == "polygon" and os.environ.get("polygon_api_key"):

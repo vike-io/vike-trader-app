@@ -29,8 +29,9 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
-# JSON-backed runtime stores (Alerts / Journal tabs) — per-user data, recreated on demand
-storage/*.json
+# JSON-backed runtime stores (Alerts / Journal tabs, data-source profiles) — per-user data,
+# recreated on demand. `**` so nested dirs (e.g. storage/parquet/profiles/*.json) are covered too.
+storage/**/*.json
 
 # ---- Test / coverage ----
 .pytest_cache/
