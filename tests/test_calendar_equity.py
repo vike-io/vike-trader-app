@@ -50,3 +50,26 @@ def test_providers_swallow_errors():
     assert FinnhubEarnings(key="k", http=boom).fetch("a", "b") == []
     assert FinnhubIpo(key="k", http=boom).fetch("a", "b") == []
     assert FmpDividends(key="k", http=boom).fetch("a", "b") == []
+
+
+def test_fetch_earnings_enriched_adds_name_and_cap(monkeypatch, tmp_path):
+    import vike_trader_app.data.calendar.equity as eq
+    monkeypatch.setattr(eq, "_PROFILE_CACHE", str(tmp_path / "profiles.json"))   # isolate cache
+
+    def fake(url, **kw):
+        if "calendar/earnings" in url:
+            return {"earningsCalendar": [
+                {"date": "2026-06-03", "symbol": "AAPL", "hour": "amc",
+                 "epsEstimate": 1.5, "epsActual": 1.6, "revenueEstimate": 9e10, "revenueActual": 9.4e10},
+                {"date": "2026-06-03", "symbol": "ZZZZ", "hour": "",   # uncovered -> not enriched
+                 "epsEstimate": None, "epsActual": None, "revenueEstimate": None, "revenueActual": None},
+            ]}
+        if "profile2" in url:
+            return {"name": "Apple Inc", "marketCapitalization": 3_500_000.0}
+        return {}
+
+    evs = eq.fetch_earnings_enriched("2026-06-01", "2026-06-07", key="k", http=fake)
+    byid = {e.symbol: e for e in evs}
+    assert byid["AAPL"].name == "Apple Inc" and byid["AAPL"].market_cap == 3_500_000.0
+    assert byid["AAPL"].surprise is not None
+    assert byid["ZZZZ"].name == "" and byid["ZZZZ"].market_cap is None
