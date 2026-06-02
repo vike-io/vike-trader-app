@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from ..http import http_get_json
 from ..model import ActualValue, CalendarEvent
 from ..taxonomy import normalize_title
+from .base import ActualsProviderBase
 
 # Fetch the program's series from last year onward, then filter the rows here. `time` is a
 # predicate (not a get-variable); the response carries it back as a column.
@@ -25,37 +26,30 @@ SERIES: dict[str, tuple[str, str, str, str]] = {
 }
 
 
-class CensusProvider:
+class CensusProvider(ActualsProviderBase):
     name = "Census"
+    currencies = ("USD",)
 
     def __init__(self, api_key: str | None = None, http=http_get_json):
         self._key = api_key if api_key is not None else os.environ.get("CENSUS_API_KEY")
         self._http = http
 
-    def backfill(self, events: list[CalendarEvent]) -> dict[str, ActualValue]:
+    def _fetch_one(self, ev: CalendarEvent) -> ActualValue | None:
         if not self._key:
-            return {}
-        out: dict[str, ActualValue] = {}
-        for ev in events:
-            if ev.currency != "USD" or ev.actual is not None:
-                continue
-            mapped = SERIES.get(normalize_title(ev.title))
-            if not mapped:
-                continue
-            program, cat, dtype, unit = mapped
-            try:
-                year = datetime.fromtimestamp(ev.ts_utc / 1000, tz=timezone.utc).year
-                rows = self._http(URL.format(program=program, since=year - 1, key=self._key))
-                col = {name: i for i, name in enumerate(rows[0])}
-                picks = [r for r in rows[1:]
-                         if r[col["category_code"]] == cat
-                         and r[col["data_type_code"]] == dtype
-                         and r[col["seasonally_adj"]] == "yes"
-                         and r[col["cell_value"]] not in (None, "", ".")]
-                if picks:
-                    latest = max(picks, key=lambda r: r[col["time"]])  # 'YYYY-MM' sorts chronologically
-                    out[ev.id] = ActualValue(round(float(latest[col["cell_value"]]), 1),
-                                             unit, self.name)
-            except Exception:  # noqa: BLE001
-                continue
-        return out
+            return None
+        mapped = SERIES.get(normalize_title(ev.title))
+        if not mapped:
+            return None
+        program, cat, dtype, unit = mapped
+        year = datetime.fromtimestamp(ev.ts_utc / 1000, tz=timezone.utc).year
+        rows = self._http(URL.format(program=program, since=year - 1, key=self._key))
+        col = {name: i for i, name in enumerate(rows[0])}
+        picks = [r for r in rows[1:]
+                 if r[col["category_code"]] == cat
+                 and r[col["data_type_code"]] == dtype
+                 and r[col["seasonally_adj"]] == "yes"
+                 and r[col["cell_value"]] not in (None, "", ".")]
+        if not picks:
+            return None
+        latest = max(picks, key=lambda r: r[col["time"]])  # 'YYYY-MM' sorts chronologically
+        return ActualValue(round(float(latest[col["cell_value"]]), 1), unit, self.name)

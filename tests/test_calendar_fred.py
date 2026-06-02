@@ -45,3 +45,11 @@ def test_ignores_unmapped_or_nonus_events():
     p = FredProvider(api_key="k", http=lambda url, **kw: {"observations": []})
     assert p.backfill([_ev("Mystery Indicator")]) == {}
     assert p.backfill([_ev("Non-Farm Employment Change", currency="EUR")]) == {}
+
+
+def test_backfills_multiple_events_concurrently():
+    # exercises the thread-pool path in ActualsProviderBase.backfill
+    fake = {"observations": [{"value": "0.3"}]}
+    p = FredProvider(api_key="k", http=lambda url, **kw: fake)
+    out = p.backfill([_ev("CPI m/m"), _ev("Unemployment Rate"), _ev("Retail Sales m/m")])
+    assert len(out) == 3 and all(av.source == "FRED" for av in out.values())

@@ -5,6 +5,7 @@ from __future__ import annotations
 from ..http import http_get_json
 from ..model import ActualValue, CalendarEvent
 from ..taxonomy import normalize_title
+from .base import ActualsProviderBase
 
 URL = "https://data-api.ecb.europa.eu/service/data/{flow}/{key}?lastNObservations=1&format=jsondata"
 # Keyed by the NORMALIZED ForexFactory EUR title (e.g. "cpi estimate y/y", not "inflation
@@ -18,28 +19,20 @@ SERIES: dict[str, tuple[str, str, str]] = {
 }
 
 
-class EcbProvider:
+class EcbProvider(ActualsProviderBase):
     name = "ECB"
+    currencies = ("EUR",)
 
     def __init__(self, http=http_get_json):
         self._http = http
 
-    def backfill(self, events: list[CalendarEvent]) -> dict[str, ActualValue]:
-        out: dict[str, ActualValue] = {}
-        for ev in events:
-            if ev.currency != "EUR" or ev.actual is not None:
-                continue
-            mapped = SERIES.get(normalize_title(ev.title))
-            if not mapped:
-                continue
-            flow, key, unit = mapped
-            try:
-                data = self._http(URL.format(flow=flow, key=key))
-                series = next(iter(data["dataSets"][0]["series"].values()))
-                obs = series["observations"]
-                first = next(iter(obs.values()))
-                # SDW returns full precision (e.g. M3 growth 2.7356); ForexFactory prints one decimal
-                out[ev.id] = ActualValue(round(float(first[0]), 1), unit, self.name)
-            except Exception:  # noqa: BLE001
-                continue
-        return out
+    def _fetch_one(self, ev: CalendarEvent) -> ActualValue | None:
+        mapped = SERIES.get(normalize_title(ev.title))
+        if not mapped:
+            return None
+        flow, key, unit = mapped
+        data = self._http(URL.format(flow=flow, key=key))
+        series = next(iter(data["dataSets"][0]["series"].values()))
+        first = next(iter(series["observations"].values()))
+        # SDW returns full precision (e.g. M3 growth 2.7356); ForexFactory prints one decimal
+        return ActualValue(round(float(first[0]), 1), unit, self.name)

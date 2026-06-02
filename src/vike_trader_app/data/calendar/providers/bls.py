@@ -10,6 +10,7 @@ import os
 
 from ..model import ActualValue, CalendarEvent
 from ..taxonomy import normalize_title
+from .base import ActualsProviderBase
 
 URL = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
 # Keyed by normalized ForexFactory USD titles. Only "unemployment rate" is shipped: BLS
@@ -21,8 +22,9 @@ SERIES: dict[str, tuple[str, str]] = {
 }
 
 
-class BlsProvider:
+class BlsProvider(ActualsProviderBase):
     name = "BLS"
+    currencies = ("USD",)
 
     def __init__(self, api_key: str | None = None, http=None):
         self._key = api_key if api_key is not None else os.environ.get("BLS_API_KEY")
@@ -40,20 +42,12 @@ class BlsProvider:
         with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
             return json.loads(resp.read().decode("utf-8"))
 
-    def backfill(self, events: list[CalendarEvent]) -> dict[str, ActualValue]:
-        out: dict[str, ActualValue] = {}
-        for ev in events:
-            if ev.currency != "USD" or ev.actual is not None:
-                continue
-            mapped = SERIES.get(normalize_title(ev.title))
-            if not mapped:
-                continue
-            series, unit = mapped
-            try:
-                data = self._post(series)
-                rows = data["Results"]["series"][0]["data"]
-                if rows:
-                    out[ev.id] = ActualValue(float(rows[0]["value"]), unit, self.name)
-            except Exception:  # noqa: BLE001
-                continue
-        return out
+    def _fetch_one(self, ev: CalendarEvent) -> ActualValue | None:
+        mapped = SERIES.get(normalize_title(ev.title))
+        if not mapped:
+            return None
+        series, unit = mapped
+        rows = self._post(series)["Results"]["series"][0]["data"]
+        if not rows:
+            return None
+        return ActualValue(float(rows[0]["value"]), unit, self.name)

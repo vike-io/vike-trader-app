@@ -12,6 +12,7 @@ import os
 from ..http import http_get_json
 from ..model import ActualValue, CalendarEvent
 from ..taxonomy import normalize_title
+from .base import ActualsProviderBase
 
 OBS_URL = ("https://api.stlouisfed.org/fred/series/observations"
            "?series_id={series}&api_key={key}&file_type=json"
@@ -39,32 +40,25 @@ SERIES: dict[str, tuple[str, str, str]] = {
 }
 
 
-class FredProvider:
+class FredProvider(ActualsProviderBase):
     name = "FRED"
+    currencies = ("USD",)
 
     def __init__(self, api_key: str | None = None, http=http_get_json):
         self._key = api_key if api_key is not None else os.environ.get("FRED_API_KEY")
         self._http = http
 
-    def backfill(self, events: list[CalendarEvent]) -> dict[str, ActualValue]:
+    def _fetch_one(self, ev: CalendarEvent) -> ActualValue | None:
         if not self._key:
-            return {}
-        out: dict[str, ActualValue] = {}
-        for ev in events:
-            if ev.currency != "USD" or ev.actual is not None:
-                continue
-            mapped = SERIES.get(normalize_title(ev.title))
-            if not mapped:
-                continue
-            series, unit, units = mapped
-            try:
-                data = self._http(OBS_URL.format(series=series, key=self._key, units=units))
-                obs = data.get("observations") or []
-                if not obs or obs[0].get("value") in (None, ".", ""):
-                    continue
-                # FRED change/percent transforms carry many decimals; ForexFactory prints
-                # one (0.2%, +139K), so round to keep the display faithful.
-                out[ev.id] = ActualValue(round(float(obs[0]["value"]), 1), unit, self.name)
-            except Exception:  # noqa: BLE001 - a flaky source must never break the calendar
-                continue
-        return out
+            return None
+        mapped = SERIES.get(normalize_title(ev.title))
+        if not mapped:
+            return None
+        series, unit, units = mapped
+        data = self._http(OBS_URL.format(series=series, key=self._key, units=units))
+        obs = data.get("observations") or []
+        if not obs or obs[0].get("value") in (None, ".", ""):
+            return None
+        # FRED change/percent transforms carry many decimals; ForexFactory prints one
+        # (0.2%, +139K), so round to keep the display faithful.
+        return ActualValue(round(float(obs[0]["value"]), 1), unit, self.name)
