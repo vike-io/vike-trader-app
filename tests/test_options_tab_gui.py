@@ -6,11 +6,11 @@ import pytest
 
 pytest.importorskip("PySide6")  # skip cleanly in the non-UI CI job (no PySide6 there)
 
-from PySide6 import QtGui, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
+from vike_trader_app.data.options import columns as C  # noqa: E402
 from vike_trader_app.data.options.model import Expiry, OptionChain, OptionQuote, StrikeRow  # noqa: E402
-from vike_trader_app.ui import theme  # noqa: E402
-from vike_trader_app.ui.options_tab import CALL_COLS, COLS, OptionsTab  # noqa: E402
+from vike_trader_app.ui.options_tab import OptionsTab  # noqa: E402
 
 
 def _app():
@@ -20,48 +20,66 @@ def _app():
 def _chain():
     exp = Expiry(date="2026-07-02", dte=30, label="02 Jul")
     rows = (
-        StrikeRow(strike=100.0,
-                  call=OptionQuote(strike=100.0, type="C", bid=0.05, ask=0.06, mark=0.055,
-                                   iv=0.62, delta=0.54, gamma=0.02, theta=-0.01, vega=0.4,
-                                   open_interest=120, volume=8),
-                  put=OptionQuote(strike=100.0, type="P", bid=0.04, ask=0.05, mark=0.045,
-                                  iv=0.61, delta=-0.46, open_interest=90, volume=3)),
-        StrikeRow(strike=110.0,
-                  call=OptionQuote(strike=110.0, type="C", bid=0.02, ask=0.03, iv=0.64,
-                                   open_interest=50, volume=1)),
+        StrikeRow(strike=7595.0,
+                  call=OptionQuote(strike=7595.0, type="C", bid=16.5, ask=16.9, last=15.1,
+                                   mark=16.7, iv=0.1817, open_interest=10, volume=1324),
+                  put=OptionQuote(strike=7595.0, type="P", bid=10.5, ask=10.7, last=11.4,
+                                  mark=10.6, iv=0.1817, open_interest=5, volume=1089)),
+        StrikeRow(strike=7605.0,
+                  call=OptionQuote(strike=7605.0, type="C", bid=11.0, ask=11.2, iv=0.1764,
+                                   volume=1242)),  # no put at 7605
     )
-    return OptionChain("BTC", "crypto", 104.0, exp, 1, "deribit", rows)
+    return OptionChain("ES", "equity", 7600.75, exp, 1, "polygon", rows)
 
 
-def test_grid_renders_rows_and_columns():
+def _cols(table, label):
+    return [c for c in range(table.columnCount())
+            if table.horizontalHeaderItem(c).text() == label]
+
+
+def test_chain_view_columns_and_atm_marker_row():
     _app()
     tab = OptionsTab()
     tab.set_chain(_chain())
-    assert tab.table.columnCount() == len(COLS)
-    assert tab.table.rowCount() == 2
-    strike_col = COLS.index("Strike")
-    assert tab.table.item(0, strike_col).text() == "100.00"
-    # a missing value renders as the em-dash placeholder
-    put_bid_col = len(CALL_COLS) + 1 + COLS[len(CALL_COLS) + 1:].index("Bid")
-    assert tab.table.item(1, put_bid_col).text() == "—"
-    # a present quote with an unset greek (row-0 put has no theta) also shows the placeholder
-    put_theta_col = len(CALL_COLS) + 1 + COLS[len(CALL_COLS) + 1:].index("Θ")
-    assert tab.table.item(0, put_theta_col).text() == "—"
+    # calls + [Strike, IV] + puts
+    assert tab.table.columnCount() == 2 * len(C.CHAIN_FIELDS) + 2
+    for label in ("Theor", "Spread", "Distance", "Rel dist", "Bid %", "Ann %", "LTP",
+                  "Strike", "IV"):
+        assert _cols(tab.table, label), f"missing column {label}"
+    # 2 strikes + 1 spanned ATM marker row, inserted at the first strike >= spot (7605)
+    assert tab.table.rowCount() == 3
+    atm = next(r for r in range(tab.table.rowCount())
+               if tab.table.columnSpan(r, 0) == tab.table.columnCount())
+    assert atm == 1 and "7,600.75" in tab.table.item(atm, 0).text()
 
 
-def test_call_and_put_cells_are_colored():
+def test_volume_columns_have_bars_and_missing_cells_dash():
     _app()
     tab = OptionsTab()
     tab.set_chain(_chain())
-    call_bid = tab.table.item(0, CALL_COLS.index("Bid"))
-    put_bid_col = len(CALL_COLS) + 1 + COLS[len(CALL_COLS) + 1:].index("Bid")
-    put_bid = tab.table.item(0, put_bid_col)
-    assert call_bid.foreground().color() == QtGui.QColor(theme.UP)
-    assert put_bid.foreground().color() == QtGui.QColor(theme.DOWN)
+    vcols = _cols(tab.table, "Volume")
+    assert len(vcols) == 2
+    assert tab._bar.call_col in vcols and tab._bar.put_col in vcols
+    # call volume on the first strike (row 0) is the max -> bar fraction 1.0
+    assert tab.table.item(0, tab._bar.call_col).data(QtCore.Qt.UserRole) == pytest.approx(1.0)
+    # 7605 (row 2, after the ATM row at 1) has no put -> put Bid renders as the em-dash
+    put_bid = 2 + len(C.CHAIN_FIELDS) + C.CHAIN_FIELDS.index("bid")  # strike_col(=11)+2 + idx
+    assert tab.table.item(2, put_bid).text() == "—"
+
+
+def test_greeks_toggle_switches_column_set():
+    _app()
+    tab = OptionsTab()
+    tab.set_chain(_chain())
+    tab.view_toggle.setCurrentText("Greeks")
+    tab._on_view_changed()
+    assert tab.table.columnCount() == 2 * len(C.GREEKS_FIELDS) + 2
+    for label in ("Δ", "Γ", "Θ", "V", "Strike", "IV"):
+        assert _cols(tab.table, label), f"missing column {label}"
 
 
 def test_status_message_no_modal():
     _app()
     tab = OptionsTab()
-    tab.set_status("Deribit unreachable")  # must not raise / pop a dialog
-    assert "Deribit" in tab.status_label.text()
+    tab.set_status("Polygon unreachable")  # must not raise / pop a dialog
+    assert "Polygon" in tab.status_label.text()
