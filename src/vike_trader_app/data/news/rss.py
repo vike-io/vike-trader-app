@@ -11,10 +11,17 @@ from xml.etree import ElementTree as ET
 from .models import NewsItem, make_id
 
 _TAG = re.compile(r"<[^>]+>")
+_MAX_SNIPPET = 400          # cap stored text so the reader shows a snippet, never a full body
 
 
 def _strip_html(text: str) -> str:
     return html.unescape(_TAG.sub("", text or "")).strip()
+
+
+def _snippet(text: str) -> str:
+    """Plain-text preview capped at _MAX_SNIPPET chars — never the full (possibly licensed) body."""
+    text = text.strip()
+    return text if len(text) <= _MAX_SNIPPET else text[:_MAX_SNIPPET].rstrip() + "…"
 
 
 def _to_ms(value: str) -> int:
@@ -46,20 +53,25 @@ def _localname(tag: str) -> str:
 def parse_feed(data: bytes | str, *, source: str, market: str) -> list[NewsItem]:
     """Parse RSS-2.0 ``<item>`` or Atom ``<entry>`` nodes. Never raises on bad input."""
     try:
+        # expat (3.12+) caps entity expansion, so billion-laughs raises ParseError here rather
+        # than blowing up memory; external entities are not resolved (no XXE). Keep on a guarded
+        # Python — don't swap for a parser that resolves entities.
         root = ET.fromstring(data)
-    except (ET.ParseError, ValueError):
+    except (ET.ParseError, ValueError, TypeError):
         return []
     items: list[NewsItem] = []
     for node in (e for e in root.iter() if _localname(e.tag) in ("item", "entry")):
-        title = link = summary = pub = ""
+        title = link = summary = content = pub = ""
         for child in node:
             name = _localname(child.tag)
             if name == "title":
                 title = (child.text or "").strip()
             elif name == "link":
                 link = (child.text or "").strip() or child.attrib.get("href", "").strip()
-            elif name in ("description", "summary", "content") and not summary:
+            elif name in ("description", "summary") and not summary:
                 summary = _strip_html(child.text or "")
+            elif name == "content" and not content:
+                content = _strip_html(child.text or "")   # only a fallback; full bodies live here
             elif name in ("pubDate", "published", "updated", "date") and not pub:
                 pub = child.text or ""
         if not title and not link:
@@ -68,7 +80,7 @@ def parse_feed(data: bytes | str, *, source: str, market: str) -> list[NewsItem]
             id=make_id(link, title, source),
             title=html.unescape(title),
             url=link,
-            summary=summary,
+            summary=_snippet(summary or content),   # prefer the real summary; cap either way
             source=source,
             market=market,
             published_ms=_to_ms(pub),

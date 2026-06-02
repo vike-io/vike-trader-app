@@ -56,3 +56,26 @@ def test_missing_date_yields_zero():
     </channel></rss>"""
     items = parse_feed(feed, source="X", market="global")
     assert items[0].published_ms == 0
+
+
+def test_atom_prefers_summary_over_content_even_when_content_is_first():
+    """License-clean: a real <summary> wins over a full-body <content>, regardless of order."""
+    feed = b"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+        <title>t</title><link href="https://x/1"/>
+        <content>FULL ARTICLE BODY that should not be shown</content>
+        <summary>short snippet</summary>
+    </entry></feed>"""
+    items = parse_feed(feed, source="X", market="global")
+    assert items[0].summary == "short snippet"
+
+
+def test_content_used_only_as_fallback_and_is_truncated():
+    """When there is no summary, <content> is a capped snippet, never the full body."""
+    body = "x" * 5000
+    feed = f"""<feed xmlns="http://www.w3.org/2005/Atom"><entry>
+        <title>t</title><link href="https://x/1"/>
+        <content>{body}</content>
+    </entry></feed>""".encode()
+    items = parse_feed(feed, source="X", market="global")
+    assert len(items[0].summary) <= 401          # 400-char cap + the ellipsis
+    assert items[0].summary.endswith("…")
