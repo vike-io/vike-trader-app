@@ -591,7 +591,8 @@ class _LegendRow(QtWidgets.QWidget):
     editRequested = QtCore.Signal(int)
     removeRequested = QtCore.Signal(int)
     hideToggled = QtCore.Signal(int)
-    moveRequested = QtCore.Signal(int, str)  # (uid, target)
+    moveRequested = QtCore.Signal(int, str)    # (uid, target: new/price/up/down/merge_*)
+    actionRequested = QtCore.Signal(int, str)  # (uid, action: clone/front/back/forward/backward)
 
     def __init__(self, ind: "_Indicator", parent=None):
         super().__init__(parent)
@@ -644,18 +645,29 @@ class _LegendRow(QtWidgets.QWidget):
         self._eye.setIcon(_eye_icon(ind.visible))
 
     def _open_menu(self):
+        uid, kind = self._uid, self._ind.kind
         m = QtWidgets.QMenu(self)
-        m.addAction("Settings…", lambda: self.editRequested.emit(self._uid))
+        m.addAction("Settings…", lambda: self.editRequested.emit(uid))
+        m.addAction("Clone", lambda: self.actionRequested.emit(uid, "clone"))
+        if kind == "overlay":
+            vo = m.addMenu("Visual order")
+            vo.addAction("Bring to front", lambda: self.actionRequested.emit(uid, "front"))
+            vo.addAction("Bring forward", lambda: self.actionRequested.emit(uid, "forward"))
+            vo.addAction("Send backward", lambda: self.actionRequested.emit(uid, "backward"))
+            vo.addAction("Send to back", lambda: self.actionRequested.emit(uid, "back"))
         move = m.addMenu("Move to")
-        if self._ind.kind == "overlay":
-            move.addAction("New pane below", lambda: self.moveRequested.emit(self._uid, "new"))
-        else:
-            move.addAction("New pane below", lambda: self.moveRequested.emit(self._uid, "new"))
-            move.addAction("Merge into price", lambda: self.moveRequested.emit(self._uid, "price"))
+        move.addAction("New pane below", lambda: self.moveRequested.emit(uid, "new"))
+        if kind in ("oscillator", "pairs"):
+            move.addAction("Merge into price", lambda: self.moveRequested.emit(uid, "price"))
+            move.addAction("Merge with pane above", lambda: self.moveRequested.emit(uid, "merge_above"))
+            move.addAction("Merge with pane below", lambda: self.moveRequested.emit(uid, "merge_below"))
+            m.addAction("Move pane up", lambda: self.moveRequested.emit(uid, "up"))
+            m.addAction("Move pane down", lambda: self.moveRequested.emit(uid, "down"))
         m.addSeparator()
         m.addAction("Hide" if self._ind.visible else "Show",
-                    lambda: self.hideToggled.emit(self._uid))
-        m.addAction("Remove", lambda: self.removeRequested.emit(self._uid))
+                    lambda: self.hideToggled.emit(uid))
+        m.addAction("Object tree…", lambda: self.actionRequested.emit(uid, "tree"))
+        m.addAction("Remove", lambda: self.removeRequested.emit(uid))
         m.exec(self._more.mapToGlobal(self._more.rect().bottomLeft()))
 
 
@@ -667,6 +679,7 @@ class _PaneLegend(QtWidgets.QWidget):
     removeRequested = QtCore.Signal(int)
     hideToggled = QtCore.Signal(int)
     moveRequested = QtCore.Signal(int, str)
+    actionRequested = QtCore.Signal(int, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -690,6 +703,7 @@ class _PaneLegend(QtWidgets.QWidget):
             row.removeRequested.connect(self.removeRequested)
             row.hideToggled.connect(self.hideToggled)
             row.moveRequested.connect(self.moveRequested)
+            row.actionRequested.connect(self.actionRequested)
             self._box.addWidget(row)
             self._rows[ind.uid] = row
         self.adjustSize()
@@ -700,22 +714,104 @@ class _PaneLegend(QtWidgets.QWidget):
             row.set_value(text)
 
 
-class OscillatorPane(pg.PlotWidget):
-    """A stacked sub-pane below the price chart that plots one oscillator indicator by bar
-    index. Its x-range is linked to the price chart (so it pans/zooms in lockstep) and it's
-    revealed via ``show_upto`` exactly like the candles; y autoscales to the visible values.
-    Shows a title chip (top-left) and a close button (top-right)."""
+class _ObjectTree(QtWidgets.QDialog):
+    """TradingView-style Object Tree: every active indicator grouped by where it lives (price
+    pane vs each oscillator pane), each a legend row with the full ⋯ menu / eye / double-click.
+    Rebuilds whenever the chart's indicator set changes."""
 
-    # management requests re-emitted from the header legend row (tagged with the indicator uid)
+    def __init__(self, chart: "PriceChart", parent=None):
+        super().__init__(parent)
+        self._chart = chart
+        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet(
+            f"#treeCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
+            f"border-radius:14px;}}"
+            f"QLabel{{background:transparent;}}"
+        )
+        self.resize(300, 380)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        card = QtWidgets.QFrame()
+        card.setObjectName("treeCard")
+        root.addWidget(card)
+        self._v = QtWidgets.QVBoxLayout(card)
+        self._v.setContentsMargins(14, 12, 14, 12)
+        self._v.setSpacing(6)
+        head = QtWidgets.QHBoxLayout()
+        t = QtWidgets.QLabel("Object tree")
+        t.setStyleSheet(f"color:{theme.TEXT};font-size:14px;font-weight:700;background:transparent;")
+        x = QtWidgets.QPushButton("✕")
+        x.setFlat(True)
+        x.setStyleSheet(f"QPushButton{{background:transparent;border:none;color:{theme.TEXT3};}}")
+        x.clicked.connect(self.reject)
+        head.addWidget(t)
+        head.addStretch(1)
+        head.addWidget(x)
+        self._v.addLayout(head)
+        self._body = QtWidgets.QVBoxLayout()
+        self._body.setSpacing(2)
+        self._v.addLayout(self._body)
+        self._v.addStretch(1)
+        self.rebuild()
+
+    def _group(self, title):
+        lbl = QtWidgets.QLabel(title)
+        lbl.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+            f"background:transparent;margin-top:4px;"
+        )
+        self._body.addWidget(lbl)
+
+    def _row(self, ind):
+        row = _LegendRow(ind)
+        row.editRequested.connect(self._chart.edit_indicator)
+        row.removeRequested.connect(lambda u: (self._chart.remove_indicator(u), self.rebuild()))
+        row.hideToggled.connect(lambda u: (self._chart._toggle_visible(u), self.rebuild()))
+        row.moveRequested.connect(lambda u, t: (self._chart.move_indicator(u, t), self.rebuild()))
+        row.actionRequested.connect(lambda u, a: (self._chart._indicator_action(u, a), self.rebuild()))
+        self._body.addWidget(row)
+
+    def rebuild(self):
+        while self._body.count():
+            item = self._body.takeAt(0)
+            w = item.widget()
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        inds = list(self._chart._indicators.values())
+        on_price = [i for i in inds if i.kind in ("overlay", "pattern")]
+        if on_price:
+            self._group("PRICE")
+            for ind in on_price:
+                self._row(ind)
+        for n, pane in enumerate(self._chart._osc_panes(), 1):
+            self._group(f"PANE {n}")
+            for ind in inds:
+                if ind.pane is pane:
+                    self._row(ind)
+        if not inds:
+            note = QtWidgets.QLabel("No indicators on the chart.")
+            note.setStyleSheet(f"color:{theme.TEXT3};background:transparent;")
+            self._body.addWidget(note)
+
+
+class OscillatorPane(pg.PlotWidget):
+    """A stacked sub-pane hosting one or MORE oscillator/pairs indicators (merged), x-linked to
+    the price chart and revealed in lockstep. Its header is a stack of _LegendRow widgets (one
+    per indicator). Management requests are re-emitted tagged with the indicator uid."""
+
     editRequested = QtCore.Signal(int)
     removeRequested = QtCore.Signal(int)
     hideToggled = QtCore.Signal(int)
     moveRequested = QtCore.Signal(int, str)
+    actionRequested = QtCore.Signal(int, str)
 
-    def __init__(self, ind: "_Indicator", link_to: "PriceChart"):
+    def __init__(self, link_to: "PriceChart"):
         super().__init__(axisItems={"right": PriceAxis(orientation="right")})
-        self._ind = ind
-        self._curves: dict = {}   # output label -> PlotDataItem
+        self._inds = []           # list[_Indicator] hosted in this pane
+        self._curves = {}         # uid -> {output label: PlotDataItem}
+        self._rows = {}           # uid -> _LegendRow
         # transparent (like the price chart) so the rounded card bg shows through; full repaint
         # avoids translucent-viewport trails.
         self.setBackground(None)
@@ -736,52 +832,88 @@ class OscillatorPane(pg.PlotWidget):
         self.getViewBox().setMouseEnabled(x=False, y=False)  # driven by the price chart
         self.getViewBox().setXLink(link_to.getViewBox())     # follow the price x-range
 
-        self._legend = _LegendRow(ind, self)  # header: name+value, eye, ⋯ menu
-        self._legend.move(6, 3)
-        self._legend.adjustSize()
-        self._legend.editRequested.connect(self.editRequested)
-        self._legend.removeRequested.connect(self.removeRequested)
-        self._legend.hideToggled.connect(self.hideToggled)
-        self._legend.moveRequested.connect(self.moveRequested)
-        self._build_curves()
+        self._header = QtWidgets.QWidget(self)  # stacked legend rows, top-left
+        self._header.setStyleSheet("background:transparent;")
+        self._hbox = QtWidgets.QVBoxLayout(self._header)
+        self._hbox.setContentsMargins(0, 0, 0, 0)
+        self._hbox.setSpacing(0)
+        self._header.move(6, 3)
 
     @property
-    def uid(self) -> int:
-        return self._ind.uid
+    def uids(self):
+        return [i.uid for i in self._inds]
 
-    def _build_curves(self):
-        for c in self._curves.values():
+    def count(self) -> int:
+        return len(self._inds)
+
+    def has(self, uid: int) -> bool:
+        return uid in self._rows
+
+    def add_ind(self, ind: "_Indicator"):
+        self._inds.append(ind)
+        row = _LegendRow(ind, self._header)
+        row.editRequested.connect(self.editRequested)
+        row.removeRequested.connect(self.removeRequested)
+        row.hideToggled.connect(self.hideToggled)
+        row.moveRequested.connect(self.moveRequested)
+        row.actionRequested.connect(self.actionRequested)
+        self._hbox.addWidget(row)
+        self._rows[ind.uid] = row
+        self._build_curves(ind)
+        self._header.adjustSize()
+
+    def remove_ind(self, uid: int) -> int:
+        """Remove one indicator; returns the number of indicators left in the pane."""
+        for c in self._curves.pop(uid, {}).values():
             self.removeItem(c)
-        self._curves = {}
-        for i, label in enumerate(self._ind.series):
-            col = self._ind.colors[i % len(self._ind.colors)]
-            self._curves[label] = self.plot([], [], pen=pg.mkPen(col, width=1))
+        row = self._rows.pop(uid, None)
+        if row is not None:
+            row.setParent(None)
+            row.deleteLater()
+        self._inds = [i for i in self._inds if i.uid != uid]
+        self._header.adjustSize()
+        return len(self._inds)
 
-    def set_indicator(self, ind: "_Indicator"):
-        """Re-bind to a recomputed/edited handle and rebuild curves."""
-        self._ind = ind
-        self._legend.refresh(ind)
-        self._build_curves()
+    def _build_curves(self, ind: "_Indicator"):
+        cs = {}
+        for i, label in enumerate(ind.series):
+            col = ind.colors[i % len(ind.colors)]
+            cs[label] = self.plot([], [], pen=pg.mkPen(col, width=1))
+        self._curves[ind.uid] = cs
+
+    def update_ind(self, ind: "_Indicator"):
+        """After an edit: rebuild that indicator's curves + refresh its legend row."""
+        for c in self._curves.get(ind.uid, {}).values():
+            self.removeItem(c)
+        self._build_curves(ind)
+        if ind.uid in self._rows:
+            self._rows[ind.uid].refresh(ind)
 
     def reveal(self, index: int):
-        all_ys, last = [], None
-        for label, curve in self._curves.items():
-            series = self._ind.series.get(label, [])
-            xs = [i for i in range(min(index + 1, len(series))) if series[i] is not None]
-            ys = [series[i] for i in xs]
-            curve.setData(xs, ys)
-            curve.setVisible(self._ind.visible)
-            all_ys += ys
-            if ys:
-                last = ys[-1]
+        all_ys = []
+        for ind in self._inds:
+            last = None
+            for label, curve in self._curves.get(ind.uid, {}).items():
+                series = ind.series.get(label, [])
+                xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
+                ys = [series[k] for k in xs]
+                curve.setData(xs, ys)
+                curve.setVisible(ind.visible)
+                if ind.visible:
+                    all_ys += ys
+                if ys:
+                    last = ys[-1]
+            if ind.uid in self._rows:
+                self._rows[ind.uid].set_value(f"{last:,.2f}" if last is not None else "")
         if all_ys:
             lo, hi = min(all_ys), max(all_ys)
             if hi > lo:
                 self.setYRange(lo, hi, padding=0.12)
-        self._legend.set_value(f"{last:,.2f}" if last is not None else "")
 
     def refresh_legend(self):
-        self._legend.refresh(self._ind)
+        for ind in self._inds:
+            if ind.uid in self._rows:
+                self._rows[ind.uid].refresh(ind)
 
 
 class PriceChart(pg.PlotWidget):
@@ -829,6 +961,7 @@ class PriceChart(pg.PlotWidget):
         self._pane_host = None  # the vertical QSplitter that stacks the price chart + osc panes
         self._price_legend = None  # _PaneLegend overlay listing the price-pane indicators
         self._marker_off = 0.0  # cached price-range marker offset (for pattern marker placement)
+        self._z_top = 1.0  # running z for overlay visual-order (kept above the candles at z=0)
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
@@ -977,6 +1110,7 @@ class PriceChart(pg.PlotWidget):
         self._price_legend.removeRequested.connect(self.remove_indicator)
         self._price_legend.hideToggled.connect(self._toggle_visible)
         self._price_legend.moveRequested.connect(self.move_indicator)
+        self._price_legend.actionRequested.connect(self._indicator_action)
         self._position_price_legend()
 
     # --- data ---
@@ -1111,23 +1245,35 @@ class PriceChart(pg.PlotWidget):
             ind.series = {lbl: _clean(s) for lbl, s in zip(outs, result)}
 
     # --- render / reveal / lifecycle, per indicator ---
+    def _new_pane(self) -> "OscillatorPane":
+        pane = OscillatorPane(self)
+        pane.editRequested.connect(self.edit_indicator)
+        pane.removeRequested.connect(self.remove_indicator)
+        pane.hideToggled.connect(self._toggle_visible)
+        pane.moveRequested.connect(self.move_indicator)
+        pane.actionRequested.connect(self._indicator_action)
+        self._pane_host.addWidget(pane)
+        self._resize_panes()
+        return pane
+
+    def _next_z(self) -> float:
+        self._z_top += 1.0
+        return self._z_top
+
     def _render(self, ind: "_Indicator"):
         if ind.kind == "overlay":
             ind.curves = {}
             for i, lbl in enumerate(ind.series):
                 col = ind.colors[i % len(ind.colors)]
-                ind.curves[lbl] = self.plot([], [], pen=pg.mkPen(col, width=1))
+                curve = self.plot([], [], pen=pg.mkPen(col, width=1))
+                curve.setZValue(self._next_z())  # overlays sit above the candles
+                ind.curves[lbl] = curve
         elif ind.kind in ("oscillator", "pairs"):
             if self._pane_host is None:
                 return
-            pane = OscillatorPane(ind, self)
-            pane.editRequested.connect(self.edit_indicator)
-            pane.removeRequested.connect(self.remove_indicator)
-            pane.hideToggled.connect(self._toggle_visible)
-            pane.moveRequested.connect(self.move_indicator)
-            ind.pane = pane
-            self._pane_host.addWidget(pane)
-            self._resize_panes()
+            if ind.pane is None:           # fresh add -> its own pane (merge sets ind.pane first)
+                ind.pane = self._new_pane()
+            ind.pane.add_ind(ind)
         elif ind.kind == "pattern":
             ind.scatter = pg.ScatterPlotItem(hoverable=True, pen=None,
                                              tip=lambda x, y, data: str(data))
@@ -1141,10 +1287,12 @@ class PriceChart(pg.PlotWidget):
             self.removeItem(c)
         ind.curves = {}
         if ind.pane is not None:
-            ind.pane.setParent(None)
-            ind.pane.deleteLater()
+            remaining = ind.pane.remove_ind(ind.uid)
+            if remaining == 0:           # last indicator left the pane -> drop the pane
+                ind.pane.setParent(None)
+                ind.pane.deleteLater()
+                self._resize_panes()
             ind.pane = None
-            self._resize_panes()
         if ind.scatter is not None:
             self.removeItem(ind.scatter)
             ind.scatter = None
@@ -1230,7 +1378,7 @@ class PriceChart(pg.PlotWidget):
         ind.colors = colors or ind.colors
         if ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             self._compute(ind)
-            ind.pane.set_indicator(ind)
+            ind.pane.update_ind(ind)
             ind.pane.reveal(self._reveal_index())
         else:
             self._unrender(ind)
@@ -1238,24 +1386,107 @@ class PriceChart(pg.PlotWidget):
             self._render(ind)
         self._refresh_legends()
 
-    def move_indicator(self, uid: int, target: str):
-        """Move an indicator between panes. ``target``: 'price' (overlay on the candles) or
-        'new' (extract to its own oscillator pane)."""
+    def clone_indicator(self, uid: int):
+        """Duplicate an indicator (same params/colours) — TradingView's 'Clone'."""
+        ind = self._indicators.get(uid)
+        if ind is None:
+            return None
+        clone = self.add_indicator(ind.name, params=dict(ind.params), benchmark=ind.benchmark)
+        if clone is not None and ind.colors:
+            self._apply_edit(clone.uid, dict(clone.params), list(ind.colors))
+        return clone
+
+    def open_object_tree(self):
+        """Open the Object Tree dialog (all active indicators grouped by pane)."""
+        dlg = _ObjectTree(self, self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        self._tree_dlg = dlg  # keep a ref
+        btn = getattr(self, "_ind_btn", None)
+        if btn is not None:
+            dlg.move(btn.mapToGlobal(QtCore.QPoint(0, btn.height() + 4)))
+        dlg.show()
+
+    def _indicator_action(self, uid: int, action: str):
         ind = self._indicators.get(uid)
         if ind is None:
             return
-        if target == "price" and ind.kind != "overlay":
-            self._unrender(ind)
-            ind.kind = "overlay"
-            self._render(ind)
-        elif target == "new" and ind.kind == "overlay":
+        if action == "clone":
+            self.clone_indicator(uid)
+            return
+        if action == "tree":
+            self.open_object_tree()
+            return
+        if ind.kind == "overlay" and ind.curves:  # visual order (z-stacking) for overlays
+            zs = [c.zValue() for c in ind.curves.values()]
+            if action == "front":
+                z = self._next_z()
+            elif action == "back":
+                z = 0.5  # still above the candles (z=0)
+            elif action == "forward":
+                z = max(zs) + 1
+            else:  # backward
+                z = max(0.5, min(zs) - 1)
+            for c in ind.curves.values():
+                c.setZValue(z)
+
+    def move_indicator(self, uid: int, target: str):
+        """Move an indicator between panes. ``target``: 'price' (overlay on the candles),
+        'new' (its own oscillator pane), 'up'/'down' (reorder its pane), or
+        'merge_above'/'merge_below' (merge into the adjacent pane)."""
+        ind = self._indicators.get(uid)
+        if ind is None:
+            return
+        if target == "price":
+            if ind.kind != "overlay":
+                self._unrender(ind)
+                ind.kind = "overlay"
+                ind.pane = None
+                self._render(ind)
+        elif target == "new":
             self._unrender(ind)
             ind.kind = "oscillator"
+            ind.pane = None  # _render gives it a fresh pane
             self._render(ind)
+        elif target in ("up", "down"):
+            self._reorder_pane(ind, target)
+            return
+        elif target in ("merge_above", "merge_below"):
+            self._merge_into_adjacent(ind, target)
         self._refresh_legends()
 
+    def _reorder_pane(self, ind: "_Indicator", direction: str):
+        host = self._pane_host
+        if host is None or ind.pane is None:
+            return
+        idx = host.indexOf(ind.pane)
+        new = idx - 1 if direction == "up" else idx + 1
+        if 1 <= new <= host.count() - 1:   # keep below the price chart (index 0)
+            host.insertWidget(new, ind.pane)
+            self._resize_panes()
+
+    def _merge_into_adjacent(self, ind: "_Indicator", direction: str):
+        host = self._pane_host
+        if host is None or ind.pane is None:
+            return
+        idx = host.indexOf(ind.pane)
+        tgt = idx - 1 if direction == "merge_above" else idx + 1
+        if not (1 <= tgt <= host.count() - 1):
+            return  # no adjacent oscillator pane (e.g. the price chart is above)
+        target_pane = host.widget(tgt)
+        if not isinstance(target_pane, OscillatorPane):
+            return
+        self._unrender(ind)                # detach from the current pane (drops it if now empty)
+        ind.kind = "oscillator"
+        ind.pane = target_pane             # _render adds it into the existing pane
+        self._render(ind)
+
     def _osc_panes(self):
-        return [i.pane for i in self._indicators.values() if i.pane is not None]
+        seen, panes = set(), []
+        for i in self._indicators.values():
+            if i.pane is not None and id(i.pane) not in seen:
+                seen.add(id(i.pane))
+                panes.append(i.pane)
+        return panes
 
     def _clear_indicators(self):
         for ind in list(self._indicators.values()):

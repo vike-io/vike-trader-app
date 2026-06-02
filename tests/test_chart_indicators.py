@@ -20,6 +20,7 @@ from vike_trader_app.ui.chart import (  # noqa: E402
     _IndicatorPicker,
     _IndicatorSettings,
     _LegendRow,
+    _ObjectTree,
     _PaneLegend,
     OscillatorPane,
     PriceChart,
@@ -201,7 +202,12 @@ def test_oscillator_reveals_in_lockstep(app):
     pane = ind.pane
 
     def _pts():
-        return sum(0 if (xs := c.getData()[0]) is None else len(xs) for c in pane._curves.values())
+        total = 0
+        for cs in pane._curves.values():  # {uid: {label: curve}}
+            for c in cs.values():
+                xs = c.getData()[0]
+                total += 0 if xs is None else len(xs)
+        return total
 
     pane.reveal(5)
     early = _pts()
@@ -257,8 +263,74 @@ def test_legend_row_signals(app):
 def test_oscillator_pane_has_legend_row(app):
     pc, _ = _chart(app)
     ind = pc.add_indicator("rsi")
-    assert ind.pane.uid == ind.uid
-    assert isinstance(ind.pane._legend, _LegendRow)
+    assert ind.uid in ind.pane.uids
+    assert isinstance(ind.pane._rows[ind.uid], _LegendRow)
+
+
+# --- DEFERRED ACTIONS: clone / visual order / reorder / merge ------------------------------
+def test_clone_duplicates_indicator(app):
+    pc, _ = _chart(app)
+    a = pc.add_indicator("ema")
+    pc._apply_edit(a.uid, a.params, ["#abcdef"])  # give it a custom colour
+    clone = pc.clone_indicator(a.uid)
+    assert clone is not None and clone.uid != a.uid
+    assert clone.name == "ema" and clone.colors[0] == "#abcdef"  # style copied
+    assert len([i for i in pc._indicators.values() if i.name == "ema"]) == 2
+
+
+def test_visual_order_changes_z(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc._indicator_action(ind.uid, "front")
+    z_front = next(iter(ind.curves.values())).zValue()
+    pc._indicator_action(ind.uid, "back")
+    z_back = next(iter(ind.curves.values())).zValue()
+    assert z_front > z_back >= 0.5  # back stays above the candles (z=0)
+
+
+def test_reorder_pane(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane at index 1
+    b = pc.add_indicator("macd")  # pane at index 2
+    assert split.indexOf(b.pane) == 2
+    pc.move_indicator(b.uid, "up")
+    assert split.indexOf(b.pane) == 1 and split.indexOf(a.pane) == 2
+
+
+def test_merge_into_existing_pane(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    assert split.count() == 3  # price + 2 oscillator panes
+    pc.move_indicator(b.uid, "merge_above")  # macd merges into rsi's pane
+    assert split.count() == 2                # one oscillator pane dropped
+    assert a.pane is b.pane and b.pane.count() == 2
+    assert set(b.pane.uids) == {a.uid, b.uid}
+
+
+def test_remove_from_shared_pane_keeps_others(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "merge_above")
+    pane = a.pane
+    pc.remove_indicator(b.uid)               # remove one of two -> pane survives
+    assert b.uid not in pc._indicators and a.uid in pc._indicators
+    assert pane.count() == 1 and split.count() == 2
+
+
+def test_object_tree_lists_and_groups(app):
+    pc, _ = _chart(app)
+    pc.add_indicator("ema")        # price group
+    pc.add_indicator("engulfing")  # price group
+    pc.add_indicator("rsi")        # pane group
+    tree = _ObjectTree(pc)
+    rows = [tree._body.itemAt(i).widget() for i in range(tree._body.count())]
+    legend_rows = [w for w in rows if isinstance(w, _LegendRow)]
+    assert len(legend_rows) == 3  # one row per active indicator
+    # removing through the tree drops it from the chart and the tree rebuilds
+    legend_rows[0].removeRequested.emit(legend_rows[0]._uid)
+    assert len(pc._indicators) == 2
 
 
 # --- the category picker (unchanged behaviour) -----------------------------------------------
