@@ -373,7 +373,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._wire_options()
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
-        # tab strip is hidden, so the rail alone switches between the six spaces.
+        # tab strip is hidden, so the rail alone switches between the spaces.
         self.tabs.tabBar().hide()
         self.setCentralWidget(self.tabs)
         # The rail lives in the LEFT TOOLBAR AREA so it sits flush against the window's left
@@ -1530,6 +1530,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._stop_forward()  # never leave a feed thread running
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
+        if getattr(self, "_options_svc", None) is not None:
+            self._options_svc.shutdown()  # stop the poll + wait out any options fetch worker
         if getattr(self, "_price_timer", None) is not None:
             self._price_timer.stop()  # halt the watchlist price-fill ticks
         if getattr(self, "_refresh_timer", None) is not None:

@@ -1,8 +1,16 @@
-from PySide6 import QtGui, QtWidgets
+import os
 
-from vike_trader_app.data.options.model import Expiry, OptionChain, OptionQuote, StrikeRow
-from vike_trader_app.ui import theme
-from vike_trader_app.ui.options_tab import CALL_COLS, COLS, OptionsTab
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+
+pytest.importorskip("PySide6")  # skip cleanly in the non-UI CI job (no PySide6 there)
+
+from PySide6 import QtGui, QtWidgets  # noqa: E402
+
+from vike_trader_app.data.options.model import Expiry, OptionChain, OptionQuote, StrikeRow  # noqa: E402
+from vike_trader_app.ui import theme  # noqa: E402
+from vike_trader_app.ui.options_tab import CALL_COLS, COLS, OptionsTab  # noqa: E402
 
 
 def _app():

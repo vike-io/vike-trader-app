@@ -113,6 +113,12 @@ class OptionsService(QtCore.QObject):
         """Start an off-thread fetch. Returns False if one is already in flight."""
         if self._busy or not (self._provider and self._underlying and self._expiry):
             return False
+        # Serialize against the expiry worker: never run two network workers at once.
+        # Overlapping native HTTP clients (yfinance/curl_cffi) across QThreads has proven
+        # crash-prone; in the normal auto-load path the expiry worker has already finished,
+        # so this wait returns immediately.
+        if self._exp_worker is not None and self._exp_worker.isRunning():
+            self._exp_worker.wait(2000)
         self._busy = True
         self._worker = _FetchWorker(
             self._provider, self._underlying, self._expiry, self._strikes, self
@@ -143,3 +149,11 @@ class OptionsService(QtCore.QObject):
 
     def stop_polling(self) -> None:
         self._timer.stop()
+
+    def shutdown(self) -> None:
+        """Stop polling and wait out any in-flight workers (call from the window's closeEvent
+        to avoid 'QThread destroyed while still running')."""
+        self._timer.stop()
+        for worker in (self._worker, self._exp_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait(2000)

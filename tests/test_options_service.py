@@ -1,7 +1,15 @@
-from PySide6 import QtWidgets
+import os
 
-from vike_trader_app.data.options.model import Expiry, OptionChain
-from vike_trader_app.data.options.service import OptionsService
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+
+pytest.importorskip("PySide6")  # skip cleanly in the non-UI CI job (no PySide6 there)
+
+from PySide6 import QtWidgets  # noqa: E402
+
+from vike_trader_app.data.options.model import Expiry, OptionChain  # noqa: E402
+from vike_trader_app.data.options.service import OptionsService  # noqa: E402
 
 
 def _app():
