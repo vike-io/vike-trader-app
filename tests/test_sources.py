@@ -45,6 +45,18 @@ def test_source_capabilities():
     assert CRYPTO.supports_live_ws is True
 
 
+def test_crypto_breadth_providers_are_registered():
+    from vike_trader_app.data.sources import CRYPTO_PROVIDERS
+
+    for name in ("bybit", "okx", "coinbase", "kraken"):
+        src = select_source("BTCUSDT", provider=name)
+        assert src.name == name
+        assert src.supports_live_ws is False           # REST-poll only, no push
+        assert callable(src.fetch_bars_range)
+        assert callable(src.make_fetch_latest("BTCUSDT", "1m"))  # builds a recent-bar poller
+    assert set(("binance", "bybit", "okx", "coinbase", "kraken")) <= set(CRYPTO_PROVIDERS)
+
+
 # --- range split (Dukascopy old | Yahoo recent) ---
 
 def test_split_range_all_recent_goes_to_yahoo():

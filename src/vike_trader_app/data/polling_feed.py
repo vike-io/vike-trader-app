@@ -70,6 +70,22 @@ class PollingBarFeed:
             self._sleep(self.poll_seconds)
 
 
+def make_rest_fetch_latest(fetch_range, symbol: str, interval: str, lookback: int = 5):
+    """Generic ``fetch_latest`` for any history fetcher: pull the last ``lookback`` intervals.
+
+    ``fetch_range(symbol, interval, start_ms, end_ms)`` is a provider's ``fetch_bars_range``.
+    Returns a zero-arg callable for ``PollingBarFeed(fetch_latest=...)`` — used by the crypto
+    providers that have no push websocket.
+    """
+    step = interval_ms(interval)
+
+    def fetch_latest() -> list[Bar]:
+        now = int(time.time() * 1000)
+        return fetch_range(symbol, interval, now - lookback * step, now)
+
+    return fetch_latest
+
+
 def make_vike_fetch_latest(symbol: str, interval: str, lookback: int = 5, caller=None):
     """Build a ``fetch_latest`` that pulls the last ``lookback`` intervals via vike.io REST.
 
