@@ -25,3 +25,68 @@ def test_value_color_beat_miss(app):
     assert value_color(actual=3.0, forecast=3.2) == theme.DOWN   # miss
     assert value_color(actual=3.2, forecast=3.2) == theme.TEXT   # inline
     assert value_color(actual=None, forecast=3.2) == theme.TEXT  # unreleased
+
+
+# ---------------------------------------------------------------------------
+# Task 12 — EconomicCalendarTab
+# ---------------------------------------------------------------------------
+from vike_trader_app.ui.economic_calendar import EconomicCalendarTab
+from vike_trader_app.data.calendar.model import CalendarEvent, iso_to_ts_utc, week_start_utc
+
+TS_TUE = iso_to_ts_utc("2026-06-02T12:30:00+00:00")
+TS_WED = iso_to_ts_utc("2026-06-03T08:00:00+00:00")
+WK = week_start_utc(TS_TUE)
+
+
+def _ev(ts, currency, title, importance, actual=None, forecast=None):
+    return CalendarEvent(
+        id=CalendarEvent.make_id(ts, currency, title), ts_utc=ts, all_day=False,
+        country={"USD": "United States", "EUR": "European Union"}[currency],
+        currency=currency, title=title, category="other", importance=importance,
+        actual=actual, forecast=forecast, previous=None, unit="%",
+        actual_display=("" if actual is None else f"{actual}%"),
+        forecast_display=("" if forecast is None else f"{forecast}%"),
+        previous_display="")
+
+
+class _FakeRepo:
+    def __init__(self, evs): self._evs = evs
+    def get_week(self, ws, *, force=False): return list(self._evs)
+
+
+def _tab(app):
+    repo = _FakeRepo([
+        _ev(TS_TUE, "USD", "JOLTs Job Openings", 2, actual=6.82, forecast=6.9),
+        _ev(TS_TUE, "EUR", "Inflation Rate YoY", 1, actual=3.2, forecast=3.2),
+        _ev(TS_WED, "USD", "GDP Growth Rate QoQ", 2, forecast=0.5),
+    ])
+    t = EconomicCalendarTab(repository=repo)
+    t.load_week(WK)
+    return t
+
+
+def test_tree_groups_by_date_then_event(app):
+    t = _tab(app)
+    # two date-header top-level rows (Tue, Wed)
+    roots = [t._tree.topLevelItem(i).text(0) for i in range(t._tree.topLevelItemCount())]
+    assert any("June 2" in r for r in roots) and any("June 3" in r for r in roots)
+
+
+def test_importance_filter_high_only_reduces_rows(app):
+    t = _tab(app)
+    assert t.visible_event_count() == 3
+    t.set_high_only(True)
+    assert t.visible_event_count() == 2     # the medium EUR row is hidden
+
+
+def test_country_filter(app):
+    t = _tab(app)
+    t.set_countries({"USD"})
+    assert t.visible_event_count() == 2     # only US events
+
+
+def test_countdown_text_for_future_event(app):
+    t = _tab(app)
+    # pin "now" 90 minutes before the Wednesday GDP event
+    t.set_now_ms(TS_WED - 90 * 60_000)
+    assert t.countdown_text(TS_WED) == "Coming in 1:30:00"
