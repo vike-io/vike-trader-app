@@ -29,8 +29,9 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
-# JSON-backed runtime stores (Alerts / Journal tabs, data-source profiles) — per-user data,
-# recreated on demand. `**` so nested dirs (e.g. storage/parquet/profiles/*.json) are covered too.
+# JSON-backed runtime stores (Alerts / Journal tabs, Economic Calendar cache, data-source
+# profiles) — per-user data, recreated on demand. `**` covers nested dirs too
+# (e.g. storage/parquet/profiles/*.json); it subsumes the old storage/*.json rule.
 storage/**/*.json
 
 # ---- Test / coverage ----
@@ -63,6 +64,7 @@ Thumbs.db
 
 # ---- Claude Code (local tooling config, not shared) ----
 .claude/
+.superpowers/
 
 # ---- Private notes / design docs (NOT shared publicly) ----
 docs/

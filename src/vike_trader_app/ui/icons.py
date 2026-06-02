@@ -118,6 +118,17 @@ def _draw_trades(p, c):  # table
     p.drawLine(QtCore.QLineF(10, 28, 38, 28))
 
 
+def _draw_news(p, c):  # newspaper
+    p.drawRoundedRect(_R(11, 13, 26, 24), 3, 3)
+    p.setBrush(c)
+    p.drawRect(_R(15, 17, 8, 6))                 # masthead block
+    p.setBrush(QtCore.Qt.NoBrush)
+    for y in (18, 22, 26):
+        p.drawLine(QtCore.QLineF(26, y, 33, y))  # right column lines
+    for y in (27, 31):
+        p.drawLine(QtCore.QLineF(15, y, 23, y))  # lines below masthead
+
+
 def _draw_data(p, c):  # database cylinder: 3 stacked disks + side walls
     for y in (11, 21, 31):
         p.drawEllipse(_R(13, y, 22, 7))
@@ -134,11 +145,23 @@ def _draw_options(p, c):  # option payoff hockey-stick + strike tick
     p.drawLine(QtCore.QLineF(24, 34, 24, 22))  # strike marker at the kink
 
 
+def _draw_calendar(p, c):  # calendar: framed grid, two top rings, day dots
+    p.drawRoundedRect(_R(11, 14, 26, 23), 3, 3)
+    p.drawLine(QtCore.QLineF(11, 22, 37, 22))   # header divider
+    p.drawLine(QtCore.QLineF(18, 10, 18, 16))   # left hanging ring
+    p.drawLine(QtCore.QLineF(30, 10, 30, 16))   # right hanging ring
+    p.setBrush(c)
+    for x in (17, 24, 31):
+        for y in (28, 33):
+            p.drawEllipse(_P(x, y), 1.3, 1.3)    # day dots
+
+
 _DRAW = {
     "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
     "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
-    "chart": _draw_chart, "data": _draw_data, "options": _draw_options,
+    "chart": _draw_chart, "news": _draw_news, "data": _draw_data, "calendar": _draw_calendar,
+    "options": _draw_options,
 }
 
 

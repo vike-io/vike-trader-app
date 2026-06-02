@@ -19,8 +19,16 @@ from dataclasses import dataclass
 from typing import Callable
 
 from ..core.model import Bar
-from . import binance_source, dukascopy_source, yahoo_source
-from .polling_feed import make_vike_fetch_latest
+from . import (
+    binance_source,
+    bybit_source,
+    coinbase_source,
+    dukascopy_source,
+    kraken_source,
+    okx_source,
+    yahoo_source,
+)
+from .polling_feed import make_rest_fetch_latest, make_vike_fetch_latest
 from .vike_source import fetch_bars_range as vike_fetch_bars_range
 
 # ISO-4217 codes we treat as forex legs (majors + common crosses/exotics we verified).
@@ -113,6 +121,11 @@ FOREX = Source(
     supports_live_ws=False,
 )
 
+def _rest_latest(fetch_range):
+    """A ``make_fetch_latest(symbol, interval)`` for a history-only provider (polls recent bars)."""
+    return lambda symbol, interval: make_rest_fetch_latest(fetch_range, symbol, interval)
+
+
 SOURCES = {
     "crypto": CRYPTO,
     "forex": FOREX,
@@ -121,7 +134,15 @@ SOURCES = {
     "vike": Source("vike", vike_fetch_bars_range, make_vike_fetch_latest, True),
     "yahoo": Source("yahoo", yahoo_source.fetch_bars_range, yahoo_source.make_yahoo_fetch_latest, False),
     "dukascopy": Source("dukascopy", dukascopy_source.fetch_bars_range, yahoo_source.make_yahoo_fetch_latest, False),
+    # crypto-breadth exchanges (public REST, no key; history + recent-poll, no push websocket):
+    "bybit": Source("bybit", bybit_source.fetch_bars_range, _rest_latest(bybit_source.fetch_bars_range), False),
+    "okx": Source("okx", okx_source.fetch_bars_range, _rest_latest(okx_source.fetch_bars_range), False),
+    "coinbase": Source("coinbase", coinbase_source.fetch_bars_range, _rest_latest(coinbase_source.fetch_bars_range), False),
+    "kraken": Source("kraken", kraken_source.fetch_bars_range, _rest_latest(kraken_source.fetch_bars_range), False),
 }
+
+# Provider names selectable in the Data Manager (history download), in display order.
+CRYPTO_PROVIDERS = ("binance", "bybit", "okx", "coinbase", "kraken")
 
 
 def select_source(symbol: str, provider: str | None = None) -> Source:

@@ -1,0 +1,10 @@
+[
+  {"title": "Non-Farm Payrolls", "country": "USD", "date": "2026-06-05T15:30:00+03:00",
+   "impact": "High", "forecast": "185K", "previous": "177K"},
+  {"title": "Inflation Rate YoY Flash", "country": "EUR", "date": "2026-06-02T12:00:00+03:00",
+   "impact": "Medium", "forecast": "3.2%", "previous": "3%"},
+  {"title": "Current Account", "country": "AUD", "date": "2026-06-02T04:30:00+03:00",
+   "impact": "Low", "forecast": "", "previous": "−23 B A$"},
+  {"title": "Bank Holiday", "country": "GBP", "date": "2026-06-01T00:00:00+03:00",
+   "impact": "Holiday", "forecast": "", "previous": ""}
+]
