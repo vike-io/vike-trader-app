@@ -20,9 +20,10 @@ def app():
 def test_news_space_present_and_rail_aligned(app):
     win = MainWindow()
     try:
-        assert win._RAIL_ITEMS[-1][1] == "News"
-        idx = win.tabs.indexOf(win.news)
-        assert idx == len(win._RAIL_ITEMS) - 1
+        names = [name for _glyph, name in win._RAIL_ITEMS]
+        assert "News" in names
+        # the rail drives tabs by position, so News's tab index must equal its rail index
+        assert win.tabs.indexOf(win.news) == names.index("News")
         assert isinstance(win.news, NewsTab)
     finally:
         win.close()

@@ -48,6 +48,7 @@ from .screener import ScreenerTab
 # Tools tab (standalone calculators) hidden per user request — restore by uncommenting
 # this import, its addTab below, and the ("⚙", "Tools") entry in _RAIL_ITEMS.
 # from .tools import ToolsTab
+from .economic_calendar import EconomicCalendarTab
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -377,6 +378,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.datamanager, "Data")
         self.news = NewsTab()
         self.tabs.addTab(self.news, "News")
+        self.economic_calendar = EconomicCalendarTab()
+        self.tabs.addTab(self.economic_calendar, "Calendar")
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
@@ -408,7 +411,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"),  # ("⚙", "Tools") — hidden per user request
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
-        ("📰", "News"),
+        ("📰", "News"), ("▦", "Calendar"),
     ]
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
