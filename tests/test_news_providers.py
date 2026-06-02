@@ -9,6 +9,14 @@ def test_registry_nonempty_and_kinds_valid():
     assert {p.market for p in PROVIDERS} <= {"crypto", "forex", "stocks", "global"}
 
 
+def test_dailyfx_dropped_for_working_forex_sources():
+    names = {p.name for p in PROVIDERS}
+    assert "DailyFX" not in names                       # Akamai-blocked, never delivered
+    assert {"FXEmpire", "Investing.com FX"} <= names     # verified-clean replacements
+    forex = [p for p in PROVIDERS if p.market == "forex"]
+    assert len(forex) >= 4 and all(p.kind == "broad" for p in forex)
+
+
 def test_normalize_crypto_pair():
     n = normalize("BTCUSDT")
     assert n.base == "BTC" and n.ticker == "BTC-USD"

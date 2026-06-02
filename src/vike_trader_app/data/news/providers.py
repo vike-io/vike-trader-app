@@ -33,8 +33,11 @@ PROVIDERS: list[ProviderSpec] = [
     # forex / macro (broad)
     ProviderSpec("FXStreet", "forex", "https://www.fxstreet.com/rss/news", "broad"),
     ProviderSpec("ForexLive", "forex", "https://www.forexlive.com/feed/news/", "broad"),
-    ProviderSpec("DailyFX", "forex", "https://www.dailyfx.com/feeds/market-news", "broad"),
+    # DailyFX dropped: its feed sits behind Akamai Bot Manager (403 to any non-browser client,
+    # UA-independent — verified), so it never delivered. FXEmpire + Investing.com FX replace it.
+    ProviderSpec("FXEmpire", "forex", "https://www.fxempire.com/api/v1/en/articles/rss/news", "broad"),
     ProviderSpec("Investing.com", "forex", "https://www.investing.com/rss/news.rss", "broad"),
+    ProviderSpec("Investing.com FX", "forex", "https://www.investing.com/rss/forex.rss", "broad"),
     # equities / general (broad)
     ProviderSpec("MarketWatch", "stocks", "http://feeds.marketwatch.com/marketwatch/topstories/", "broad"),
     ProviderSpec("CNBC", "stocks", "https://www.cnbc.com/id/100003114/device/rss/rss.html", "broad"),
