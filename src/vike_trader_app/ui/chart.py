@@ -279,9 +279,9 @@ class _IndicatorPicker(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.resize(470, 600)
         self.setStyleSheet(
-            f"#pickerCard{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"#pickerCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
             f"border-radius:14px;}}"
-            f"QLineEdit{{background:{theme.PANEL};border:1px solid {theme.BORDER};"
+            f"QLineEdit{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
             f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
             f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
             f"QPushButton#tab{{background:transparent;border:none;color:{theme.TEXT3};"
@@ -364,21 +364,30 @@ class _IndicatorPicker(QtWidgets.QDialog):
         self._tabs.idClicked.connect(self._on_tab)
         self._tabs.button(0).setChecked(True)
         self._search.textChanged.connect(lambda *_: self._apply())
-        self._list.itemActivated.connect(self._activate)
-        self._list.itemDoubleClicked.connect(self._activate)
+        self._list.itemClicked.connect(self._activate)    # single click -> add + close
+        self._list.itemActivated.connect(self._activate)  # Enter / keyboard
         self._search.setFocus()
+
+    def event(self, e):  # noqa: A003 - Qt override; close when focus leaves (click outside)
+        if e.type() == QtCore.QEvent.WindowDeactivate:
+            self.close()
+        return super().event(e)
 
     @staticmethod
     def _search_icon() -> QtGui.QIcon:
-        pm = QtGui.QPixmap(32, 32)
+        # 2x pixmap for a crisp, friendly magnifier (round caps, brighter than the placeholder)
+        s, dpr = 36, 2
+        pm = QtGui.QPixmap(s * dpr, s * dpr)
+        pm.setDevicePixelRatio(dpr)
         pm.fill(QtCore.Qt.transparent)
         p = QtGui.QPainter(pm)
         p.setRenderHint(QtGui.QPainter.Antialiasing, True)
-        pen = QtGui.QPen(QtGui.QColor(theme.TEXT3))
-        pen.setWidthF(2.4)
+        pen = QtGui.QPen(QtGui.QColor(theme.TEXT2))
+        pen.setWidthF(2.6)
+        pen.setCapStyle(QtCore.Qt.RoundCap)
         p.setPen(pen)
-        p.drawEllipse(QtCore.QRectF(8, 8, 12, 12))
-        p.drawLine(QtCore.QPointF(19, 19), QtCore.QPointF(25, 25))
+        p.drawEllipse(QtCore.QRectF(8.5, 8.5, 13.5, 13.5))
+        p.drawLine(QtCore.QPointF(21.5, 21.5), QtCore.QPointF(27.5, 27.5))
         p.end()
         return QtGui.QIcon(pm)
 
@@ -723,7 +732,10 @@ class PriceChart(pg.PlotWidget):
         btn = getattr(self, "_ind_btn", None)  # drop it just under the ƒx Indicators button
         if btn is not None:
             dlg.move(btn.mapToGlobal(QtCore.QPoint(0, btn.height() + 4)))
-        dlg.exec()
+        self._ind_dlg = dlg  # keep a ref; dismisses on outside-click / pick (WA_DeleteOnClose)
+        dlg.show()
+        dlg.activateWindow()
+        dlg.raise_()
 
     def set_pane_host(self, splitter):
         """Give the chart the vertical QSplitter it shares with its oscillator sub-panes."""
