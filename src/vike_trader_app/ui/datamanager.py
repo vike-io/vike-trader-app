@@ -13,7 +13,6 @@ import time
 from PySide6 import QtCore, QtWidgets
 
 from ..data.cache import DEFAULT_ROOT, get_bars, repair_gaps
-from ..data.catalog import Catalog
 from ..data.parquet_source import delete_series
 from ..data.rollup import load_pins, refresh_rollup, save_pins
 from ..data.sources import select_source
@@ -33,6 +32,7 @@ class DataManagerTab(QtWidgets.QWidget):
         super().__init__(parent)
         self._root = root or DEFAULT_ROOT
         self._pins_path = pins_path or _PINS_PATH
+        self._cat = self._make_catalog()  # DuckDB (fast Parquet-stats metadata) or Polars fallback
 
         root_layout = QtWidgets.QVBoxLayout(self)
         root_layout.setContentsMargins(8, 8, 8, 8)
@@ -71,12 +71,25 @@ class DataManagerTab(QtWidgets.QWidget):
 
         self.refresh()
 
+    def _make_catalog(self):
+        """Prefer the DuckDB catalog — it answers count/min/max from Parquet *statistics* without
+        reading the bars (≈50× faster first open). Falls back to the Polars Catalog (which reads
+        each series in full) only when the optional ``[duck]`` extra isn't installed.
+        """
+        try:
+            from ..data.duck_catalog import DuckCatalog
+
+            return DuckCatalog(self._root)
+        except ImportError:
+            from ..data.catalog import Catalog
+
+            return Catalog(self._root)
+
     # --- table ---
     def refresh(self) -> None:
         """Repopulate the table from the catalog (+ pin state + on-disk size)."""
-        cat = Catalog(self._root)
         pins = {tuple(p) for p in load_pins(self._pins_path)}
-        datasets = cat.list_datasets()
+        datasets = self._cat.list_datasets()
         self._table.setRowCount(len(datasets))
         for r, info in enumerate(datasets):
             pinned = (info.symbol, info.interval) in pins
