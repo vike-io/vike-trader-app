@@ -32,7 +32,7 @@ class _NewsWorker(QtCore.QThread):
         super().__init__(parent)
         self._specs = list(specs)
         self._symbol = symbol
-        self._follow = follow
+        self._follow_chart = follow
         self._poll = poll_seconds
         self._stop = False
         self._wake = threading.Event()
@@ -42,7 +42,7 @@ class _NewsWorker(QtCore.QThread):
         self._wake.set()
 
     def set_follow(self, follow):
-        self._follow = follow
+        self._follow_chart = follow
         self._wake.set()
 
     def refresh_now(self):
@@ -55,7 +55,7 @@ class _NewsWorker(QtCore.QThread):
     def run(self):
         while not self._stop:
             try:
-                sym = self._symbol if self._follow else None
+                sym = self._symbol if self._follow_chart else None
                 items = fetch_all(self._specs, sym)
                 if not self._stop:
                     self.itemsReceived.emit(items)
@@ -178,7 +178,7 @@ class NewsTab(QtWidgets.QWidget):
     def stop_feed(self) -> None:
         if self._worker is not None:
             self._worker.stop()
-            self._worker.wait(2000)
+            self._worker.wait(8000)   # ≥ the 6s per-feed urllib timeout, so a stalled poll still joins
             self._worker = None
 
     def set_symbol(self, symbol: str | None) -> None:
@@ -279,6 +279,10 @@ class NewsTab(QtWidgets.QWidget):
             act.setChecked(n in feed.providers)
         self._search.setText(feed.query)
         self._follow.setChecked(feed.follow_chart)
+        if feed.symbol:                       # restore the saved symbol context (read back, not dead data)
+            self._symbol = feed.symbol
+            if self._worker is not None:
+                self._worker.set_symbol(feed.symbol)
         self._refresh_list()
 
     def _delete_feed(self) -> None:
