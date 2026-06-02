@@ -14,8 +14,9 @@ from PySide6 import QtCore, QtWidgets
 
 from ..data.binance_source import interval_ms
 from ..data.cache import DEFAULT_ROOT, get_bars, repair_gaps
+from ..data.csv_import import aggregate, infer_interval_ms, ms_to_interval, parse_csv
 from ..data.instruments import ensure_presets, profile_for_symbol, spec_for_symbol
-from ..data.parquet_source import delete_series
+from ..data.parquet_source import append_series, delete_series
 from ..data.rollup import load_pins, refresh_rollup, save_pins
 from ..data.sources import select_source
 from . import theme
@@ -52,6 +53,8 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_refresh = QtWidgets.QPushButton("↻ Refresh")
         self.btn_update_all = QtWidgets.QPushButton("⟳ Update all")
         self.btn_download = QtWidgets.QPushButton("⤓ Download / Extend…")
+        self.btn_import = QtWidgets.QPushButton("⤒ Import CSV…")
+        self.btn_import.setToolTip("Import an OHLCV CSV (auto-detect format; optional TZ shift + aggregate)")
         self.btn_inspect = QtWidgets.QPushButton("🔍 Inspect")
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
@@ -61,12 +64,13 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_update_all.clicked.connect(self._on_update_all)
         self.btn_download.clicked.connect(self._on_download)
+        self.btn_import.clicked.connect(self._on_import_csv)
         self.btn_inspect.clicked.connect(self._on_inspect)
         self.btn_repair.clicked.connect(self._on_repair)
         self.btn_pin.clicked.connect(self._on_pin)
         self.btn_delete.clicked.connect(self._on_delete)
-        for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_inspect,
-                  self.btn_repair, self.btn_pin, self.btn_delete):
+        for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_import,
+                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
         self.count_label = QtWidgets.QLabel("")
@@ -256,6 +260,45 @@ class DataManagerTab(QtWidgets.QWidget):
         self.refresh()
         self._log(f"Downloaded {symbol} {interval}")
 
+    def import_csv_file(self, path: str, symbol: str, tz_offset_minutes: int = 0,
+                        target_interval: str | None = None) -> int:
+        """Parse a CSV at ``path`` into the cache for ``symbol`` — returns bars written. No dialog.
+
+        Interval is the one chosen (``target_interval``, which also triggers aggregation) or the
+        one inferred from row spacing. The prompt-free path the Import dialog calls (and tests use).
+        """
+        from pathlib import Path
+
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        bars = parse_csv(text, tz_offset_minutes=tz_offset_minutes)
+        if not bars:
+            self._log(f"Import {symbol}: no rows parsed from {path}")
+            return 0
+        interval = target_interval or ms_to_interval(infer_interval_ms(bars)) or "1m"
+        if target_interval:
+            bars = aggregate(bars, target_interval)
+        append_series(bars, self._root, symbol.upper(), interval)
+        self.refresh()
+        self._log(f"Imported {symbol.upper()} {interval}: {len(bars):,} bar(s) from CSV")
+        return len(bars)
+
+    def _on_import_csv(self) -> None:
+        sel = self._selected()
+        dlg = _ImportCsvDialog(self, default_symbol=sel[0] if sel else "")
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+        path, symbol, tz_off, target = dlg.values()
+        if not path or not symbol:
+            return
+        self._log(f"Importing {symbol} from {path}…")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            self.import_csv_file(path, symbol, tz_off, target)
+        except Exception as exc:  # noqa: BLE001 - report, no crash
+            self._log(f"Import {symbol} failed: {exc}")
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+
     def _delete(self, symbol: str, interval: str) -> None:
         """Remove a series' files (no prompt — the prompt lives in ``_on_delete``, so tests skip it)."""
         delete_series(self._root, symbol, interval)
@@ -313,3 +356,56 @@ class _DownloadDialog(QtWidgets.QDialog):
 
     def values(self) -> tuple[str, str, int]:
         return self._symbol.text().strip(), self._interval.currentText(), self._days.value()
+
+
+class _ImportCsvDialog(QtWidgets.QDialog):
+    """Pick a CSV + symbol + source-timezone offset + (optional) aggregate target."""
+
+    def __init__(self, parent=None, default_symbol: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("Import CSV data")
+        form = QtWidgets.QFormLayout(self)
+
+        self._path = QtWidgets.QLineEdit()
+        self._path.setPlaceholderText("path to an OHLCV .csv")
+        browse = QtWidgets.QPushButton("Browse…")
+        browse.clicked.connect(self._browse)
+        path_row = QtWidgets.QHBoxLayout()
+        path_row.addWidget(self._path, 1)
+        path_row.addWidget(browse)
+        path_wrap = QtWidgets.QWidget()
+        path_wrap.setLayout(path_row)
+
+        self._symbol = QtWidgets.QLineEdit(default_symbol)
+        self._symbol.setPlaceholderText("e.g. EURUSD")
+        self._tz = QtWidgets.QSpinBox()
+        self._tz.setRange(-720, 840)
+        self._tz.setSingleStep(30)
+        self._tz.setSuffix(" min from UTC")
+        self._tz.setToolTip("Source data's offset from UTC (e.g. 120 for UTC+2). Stamps are shifted to UTC.")
+        self._interval = QtWidgets.QComboBox()
+        self._interval.addItems(["as-is (detected)", *_INTERVALS])
+        self._interval.setToolTip("Keep the file's resolution, or aggregate up to a higher timeframe")
+
+        form.addRow("CSV file", path_wrap)
+        form.addRow("Symbol", self._symbol)
+        form.addRow("Source TZ", self._tz)
+        form.addRow("Aggregate to", self._interval)
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def _browse(self) -> None:
+        fn, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Choose CSV", "", "CSV / text (*.csv *.txt);;All files (*)"
+        )
+        if fn:
+            self._path.setText(fn)
+
+    def values(self) -> tuple[str, str, int, str | None]:
+        choice = self._interval.currentText()
+        target = None if choice.startswith("as-is") else choice
+        return self._path.text().strip(), self._symbol.text().strip(), self._tz.value(), target
