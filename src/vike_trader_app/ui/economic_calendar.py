@@ -529,10 +529,13 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         return datetime.fromtimestamp(ts_ms / 1000, tz=self._tz)
 
     def _stop_workers(self) -> None:
+        # give an in-flight fetch a moment, then force-stop so the QThread is never
+        # destroyed mid-run (which crashes the process at exit)
         for w in list(self._workers):
             try:
-                if w.isRunning():
-                    w.wait(5000)
+                if w.isRunning() and not w.wait(3000):
+                    w.terminate()
+                    w.wait(1000)
             except RuntimeError:
                 pass
 

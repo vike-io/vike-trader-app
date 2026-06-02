@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timedelta, timezone
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
 
@@ -35,28 +35,57 @@ def _fmt_big(v) -> str:
     return f"{v:.0f}"
 
 
-# ---- per-type config: (columns, row_fn, date_of) -------------------------------------
+def _fmt_pct(v) -> str:
+    if v is None:
+        return "—"
+    return f"{'+' if v > 0 else ''}{v:.1f}%"
+
+
+def _fmt_cap(millions) -> str:
+    """Market cap given in USD millions -> '24.2B' / '930M' / '1.4T'."""
+    if not millions:
+        return "—"
+    if millions >= 1_000_000:
+        return f"{millions / 1e6:.1f}T"
+    if millions >= 1000:
+        return f"{millions / 1000:.1f}B"
+    return f"{millions:.0f}M"
+
+
+def _surprise_color(v):
+    if v is None:
+        return None
+    return theme.UP if v > 0 else (theme.DOWN if v < 0 else None)
+
+
+# ---- per-type config: dict of EquityCalendarTab kwargs --------------------------------
 def _earnings_cfg():
-    cols = ["Time", "Symbol", "EPS est.", "EPS act.", "Rev est.", "Rev act."]
+    # match TradingView's Earnings layout: Symbol · Company · EPS est/act · Surprise · Mkt cap
     def row(e):
-        return [_HOUR_LABEL.get(e.hour, "—"), e.symbol, _fmt(e.eps_estimate), _fmt(e.eps_actual),
-                _fmt_big(e.rev_estimate), _fmt_big(e.rev_actual)]
-    return cols, row, lambda e: e.date
+        return [_HOUR_LABEL.get(e.hour, "—"), e.symbol, e.name or "—",
+                _fmt(e.eps_estimate), _fmt(e.eps_actual), _fmt_pct(e.surprise), _fmt_cap(e.market_cap)]
+    return {
+        "columns": ["Time", "Symbol", "Company", "EPS est.", "EPS act.", "Surprise", "Mkt cap"],
+        "row_fn": row, "date_of": lambda e: e.date,
+        "sort_key": lambda e: -((e.market_cap or 0) + (0 if e.market_cap else (e.rev_estimate or 0) / 1e6)),
+        "covered_of": lambda e: e.eps_estimate is not None,   # has analyst coverage
+        "color_of": lambda e: (5, _surprise_color(e.surprise)),
+    }
 
 
 def _dividends_cfg():
-    cols = ["Symbol", "Ex-date", "Pay date", "Amount", "Yield", "Freq"]
     def row(d):
         return [d.symbol, d.ex_date, d.pay_date or "—", _fmt(d.amount, " $"),
                 _fmt(d.yield_pct, "%") if d.yield_pct is not None else "—", d.frequency or "—"]
-    return cols, row, lambda d: d.ex_date
+    return {"columns": ["Symbol", "Ex-date", "Pay date", "Amount", "Yield", "Freq"],
+            "row_fn": row, "date_of": lambda d: d.ex_date}
 
 
 def _ipo_cfg():
-    cols = ["Symbol", "Company", "Exchange", "Price", "Shares", "Status"]
     def row(i):
         return [i.symbol or "—", i.name, i.exchange, i.price or "—", _fmt_big(i.shares), i.status]
-    return cols, row, lambda i: i.date
+    return {"columns": ["Symbol", "Company", "Exchange", "Price", "Shares", "Status"],
+            "row_fn": row, "date_of": lambda i: i.date}
 
 
 class _EquityFetchWorker(QtCore.QThread):
@@ -78,9 +107,14 @@ class EquityCalendarTab(QtWidgets.QWidget):
     a list of typed events; `row_fn` maps an event to cell texts; `date_of` returns the
     event's grouping date (YYYY-MM-DD)."""
 
-    def __init__(self, *, fetch, columns, row_fn, date_of, parent=None):
+    def __init__(self, *, fetch, columns, row_fn, date_of,
+                 sort_key=None, covered_of=None, color_of=None, parent=None):
         super().__init__(parent)
         self._fetch, self._row_fn, self._date_of = fetch, row_fn, date_of
+        self._sort_key = sort_key          # within-date ordering (e.g. biggest first)
+        self._covered_of = covered_of      # predicate -> enables a "Covered only" toggle
+        self._color_of = color_of          # event -> (col, hex|None) cell color (e.g. surprise)
+        self._covered_only = covered_of is not None   # default ON when supported
         self._events: list = []
         self._filter = ""
         self._now = lambda: int(time.time() * 1000)
@@ -125,8 +159,17 @@ class EquityCalendarTab(QtWidgets.QWidget):
         for w in (btn_today, prev, nxt, self._lbl_range):
             h.addWidget(w)
         h.addStretch(1)
+        if self._covered_of is not None:
+            self._chk_covered = QtWidgets.QCheckBox("Covered only")
+            self._chk_covered.setChecked(self._covered_only)
+            self._chk_covered.toggled.connect(self._on_covered_toggled)
+            h.addWidget(self._chk_covered)
         h.addWidget(self._search)
         return bar
+
+    def _on_covered_toggled(self, on: bool) -> None:
+        self._covered_only = on
+        self._rebuild()
 
     # ---- navigation ----
     def current_week_start(self) -> int:
@@ -177,10 +220,13 @@ class EquityCalendarTab(QtWidgets.QWidget):
             self._start_worker()
 
     def _stop_workers(self) -> None:
+        # Enrichment fetches can be slow (rate-limited); give them a moment, then force-stop
+        # so the QThread is never destroyed mid-run (which crashes the process at exit).
         for w in list(self._workers):
             try:
-                if w.isRunning():
-                    w.wait(5000)
+                if w.isRunning() and not w.wait(2000):
+                    w.terminate()
+                    w.wait(1000)
             except RuntimeError:
                 pass
 
@@ -209,9 +255,11 @@ class EquityCalendarTab(QtWidgets.QWidget):
     def _rebuild(self) -> None:
         self._tree.clear()
         rows = [e for e in self._events
-                if not self._filter or self._filter in str(getattr(e, "symbol", "")).upper()]
+                if (not self._filter or self._filter in str(getattr(e, "symbol", "")).upper())
+                and not (self._covered_only and self._covered_of and not self._covered_of(e))]
+        key = (lambda e: (self._date_of(e), self._sort_key(e))) if self._sort_key else self._date_of
         groups: dict[str, QtWidgets.QTreeWidgetItem] = {}
-        for ev in sorted(rows, key=self._date_of):
+        for ev in sorted(rows, key=key):
             day = self._date_of(ev)
             parent = groups.get(day)
             if parent is None:
@@ -223,7 +271,12 @@ class EquityCalendarTab(QtWidgets.QWidget):
                 self._tree.addTopLevelItem(parent)
                 parent.setExpanded(True)
                 groups[day] = parent
-            parent.addChild(QtWidgets.QTreeWidgetItem(self._row_fn(ev)))
+            item = QtWidgets.QTreeWidgetItem(self._row_fn(ev))
+            if self._color_of:
+                col, color = self._color_of(ev)
+                if color:
+                    item.setForeground(col, QtGui.QColor(color))
+            parent.addChild(item)
         self._status.setText("" if rows else "No events for this week.")
 
     def _refresh_range_label(self) -> None:
@@ -240,18 +293,12 @@ class CalendarSpace(QtWidgets.QWidget):
     def __init__(self, economic_tab=None, parent=None):
         super().__init__(parent)
         from .economic_calendar import EconomicCalendarTab
-        from ..data.calendar.equity import FinnhubEarnings, FinnhubIpo, FmpDividends
+        from ..data.calendar.equity import FinnhubIpo, FmpDividends, fetch_earnings_enriched
 
         self.economic = economic_tab or EconomicCalendarTab()
-        e_cols, e_row, e_date = _earnings_cfg()
-        d_cols, d_row, d_date = _dividends_cfg()
-        i_cols, i_row, i_date = _ipo_cfg()
-        self.earnings = EquityCalendarTab(fetch=FinnhubEarnings().fetch, columns=e_cols,
-                                          row_fn=e_row, date_of=e_date)
-        self.dividends = EquityCalendarTab(fetch=FmpDividends().fetch, columns=d_cols,
-                                           row_fn=d_row, date_of=d_date)
-        self.ipo = EquityCalendarTab(fetch=FinnhubIpo().fetch, columns=i_cols,
-                                     row_fn=i_row, date_of=i_date)
+        self.earnings = EquityCalendarTab(fetch=fetch_earnings_enriched, **_earnings_cfg())
+        self.dividends = EquityCalendarTab(fetch=FmpDividends().fetch, **_dividends_cfg())
+        self.ipo = EquityCalendarTab(fetch=FinnhubIpo().fetch, **_ipo_cfg())
 
         self._stack = QtWidgets.QStackedWidget()
         self._pages = [("Economic", self.economic), ("Earnings", self.earnings),

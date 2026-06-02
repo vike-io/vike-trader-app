@@ -11,15 +11,20 @@ Deribit/yfinance feature.
 """
 from __future__ import annotations
 
+import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 
 from .http import http_get_json
 
 FINNHUB_EARNINGS = "https://finnhub.io/api/v1/calendar/earnings?from={frm}&to={to}&token={key}"
 FINNHUB_IPO = "https://finnhub.io/api/v1/calendar/ipo?from={frm}&to={to}&token={key}"
+FINNHUB_PROFILE = "https://finnhub.io/api/v1/stock/profile2?symbol={sym}&token={key}"
 FMP_DIVIDENDS = ("https://financialmodelingprep.com/stable/dividends-calendar"
                  "?from={frm}&to={to}&apikey={key}")
+_PROFILE_CACHE = "storage/calendar/profiles.json"
 
 
 def _num(v):
@@ -38,6 +43,15 @@ class EarningsEvent:
     eps_actual: float | None
     rev_estimate: float | None
     rev_actual: float | None
+    name: str = ""               # company name (from profile2 enrichment)
+    market_cap: float | None = None   # USD millions (from profile2 enrichment)
+
+    @property
+    def surprise(self) -> float | None:
+        """EPS surprise %, when both estimate and actual are known."""
+        if self.eps_actual is None or not self.eps_estimate:
+            return None
+        return (self.eps_actual - self.eps_estimate) / abs(self.eps_estimate) * 100
 
 
 @dataclass
@@ -128,3 +142,69 @@ class FmpDividends:
             return out
         except Exception:  # noqa: BLE001
             return []
+
+
+# ---- company profiles (name + market cap) for earnings enrichment -------------------
+def _load_profiles() -> dict:
+    p = Path(_PROFILE_CACHE)
+    if p.exists():
+        try:
+            return json.loads(p.read_text("utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _save_profiles(data: dict) -> None:
+    p = Path(_PROFILE_CACHE)
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def profiles(symbols, *, key: str | None = None, http=http_get_json,
+             max_workers: int = 4, limit: int = 12) -> dict:
+    """{symbol: {'name', 'cap'}} from Finnhub profile2 — persistent-cached so each symbol is
+    fetched once, fetched concurrently (bounded) the first time. Finnhub's free tier is
+    ~60 req/min, so `limit` keeps each cold load's burst small; only SUCCESSFUL lookups are
+    cached, so rate-limited misses retry on the next load rather than sticking as blanks."""
+    key = key if key is not None else os.environ.get("FINNHUB_API_KEY")
+    cache = _load_profiles()
+    want = [s for s in dict.fromkeys(symbols) if s and s not in cache][:limit]
+    if key and want:
+        def one(sym):
+            try:
+                d = http(FINNHUB_PROFILE.format(sym=sym, key=key)) or {}
+                cap = d.get("marketCapitalization")
+                if cap:                                 # success only
+                    return sym, {"name": d.get("name", ""), "cap": cap}
+            except Exception:  # noqa: BLE001
+                pass
+            return sym, None
+        got = False
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(want))) as ex:
+            for sym, prof in ex.map(one, want):
+                if prof:
+                    cache[sym] = prof
+                    got = True
+        if got:
+            _save_profiles(cache)
+    return {s: cache.get(s, {}) for s in symbols}
+
+
+def fetch_earnings_enriched(frm: str, to: str, *, key: str | None = None,
+                            http=http_get_json) -> list[EarningsEvent]:
+    """Earnings for the week, with company name + market cap filled in for the covered
+    symbols — fetched biggest-first (by revenue) so the names a trader cares about get a
+    market cap even when the per-load profile budget is small."""
+    events = FinnhubEarnings(key=key, http=http).fetch(frm, to)
+    covered = sorted((e for e in events if e.eps_estimate is not None),
+                     key=lambda e: -(e.rev_estimate or 0))
+    profs = profiles([e.symbol for e in covered], key=key, http=http)
+    for e in events:
+        p = profs.get(e.symbol) or {}
+        e.name = p.get("name", "") or ""
+        e.market_cap = p.get("cap")
+    return events
