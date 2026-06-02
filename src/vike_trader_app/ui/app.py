@@ -35,6 +35,7 @@ from .watchlist_data import is_stale, quote_from_bars
 from .studio import StudioTab
 from .alerts import AlertsTab
 from .journal import JournalTab
+from .news import NewsTab
 from .screener import ScreenerTab
 from .tools import ToolsTab
 
@@ -353,6 +354,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.journal, "Journal")
         self.alerts = AlertsTab()
         self.tabs.addTab(self.alerts, "Alerts")
+        self.news = NewsTab()
+        self.tabs.addTab(self.news, "News")
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
@@ -372,6 +375,7 @@ class MainWindow(QtWidgets.QMainWindow):
         rail_tb.setStyleSheet(f"QToolBar{{border:none;background:{theme.BG};}}")
         rail_tb.addWidget(self._build_icon_rail())
         self.addToolBar(QtCore.Qt.LeftToolBarArea, rail_tb)
+        self.tabs.currentChanged.connect(self._on_space_changed)
         self._rail_tb = rail_tb  # anchor for the rail separator line (see _place_rules)
 
         # Full-width separator hairlines (under the title bar + above the status bar), painted
@@ -383,6 +387,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"),
+        ("📰", "News"),
     ]
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
@@ -471,6 +476,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if first is not None:
             first.setChecked(True)
         return rail
+
+    def _on_space_changed(self, index: int) -> None:
+        """Lazy-start the news feed the first time the News space is opened."""
+        if self.tabs.widget(index) is getattr(self, "news", None):
+            self.news.start_feed(self._symbol)
 
     def _build_statusbar(self) -> QtWidgets.QStatusBar:
         sb = QtWidgets.QStatusBar()
@@ -1071,6 +1081,8 @@ class MainWindow(QtWidgets.QMainWindow):
         without ever fetching the gap, which is why the chart lagged behind Binance.) If the
         top-up fetch fails we fall back to whatever is cached rather than leaving an empty chart.
         """
+        if hasattr(self, "news"):
+            self.news.set_symbol(symbol)
         interval = interval or getattr(self, "_interval", None) or "1m"
         now = int(time.time() * 1000)
         start = now - _INTERVAL_LOOKBACK.get(interval, _WATCHLIST_DAYS) * _DAY_MS
@@ -1449,6 +1461,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._stop_forward()  # never leave a feed thread running
+        if hasattr(self, "news"):
+            self.news.stop_feed()  # halt the news poller thread
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
         if getattr(self, "_price_timer", None) is not None:
             self._price_timer.stop()  # halt the watchlist price-fill ticks
