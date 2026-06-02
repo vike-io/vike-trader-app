@@ -160,3 +160,26 @@ def test_profile_for_symbol_is_honest_about_forex_fallback():
     assert inst.profile_for_symbol("BTCUSDT") == "Binance"
     assert inst.profile_for_symbol("AAPL") == "US Equities"
     assert inst.profile_for_symbol("EURUSD") == "forex (default)"  # no FX preset in scope
+
+
+# --- profile editing (for the editor panel) ----------------------------------------------
+
+def test_with_instrument_adds_and_replaces_by_symbol():
+    p = BrokerProfile("P")
+    p = inst.with_instrument(p, InstrumentSpec("BTCUSDT", "crypto", 0.5))
+    assert p.instruments["BTCUSDT"].tick_size == 0.5
+    p = inst.with_instrument(p, InstrumentSpec("btcusdt", "crypto", 0.1))  # case-folded replace
+    assert len(p.instruments) == 1 and p.instruments["BTCUSDT"].tick_size == 0.1
+
+
+def test_without_instrument_removes():
+    p = inst.with_instrument(BrokerProfile("P"), InstrumentSpec("ETHUSDT", "crypto", 0.01))
+    assert inst.without_instrument(p, "ethusdt").instruments == {}
+
+
+def test_mass_edit_applies_changes_and_ignores_unknown_fields():
+    specs = [InstrumentSpec("A", "crypto", 0.01), InstrumentSpec("B", "crypto", 0.5)]
+    out = inst.mass_edit_specs(specs, {"tick_size": 0.001, "volume_step": 2, "bogus": 9})
+    assert [s.tick_size for s in out] == [0.001, 0.001]
+    assert [s.volume_step for s in out] == [2, 2]
+    assert [s.symbol for s in out] == ["A", "B"]  # symbols untouched
