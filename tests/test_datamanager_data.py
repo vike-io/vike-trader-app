@@ -7,7 +7,13 @@ pure (or thin file I/O) so it's unit-testable away from the Qt widget.
 from vike_trader_app.core.model import Bar
 from vike_trader_app.data import parquet_source as ps
 from vike_trader_app.data.catalog import DatasetInfo
-from vike_trader_app.ui.datamanager_data import human_size, human_ts, row_cells
+from vike_trader_app.ui.datamanager_data import human_size, human_ts, quality_summary, row_cells
+
+_MIN = 60_000
+
+
+def _b(ts, o=100.0, h=101.0, low=99.0, c=100.0):
+    return Bar(ts=ts, open=o, high=h, low=low, close=c, volume=1.0)
 
 
 def _bar(ts):
@@ -52,6 +58,42 @@ def test_series_size_bytes_zero_when_absent(tmp_path):
     from vike_trader_app.ui.datamanager_data import series_size_bytes
 
     assert series_size_bytes(str(tmp_path), "NOPE", "1m") == 0
+
+
+def test_instrument_label_is_compact():
+    from vike_trader_app.data.instruments import InstrumentSpec
+    from vike_trader_app.ui.datamanager_data import instrument_label
+
+    assert instrument_label(InstrumentSpec("BTCUSDT", "crypto", 0.01)) == "crypto · tick 0.01"
+    assert instrument_label(InstrumentSpec("EURUSD", "forex", 0.00001)) == "forex · tick 1e-05"
+
+
+def test_instrument_detail_has_spec_and_profile():
+    from vike_trader_app.data.instruments import InstrumentSpec
+    from vike_trader_app.ui.datamanager_data import instrument_detail
+
+    s = instrument_detail(InstrumentSpec("BTCUSDT", "crypto", 0.01, volume_step=1e-5), "Binance")
+    assert "tick 0.01" in s and "2dp" in s and "Binance" in s
+
+
+def test_quality_summary_empty():
+    assert quality_summary([], _MIN) == "no data"
+
+
+def test_quality_summary_clean_series():
+    s = quality_summary([_b(i * _MIN) for i in range(5)], _MIN)
+    assert "clean" in s and "5" in s
+
+
+def test_quality_summary_flags_interior_gap():
+    # 0,1, [missing 2,3], 4,5
+    bars = [_b(0), _b(_MIN), _b(4 * _MIN), _b(5 * _MIN)]
+    assert "gap" in quality_summary(bars, _MIN).lower()
+
+
+def test_quality_summary_flags_ohlc_anomaly():
+    bars = [_b(0), _b(_MIN, h=50.0, low=99.0)]  # high < low -> anomaly
+    assert "high" in quality_summary(bars, _MIN).lower()
 
 
 def test_delete_series_removes_all_files(tmp_path):

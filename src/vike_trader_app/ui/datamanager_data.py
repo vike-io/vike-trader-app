@@ -7,6 +7,7 @@ Kept out of the Qt widget (``datamanager.py``) so it's unit-testable, matching t
 from datetime import datetime, timezone
 
 from ..data import parquet_source as ps
+from ..data.quality import validate_bars
 
 
 def human_size(n: int) -> str:
@@ -33,6 +34,32 @@ def row_cells(info, pinned: bool, size_bytes: int) -> list[str]:
         human_ts(info.start_ts), human_ts(info.end_ts),
         human_size(size_bytes), "📌" if pinned else "",
     ]
+
+
+def instrument_label(spec) -> str:
+    """A compact cell for the Data Manager's Instrument column, e.g. ``crypto · tick 0.01``."""
+    return f"{spec.asset_class} · tick {spec.tick_size:g}"
+
+
+def instrument_detail(spec, profile_name: str) -> str:
+    """A one-line spec dump for the Inspect log — asset, tick/pip/step, contract, decimals, profile."""
+    return (f"{spec.asset_class} | tick {spec.tick_size:g} · pip {spec.pip_size:g} · "
+            f"step {spec.volume_step:g} · contract {spec.contract_size:g} · {spec.decimals}dp "
+            f"(profile: {profile_name})")
+
+
+def quality_summary(bars: list, interval_ms: int) -> str:
+    """A human report of a series' data quality — gaps, ordering, and OHLC anomalies.
+
+    Wraps ``quality.validate_bars`` (which surfaces interior gaps + bad/duplicate timestamps +
+    invalid OHLC) into a one-or-more-line string for the Data Manager's Inspect/log view.
+    """
+    if not bars:
+        return "no data"
+    problems = validate_bars(bars, interval_ms)
+    if not problems:
+        return f"clean — {len(bars):,} bars, no gaps or anomalies"
+    return f"{len(bars):,} bars — issues:\n" + "\n".join(f"  • {p}" for p in problems)
 
 
 def series_size_bytes(root: str, symbol: str, interval: str) -> int:
