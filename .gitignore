@@ -29,8 +29,9 @@ ENV/
 *.db
 *.sqlite
 *.sqlite3
-# JSON-backed runtime stores (Alerts / Journal tabs, Economic Calendar cache) — per-user data, recreated on demand
-storage/*.json
+# JSON-backed runtime stores (Alerts / Journal tabs, Economic Calendar cache, data-source
+# profiles) — per-user data, recreated on demand. `**` covers nested dirs too
+# (e.g. storage/parquet/profiles/*.json); it subsumes the old storage/*.json rule.
 storage/**/*.json
 
 # ---- Test / coverage ----

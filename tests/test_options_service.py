@@ -1,0 +1,101 @@
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+
+pytest.importorskip("PySide6")  # skip cleanly in the non-UI CI job (no PySide6 there)
+
+from PySide6 import QtWidgets  # noqa: E402
+
+from vike_trader_app.data.options.model import Expiry, OptionChain  # noqa: E402
+from vike_trader_app.data.options.service import OptionsService  # noqa: E402
+
+
+def _app():
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+def _chain():
+    exp = Expiry(date="2026-07-02", dte=30, label="02 Jul")
+    return OptionChain("BTC", "crypto", 104000.0, exp, 1, "deribit", ())
+
+
+class _StubProvider:
+    name = "stub"
+    asset_class = "crypto"
+
+    def __init__(self, chain=None, exc=None):
+        self._chain, self._exc = chain, exc
+
+    def list_underlyings(self):
+        return ["BTC"]
+
+    def list_expiries(self, underlying):
+        return [_chain().expiry]
+
+    def fetch_chain(self, underlying, expiry, strikes=None):
+        if self._exc:
+            raise self._exc
+        return self._chain
+
+
+def test_fetch_now_emits_chain_ready():
+    _app()
+    svc = OptionsService(provider_factory=lambda u: _StubProvider(chain=_chain()))
+    got = []
+    svc.chainReady.connect(got.append)
+    svc.set_underlying("BTC")
+    svc.set_expiry(_chain().expiry)
+    svc.fetch_now()
+    assert len(got) == 1 and got[0].underlying == "BTC"
+
+
+def test_fetch_now_routes_errors_to_failed():
+    _app()
+    svc = OptionsService(provider_factory=lambda u: _StubProvider(exc=RuntimeError("boom")))
+    errs = []
+    svc.failed.connect(errs.append)
+    svc.set_underlying("BTC")
+    svc.set_expiry(_chain().expiry)
+    svc.fetch_now()
+    assert errs and "boom" in errs[0]
+
+
+def test_refresh_skips_when_busy():
+    _app()
+    svc = OptionsService(provider_factory=lambda u: _StubProvider(chain=_chain()))
+    svc.set_underlying("BTC")
+    svc.set_expiry(_chain().expiry)
+    svc._busy = True  # simulate in-flight fetch
+    assert svc.refresh() is False  # guarded, no new worker
+
+
+def test_fetch_now_silent_when_not_configured():
+    _app()
+    svc = OptionsService()
+    fired = []
+    svc.chainReady.connect(fired.append)
+    svc.failed.connect(fired.append)
+    svc.fetch_now()  # prerequisites absent -> must not emit anything (no thread, no hang)
+    assert fired == []
+
+
+def test_chains_worker_collects_all_expiries():
+    _app()
+    from vike_trader_app.data.options.service import _ChainsWorker
+    exp1 = _chain().expiry
+    exp2 = Expiry(date="2026-08-01", dte=60, label="01 Aug")
+    worker = _ChainsWorker(_StubProvider(chain=_chain()), "BTC", [exp1, exp2], 12)
+    got = []
+    worker.done.connect(got.append)
+    worker.run()  # run synchronously (no thread) -> emits to the connected slot directly
+    assert len(got) == 1 and len(got[0]) == 2  # one emission carrying both expiries' chains
+
+
+def test_load_chains_skips_when_busy():
+    _app()
+    svc = OptionsService(provider_factory=lambda u: _StubProvider(chain=_chain()))
+    svc.set_underlying("BTC")
+    svc._busy = True
+    assert svc.load_chains([_chain().expiry]) is False

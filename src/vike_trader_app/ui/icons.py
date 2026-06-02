@@ -136,6 +136,15 @@ def _draw_data(p, c):  # database cylinder: 3 stacked disks + side walls
     p.drawLine(QtCore.QLineF(35, 14, 35, 34))
 
 
+def _draw_options(p, c):  # option payoff hockey-stick + strike tick
+    path = QtGui.QPainterPath()
+    path.moveTo(9, 30)
+    path.lineTo(24, 30)
+    path.lineTo(39, 13)
+    p.drawPath(path)
+    p.drawLine(QtCore.QLineF(24, 34, 24, 22))  # strike marker at the kink
+
+
 def _draw_calendar(p, c):  # calendar: framed grid, two top rings, day dots
     p.drawRoundedRect(_R(11, 14, 26, 23), 3, 3)
     p.drawLine(QtCore.QLineF(11, 22, 37, 22))   # header divider
@@ -152,6 +161,7 @@ _DRAW = {
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
     "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
     "chart": _draw_chart, "news": _draw_news, "data": _draw_data, "calendar": _draw_calendar,
+    "options": _draw_options,
 }
 
 

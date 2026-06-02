@@ -50,6 +50,8 @@ from .screener import ScreenerTab
 # from .tools import ToolsTab
 from .economic_calendar import EconomicCalendarTab
 from .equity_calendar import CalendarSpace
+from .options_tab import OptionsTab
+from ..data.options.service import OptionsService
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -382,9 +384,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.economic_calendar = EconomicCalendarTab()
         self.calendar_space = CalendarSpace(economic_tab=self.economic_calendar)
         self.tabs.addTab(self.calendar_space, "Calendar")
+        self.options = OptionsTab()
+        self.tabs.addTab(self.options, "Options")
+        self._options_svc = OptionsService(parent=self)
+        self._options_started = False
+        self._wire_options()
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
-        # tab strip is hidden, so the rail alone switches between the six spaces.
+        # tab strip is hidden, so the rail alone switches between the spaces.
         self.tabs.tabBar().hide()
         self.setCentralWidget(self.tabs)
         # The rail lives in the LEFT TOOLBAR AREA so it sits flush against the window's left
@@ -410,10 +417,70 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rules = _RuleOverlay(self)
         self._rules.raise_()
 
+    def _wire_options(self) -> None:
+        """Connect the Options tab <-> service. Fetching only starts when the tab is first
+        shown (keeps startup + headless tests network-free)."""
+        tab, svc = self.options, self._options_svc
+        svc.chainsReady.connect(tab.set_chains)   # grouped (multi-expiry) view
+        svc.failed.connect(tab.set_status)
+        self._options_all_expiries: list = []
+        self._options_shown: list = []
+        groups_max = 12  # cap on simultaneous expiry groups (bounds the per-expiry fetch count)
+
+        def _show(subset: list) -> None:
+            if not subset:
+                return
+            self._options_shown = list(subset)
+            svc.set_strikes(tab.strikes_value())
+            svc.start_polling_grouped(self._options_shown)
+
+        def _filtered() -> list:
+            days = tab.exp_range_days()
+            within = [e for e in self._options_all_expiries if days is None or e.dte <= days]
+            return (within or self._options_all_expiries)[:groups_max]
+
+        def _on_expiries(expiries) -> None:
+            self._options_all_expiries = list(expiries)
+            tab.set_expiries(expiries)        # dropdown = jump-to-expiry
+            _show(_filtered())                # default: expiries within the range filter
+
+        svc.expiriesReady.connect(_on_expiries)
+
+        def _load_underlying(sym: str) -> None:
+            svc.stop_polling()
+            svc.set_underlying(sym)
+            svc.set_strikes(tab.strikes_value())
+            svc.load_expiries()
+
+        def _jump(iso: str) -> None:  # selecting an expiry pages the groups to start there
+            allx = self._options_all_expiries
+            idx = next((i for i, e in enumerate(allx) if e.date == iso), 0)
+            _show(allx[idx:idx + groups_max])
+
+        def _refresh() -> None:
+            svc.set_strikes(tab.strikes_value())
+            if self._options_shown:
+                svc.load_chains(self._options_shown)
+
+        tab.underlyingChanged.connect(_load_underlying)
+        tab.expiryChanged.connect(_jump)
+        tab.rangeChanged.connect(lambda: _show(_filtered()))
+        tab.refreshRequested.connect(_refresh)
+        self._load_options_underlying = _load_underlying
+
+    def _maybe_start_options(self) -> None:
+        if not self._options_started:
+            self._options_started = True
+            self._load_options_underlying(self.options.underlying.currentText())
+        elif self._options_shown:
+            self._options_svc.start_polling_grouped(self._options_shown)  # resume on re-open
+
+    # Order MUST match the addTab() order in _build_central — rail buttons map to tab
+    # index by position here. Append new spaces last to keep existing indices stable.
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"),  # ("⚙", "Tools") — hidden per user request
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
-        ("📰", "News"), ("▦", "Calendar"),
+        ("📰", "News"), ("▦", "Calendar"), ("⊗", "Options"),
     ]
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
@@ -911,6 +978,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # the OS title bar is the active-space indicator now (tab strip + header chip are gone)
         if 0 <= index < len(self._RAIL_ITEMS):
             self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
+        # Options space: start fetching on first open; pause polling when navigating away.
+        if getattr(self, "options", None) is not None:
+            if self.tabs.currentWidget() is self.options:
+                self._maybe_start_options()
+            elif getattr(self, "_options_started", False):
+                self._options_svc.stop_polling()
 
     def _wire_studio_agent(self) -> None:
         """Give the Studio a live Claude client iff an API key + the [ai] extra are present.
@@ -1516,6 +1589,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "news"):
             self.news.stop_feed()  # halt the news poller thread
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
+        if getattr(self, "_options_svc", None) is not None:
+            self._options_svc.shutdown()  # stop the poll + wait out any options fetch worker
         if getattr(self, "_price_timer", None) is not None:
             self._price_timer.stop()  # halt the watchlist price-fill ticks
         if getattr(self, "_refresh_timer", None) is not None:
@@ -1543,6 +1618,13 @@ def _install_qt_log_filter():
 
 def main():
     import sys
+
+    try:  # honor .env so API keys / options-backend config are picked up (python-dotenv is a core dep)
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except Exception:  # noqa: BLE001 - missing .env / dotenv must never block launch
+        pass
 
     _install_qt_log_filter()
     app = QtWidgets.QApplication(sys.argv)
