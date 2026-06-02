@@ -92,7 +92,9 @@ def test_get_bars_fetches_then_caches(tmp_path):
     bars = cache.get_bars("BTCUSDT", "1m", 0, 5 * STEP, root=root, fetcher=fetcher)
     assert [b.ts for b in bars] == [i * STEP for i in range(6)]
     assert len(calls) == 1  # fetched once
-    assert (tmp_path / "BTCUSDT" / "1m.parquet").exists()  # cached to disk
+    # Phase 2b: append-only month partitions (ts 0..5*STEP all fall in 1970-01), not a single file.
+    assert (tmp_path / "BTCUSDT" / "1m" / "1970-01.parquet").exists()
+    assert not (tmp_path / "BTCUSDT" / "1m.parquet").exists()
 
 
 def test_get_bars_second_call_hits_cache(tmp_path):

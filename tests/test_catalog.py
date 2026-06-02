@@ -47,3 +47,16 @@ def test_catalog_query_missing_dataset_returns_empty(tmp_path):
     cat = Catalog(str(tmp_path))
     assert cat.query("NOPE", "1m") == []
     assert cat.info("NOPE", "1m") is None
+
+
+def test_catalog_reads_partitioned_layout(tmp_path):
+    # Phase 2b: data written append-only as month partitions must be discoverable + queryable.
+    from vike_trader_app.data.parquet_source import append_series
+
+    nov = 1_700_000_000_000
+    append_series(_bars(2, base_ts=nov), str(tmp_path), "BTCUSDT", "1m")
+    cat = Catalog(str(tmp_path))
+    assert cat.symbols() == ["BTCUSDT"]
+    assert cat.intervals("BTCUSDT") == ["1m"]
+    assert [b.ts for b in cat.query("BTCUSDT", "1m")] == [nov, nov + 60_000]
+    assert cat.info("BTCUSDT", "1m").n_bars == 2
