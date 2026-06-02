@@ -36,6 +36,18 @@ def row_cells(info, pinned: bool, size_bytes: int) -> list[str]:
     ]
 
 
+def instrument_label(spec) -> str:
+    """A compact cell for the Data Manager's Instrument column, e.g. ``crypto · tick 0.01``."""
+    return f"{spec.asset_class} · tick {spec.tick_size:g}"
+
+
+def instrument_detail(spec, profile_name: str) -> str:
+    """A one-line spec dump for the Inspect log — asset, tick/pip/step, contract, decimals, profile."""
+    return (f"{spec.asset_class} | tick {spec.tick_size:g} · pip {spec.pip_size:g} · "
+            f"step {spec.volume_step:g} · contract {spec.contract_size:g} · {spec.decimals}dp "
+            f"(profile: {profile_name})")
+
+
 def quality_summary(bars: list, interval_ms: int) -> str:
     """A human report of a series' data quality — gaps, ordering, and OHLC anomalies.
 

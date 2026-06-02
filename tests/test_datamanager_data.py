@@ -60,6 +60,22 @@ def test_series_size_bytes_zero_when_absent(tmp_path):
     assert series_size_bytes(str(tmp_path), "NOPE", "1m") == 0
 
 
+def test_instrument_label_is_compact():
+    from vike_trader_app.data.instruments import InstrumentSpec
+    from vike_trader_app.ui.datamanager_data import instrument_label
+
+    assert instrument_label(InstrumentSpec("BTCUSDT", "crypto", 0.01)) == "crypto · tick 0.01"
+    assert instrument_label(InstrumentSpec("EURUSD", "forex", 0.00001)) == "forex · tick 1e-05"
+
+
+def test_instrument_detail_has_spec_and_profile():
+    from vike_trader_app.data.instruments import InstrumentSpec
+    from vike_trader_app.ui.datamanager_data import instrument_detail
+
+    s = instrument_detail(InstrumentSpec("BTCUSDT", "crypto", 0.01, volume_step=1e-5), "Binance")
+    assert "tick 0.01" in s and "2dp" in s and "Binance" in s
+
+
 def test_quality_summary_empty():
     assert quality_summary([], _MIN) == "no data"
 
