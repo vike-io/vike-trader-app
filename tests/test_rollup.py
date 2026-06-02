@@ -89,3 +89,29 @@ def test_refresh_rollup_base_interval_is_noop(tmp_path):
     root = str(tmp_path)
     ps.append_series(_m1(10), root, "X", "1m")
     assert refresh_rollup(root, "X", "1m") == 0      # rolling base -> base does nothing
+
+
+# --- pin registry ----------------------------------------------------------
+
+def test_save_and_load_pins_roundtrip_dedups_and_sorts(tmp_path):
+    from vike_trader_app.data.rollup import load_pins, save_pins
+
+    path = str(tmp_path / "pins.json")
+    save_pins(path, [("X", "1h"), ("Y", "1d"), ("X", "1h")])
+    assert load_pins(path) == [["X", "1h"], ["Y", "1d"]]
+
+
+def test_load_pins_missing_file_is_empty(tmp_path):
+    from vike_trader_app.data.rollup import load_pins
+
+    assert load_pins(str(tmp_path / "nope.json")) == []
+
+
+def test_refresh_pinned_materialises_each_pin(tmp_path):
+    from vike_trader_app.data.rollup import refresh_pinned
+
+    root = str(tmp_path)
+    ps.append_series(_m1(120), root, "X", "1m")  # 2 full hours
+    out = refresh_pinned(root, [["X", "1h"]])
+    assert out == {"X/1h": 2}
+    assert [b.ts for b in ps.read_series(root, "X", "1h")] == [0, HOUR]
