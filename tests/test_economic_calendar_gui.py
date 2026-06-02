@@ -214,3 +214,25 @@ def test_calendar_rail_icon_registered(app):
     assert "calendar" in icons._DRAW
     pm = icons._pixmap("calendar", "#ffffff")
     assert not pm.isNull()
+
+
+# ---------------------------------------------------------------------------
+# Task 20 — TradingView-exact country/time dedup within a date (once per run)
+# ---------------------------------------------------------------------------
+def test_country_and_time_dedup_within_date(app):
+    # one date: two USD events at the SAME time, then a USD event at a LATER time.
+    same = TS_TUE                       # 12:30
+    later = TS_TUE + 3600_000           # 13:30, still USD
+    repo = _FakeRepo([
+        _ev(same, "USD", "AAA Event", 1, forecast=1.0),
+        _ev(same, "USD", "BBB Event", 1, forecast=2.0),   # same ts + country as AAA
+        _ev(later, "USD", "CCC Event", 1, forecast=3.0),  # later time, same country
+    ])
+    t = EconomicCalendarTab(repository=repo)
+    t.load_week(WK)
+    top = t._tree.topLevelItem(0)        # single date header
+    rows = [top.child(i) for i in range(top.childCount())]
+    # sorted by (ts, country, title): AAA, BBB (same ts), then CCC
+    assert rows[0].text(0) == "12:30" and rows[0].text(1) == "United States"   # first of run: shown
+    assert rows[1].text(0) == "" and rows[1].text(1) == ""                     # same ts+country: blanked
+    assert rows[2].text(0) == "13:30" and rows[2].text(1) == "United States"   # time changed: shown again

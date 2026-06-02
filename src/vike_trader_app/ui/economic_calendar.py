@@ -209,6 +209,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
     def _rebuild(self) -> None:
         self._tree.clear()
         groups: dict[str, QtWidgets.QTreeWidgetItem] = {}
+        prev: dict[str, tuple[str, str]] = {}  # day -> (last time str, last currency)
         for ev in sorted(self._events, key=lambda e: (e.ts_utc, e.country, e.title)):
             if not self._passes(ev):
                 continue
@@ -223,21 +224,30 @@ class EconomicCalendarTab(QtWidgets.QWidget):
                 self._tree.addTopLevelItem(parent)
                 parent.setExpanded(True)
                 groups[day] = parent
-            parent.addChild(self._row(ev))
+            # TradingView-exact: show Time once per time-run and the Country flag+name
+            # once per consecutive same-country run within the date (blank on continuation).
+            t = "" if ev.all_day else self._hhmm(ev.ts_utc)
+            last_t, last_c = prev.get(day, (None, None))
+            show_time = t != last_t
+            show_country = show_time or ev.currency != last_c
+            parent.addChild(self._row(ev, show_time=show_time, show_country=show_country))
+            prev[day] = (t, ev.currency)
         if self._day_cards:
             self._refresh_strip()
         if hasattr(self, "_lbl_range"):
             self._refresh_range_label()
 
-    def _row(self, ev) -> QtWidgets.QTreeWidgetItem:
+    def _row(self, ev, *, show_time: bool = True, show_country: bool = True) -> QtWidgets.QTreeWidgetItem:
         t = "" if ev.all_day else self._hhmm(ev.ts_utc)
         actual = self.countdown_text(ev.ts_utc) if ev.actual is None and ev.ts_utc > self._now() \
             else ev.actual_display or "—"
-        it = QtWidgets.QTreeWidgetItem([t, ev.country, "", ev.title, actual,
+        it = QtWidgets.QTreeWidgetItem([t if show_time else "",
+                                        ev.country if show_country else "", "", ev.title, actual,
                                         ev.forecast_display or "—", ev.previous_display or "—"])
         it.setData(0, QtCore.Qt.UserRole, ev.id)
-        _country, iso = currency_country(ev.currency)
-        it.setIcon(1, QtGui.QIcon(country_chip_pixmap(iso)))
+        if show_country:
+            _country, iso = currency_country(ev.currency)
+            it.setIcon(1, QtGui.QIcon(country_chip_pixmap(iso)))
         it.setIcon(2, QtGui.QIcon(importance_bar_pixmap(ev.importance)))
         color = theme.DOWN if (ev.actual is None and ev.ts_utc > self._now()) else value_color(ev.actual, ev.forecast)
         it.setForeground(4, QtGui.QColor(color))
