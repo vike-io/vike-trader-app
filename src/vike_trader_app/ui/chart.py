@@ -638,11 +638,11 @@ class _LegendRow(QtWidgets.QWidget):
         h.setSpacing(5)
         self._name = QtWidgets.QLabel(ind.label)
         self._name.setStyleSheet(
-            f"color:{theme.TEXT2};font-size:11px;font-weight:600;background:transparent;"
+            f"color:{theme.TEXT2};font-size:13px;font-weight:600;background:transparent;"
         )
         self._val = QtWidgets.QLabel("")
         self._val.setStyleSheet(
-            f"color:{theme.TEXT3};font-size:11px;font-family:{theme.FONT_MONO};background:transparent;"
+            f"color:{theme.TEXT3};font-size:13px;font-family:{theme.FONT_MONO};background:transparent;"
         )
         self._eye = self._btn()
         self._eye.setIcon(_eye_icon(ind.visible))
@@ -996,10 +996,12 @@ class PriceChart(pg.PlotWidget):
         # TradingView look: NO hard spine line by the labels — the axis pen is transparent,
         # and the grid is drawn via the (visible) tick pen, so only labels + gridlines show.
         _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
+        _tick_font = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
+        _tick_font.setPixelSize(12)                          # readable axis labels (~TV's 11px)
         for _ax in ("right", "bottom"):
             self.getAxis(_ax).setPen(_transparent)          # no spine
             self.getAxis(_ax).setTickPen(pg.mkPen(theme.BORDER))  # gridline colour
-            self.getAxis(_ax).setStyle(tickLength=0)
+            self.getAxis(_ax).setStyle(tickLength=0, tickFont=_tick_font)
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()  # hide pyqtgraph's built-in auto-range "A" button (we have our own "Auto")
         self.addLegend(offset=(10, 30), labelTextColor=theme.TEXT2)
