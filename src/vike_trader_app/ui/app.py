@@ -17,7 +17,13 @@ from ..core.paper import PaperTester, pump
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
 from ..data.cache import DEFAULT_ROOT, get_bars
-from ..data.live_update import closed_bars, feed_health, live_fetch_window, merge_live_bars
+from ..data.live_update import (
+    closed_bars,
+    feed_health,
+    fetch_in_flight,
+    live_fetch_window,
+    merge_live_bars,
+)
 from ..data.polling_feed import PollingBarFeed
 from ..data.rollup import load_pins, refresh_pinned
 from ..data.sources import select_source
@@ -48,6 +54,7 @@ _INTERVAL_LOOKBACK = {"1m": 7, "3m": 7, "5m": 10, "15m": 21, "30m": 30,
                       "1h": 90, "2h": 120, "4h": 240, "1d": 1825, "1w": 3650}
 _WATCHLIST_FRESH_MS = 5 * 60_000  # cache-first: reuse cached bars if the last one is this fresh
 _LIVE_LOOKBACK = 5  # bars (incl. the forming candle) pulled per live chart tick
+_LIVE_FETCH_TIMEOUT_MS = 60_000  # a live fetch running longer than this is presumed stuck (self-heal)
 _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
     "live": (theme.UP, "● LIVE · "),
     "stale": (theme.WARN, "● STALE · "),
@@ -180,6 +187,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_fail_streak = 0
         self._live_base_ms = 10_000
         self._live_worker = None        # in-flight _LiveFetchWorker (kept ref'd so it isn't GC'd)
+        self._live_worker_started = 0   # when it started (ms) -> abandon if it runs too long
         self._live_fetch_for = None     # (symbol, interval) the in-flight fetch is for
 
         # widgets
@@ -572,6 +580,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_base_ms = max(2_000, min(interval_ms(self._interval) // 12, 10_000))
         self._live_timer.start(self._live_base_ms)
         self._update_feed_health()
+        # Poll promptly on arm at the base cadence even if the loaded cache reads STALE: otherwise
+        # _update_feed_health would have just slowed the very first poll to the 30s STALE cadence,
+        # leaving a freshly-loaded chart sitting STALE for 30s before it catches up to the edge.
+        self._live_timer.setInterval(self._live_base_ms)
 
     def _stop_live_updates(self) -> None:
         self._live_timer.stop()
@@ -584,25 +596,34 @@ class MainWindow(QtWidgets.QMainWindow):
         flight. The fetch runs on a worker thread so the poll never stutters the UI; the merge
         and repaint happen back on the main thread in ``_on_live_fetched``.
         """
-        if self._forward is not None or not self._bars or self._live_worker is not None:
+        if self._forward is not None or not self._bars:
+            return
+        now = int(time.time() * 1000)
+        # Skip only while a fetch is *genuinely* in flight. A worker running longer than the
+        # timeout is presumed stuck (hung connection / a 'finished' we never saw) — abandon it and
+        # fetch afresh, so one bad fetch can't freeze the feed at STALE forever.
+        if fetch_in_flight(self._live_worker, self._live_worker_started, now, _LIVE_FETCH_TIMEOUT_MS):
             return
         symbol, interval = self._symbol, self._interval
-        now = int(time.time() * 1000)
         step = interval_ms(interval)
         # Gap-aware: normally the last few bars, but stretch back to bridge a pause (e.g. after
         # a long Forward run) so a returning session doesn't tear a hole in the series.
         start, end = live_fetch_window(self._bars[-1].ts, now, step, lookback=_LIVE_LOOKBACK)
         self._live_fetch_for = (symbol, interval)
-        self._live_worker = _LiveFetchWorker(
+        worker = self._live_worker = _LiveFetchWorker(
             select_source(symbol).fetch_bars_range, symbol, interval, start, end
         )
-        self._live_worker.fetched.connect(self._on_live_fetched)
-        self._live_worker.failed.connect(self._on_live_fetch_failed)
-        self._live_worker.finished.connect(self._clear_live_worker)
-        self._live_worker.start()
+        self._live_worker_started = now
+        worker.fetched.connect(self._on_live_fetched)
+        worker.failed.connect(self._on_live_fetch_failed)
+        worker.finished.connect(lambda w=worker: self._clear_live_worker(w))
+        worker.start()
 
-    def _clear_live_worker(self) -> None:
-        self._live_worker = None  # frees the in-flight guard so the next tick can fetch
+    def _clear_live_worker(self, worker=None) -> None:
+        # Only the *current* worker clears the guard — a late-finishing abandoned worker must not
+        # clear a fetch we've since started.
+        if worker is None or worker is self._live_worker:
+            self._live_worker = None
 
     def _on_live_fetched(self, fetched) -> None:
         """Main thread: merge the fetched bars and repaint the live edge (if we're viewing it)."""
