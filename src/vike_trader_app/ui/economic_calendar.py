@@ -242,7 +242,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._cmb_tz = QtWidgets.QComboBox()
         self._cmb_tz.addItems([name for name, _tz in _TZ_CHOICES])
         self._cmb_tz.currentIndexChanged.connect(self._on_tz_changed)
-        for w in (self._btn_today, prev, nxt, self._lbl_range):
+        self._nav_widgets = [self._btn_today, prev, nxt, self._lbl_range]
+        for w in self._nav_widgets:
             h.addWidget(w)
         h.addStretch(1)
         h.addWidget(self._chk_high)

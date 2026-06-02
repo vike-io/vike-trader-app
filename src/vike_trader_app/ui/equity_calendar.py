@@ -234,7 +234,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._search.setPlaceholderText("Filter symbol…")
         self._search.setMaximumWidth(160)
         self._search.textChanged.connect(self._on_filter)
-        for w in (btn_today, prev, nxt, self._lbl_range):
+        self._nav_widgets = [btn_today, prev, nxt, self._lbl_range]
+        for w in self._nav_widgets:
             h.addWidget(w)
         h.addStretch(1)
         if self._covered_of is not None:
@@ -420,12 +421,20 @@ class CalendarSpace(QtWidgets.QWidget):
 
         root = QtWidgets.QVBoxLayout(self)
         root.setSpacing(10)
+        root.addWidget(self._build_topnav())   # TV: date-nav row ABOVE the day-cards
         root.addWidget(strip)
         bar = QtWidgets.QWidget()
         bar.setLayout(pills)
         root.addWidget(bar)
         root.addWidget(self._stack, 1)
+        # the shared top date-nav drives the week for every page (all tabs follow economic),
+        # so hide each sub-tab's own date-nav + economic's timezone selector to avoid dupes.
+        for tab in (self.economic, self.earnings, self.dividends, self.ipo):
+            for w in getattr(tab, "_nav_widgets", []):
+                w.setVisible(False)
+        self.economic._cmb_tz.setVisible(False)
         self.set_page(0)
+        self._sync_range()
 
         # recount day-cards whenever any source's data changes
         self.economic.eventsChanged.connect(self._on_economic_changed)
@@ -505,6 +514,46 @@ class CalendarSpace(QtWidgets.QWidget):
                 if tab._loaded:
                     tab.refresh_async()
         self.refresh_day_counts()
+        self._sync_range()
+
+    # ---- shared top date-nav (TV-style, drives the week for every page) ----
+    def _build_topnav(self) -> QtWidgets.QWidget:
+        bar = QtWidgets.QWidget()
+        bar.setStyleSheet(
+            f"QPushButton{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:6px 13px;color:{theme.TEXT2};font-size:13px;}}"
+            f"QPushButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
+            f"QComboBox{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:8px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}")
+        h = QtWidgets.QHBoxLayout(bar)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(6)
+        btn_today = QtWidgets.QPushButton("Today")
+        btn_today.setCursor(QtCore.Qt.PointingHandCursor)
+        btn_today.clicked.connect(lambda: (self.economic.go_today(), self._sync_range()))
+        prev = QtWidgets.QPushButton("‹")
+        prev.clicked.connect(lambda: (self.economic.go_prev_week(), self._sync_range()))
+        nxt = QtWidgets.QPushButton("›")
+        nxt.clicked.connect(lambda: (self.economic.go_next_week(), self._sync_range()))
+        self._range_lbl = QtWidgets.QLabel("")
+        self._range_lbl.setStyleSheet(
+            f"color:{theme.TEXT};font-size:16px;font-weight:600;border:none;padding-left:6px;")
+        for w in (btn_today, prev, nxt):
+            h.addWidget(w)
+        h.addWidget(self._range_lbl)
+        h.addStretch(1)
+        self._tz = QtWidgets.QComboBox()
+        self._tz.setCursor(QtCore.Qt.PointingHandCursor)
+        self._tz.addItems([self.economic._cmb_tz.itemText(i)
+                           for i in range(self.economic._cmb_tz.count())])
+        self._tz.setCurrentIndex(self.economic._cmb_tz.currentIndex())
+        self._tz.currentIndexChanged.connect(self.economic._cmb_tz.setCurrentIndex)
+        h.addWidget(self._tz)
+        return bar
+
+    def _sync_range(self) -> None:
+        if hasattr(self, "_range_lbl"):
+            self._range_lbl.setText(self.economic._lbl_range.text())
 
     def refresh_day_counts(self) -> None:
         origin = self.economic.current_week_start()
