@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from .models import NewsFilter, NewsItem
-from .providers import NormalizedSymbol, normalize
+from .providers import _CRYPTO_NAME, NormalizedSymbol, normalize
+
+# lowercase base→name for free-text symbol matching (e.g. "BTC" → "bitcoin")
+_CRYPTO_NAME_LOWER = {b: nm.lower() for b, nm in _CRYPTO_NAME.items()}
 
 
 def merge(existing: list[NewsItem], incoming: list[NewsItem], *, cap: int = 500) -> list[NewsItem]:
@@ -35,9 +38,3 @@ def apply_filter(items: list[NewsItem], flt: NewsFilter) -> list[NewsItem]:
         q = flt.query.lower()
         out = [it for it in out if q in it.title.lower() or q in it.summary.lower()]
     return out
-
-
-# lowercase base→name for text matching (e.g. "BTC" → "bitcoin")
-from .providers import _CRYPTO_NAME  # noqa: E402
-
-_CRYPTO_NAME_LOWER = {b: nm.lower() for b, nm in _CRYPTO_NAME.items()}
