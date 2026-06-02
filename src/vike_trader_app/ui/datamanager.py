@@ -18,7 +18,7 @@ from ..data.csv_import import aggregate, infer_interval_ms, ms_to_interval, pars
 from ..data.instruments import ensure_presets, profile_for_symbol, spec_for_symbol
 from ..data.parquet_source import append_series, delete_series
 from ..data.rollup import load_pins, refresh_rollup, save_pins
-from ..data.sources import select_source
+from ..data.sources import CRYPTO_PROVIDERS, select_source
 from . import theme
 from .datamanager_data import (
     instrument_detail,
@@ -32,6 +32,8 @@ _PINS_PATH = "storage/pins.json"
 _COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌", "Instrument"]
 _DAY_MS = 86_400_000
 _INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
+# explicit providers selectable in the Download / DataSet dialogs (besides "Auto")
+PROVIDER_CHOICES = [*CRYPTO_PROVIDERS, "yahoo", "dukascopy"]
 
 
 class DataManagerTab(QtWidgets.QWidget):
@@ -55,6 +57,8 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_download = QtWidgets.QPushButton("⤓ Download / Extend…")
         self.btn_import = QtWidgets.QPushButton("⤒ Import CSV…")
         self.btn_import.setToolTip("Import an OHLCV CSV (auto-detect format; optional TZ shift + aggregate)")
+        self.btn_datasets = QtWidgets.QPushButton("🗂 DataSets…")
+        self.btn_datasets.setToolTip("Named symbol collections — download/update a whole universe at once")
         self.btn_inspect = QtWidgets.QPushButton("🔍 Inspect")
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
@@ -67,13 +71,15 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_update_all.clicked.connect(self._on_update_all)
         self.btn_download.clicked.connect(self._on_download)
         self.btn_import.clicked.connect(self._on_import_csv)
+        self.btn_datasets.clicked.connect(self._on_datasets)
         self.btn_inspect.clicked.connect(self._on_inspect)
         self.btn_repair.clicked.connect(self._on_repair)
         self.btn_pin.clicked.connect(self._on_pin)
         self.btn_profiles.clicked.connect(self._on_profiles)
         self.btn_delete.clicked.connect(self._on_delete)
         for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_import,
-                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_profiles, self.btn_delete):
+                  self.btn_datasets, self.btn_inspect, self.btn_repair, self.btn_pin,
+                  self.btn_profiles, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
         self.count_label = QtWidgets.QLabel("")
@@ -241,27 +247,37 @@ class DataManagerTab(QtWidgets.QWidget):
         self.refresh()
         self._log("Update all: done")
 
+    def download_series(self, symbol: str, interval: str, days: int,
+                        provider: str | None = None) -> int:
+        """Fetch ``days`` of history for one symbol from ``provider`` (None = Auto). No dialog.
+
+        Returns the number of bars now cached for the window. The prompt-free path the Download
+        dialog and tests call.
+        """
+        now = int(time.time() * 1000)
+        src = select_source(symbol, provider=provider or None)
+        bars = get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root,
+                        fetcher=src.fetch_bars_range)
+        self.refresh()
+        self._log(f"Downloaded {symbol} {interval} via {src.name} ({days}d)")
+        return len(bars)
+
     def _on_download(self) -> None:
         sel = self._selected()
         dlg = _DownloadDialog(self, default=sel)
         if dlg.exec() != QtWidgets.QDialog.Accepted:
             return
-        symbol, interval, days = dlg.values()
+        symbol, interval, days, provider = dlg.values()
         if not symbol:
             return
-        now = int(time.time() * 1000)
         self._log(f"Downloading {symbol} {interval} ({days}d)…")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root,
-                     fetcher=select_source(symbol).fetch_bars_range)
+            self.download_series(symbol, interval, days, provider)
         except Exception as exc:  # noqa: BLE001 - report, no crash
-            QtWidgets.QApplication.restoreOverrideCursor()
             self._log(f"Download {symbol} {interval} failed: {exc}")
-            return
-        QtWidgets.QApplication.restoreOverrideCursor()
-        self.refresh()
-        self._log(f"Downloaded {symbol} {interval}")
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def import_csv_file(self, path: str, symbol: str, tz_offset_minutes: int = 0,
                         target_interval: str | None = None) -> int:
@@ -309,6 +325,34 @@ class DataManagerTab(QtWidgets.QWidget):
         ProfileEditorDialog(self._root, self).exec()
         self.refresh()
 
+    def download_dataset(self, dataset, days: int) -> int:
+        """Fetch ``days`` of history for every symbol in a DataSet (its provider, or Auto each).
+
+        Returns how many symbols were fetched without error. Used by the DataSets dialog.
+        """
+        ok = 0
+        self._log(f"DataSet '{dataset.name}': {len(dataset.symbols)} symbols, {days}d…")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            for sym in dataset.symbols:
+                try:
+                    self.download_series(sym, dataset.interval, days, dataset.provider)
+                    ok += 1
+                except Exception as exc:  # noqa: BLE001 - skip a failing symbol, keep going
+                    self._log(f"  {sym}: failed — {exc}")
+                QtWidgets.QApplication.processEvents()
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self._log(f"DataSet '{dataset.name}': done ({ok}/{len(dataset.symbols)})")
+        return ok
+
+    def _on_datasets(self) -> None:
+        """Open the DataSets manager; its 'Download all' runs through :meth:`download_dataset`."""
+        from .dataset_editor import DataSetEditorDialog
+
+        DataSetEditorDialog(self._root, on_download=self.download_dataset, parent=self).exec()
+        self.refresh()
+
     def _delete(self, symbol: str, interval: str) -> None:
         """Remove a series' files (no prompt — the prompt lives in ``_on_delete``, so tests skip it)."""
         delete_series(self._root, symbol, interval)
@@ -354,8 +398,12 @@ class _DownloadDialog(QtWidgets.QDialog):
         self._days = QtWidgets.QSpinBox()
         self._days.setRange(1, 36500)
         self._days.setValue(30)
+        self._provider = QtWidgets.QComboBox()
+        self._provider.addItems(["Auto", *PROVIDER_CHOICES])
+        self._provider.setToolTip("Auto routes by symbol; or force a specific exchange/provider")
         form.addRow("Symbol", self._symbol)
         form.addRow("Timeframe", self._interval)
+        form.addRow("Provider", self._provider)
         form.addRow("Days back", self._days)
         buttons = QtWidgets.QDialogButtonBox(
             QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
@@ -364,8 +412,10 @@ class _DownloadDialog(QtWidgets.QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
-    def values(self) -> tuple[str, str, int]:
-        return self._symbol.text().strip(), self._interval.currentText(), self._days.value()
+    def values(self) -> tuple[str, str, int, str | None]:
+        choice = self._provider.currentText()
+        provider = None if choice == "Auto" else choice
+        return self._symbol.text().strip(), self._interval.currentText(), self._days.value(), provider
 
 
 class _ImportCsvDialog(QtWidgets.QDialog):
