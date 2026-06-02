@@ -39,6 +39,8 @@ from .alerts import AlertsTab
 from .journal import JournalTab
 from .screener import ScreenerTab
 from .tools import ToolsTab
+from .options_tab import OptionsTab
+from ..data.options.service import OptionsService
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -363,6 +365,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.alerts, "Alerts")
         self.datamanager = DataManagerTab(pins_path=_PINS_PATH)
         self.tabs.addTab(self.datamanager, "Data")
+        self.options = OptionsTab()
+        self.tabs.addTab(self.options, "Options")
+        self._options_svc = OptionsService(parent=self)
+        self._options_started = False
+        self._wire_options()
 
         # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
         # tab strip is hidden, so the rail alone switches between the six spaces.
@@ -390,9 +397,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rules = _RuleOverlay(self)
         self._rules.raise_()
 
+    def _wire_options(self) -> None:
+        """Connect the Options tab <-> service. Fetching only starts when the tab is first
+        shown (keeps startup + headless tests network-free)."""
+        tab, svc = self.options, self._options_svc
+        svc.chainReady.connect(tab.set_chain)
+        svc.expiriesReady.connect(tab.set_expiries)
+        svc.failed.connect(tab.set_status)
+
+        def _load_underlying(sym: str) -> None:
+            svc.stop_polling()
+            svc.set_underlying(sym)
+            svc.set_strikes(tab.strikes_value())
+            svc.load_expiries()
+
+        def _load_expiry(iso: str) -> None:
+            from ..data.options.model import make_expiry
+            import time
+            svc.set_expiry(make_expiry(iso, int(time.time() * 1000)))
+            svc.set_strikes(tab.strikes_value())
+            svc.start_polling()
+
+        tab.underlyingChanged.connect(_load_underlying)
+        tab.expiryChanged.connect(_load_expiry)
+        tab.refreshRequested.connect(svc.refresh)
+        self._load_options_underlying = _load_underlying
+
+    def _maybe_start_options(self) -> None:
+        if not self._options_started:
+            self._options_started = True
+            self._load_options_underlying(self.options.underlying.currentText())
+
     _RAIL_ITEMS = [
         ("▤", "Chart"), ("✦", "Studio"), ("⚙", "Tools"),
         ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
+        ("⊗", "Options"),
     ]
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
@@ -872,6 +911,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # the OS title bar is the active-space indicator now (tab strip + header chip are gone)
         if 0 <= index < len(self._RAIL_ITEMS):
             self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
+        # Options space: start fetching on first open; pause polling when navigating away.
+        if getattr(self, "options", None) is not None:
+            if self.tabs.currentWidget() is self.options:
+                self._maybe_start_options()
+            elif getattr(self, "_options_started", False):
+                self._options_svc.stop_polling()
 
     def _wire_studio_agent(self) -> None:
         """Give the Studio a live Claude client iff an API key + the [ai] extra are present.
