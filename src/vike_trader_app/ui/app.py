@@ -156,6 +156,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # timeframe dropdown on either chart -> reload the current symbol at that interval
         self.price.intervalChosen.connect(self._on_interval_chosen)
         self.studio_price.intervalChosen.connect(self._on_interval_chosen)
+        # pairs indicators need a 2nd symbol the app fetches (the chart can't reach the data layer)
+        self.price.pairsRequested.connect(lambda n: self._add_pairs(self.price, n))
+        self.studio_price.pairsRequested.connect(lambda n: self._add_pairs(self.studio_price, n))
 
         # Header crumb removed — it duplicated the chart's OHLC legend + the status bar.
         # Keep the labels as hidden status sinks so existing setText() calls (and tests) work.
@@ -249,7 +252,13 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         _card_lay = QtWidgets.QVBoxLayout(chart_card)
         _card_lay.setContentsMargins(0, 0, 0, 0)
-        _card_lay.addWidget(self.price)
+        # vertical splitter inside the card: price chart on top, oscillator panes stacked below
+        _price_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        _price_split.setHandleWidth(6)
+        _price_split.addWidget(self.price)
+        _price_split.setStretchFactor(0, 1)
+        self.price.set_pane_host(_price_split)
+        _card_lay.addWidget(_price_split)
 
         charts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         charts.addWidget(chart_card)
@@ -284,7 +293,13 @@ class MainWindow(QtWidgets.QMainWindow):
         _row = QtWidgets.QHBoxLayout()
         _row.setContentsMargins(0, 0, 0, 0)
         _row.setSpacing(6)
-        _row.addWidget(self.studio_price, 1)
+        # studio chart + its own stacked oscillator sub-panes
+        _studio_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        _studio_split.setHandleWidth(6)
+        _studio_split.addWidget(self.studio_price)
+        _studio_split.setStretchFactor(0, 1)
+        self.studio_price.set_pane_host(_studio_split)
+        _row.addWidget(_studio_split, 1)
         _row.addWidget(_controls, 0)
         _cb.addLayout(_row, 1)
         _cb.addWidget(_scrubber)
@@ -938,6 +953,49 @@ class MainWindow(QtWidgets.QMainWindow):
         """Timeframe dropdown -> reload the current symbol at the chosen interval."""
         if getattr(self, "_symbol", None):
             self._load_symbol(self._symbol, interval)
+
+    def _add_pairs(self, chart, name: str):
+        """Prompt for a 2nd symbol, fetch + align its closes to ``chart``'s bars, and add the
+        pairs indicator (ratio/spread/zscore) as an oscillator pane on that chart."""
+        bars = chart._bars
+        if not bars:
+            return
+        sym, ok = QtWidgets.QInputDialog.getText(
+            self, "Compare symbol", "Second symbol for the pair:", text="ETHUSDT"
+        )
+        if not ok or not sym.strip():
+            return
+        sym = sym.strip().upper()
+        start, end = bars[0].ts, bars[-1].ts
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            from ..data.catalog import Catalog
+
+            bench = Catalog().query(sym, self._interval, start, end)
+            if not bench:  # not cached -> fetch the gap (main thread; data layer isn't thread-safe)
+                bench = get_bars(sym, self._interval, start, end,
+                                 fetcher=select_source(sym).fetch_bars_range)
+        except Exception as exc:  # noqa: BLE001 - network/load failure
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(self, "Compare failed", f"{sym}: {exc}")
+            return
+        QtWidgets.QApplication.restoreOverrideCursor()
+        if not bench:
+            QtWidgets.QMessageBox.information(self, "Compare", f"No data for {sym} in this range.")
+            return
+        # align the benchmark closes to the chart bars by timestamp (forward-filled gaps)
+        bench_close = {b.ts: b.close for b in bench}
+        series, last = [], None
+        for b in bars:
+            v = bench_close.get(b.ts)
+            if v is not None:
+                last = v
+            series.append(last)
+        first = next((v for v in series if v is not None), None)
+        if first is None:
+            QtWidgets.QMessageBox.information(self, "Compare", f"No overlapping data for {sym}.")
+            return
+        chart.add_pairs(name, [v if v is not None else first for v in series])
 
     def _fetch_progress(self, done, start, end):
         pct = (done - start) / max(end - start, 1) * 100

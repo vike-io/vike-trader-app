@@ -163,87 +163,318 @@ _SELL = theme.DOWN
 _EXIT_C = "#ffffff"
 _MARKER_SIZE = 22  # arrow size in px (TradeStation-style prominence)
 
-# Indicator categories that overlay on the PRICE scale (look correct on the candles).
-# Oscillators (momentum/volume/etc.) need a separate sub-pane — a later step.
-_OVERLAY_CATEGORIES = ("overlap", "price")
+# Indicators that plot on the PRICE scale (overlay on the candles). Everything else that
+# isn't a `pattern` (bar markers) or `pairs` (needs a 2nd symbol) goes in an oscillator pane.
+# Category alone is NOT enough — volatility/volume/statistics each mix price-overlays (bands,
+# VWAP, linear-reg) with oscillators (ATR, OBV, z-score), so we classify by name.
+_OVERLAY_NAMES = frozenset({
+    # overlap (all) — moving averages + bands on the price scale
+    "alligator", "alma", "dema", "ema", "envelopes", "gmma", "hma", "ichimoku", "mcginley",
+    "midpoint", "midprice", "psar", "sma", "smma", "supertrend", "t3", "tema", "trima",
+    "vwma", "wma", "zlema",
+    # price transforms
+    "avgprice", "medprice", "typprice", "wclprice",
+    # structure (price levels / lines / fractals on the candles)
+    "pivot_points", "volume_profile_poc", "williams_fractal", "zigzag",
+    # volatility bands that ride the price scale
+    "bollinger", "donchian", "keltner", "high_low_52w",
+    # volume / statistics that ride the price scale
+    "vwap", "linearreg", "linearreg_intercept", "tsf", "std_error_bands",
+})
 
-# Short codes shown verbatim in upper-case; longer codes get Title Case (e.g. "alligator").
+# Full descriptive names for the picker's right column (TradingView-style). Candlestick
+# patterns aren't listed — they title-case cleanly from their snake_case name.
 _INDICATOR_NAMES = {
+    # overlap
     "ema": "Exponential Moving Average", "sma": "Simple Moving Average",
-    "wma": "Weighted Moving Average", "hma": "Hull Moving Average",
-    "dema": "Double EMA", "tema": "Triple EMA", "trima": "Triangular MA",
-    "vwma": "Volume-Weighted MA", "zlema": "Zero-Lag EMA", "smma": "Smoothed MA",
-    "alma": "Arnaud Legoux MA", "t3": "T3 Moving Average", "mcginley": "McGinley Dynamic",
-    "gmma": "Guppy Multiple MA", "psar": "Parabolic SAR", "supertrend": "Supertrend",
-    "ichimoku": "Ichimoku Cloud", "envelopes": "Envelopes", "alligator": "Alligator",
-    "midpoint": "Midpoint", "midprice": "Mid Price", "avgprice": "Average Price",
-    "medprice": "Median Price",
+    "wma": "Weighted Moving Average", "hma": "Hull Moving Average", "dema": "Double EMA",
+    "tema": "Triple EMA", "trima": "Triangular Moving Average", "vwma": "Volume-Weighted MA",
+    "zlema": "Zero-Lag EMA", "smma": "Smoothed Moving Average", "alma": "Arnaud Legoux MA",
+    "t3": "T3 Moving Average", "mcginley": "McGinley Dynamic", "gmma": "Guppy Multiple MA",
+    "psar": "Parabolic SAR", "supertrend": "Supertrend", "ichimoku": "Ichimoku Cloud",
+    "envelopes": "Moving Average Envelopes", "alligator": "Williams Alligator",
+    "midpoint": "Midpoint", "midprice": "Mid Price",
+    # price
+    "avgprice": "Average Price", "medprice": "Median Price", "typprice": "Typical Price",
+    "wclprice": "Weighted Close Price",
+    # momentum
+    "ac": "Accelerator Oscillator", "adx": "Average Directional Index", "adxr": "ADX Rating",
+    "ao": "Awesome Oscillator", "apo": "Absolute Price Oscillator", "aroon": "Aroon",
+    "aroonosc": "Aroon Oscillator", "asi": "Accumulative Swing Index", "bop": "Balance of Power",
+    "cci": "Commodity Channel Index", "chande_kroll_stop": "Chande Kroll Stop",
+    "cmo": "Chande Momentum Oscillator", "connors_rsi": "Connors RSI", "coppock": "Coppock Curve",
+    "dpo": "Detrended Price Oscillator", "elder_ray": "Elder Ray Index", "fisher": "Fisher Transform",
+    "kst": "Know Sure Thing", "macd": "MACD", "mom": "Momentum",
+    "ppo": "Percentage Price Oscillator", "relative_vigor": "Relative Vigor Index",
+    "roc": "Rate of Change", "rocp": "Rate of Change (%)", "rocr": "Rate of Change Ratio",
+    "rocr100": "Rate of Change Ratio (100)", "rsi": "Relative Strength Index",
+    "smi_ergodic": "SMI Ergodic Indicator", "stochastic": "Stochastic",
+    "stochf": "Stochastic Fast", "stochrsi": "Stochastic RSI", "trix": "TRIX",
+    "tsi": "True Strength Index", "ultosc": "Ultimate Oscillator", "vortex": "Vortex Indicator",
+    "williams_r": "Williams %R",
+    # volatility
+    "atr": "Average True Range", "bbands_pctb": "Bollinger %B", "bbands_width": "Bollinger Bandwidth",
+    "bollinger": "Bollinger Bands", "chop": "Choppiness Index", "donchian": "Donchian Channels",
+    "donchian_width": "Donchian Width", "high_low_52w": "52-Week High/Low",
+    "hvol": "Historical Volatility", "keltner": "Keltner Channels", "mass": "Mass Index",
+    "natr": "Normalized ATR", "relative_volatility": "Relative Volatility Index",
+    "stddev": "Standard Deviation", "true_range": "True Range", "ulcer": "Ulcer Index",
+    # volume
+    "ad": "Accumulation/Distribution", "adosc": "Chaikin A/D Oscillator", "cmf": "Chaikin Money Flow",
+    "efi": "Elder Force Index", "eom": "Ease of Movement", "kvo": "Klinger Volume Oscillator",
+    "net_volume": "Net Volume", "nvi": "Negative Volume Index", "obv": "On-Balance Volume",
+    "pvi": "Positive Volume Index", "pvt": "Price Volume Trend", "volume_osc": "Volume Oscillator",
+    "vwap": "VWAP",
+    # statistics
+    "beta": "Beta", "correl": "Correlation Coefficient", "correl_log": "Log Correlation",
+    "kurtosis": "Kurtosis", "linearreg": "Linear Regression", "linearreg_angle": "Linear Reg Angle",
+    "linearreg_intercept": "Linear Reg Intercept", "linearreg_slope": "Linear Reg Slope",
+    "mad": "Mean Absolute Deviation", "rank_correlation": "Rank Correlation", "skew": "Skewness",
+    "std_error": "Standard Error", "std_error_bands": "Standard Error Bands",
+    "tsf": "Time Series Forecast", "var": "Variance", "zscore": "Z-Score",
+    # structure
+    "pivot_points": "Pivot Points", "volume_profile_poc": "Volume Profile POC",
+    "williams_fractal": "Williams Fractal", "zigzag": "ZigZag",
+    # pairs
+    "ratio": "Price Ratio", "spread": "Spread", "spread_zscore": "Spread Z-Score",
 }
+
+# Friendly tab labels for the picker, mapped to the registry categories they show.
+_PICKER_TABS = [
+    ("All", None),
+    ("Trend", {"overlap", "price"}),
+    ("Momentum", {"momentum"}),
+    ("Volatility", {"volatility"}),
+    ("Volume", {"volume"}),
+    ("Statistics", {"statistics"}),
+    ("Structure", {"structure"}),
+    ("Pattern", {"pattern"}),
+    ("Pairs", {"pairs"}),
+]
 
 
 def _pretty_indicator(code: str) -> str:
-    """Human-readable indicator label for the picker (TradingView-style)."""
+    """Full descriptive indicator name for the picker (TradingView-style)."""
     if code in _INDICATOR_NAMES:
         return _INDICATOR_NAMES[code]
-    return code.upper() if len(code) <= 5 else code.replace("_", " ").title()
+    return code.replace("_", " ").title()  # patterns + any long tail read well title-cased
+
+
+def _indicator_code(name: str) -> str:
+    """Short upper-case code for the picker's left column (e.g. 'rsi' -> 'RSI')."""
+    return name.upper()
 
 
 class _IndicatorPicker(QtWidgets.QDialog):
-    """Searchable, polished list of price-overlay indicators (TradingView/TradeLocker-style)."""
+    """TradingView-style indicator picker: a search field + category pill tabs over a
+    two-column (short CODE / full NAME) list of the whole 176-indicator registry."""
 
     chosen = QtCore.Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Indicators")
-        self.resize(360, 480)
+        # frameless rounded panel (no OS title bar) — the TradingView look
+        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.resize(470, 600)
         self.setStyleSheet(
-            f"QDialog{{background:{theme.PANEL};}}"
-            f"QLineEdit{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;padding:8px 12px;color:{theme.TEXT};font-size:14px;}}"
+            f"#pickerCard{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"border-radius:14px;}}"
+            f"QLineEdit{{background:{theme.PANEL};border:1px solid {theme.BORDER};"
+            f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
             f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
-            f"QListWidget{{background:transparent;border:none;outline:none;font-size:14px;}}"
-            f"QListWidget::item{{color:{theme.TEXT};padding:9px 8px;border-radius:6px;}}"
-            f"QListWidget::item:hover{{background:{theme.PANEL2};}}"
-            f"QListWidget::item:selected{{background:{theme.RAISE};color:{theme.TEXT};}}"
+            f"QPushButton#tab{{background:transparent;border:none;color:{theme.TEXT3};"
+            f"padding:6px 13px;border-radius:9px;font-size:13px;font-weight:600;}}"
+            f"QPushButton#tab:hover{{color:{theme.TEXT2};}}"
+            f"QPushButton#tab:checked{{background:{theme.RAISE};color:{theme.TEXT};}}"
+            f"QListWidget#indList{{background:transparent;border:none;outline:none;}}"
+            f"QListWidget#indList::item{{border:none;border-bottom:0px;border-radius:8px;"
+            f"margin:1px 2px;padding:0;}}"
+            f"QListWidget#indList::item:hover{{background:{theme.RAISE};}}"
+            f"QListWidget#indList::item:selected{{background:{theme.RAISE};}}"
+            f"QScrollBar:vertical{{background:transparent;width:9px;margin:4px 2px;}}"
+            f"QScrollBar::handle:vertical{{background:{theme.RAISE};border-radius:4px;min-height:30px;}}"
+            f"QScrollBar::add-line,QScrollBar::sub-line{{height:0;}}"
         )
-        v = QtWidgets.QVBoxLayout(self)
-        v.setContentsMargins(14, 14, 14, 12)
-        v.setSpacing(10)
+        _root = QtWidgets.QVBoxLayout(self)  # translucent root; the rounded card is the visible panel
+        _root.setContentsMargins(0, 0, 0, 0)
+        card = QtWidgets.QFrame()
+        card.setObjectName("pickerCard")
+        _root.addWidget(card)
+        outer = QtWidgets.QVBoxLayout(card)
+        outer.setContentsMargins(16, 16, 16, 12)
+        outer.setSpacing(11)
+
         self._search = QtWidgets.QLineEdit()
-        self._search.setPlaceholderText("Search")
+        self._search.setPlaceholderText("Search for indicators")
         self._search.setClearButtonEnabled(True)
-        v.addWidget(self._search)
-        hdr = QtWidgets.QLabel("SCRIPT NAME")
-        hdr.setStyleSheet(
-            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
-        )
-        v.addWidget(hdr)
+        self._search.addAction(self._search_icon(), QtWidgets.QLineEdit.LeadingPosition)
+        outer.addWidget(self._search)
+
+        # category pill tabs (exclusive)
+        tabrow = QtWidgets.QHBoxLayout()
+        tabrow.setSpacing(2)
+        tabrow.setContentsMargins(0, 0, 0, 0)
+        self._tabs = QtWidgets.QButtonGroup(self)
+        self._tabs.setExclusive(True)
+        for i, (label, _cats) in enumerate(_PICKER_TABS):
+            b = QtWidgets.QPushButton(label)
+            b.setObjectName("tab")
+            b.setCheckable(True)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            self._tabs.addButton(b, i)
+            tabrow.addWidget(b)
+        tabrow.addStretch(1)
+        outer.addLayout(tabrow)
+
         self._list = QtWidgets.QListWidget()
-        v.addWidget(self._list, 1)
+        self._list.setObjectName("indList")  # ID selector beats the global QListWidget::item border
+        self._list.setVerticalScrollMode(QtWidgets.QAbstractItemView.ScrollPerPixel)
+        outer.addWidget(self._list, 1)
 
         import vike_trader_app.core.indicators  # noqa: F401 - populate the REGISTRY
         from vike_trader_app.core.indicators import base as _base
 
-        specs = [s for s in _base.list_indicators() if s.category in _OVERLAY_CATEGORIES]
-        for s in sorted(specs, key=lambda x: _pretty_indicator(x.name)):
-            item = QtWidgets.QListWidgetItem(_pretty_indicator(s.name))
+        self._rows = []  # (item, haystack, category) for filtering
+        for s in sorted(_base.list_indicators(), key=lambda x: x.name):
+            item = QtWidgets.QListWidgetItem()
             item.setData(QtCore.Qt.UserRole, s.name)
+            row = QtWidgets.QWidget()
+            row.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)  # clicks -> the list item
+            row.setStyleSheet("background:transparent;")  # else the global QWidget bg darkens rows
+            rl = QtWidgets.QHBoxLayout(row)
+            rl.setContentsMargins(12, 9, 12, 9)
+            rl.setSpacing(14)
+            code = QtWidgets.QLabel(_indicator_code(s.name))
+            code.setFixedWidth(150)
+            code.setStyleSheet(
+                f"color:{theme.TEXT};font-weight:600;font-size:15px;background:transparent;"
+            )
+            name = QtWidgets.QLabel(_pretty_indicator(s.name))
+            name.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;background:transparent;")
+            rl.addWidget(code)
+            rl.addWidget(name, 1)
+            item.setSizeHint(row.sizeHint())
             self._list.addItem(item)
+            self._list.setItemWidget(item, row)
+            self._rows.append((item, f"{s.name} {_pretty_indicator(s.name)}".lower(), s.category))
 
-        self._search.textChanged.connect(self._filter)
+        self._cats = None  # active tab's category set; None = All
+        self._tabs.idClicked.connect(self._on_tab)
+        self._tabs.button(0).setChecked(True)
+        self._search.textChanged.connect(lambda *_: self._apply())
         self._list.itemActivated.connect(self._activate)
         self._list.itemDoubleClicked.connect(self._activate)
+        self._search.setFocus()
 
-    def _filter(self, text):
-        t = text.strip().lower()
-        for i in range(self._list.count()):
-            it = self._list.item(i)
-            it.setHidden(bool(t) and t not in it.text().lower())
+    @staticmethod
+    def _search_icon() -> QtGui.QIcon:
+        pm = QtGui.QPixmap(32, 32)
+        pm.fill(QtCore.Qt.transparent)
+        p = QtGui.QPainter(pm)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        pen = QtGui.QPen(QtGui.QColor(theme.TEXT3))
+        pen.setWidthF(2.4)
+        p.setPen(pen)
+        p.drawEllipse(QtCore.QRectF(8, 8, 12, 12))
+        p.drawLine(QtCore.QPointF(19, 19), QtCore.QPointF(25, 25))
+        p.end()
+        return QtGui.QIcon(pm)
+
+    def _on_tab(self, idx: int):
+        self._cats = _PICKER_TABS[idx][1]
+        self._apply()
+
+    def _apply(self):
+        t = self._search.text().strip().lower()
+        for item, hay, cat in self._rows:
+            ok = (self._cats is None or cat in self._cats) and (not t or t in hay)
+            item.setHidden(not ok)
 
     def _activate(self, item):
         self.chosen.emit(item.data(QtCore.Qt.UserRole))
         self.accept()
+
+
+class OscillatorPane(pg.PlotWidget):
+    """A stacked sub-pane below the price chart that plots one oscillator indicator by bar
+    index. Its x-range is linked to the price chart (so it pans/zooms in lockstep) and it's
+    revealed via ``show_upto`` exactly like the candles; y autoscales to the visible values.
+    Shows a title chip (top-left) and a close button (top-right)."""
+
+    paneClosed = QtCore.Signal(object)  # emits self when the user clicks ✕
+    # (NB: don't name this `closed` — pyqtgraph's GraphicsView sets self.closed = bool.)
+
+    def __init__(self, name: str, label: str, link_to: "PriceChart"):
+        super().__init__(axisItems={"right": PriceAxis(orientation="right")})
+        self._name = name
+        self._series: dict = {}   # sublabel -> full series aligned to bars
+        self._curves: dict = {}   # sublabel -> PlotDataItem
+        # transparent (like the price chart) so the rounded card bg shows through; full repaint
+        # avoids translucent-viewport trails.
+        self.setBackground(None)
+        _vp = self.viewport()
+        _vp.setAutoFillBackground(False)
+        _vp.setStyleSheet("background:transparent;")
+        self.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
+        self.showAxis("right")
+        self.hideAxis("left")
+        self.hideAxis("bottom")  # time axis lives on the price chart; panes align via x-link
+        self.getAxis("right").setTextPen(theme.TEXT3)
+        _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
+        self.getAxis("right").setPen(_transparent)
+        self.getAxis("right").setTickPen(pg.mkPen(theme.BORDER))
+        self.getAxis("right").setStyle(tickLength=0)
+        self.showGrid(x=True, y=True, alpha=_GRID)
+        self.hideButtons()
+        self.getViewBox().setMouseEnabled(x=False, y=False)  # driven by the price chart
+        self.getViewBox().setXLink(link_to.getViewBox())     # follow the price x-range
+
+        self._title_lbl = QtWidgets.QLabel(label, self)
+        self._title_lbl.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._title_lbl.setStyleSheet(
+            f"color:{theme.TEXT2};font-size:11px;font-weight:600;background:transparent;"
+        )
+        self._title_lbl.move(8, 4)
+        self._title_lbl.adjustSize()
+        self._close = QtWidgets.QPushButton("✕", self)
+        self._close.setCursor(QtCore.Qt.PointingHandCursor)
+        self._close.setFixedSize(18, 18)
+        self._close.setStyleSheet(
+            f"QPushButton{{color:{theme.TEXT3};background:transparent;border:none;font-size:12px;}}"
+            f"QPushButton:hover{{color:{theme.TEXT};}}"
+        )
+        self._close.clicked.connect(lambda: self.paneClosed.emit(self))
+
+    def set_series(self, series: dict):
+        """``series``: ``{sublabel: full list aligned to bars}`` (one curve per output)."""
+        for c in self._curves.values():
+            self.removeItem(c)
+        self._curves = {}
+        self._series = series or {}
+        for i, label in enumerate(self._series):
+            color = _OVERLAY_COLORS[i % len(_OVERLAY_COLORS)]
+            self._curves[label] = self.plot([], [], pen=pg.mkPen(color, width=1))
+
+    def show_upto(self, index: int):
+        all_ys = []
+        for label, curve in self._curves.items():
+            series = self._series.get(label, [])
+            xs = [i for i in range(min(index + 1, len(series))) if series[i] is not None]
+            ys = [series[i] for i in xs]
+            curve.setData(xs, ys)
+            all_ys += ys
+        if all_ys:
+            lo, hi = min(all_ys), max(all_ys)
+            if hi > lo:
+                self.setYRange(lo, hi, padding=0.12)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        if hasattr(self, "_close"):
+            aw = self.getAxis("right").width() if self.getAxis("right").isVisible() else 0
+            self._close.move(self.width() - int(aw) - 22, 4)
 
 
 class PriceChart(pg.PlotWidget):
@@ -252,6 +483,7 @@ class PriceChart(pg.PlotWidget):
     last-price line+badge, and vertical autoscale that fits the visible candles."""
 
     intervalChosen = QtCore.Signal(str)  # emitted by the timeframe dropdown (e.g. "5m")
+    pairsRequested = QtCore.Signal(str)  # a pairs indicator was picked; the app supplies a benchmark
 
     def __init__(self):
         axis = TimeAxis(orientation="bottom")
@@ -286,6 +518,9 @@ class PriceChart(pg.PlotWidget):
         self._ts_index = {}  # bar timestamp -> index (for trade-row -> chart focus)
         self._overlays = {}  # label -> full series (aligned to bars)
         self._overlay_curves = {}  # label -> PlotDataItem
+        self._osc_panes = {}  # indicator name -> OscillatorPane (stacked below; see set_pane_host)
+        self._pane_host = None  # the vertical QSplitter that stacks the price chart + osc panes
+        self._patterns = {}  # pattern name -> {"series": [int], "scatter": ScatterPlotItem}
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
@@ -436,6 +671,8 @@ class PriceChart(pg.PlotWidget):
 
     def set_data(self, bars, trades):
         self._bars = bars
+        self._clear_oscillators()  # oscillators + patterns reset on a new symbol/interval
+        self._clear_patterns()
         self._time_axis.set_bars(bars)
         ts_index = {b.ts: i for i, b in enumerate(bars)}
         self._ts_index = ts_index
@@ -483,12 +720,44 @@ class PriceChart(pg.PlotWidget):
         dlg = _IndicatorPicker(self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         dlg.chosen.connect(self.add_indicator)
+        btn = getattr(self, "_ind_btn", None)  # drop it just under the ƒx Indicators button
+        if btn is not None:
+            dlg.move(btn.mapToGlobal(QtCore.QPoint(0, btn.height() + 4)))
         dlg.exec()
 
+    def set_pane_host(self, splitter):
+        """Give the chart the vertical QSplitter it shares with its oscillator sub-panes."""
+        self._pane_host = splitter
+
     def add_indicator(self, name: str):
-        """Compute indicator ``name`` over the loaded bars and add it as a chart overlay."""
+        """Render a picked indicator: price-overlays go on the candles, oscillators get a
+        stacked sub-pane. (Patterns -> bar markers and pairs -> spread pane are later phases.)"""
         if not self._bars:
             return
+        from vike_trader_app.core.indicators import base as _base
+
+        try:
+            spec = _base.get(name)
+        except Exception:  # noqa: BLE001 - unknown indicator
+            return
+        if spec.category == "pattern":
+            self._toggle_pattern(name)  # candlestick patterns -> bar markers (toggle on/off)
+            return
+        if spec.category == "pairs":
+            self.pairsRequested.emit(name)  # app prompts for a 2nd symbol -> add_pairs()
+            return
+        outputs = self._compute_indicator(name, spec)
+        if outputs is None:
+            return
+        if name in _OVERLAY_NAMES:
+            merged = dict(self._overlays)
+            merged.update(outputs)
+            self.set_overlays(merged)
+        else:
+            self._add_oscillator(name, outputs)
+
+    def _compute_indicator(self, name: str, spec):
+        """Run the indicator over the loaded bars -> ``{label: cleaned series}`` (None on failure)."""
         from vike_trader_app.core.indicators import base as _base
 
         data = {
@@ -499,24 +768,136 @@ class PriceChart(pg.PlotWidget):
             "volume": [b.volume for b in self._bars],
         }
         try:
-            spec = _base.get(name)
             result = _base.compute(name, data)
-        except Exception:  # noqa: BLE001 - bad inputs / unknown indicator -> ignore
+        except Exception:  # noqa: BLE001 - bad inputs -> ignore
+            return None
+
+        def _clean(seq):  # nan/inf -> None so the renderer skips warm-up gaps
+            return [None if v is None or (isinstance(v, float) and v != v) else v for v in seq]
+
+        if len(spec.outputs) <= 1:
+            return {name: _clean(result)}
+        return {f"{name}:{lbl}": _clean(s) for lbl, s in zip(spec.outputs, result)}
+
+    # --- oscillator sub-panes (stacked below the price chart, x-linked) ---
+    def _add_oscillator(self, name: str, outputs: dict):
+        if self._pane_host is None or name in self._osc_panes:
+            return
+        pane = OscillatorPane(name, _pretty_indicator(name), self)
+        pane.set_series(outputs)
+        pane.paneClosed.connect(self._remove_oscillator)
+        self._osc_panes[name] = pane
+        self._pane_host.addWidget(pane)
+        self._resize_panes()
+        pane.show_upto(len(self._bars) - 1 if self._bars else 0)
+
+    def _remove_oscillator(self, pane):
+        self._osc_panes.pop(getattr(pane, "_name", None), None)
+        pane.setParent(None)
+        pane.deleteLater()
+        self._resize_panes()
+
+    def _clear_oscillators(self):
+        for pane in list(self._osc_panes.values()):
+            pane.setParent(None)
+            pane.deleteLater()
+        self._osc_panes = {}
+
+    def _resize_panes(self):
+        """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked)."""
+        host = self._pane_host
+        if host is None or host.count() <= 1:
+            return
+        n_panes = host.count() - 1
+        total = host.height() or 600
+        pane_h = max(96, int(total * 0.22))
+        price_h = max(140, total - pane_h * n_panes)
+        host.setSizes([price_h] + [pane_h] * n_panes)
+
+    def add_pairs(self, name: str, benchmark: list):
+        """Add a pairs indicator (ratio/spread/zscore) computed against a 2nd symbol's close
+        series (``benchmark``, aligned to the loaded bars) — rendered in an oscillator pane."""
+        if not self._bars:
+            return
+        from vike_trader_app.core.indicators import base as _base
+
+        try:
+            spec = _base.get(name)
+        except Exception:  # noqa: BLE001 - unknown indicator
+            return
+        data = {
+            "open": [b.open for b in self._bars], "high": [b.high for b in self._bars],
+            "low": [b.low for b in self._bars], "close": [b.close for b in self._bars],
+            "volume": [b.volume for b in self._bars], "benchmark": benchmark,
+        }
+        try:
+            result = _base.compute(name, data)
+        except Exception:  # noqa: BLE001 - bad inputs -> ignore
             return
 
-        def _clean(seq):  # nan/inf -> None so the overlay renderer skips warmup gaps
-            out = []
-            for v in seq:
-                out.append(None if v is None or (isinstance(v, float) and v != v) else v)
-            return out
+        def _clean(seq):
+            return [None if v is None or (isinstance(v, float) and v != v) else v for v in seq]
 
-        merged = dict(self._overlays)
         if len(spec.outputs) <= 1:
-            merged[name] = _clean(result)
-        else:  # multi-output (e.g. ichimoku, envelopes) -> one line per named output
-            for label, series in zip(spec.outputs, result):
-                merged[f"{name}:{label}"] = _clean(series)
-        self.set_overlays(merged)
+            outputs = {name: _clean(result)}
+        else:
+            outputs = {f"{name}:{lbl}": _clean(s) for lbl, s in zip(spec.outputs, result)}
+        self._add_oscillator(name, outputs)
+
+    # --- candlestick patterns (bar markers; pick again to toggle off) ---
+    def _toggle_pattern(self, name: str):
+        if name in self._patterns:
+            self._remove_pattern(name)
+            return
+        from vike_trader_app.core.indicators import base as _base
+
+        data = {
+            "open": [b.open for b in self._bars], "high": [b.high for b in self._bars],
+            "low": [b.low for b in self._bars], "close": [b.close for b in self._bars],
+            "volume": [b.volume for b in self._bars],
+        }
+        try:
+            series = _base.compute(name, data)
+        except Exception:  # noqa: BLE001 - bad inputs -> ignore
+            return
+        scatter = pg.ScatterPlotItem(
+            hoverable=True, pen=None, tip=lambda x, y, data: str(data),
+        )
+        scatter.setZValue(20)
+        self.addItem(scatter)
+        self._patterns[name] = {"series": series, "scatter": scatter}
+        self.show_upto(len(self._bars) - 1 if self._bars else 0)
+
+    def _remove_pattern(self, name: str):
+        p = self._patterns.pop(name, None)
+        if p is not None:
+            self.removeItem(p["scatter"])
+
+    def _clear_patterns(self):
+        for p in self._patterns.values():
+            self.removeItem(p["scatter"])
+        self._patterns = {}
+
+    def _render_patterns(self, index: int, off: float):
+        """Draw revealed pattern markers: up-triangle below (bullish), down-triangle above
+        (bearish); the pattern name shows on hover (no per-bar labels -> no clutter)."""
+        for name, p in self._patterns.items():
+            series = p["series"]
+            label = _pretty_indicator(name)
+            spots = []
+            for i in range(min(index + 1, len(series))):
+                v = series[i]
+                if not v:
+                    continue
+                bull = v > 0
+                bar = self._bars[i]
+                y = (bar.low - off) if bull else (bar.high + off)
+                spots.append({
+                    "pos": (i, y), "symbol": "t1" if bull else "t", "size": 12,
+                    "brush": pg.mkBrush(theme.UP if bull else theme.DOWN), "pen": None,
+                    "data": f"{label} · {'Bullish' if bull else 'Bearish'}",
+                })
+            p["scatter"].setData(spots)
 
     def show_upto(self, index: int):
         """Reveal candles/markers/overlays up to and including ``index``."""
@@ -533,6 +914,7 @@ class PriceChart(pg.PlotWidget):
         yb = y_bounds(self._bars, lo, min(hi, index + 1))
         marker_off = (yb[1] - yb[0]) * 0.04 if yb and yb[1] > yb[0] else 0.0
         self._render_markers(index, marker_off)
+        self._render_patterns(index, marker_off)
         for label, curve in self._overlay_curves.items():
             series = self._overlays.get(label, [])
             xs = [i for i in range(min(index + 1, len(series))) if series[i] is not None]
@@ -553,6 +935,8 @@ class PriceChart(pg.PlotWidget):
         self._update_last()
         self._autoscale_y()
         self._show_last_ohlc()  # header is pinned to the latest candle (not the hovered bar)
+        for pane in self._osc_panes.values():  # reveal the oscillator panes in lockstep
+            pane.show_upto(index)
 
     def _add_marker(self, x, price, *, below, symbol, color, text):
         """Register a trade marker + its bold 'Buy'/'Sell' label (TradeStation style)."""
