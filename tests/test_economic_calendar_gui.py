@@ -140,3 +140,18 @@ def test_tick_refreshes_only_future_countdowns(app):
     t.set_now_ms(TS_WED - 60_000)
     t._tick()                                  # advance; should not raise, recomputes labels
     assert t.countdown_text(TS_WED) == "Coming in 0:01:00"
+
+
+# ---------------------------------------------------------------------------
+# Task 15 — expandable per-event detail row
+# ---------------------------------------------------------------------------
+def test_clicking_event_toggles_detail_child(app):
+    t = _tab(app)
+    top = t._tree.topLevelItem(0)
+    row = top.child(0)
+    assert row.childCount() == 0
+    t._toggle_detail(row)
+    assert row.childCount() == 1            # detail node added
+    assert "Forecast" in row.child(0).text(0) or row.child(0).text(0) != ""
+    t._toggle_detail(row)
+    assert row.childCount() == 0            # collapses again
