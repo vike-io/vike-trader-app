@@ -12,12 +12,13 @@ import time
 
 from PySide6 import QtCore, QtWidgets
 
+from ..data.binance_source import interval_ms
 from ..data.cache import DEFAULT_ROOT, get_bars, repair_gaps
 from ..data.parquet_source import delete_series
 from ..data.rollup import load_pins, refresh_rollup, save_pins
 from ..data.sources import select_source
 from . import theme
-from .datamanager_data import row_cells, series_size_bytes
+from .datamanager_data import quality_summary, row_cells, series_size_bytes
 
 _PINS_PATH = "storage/pins.json"
 _COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌"]
@@ -41,16 +42,23 @@ class DataManagerTab(QtWidgets.QWidget):
         bar = QtWidgets.QHBoxLayout()
         bar.setSpacing(6)
         self.btn_refresh = QtWidgets.QPushButton("↻ Refresh")
+        self.btn_update_all = QtWidgets.QPushButton("⟳ Update all")
         self.btn_download = QtWidgets.QPushButton("⤓ Download / Extend…")
+        self.btn_inspect = QtWidgets.QPushButton("🔍 Inspect")
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
         self.btn_delete = QtWidgets.QPushButton("🗑 Delete")
+        self.btn_update_all.setToolTip("Fetch up-to-now for every cached series")
+        self.btn_inspect.setToolTip("Check the selected series for gaps / OHLC anomalies")
         self.btn_refresh.clicked.connect(self.refresh)
+        self.btn_update_all.clicked.connect(self._on_update_all)
         self.btn_download.clicked.connect(self._on_download)
+        self.btn_inspect.clicked.connect(self._on_inspect)
         self.btn_repair.clicked.connect(self._on_repair)
         self.btn_pin.clicked.connect(self._on_pin)
         self.btn_delete.clicked.connect(self._on_delete)
-        for b in (self.btn_refresh, self.btn_download, self.btn_repair, self.btn_pin, self.btn_delete):
+        for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_inspect,
+                  self.btn_repair, self.btn_pin, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
         self.count_label = QtWidgets.QLabel("")
@@ -66,10 +74,24 @@ class DataManagerTab(QtWidgets.QWidget):
         self._table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        self._table.doubleClicked.connect(lambda *_: self._on_repair())
+        self._table.doubleClicked.connect(lambda *_: self._on_inspect())
         root_layout.addWidget(self._table, 1)
+
+        # operation log (downloads / repairs / inspect reports) — read-only, like QDM's log
+        self._log_view = QtWidgets.QPlainTextEdit()
+        self._log_view.setReadOnly(True)
+        self._log_view.setMaximumHeight(130)
+        self._log_view.setStyleSheet(
+            f"QPlainTextEdit{{background:{theme.PANEL2};color:{theme.TEXT2};border:1px solid "
+            f"{theme.BORDER};border-radius:6px;font-family:{theme.FONT_MONO};font-size:11px;}}"
+        )
+        root_layout.addWidget(self._log_view)
         # No refresh() here: the table populates lazily on first show (showEvent), so app startup
         # never reads the catalog for a tab the user may not open.
+
+    def _log(self, msg: str) -> None:
+        """Append a timestamped line to the operation log."""
+        self._log_view.appendPlainText(f"{time.strftime('%H:%M:%S')}  {msg}")
 
     def _make_catalog(self):
         """Prefer the DuckDB catalog — it answers count/min/max from Parquet *statistics* without
@@ -129,6 +151,7 @@ class DataManagerTab(QtWidgets.QWidget):
                 pass
         save_pins(self._pins_path, list(pins))
         self.refresh()
+        self._log(f"{'Pinned' if sel in pins else 'Unpinned'} {sel[0]} {sel[1]}")
 
     def _on_repair(self) -> None:
         sel = self._selected()
@@ -136,17 +159,53 @@ class DataManagerTab(QtWidgets.QWidget):
             return
         symbol, interval = sel
         now = int(time.time() * 1000)
+        self._log(f"Repairing gaps in {symbol} {interval}…")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             n = repair_gaps(symbol, interval, 0, now, root=self._root,
                             fetcher=select_source(symbol).fetch_bars_range)
         except Exception as exc:  # noqa: BLE001 - report, no crash
             QtWidgets.QApplication.restoreOverrideCursor()
-            self.count_label.setText(f"Repair failed: {exc}")
+            self._log(f"Repair {symbol} {interval} failed: {exc}")
             return
         QtWidgets.QApplication.restoreOverrideCursor()
         self.refresh()
-        self.count_label.setText(f"Repaired {symbol} {interval}: +{n} bar(s)")
+        self._log(f"Repaired {symbol} {interval}: +{n} bar(s)")
+
+    def _on_inspect(self) -> None:
+        """Check the selected series for gaps / OHLC anomalies and report to the log."""
+        sel = self._selected()
+        if sel is None:
+            return
+        symbol, interval = sel
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            bars = self._catalog().query(symbol, interval)
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self._log(f"Inspect {symbol} {interval}: {quality_summary(bars, interval_ms(interval))}")
+
+    def _on_update_all(self) -> None:
+        """Fetch up-to-now for every cached series (TradeStation/NinjaTrader 'Update all')."""
+        datasets = self._catalog().list_datasets()
+        now = int(time.time() * 1000)
+        self._log(f"Update all: {len(datasets)} series…")
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            for info in datasets:
+                try:
+                    before = info.n_bars
+                    bars = get_bars(info.symbol, info.interval, info.start_ts, now,
+                                    root=self._root,
+                                    fetcher=select_source(info.symbol).fetch_bars_range)
+                    self._log(f"  {info.symbol} {info.interval}: +{max(0, len(bars) - before)} bar(s)")
+                except Exception as exc:  # noqa: BLE001 - skip a failing symbol, keep going
+                    self._log(f"  {info.symbol} {info.interval}: failed — {exc}")
+                QtWidgets.QApplication.processEvents()  # keep the log/UI live during the run
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.refresh()
+        self._log("Update all: done")
 
     def _on_download(self) -> None:
         sel = self._selected()
@@ -157,17 +216,18 @@ class DataManagerTab(QtWidgets.QWidget):
         if not symbol:
             return
         now = int(time.time() * 1000)
+        self._log(f"Downloading {symbol} {interval} ({days}d)…")
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root,
                      fetcher=select_source(symbol).fetch_bars_range)
         except Exception as exc:  # noqa: BLE001 - report, no crash
             QtWidgets.QApplication.restoreOverrideCursor()
-            self.count_label.setText(f"Download failed: {exc}")
+            self._log(f"Download {symbol} {interval} failed: {exc}")
             return
         QtWidgets.QApplication.restoreOverrideCursor()
         self.refresh()
-        self.count_label.setText(f"Downloaded {symbol} {interval}")
+        self._log(f"Downloaded {symbol} {interval}")
 
     def _delete(self, symbol: str, interval: str) -> None:
         """Remove a series' files (no prompt — the prompt lives in ``_on_delete``, so tests skip it)."""
@@ -176,6 +236,7 @@ class DataManagerTab(QtWidgets.QWidget):
         pins = [p for p in load_pins(self._pins_path) if tuple(p) != (symbol, interval)]
         save_pins(self._pins_path, pins)
         self.refresh()
+        self._log(f"Deleted {symbol} {interval}")
 
     def _on_delete(self) -> None:
         sel = self._selected()
