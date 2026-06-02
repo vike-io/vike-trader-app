@@ -141,3 +141,15 @@ def test_status_message_no_modal():
     tab = OptionsTab()
     tab.set_status("Polygon unreachable")  # must not raise / pop a dialog
     assert "Polygon" in tab.status_label.text()
+
+
+def test_status_flags_free_yfinance_feed_only():
+    _app()
+    tab = OptionsTab()
+    exp = Expiry(date="2026-07-02", dte=30, label="02 Jul")
+    yf = OptionChain("MSFT", "equity", 460.0, exp, 1, "yfinance",
+                     (StrikeRow(strike=460.0, call=OptionQuote(strike=460.0, type="C")),))
+    tab.set_chain(yf)
+    assert "free feed" in tab.status_label.text()           # nags on the free fallback
+    tab.set_chain(_chain())                                  # source="polygon"
+    assert "free feed" not in tab.status_label.text()        # silent on a real backend

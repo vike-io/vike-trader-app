@@ -154,12 +154,21 @@ class OptionsTab(QtWidgets.QWidget):
             self.expiry.addItem(f"{e.label}  ·  {e.dte}DTE", e.date)
         self.expiry.blockSignals(False)
 
+    @staticmethod
+    def _source_note(source: str) -> str:
+        """Flag the free fallback so the data source (and how to upgrade) is always clear."""
+        if source == "yfinance":
+            return "  ·  free feed — greeks inferred (set options_stock_provider for exchange-grade)"
+        return ""
+
     def set_chain(self, chain: OptionChain) -> None:
         """Single-expiry view (flat grid)."""
         self._chain, self._chains = chain, None
         self._render()
         px = "—" if chain.underlying_price is None else f"{chain.underlying_price:,.2f}"
-        self.set_status(f"{chain.underlying} {px}  ·  {chain.source}  ·  {chain.expiry.label}")
+        self.set_status(
+            f"{chain.underlying} {px}  ·  {chain.source}  ·  {chain.expiry.label}"
+            + self._source_note(chain.source))
 
     def set_chains(self, chains: list[OptionChain]) -> None:
         """Grouped view: each expiry as a collapsible section (first expanded)."""
@@ -168,7 +177,9 @@ class OptionsTab(QtWidgets.QWidget):
         if chains:
             c = chains[0]
             px = "—" if c.underlying_price is None else f"{c.underlying_price:,.2f}"
-            self.set_status(f"{c.underlying} {px}  ·  {c.source}  ·  {len(chains)} expiries")
+            self.set_status(
+                f"{c.underlying} {px}  ·  {c.source}  ·  {len(chains)} expiries"
+                + self._source_note(c.source))
 
     # --- rendering -----------------------------------------------------------
     def _setup_columns(self) -> tuple[list[str], list[str], int, int]:
