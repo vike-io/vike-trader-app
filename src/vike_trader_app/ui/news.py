@@ -333,7 +333,7 @@ class NewsTab(QtWidgets.QWidget):
         it = self._current_item()
         if it is None:
             return
-        self._reader_av.setPixmap(_avatar_for(it.source, 26))
+        self._reader_av.setPixmap(_avatar_for(it.source, 30))   # match the 30x30 reader avatar label
         self._source_lbl.setText(it.source)
         self._title.setText(it.title)
         when = time.strftime("%b %d, %Y · %H:%M", time.localtime(it.published_ms / 1000)) if it.published_ms else ""

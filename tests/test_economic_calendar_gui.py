@@ -7,7 +7,7 @@ pytest.importorskip("PySide6")
 
 from datetime import timezone  # noqa: E402
 
-from PySide6 import QtWidgets, QtGui
+from PySide6 import QtWidgets, QtGui, QtCore
 from vike_trader_app.ui.calendar_delegate import importance_bar_pixmap, value_color
 
 
@@ -125,6 +125,42 @@ def test_week_strip_has_seven_day_cards(app):
     space = CalendarSpace(economic_tab=t)
     assert len(space._day_cards) == 7
     assert t.day_card_count() == 0
+
+
+def test_calendar_space_topnav_mirrors_week_range(app):
+    # The shared top date-nav (Today/‹/›/range + tz) lives in CalendarSpace and drives the
+    # economic week for all pages; each sub-tab's own date-nav + economic's tz are hidden.
+    from vike_trader_app.ui.equity_calendar import CalendarSpace
+    t = _tab(app)
+    space = CalendarSpace(economic_tab=t)
+    assert t._btn_today.isHidden()                 # per-tab date-nav hidden when embedded
+    assert t._cmb_tz.isHidden()                    # tz moved to the shared top bar
+    before = space._range_lbl.text()
+    assert before and before == t._lbl_range.text()   # shared label mirrors economic's range
+    space.economic.go_next_week()                  # what the top-bar ‹/› buttons drive
+    space._sync_range()
+    _drain(t, app)
+    assert space._range_lbl.text() == t._lbl_range.text()
+    assert space._range_lbl.text() != before       # advanced to the next week
+
+
+def test_country_dialog_quickpicks_and_selection(app):
+    from vike_trader_app.ui.country_dialog import SelectCountriesDialog
+    from vike_trader_app.data.calendar.taxonomy import ALL_CURRENCIES, TOP20_ECONOMIES
+    dlg = SelectCountriesDialog({"USD"})
+    assert dlg.selected_countries() == {"USD"}
+    assert dlg._items["USD"].checkState() == QtCore.Qt.Checked
+    # "Top 20 economies" quick-pick: list check-states AND the returned set must both update
+    dlg._set_all(set(TOP20_ECONOMIES))
+    assert dlg.selected_countries() == set(TOP20_ECONOMIES)
+    for cur in TOP20_ECONOMIES:
+        assert dlg._items[cur].checkState() == QtCore.Qt.Checked
+    for cur in (ALL_CURRENCIES - set(TOP20_ECONOMIES)):   # NZD, IDR — not top-20
+        assert dlg._items[cur].checkState() == QtCore.Qt.Unchecked
+    # "Clear": empty selection maps to None (== all countries)
+    dlg._set_all(set())
+    assert dlg.selected_countries() is None
+    assert all(it.checkState() == QtCore.Qt.Unchecked for it in dlg._items.values())
 
 
 def test_category_filter(app):
