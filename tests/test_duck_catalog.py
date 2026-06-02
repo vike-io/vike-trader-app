@@ -121,3 +121,32 @@ def test_duck_resample_sliced_matches_core_on_same_slice(tmp_path):
 
 def test_duck_resample_missing_dataset_returns_empty(tmp_path):
     assert DuckCatalog(str(tmp_path)).resample("NOPE", "1m", _HOUR) == []
+
+
+# --- get_or_derive (serve a timeframe from its own file, else derive from the 1m base) ---
+
+def test_get_or_derive_prefers_own_cached_file(tmp_path):
+    # 1h cached directly -> return it verbatim (distinct sentinel), not a derived series.
+    _seed(tmp_path, "X", "1m", [Bar(ts=i * 60_000, open=1, high=1, low=1, close=1, volume=1.0)
+                                for i in range(120)])
+    _seed(tmp_path, "X", "1h", [Bar(ts=0, open=9, high=9, low=9, close=9, volume=99.0)])
+    got = DuckCatalog(str(tmp_path)).get_or_derive("X", "1h")
+    assert len(got) == 1 and got[0].volume == 99.0  # from the 1h file, not derived from 1m
+
+
+def test_get_or_derive_falls_back_to_resampling_the_base(tmp_path):
+    bars = [Bar(ts=i * 60_000, open=100 + i, high=110 + i, low=90 - i, close=100 + (i % 5),
+                volume=i + 1.0) for i in range(120)]
+    _seed(tmp_path, "X", "1m", bars)  # only the 1m base is cached
+    got = DuckCatalog(str(tmp_path)).get_or_derive("X", "1h")  # no 1h file -> derive from 1m
+    assert _tuples(got) == _tuples(resample(bars, _HOUR))
+
+
+def test_get_or_derive_base_interval_returns_base(tmp_path):
+    bars = [Bar(ts=i * 60_000, open=1, high=1, low=1, close=1, volume=1.0) for i in range(5)]
+    _seed(tmp_path, "X", "1m", bars)
+    assert _tuples(DuckCatalog(str(tmp_path)).get_or_derive("X", "1m")) == _tuples(bars)
+
+
+def test_get_or_derive_missing_everything_returns_empty(tmp_path):
+    assert DuckCatalog(str(tmp_path)).get_or_derive("NOPE", "1h") == []

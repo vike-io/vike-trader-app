@@ -91,6 +91,24 @@ class DuckCatalog:
         return [Bar(ts=int(r[0]), open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])
                 for r in rows]
 
+    def get_or_derive(self, symbol: str, interval: str, start: int | None = None,
+                      end: int | None = None, base: str = "1m"):
+        """Serve ``interval`` from its own Parquet if cached, else derive it from the ``base``.
+
+        The "one base, derive the rest" read path (Phase 2 foundation): a timeframe the source
+        provides natively is served as-is; anything else is resampled from the stored base via
+        DuckDB, so we don't need a separate cached file per timeframe. ``[]`` if neither exists.
+        """
+        if interval == base:
+            return self.query(symbol, base, start, end)
+        if (self.root / symbol / f"{interval}.parquet").exists():
+            return self.query(symbol, interval, start, end)
+        if (self.root / symbol / f"{base}.parquet").exists():
+            from ..core.timeframe import parse_timeframe
+
+            return self.resample(symbol, base, parse_timeframe(interval), start, end)
+        return []
+
     def resample(self, symbol: str, base_interval: str, target_ms: int,
                  start: int | None = None, end: int | None = None):
         """Aggregate the ``base_interval`` series into ``target_ms`` buckets straight from Parquet.
