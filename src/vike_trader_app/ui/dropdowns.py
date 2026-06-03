@@ -126,6 +126,11 @@ class ChecklistPopover(QtWidgets.QFrame):
             f"#filterPop QCheckBox::indicator:checked{{background:{theme.ACCENT};"
             f"border-color:{theme.ACCENT};}}"
             f"#filterPop QScrollArea{{border:none;background:transparent;}}"
+            # The scroll viewport + its #clbody host are plain QWidgets, so the app-wide
+            # `QWidget{{background:BG}}` rule would paint the list area a darker BG than the
+            # SURFACE card — pin them transparent so the popup reads as one flat surface.
+            f"#filterPop QScrollArea > QWidget{{background:transparent;}}"
+            f"#filterPop #clbody{{background:transparent;}}"
             f"#filterPop #divider{{background:{theme.BORDER};}}"
         )
 
@@ -153,6 +158,7 @@ class ChecklistPopover(QtWidgets.QFrame):
         area.setWidgetResizable(True)
         area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         body = QtWidgets.QWidget()
+        body.setObjectName("clbody")
         bl = QtWidgets.QVBoxLayout(body)
         bl.setContentsMargins(0, 0, 0, 0)
         bl.setSpacing(1)

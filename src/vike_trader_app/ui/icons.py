@@ -158,12 +158,77 @@ def _draw_calendar(p, c):  # calendar: framed grid, two top rings, day dots
             p.drawEllipse(_P(x, y), 1.3, 1.3)    # day dots
 
 
+def _draw_save(p, c):  # floppy-disk save glyph: body + folded corner, shutter, label
+    path = QtGui.QPainterPath()
+    path.moveTo(13, 12)
+    path.lineTo(30, 12)
+    path.lineTo(36, 18)
+    path.lineTo(36, 36)
+    path.lineTo(13, 36)
+    path.closeSubpath()
+    p.drawPath(path)
+    p.drawRect(_R(19, 12, 10, 7))               # shutter rectangle (upper area)
+    p.drawRect(_R(17, 26, 14, 10))              # label rectangle (lower-middle)
+
+
+def _draw_chevron_up(p, c):  # upward chevron
+    path = QtGui.QPainterPath()
+    path.moveTo(13, 29)
+    path.lineTo(24, 18)
+    path.lineTo(35, 29)
+    p.drawPath(path)
+
+
+def _draw_chevron_down(p, c):  # downward chevron
+    path = QtGui.QPainterPath()
+    path.moveTo(13, 19)
+    path.lineTo(24, 30)
+    path.lineTo(35, 19)
+    p.drawPath(path)
+
+
+def _draw_scale(p, c):  # balance/justice scale: central post on a base, top beam, two hanging pans
+    p.drawLine(QtCore.QLineF(24, 12, 24, 33))    # central post
+    p.drawLine(QtCore.QLineF(12, 16, 36, 16))    # top beam
+    p.drawLine(QtCore.QLineF(18, 33, 30, 33))    # base foot
+    for hx in (12, 36):                          # the two suspension drops
+        p.drawLine(QtCore.QLineF(hx, 16, hx, 21))
+    p.drawArc(_R(8, 21, 8, 7), 0, -180 * 16)     # left pan (shallow bowl)
+    p.drawArc(_R(32, 21, 8, 7), 0, -180 * 16)    # right pan
+
+
+def _draw_folder(p, c):  # simple folder with a tab
+    path = QtGui.QPainterPath()
+    path.moveTo(11, 17)
+    path.lineTo(20, 17)
+    path.lineTo(23, 20)
+    path.lineTo(37, 20)
+    path.lineTo(37, 34)
+    path.lineTo(11, 34)
+    path.closeSubpath()
+    p.drawPath(path)
+
+
+def _draw_gear(p, c):  # settings cog: a ring with 8 short radial teeth + a small inner hole
+    import math
+    cx, cy, r_in, r_out = 24.0, 24.0, 13.0, 17.0
+    for i in range(8):
+        a = math.radians(i * 45)
+        ca, sa = math.cos(a), math.sin(a)
+        p.drawLine(QtCore.QLineF(cx + r_in * ca, cy + r_in * sa,
+                                 cx + r_out * ca, cy + r_out * sa))
+    p.drawEllipse(_P(cx, cy), r_in, r_in)        # outer ring
+    p.drawEllipse(_P(cx, cy), 4.5, 4.5)          # inner hole
+
+
 _DRAW = {
     "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
     "market": _draw_market, "strategies": _draw_strategies, "trades": _draw_trades,
     "chart": _draw_chart, "news": _draw_news, "data": _draw_data, "calendar": _draw_calendar,
-    "options": _draw_options,
+    "options": _draw_options, "save": _draw_save,
+    "chevron_up": _draw_chevron_up, "chevron_down": _draw_chevron_down,
+    "scale": _draw_scale, "folder": _draw_folder, "gear": _draw_gear,
 }
 
 
@@ -176,6 +241,11 @@ def _pixmap(name: str, color: str) -> QtGui.QPixmap:
         fn(p, QtGui.QColor(color))
     p.end()
     return pm
+
+
+def glyph_icon(name: str, color: str) -> QtGui.QIcon:
+    """A single-state QIcon of one line-art glyph (for inline buttons / toolbars)."""
+    return QtGui.QIcon(_pixmap(name, color))
 
 
 def avatar(text: str, bg: str, fg: str = theme.BG) -> QtGui.QPixmap:

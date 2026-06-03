@@ -33,6 +33,41 @@ def test_parse_instrument_name():
     assert parse_instrument_name("BTC-27JUN26-100000-C") == ("BTC", "2026-06-27", 100000.0, "C")
     assert parse_instrument_name("BTC-PERPETUAL") is None
     assert parse_instrument_name("BTC-27JUN26-100000-Z") is None
+    # USDC-margined altcoin form: base carries a _USDC suffix, dropped so base normalizes to SOL
+    assert parse_instrument_name("SOL_USDC-26JUN26-90-P") == ("SOL", "2026-06-26", 90.0, "P")
+    assert parse_instrument_name("SOL_USDC-5JUN26-80-C") == ("SOL", "2026-06-05", 80.0, "C")
+
+
+def _usdc_summary():
+    # The shared USDC book mixes coins; SOL's chain must pick out only SOL_USDC rows.
+    return [
+        {"instrument_name": "SOL_USDC-26JUN26-90-P", "bid_price": 17.5, "ask_price": 18.0,
+         "mark_price": 17.75, "mark_iv": 60.0, "open_interest": 40.0, "volume": 5.0,
+         "underlying_price": 74.5},
+        {"instrument_name": "SOL_USDC-26JUN26-90-C", "bid_price": 1.0, "ask_price": 1.2,
+         "mark_price": 1.1, "mark_iv": 61.0, "open_interest": 30.0, "volume": 2.0,
+         "underlying_price": 74.5},
+        # other coins in the same book — excluded from SOL's expiries + chain
+        {"instrument_name": "BTC_USDC-31JUL26-115000-P", "bid_price": 5000.0, "ask_price": 5100.0,
+         "mark_price": 5050.0, "mark_iv": 55.0, "underlying_price": 104000.0},
+        {"instrument_name": "XRP_USDC-26JUN26-3-C", "bid_price": 0.1, "ask_price": 0.12,
+         "mark_price": 0.11, "mark_iv": 70.0, "underlying_price": 2.4},
+    ]
+
+
+def test_list_expiries_filters_to_requested_coin_in_shared_book():
+    exps = list_expiries_from_summary(_usdc_summary(), _ms(2026, 6, 2), "SOL")
+    assert [e.date for e in exps] == ["2026-06-26"]  # only SOL, not the BTC 31 Jul row
+
+
+def test_build_sol_chain_from_usdc_book_unscaled_premiums():
+    # usd_quoted=True: USDC premiums are already USD -> NOT scaled by the ~74.5 underlying
+    chain = build_chain_from_summary(
+        "SOL", _usdc_summary(), "2026-06-26", _ms(2026, 6, 2), usd_quoted=True)
+    assert chain.underlying == "SOL" and chain.underlying_price == 74.5
+    assert [r.strike for r in chain.rows] == [90.0]   # BTC/XRP rows excluded
+    assert chain.rows[0].put.bid == 17.5              # passed through, not 17.5 * 74.5
+    assert chain.rows[0].call.mark == 1.1
 
 
 def test_list_expiries_from_summary():

@@ -1,7 +1,29 @@
 from vike_trader_app.data.calendar.equity import (
-    FinnhubEarnings, FinnhubIpo, FmpDividends,
+    FinnhubEarnings, FinnhubIpo, NasdaqIpo, Ipo, FmpDividends,
     EarningsEvent, DividendEvent, IpoEvent,
 )
+
+
+def _nasdaq_payload():
+    """Shape of Nasdaq's /api/ipo/calendar response (upcoming nests under upcomingTable)."""
+    return {"data": {
+        "upcoming": {"upcomingTable": {"rows": [
+            {"proposedTickerSymbol": "WHK", "companyName": "WhiteHawk Income Corp",
+             "proposedExchange": "NYSE", "proposedSharePrice": "25.00-27.00",
+             "sharesOffered": "6,925,000", "expectedPriceDate": "6/05/2026",
+             "dollarValueOfSharesOffered": "$215,021,250"},
+            {"proposedTickerSymbol": "LATE", "companyName": "Out Of Window Inc",
+             "proposedExchange": "NASDAQ", "proposedSharePrice": "10.00",
+             "sharesOffered": "1,000,000", "expectedPriceDate": "7/20/2026"},   # outside [frm,to]
+        ]}},
+        "priced": {"rows": [
+            {"proposedTickerSymbol": "BIDWU", "companyName": "Tribeca Strategic Acquisition Corp.",
+             "proposedExchange": "NASDAQ Global", "proposedSharePrice": "10.00",
+             "sharesOffered": "14,000,000", "pricedDate": "6/03/2026"},
+        ]},
+        "filed": {"rows": []},
+        "withdrawn": {"rows": []},
+    }}
 
 
 def test_no_key_returns_empty():
@@ -31,6 +53,45 @@ def test_finnhub_ipo_parses_live_shape():
     evs = FinnhubIpo(key="k", http=lambda u, **k: fake).fetch("a", "b")
     assert len(evs) == 1 and isinstance(evs[0], IpoEvent)
     assert evs[0].symbol == "NEWCO" and evs[0].exchange == "NASDAQ" and evs[0].price == "18-20"
+
+
+def test_nasdaq_ipo_parses_and_windows_live_shape():
+    payload = _nasdaq_payload()
+    evs = NasdaqIpo(http=lambda u, **k: payload).fetch("2026-06-01", "2026-06-07")
+    byid = {e.symbol: e for e in evs}
+    assert "LATE" not in byid                          # 7/20 row filtered out of the week window
+    assert byid["WHK"].date == "2026-06-05" and byid["WHK"].exchange == "NYSE"
+    assert byid["WHK"].price == "25.00-27.00" and byid["WHK"].shares == 6_925_000.0
+    assert byid["WHK"].status == "upcoming"
+    assert byid["BIDWU"].date == "2026-06-03" and byid["BIDWU"].status == "priced"  # priced section too
+
+
+def test_nasdaq_ipo_swallows_errors():
+    def boom(url, **kw):
+        raise RuntimeError("network down")
+    assert NasdaqIpo(http=boom).fetch("2026-06-01", "2026-06-07") == []
+
+
+def test_ipo_prefers_nasdaq_then_falls_back_to_finnhub():
+    nasdaq_payload = _nasdaq_payload()
+    finnhub_payload = {"ipoCalendar": [
+        {"date": "2026-06-04", "symbol": "FBONLY", "name": "Fallback Co", "exchange": "NYSE",
+         "price": "12-14", "numberOfShares": 5.0e6, "status": "expected"},
+    ]}
+
+    def both(url, **kw):
+        return finnhub_payload if "finnhub.io" in url else nasdaq_payload
+
+    # Nasdaq has rows -> Finnhub is not used.
+    evs = Ipo(key="k", http=both).fetch("2026-06-01", "2026-06-07")
+    assert {e.symbol for e in evs} == {"WHK", "BIDWU"}
+
+    # Nasdaq empty (out-of-window month) -> falls back to the Finnhub rows.
+    def empty_nasdaq(url, **kw):
+        return finnhub_payload if "finnhub.io" in url else {"data": {}}
+
+    evs = Ipo(key="k", http=empty_nasdaq).fetch("2026-06-01", "2026-06-07")
+    assert [e.symbol for e in evs] == ["FBONLY"]
 
 
 def test_fmp_dividends_parses_live_shape():

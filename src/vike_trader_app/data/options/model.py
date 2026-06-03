@@ -72,10 +72,19 @@ def make_expiry(date_iso: str, now_ms: int) -> Expiry:
 
 
 def limit_strikes(chain: OptionChain, n: int | None) -> OptionChain:
-    """Return a chain trimmed to the `n` strikes nearest the underlying (ATM-centered)."""
-    if n is None or n <= 0 or chain.underlying_price is None or len(chain.rows) <= n:
+    """Window the chain to ``n`` strikes ABOVE and ``n`` strikes BELOW the at-the-money strike
+    (the "±n strikes" toolbar selection): the ATM strike (first strike >= spot) plus its n nearest
+    neighbours on each side, so ±3 shows 3 rows above + 3 below, ±6 shows 6 each side, etc.
+
+    Returns the chain unchanged for n=None / n<=0 / no spot. Rows stay ascending by strike.
+    """
+    if n is None or n <= 0 or chain.underlying_price is None:
         return chain
     spot = chain.underlying_price
-    # Stable sort: equidistant strikes keep `rows`' ascending order, so the lower strike wins ties.
-    nearest = sorted(chain.rows, key=lambda r: abs(r.strike - spot))[:n]
-    return replace(chain, rows=tuple(sorted(nearest, key=lambda r: r.strike)))
+    rows = chain.rows  # already ascending by strike
+    # ATM anchor: the first strike at/above spot (clamp to the last strike if spot tops the ladder).
+    atm = next((i for i, r in enumerate(rows) if r.strike >= spot), len(rows) - 1)
+    lo, hi = max(atm - n, 0), min(atm + n + 1, len(rows))
+    if lo == 0 and hi == len(rows):
+        return chain
+    return replace(chain, rows=tuple(rows[lo:hi]))

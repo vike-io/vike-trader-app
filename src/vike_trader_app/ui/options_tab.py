@@ -147,7 +147,11 @@ class _ExpiryStrip(QtWidgets.QScrollArea):
         self._buttons: dict[str, QtWidgets.QToolButton] = {}
 
     def set_expiries(self, expiries) -> None:
-        """Rebuild the pills; auto-select the first (nearest) expiry and announce it."""
+        """Rebuild the pills; auto-select the NEAREST (front/most-active-for-today) expiry and
+        announce it. Pills keep their incoming order, but the default lands on the soonest
+        non-expired expiry (lowest DTE) rather than positional [0]: provider lists aren't all
+        sorted (Tradier/marketdata pass the API order through), so trusting [0] could miss the
+        front/0DTE contract. If today is itself an expiry (0DTE present) it has DTE 0 -> wins."""
         for b in self._buttons.values():
             self._group.removeButton(b)
             b.deleteLater()
@@ -163,8 +167,9 @@ class _ExpiryStrip(QtWidgets.QScrollArea):
             self._row.insertWidget(self._row.count() - 1, b)   # before the trailing stretch
             self._buttons[e.date] = b
         if expiries:
-            self._buttons[expiries[0].date].setChecked(True)
-            self.selected.emit(expiries[0].date)
+            nearest = min(expiries, key=lambda e: e.dte)   # front expiry = lowest days-to-expiry
+            self._buttons[nearest.date].setChecked(True)
+            self.selected.emit(nearest.date)
 
     def current(self) -> str | None:
         return next((iso for iso, b in self._buttons.items() if b.isChecked()), None)
@@ -197,7 +202,8 @@ class OptionsTab(QtWidgets.QWidget):
         self.exp_range = QtWidgets.QComboBox()
         self.exp_range.addItems(["Next 30d", "Next 60d", "Next 90d", "All"])
         self.strikes = QtWidgets.QComboBox()
-        self.strikes.addItem("±6 strikes", 6)        # self-labeling like TV's "±6 strikes ▾"
+        self.strikes.addItem("±3 strikes", 3)        # self-labeling like TV's "±3 strikes ▾"
+        self.strikes.addItem("±6 strikes", 6)
         self.strikes.addItem("±12 strikes", 12)
         self.strikes.addItem("All strikes", None)
         self.strikes.setCurrentText("±12 strikes")

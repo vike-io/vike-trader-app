@@ -142,6 +142,7 @@ def _earnings_cfg():
                 _fmt(e.eps_estimate), _fmt(e.eps_actual), _fmt_pct(e.surprise), _fmt_cap(e.market_cap)]
     return {
         "columns": ["Time", "Symbol", "Company", "EPS est.", "EPS act.", "Surprise", "Mkt cap"],
+        "stretch_col": 2,            # Company is the wide free-text column (like Economic's Event)
         "row_fn": row, "date_of": lambda e: e.date,
         "sort_key": lambda e: -((e.market_cap or 0) + (0 if e.market_cap else (e.rev_estimate or 0) / 1e6)),
         "covered_of": lambda e: e.eps_estimate is not None,   # has analyst coverage
@@ -154,6 +155,7 @@ def _dividends_cfg():
         return [d.symbol, d.ex_date, d.pay_date or "—", _fmt(d.amount, " $"),
                 _fmt(d.yield_pct, "%") if d.yield_pct is not None else "—", d.frequency or "—"]
     return {"columns": ["Symbol", "Ex-date", "Pay date", "Amount", "Yield", "Freq"],
+            "stretch_col": 0,        # Symbol absorbs the slack (dividends have no wide text column)
             "row_fn": row, "date_of": lambda d: d.ex_date}
 
 
@@ -161,6 +163,7 @@ def _ipo_cfg():
     def row(i):
         return [i.symbol or "—", i.name, i.exchange, i.price or "—", _fmt_big(i.shares), i.status]
     return {"columns": ["Symbol", "Company", "Exchange", "Price", "Shares", "Status"],
+            "stretch_col": 1,        # Company is the wide free-text column (like Economic's Event)
             "row_fn": row, "date_of": lambda i: i.date}
 
 
@@ -185,7 +188,7 @@ class EquityCalendarTab(QtWidgets.QWidget):
 
     eventsChanged = QtCore.Signal()   # emitted after a week's events land (for day-card counts)
 
-    def __init__(self, *, fetch, columns, row_fn, date_of,
+    def __init__(self, *, fetch, columns, row_fn, date_of, stretch_col=1,
                  sort_key=None, covered_of=None, color_of=None, parent=None):
         super().__init__(parent)
         self._fetch, self._row_fn, self._date_of = fetch, row_fn, date_of
@@ -210,9 +213,16 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setColumnCount(len(columns))
         self._tree.setHeaderLabels(columns)
+        # Match the Economic tree exactly (TV-polished): no decoration/indent, no alt rows, and a
+        # single wide Stretch column (its free-text column, like Economic's Event) with the rest
+        # left at Qt's default Interactive sizing. Header styling, row padding and the mono cell
+        # font all come from the shared QSS (QHeaderView::section / QTreeWidget::item), so the four
+        # calendars read identically. (Was: hard-coded Stretch on col 1 — wrong column for
+        # Dividends/IPO, which is why those tables looked unaligned vs. Economic.)
         self._tree.setRootIsDecorated(False)
         self._tree.setIndentation(0)
-        self._tree.header().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._tree.setAlternatingRowColors(False)
+        self._tree.header().setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
         root.addWidget(self._tree, 1)
 
         _app = QtWidgets.QApplication.instance()
@@ -373,12 +383,12 @@ class CalendarSpace(QtWidgets.QWidget):
     def __init__(self, economic_tab=None, parent=None):
         super().__init__(parent)
         from .economic_calendar import EconomicCalendarTab
-        from ..data.calendar.equity import FinnhubIpo, FmpDividends, fetch_earnings_enriched
+        from ..data.calendar.equity import Ipo, FmpDividends, fetch_earnings_enriched
 
         self.economic = economic_tab or EconomicCalendarTab()
         self.earnings = EquityCalendarTab(fetch=fetch_earnings_enriched, **_earnings_cfg())
         self.dividends = EquityCalendarTab(fetch=FmpDividends().fetch, **_dividends_cfg())
-        self.ipo = EquityCalendarTab(fetch=FinnhubIpo().fetch, **_ipo_cfg())
+        self.ipo = EquityCalendarTab(fetch=Ipo().fetch, **_ipo_cfg())
 
         self._stack = QtWidgets.QStackedWidget()
         self._pages = [("Economic", self.economic), ("Earnings", self.earnings),

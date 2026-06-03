@@ -28,14 +28,18 @@ def test_make_expiry_dte_and_label():
     assert make_expiry("2026-06-02", now).label == "0DTE"
 
 
-def test_limit_strikes_keeps_n_nearest_atm_sorted():
-    rows = tuple(StrikeRow(strike=float(s)) for s in (80, 90, 100, 110, 120))
+def test_limit_strikes_windows_n_each_side_of_atm():
+    rows = tuple(StrikeRow(strike=float(s)) for s in (80, 90, 100, 110, 120, 130, 140))
     chain = OptionChain(
         underlying="BTC", asset_class="crypto", underlying_price=104.0,
         expiry=make_expiry("2026-07-02", _ms(2026, 6, 2)), asof_ms=_ms(2026, 6, 2),
         source="deribit", rows=rows,
     )
-    out = limit_strikes(chain, 3)
-    assert [r.strike for r in out.rows] == [90.0, 100.0, 110.0]
-    # None / oversized n is a no-op
+    # spot 104 -> ATM is 110 (first strike >= spot); ±2 keeps 2 below + ATM + 2 above
+    out = limit_strikes(chain, 2)
+    assert [r.strike for r in out.rows] == [90.0, 100.0, 110.0, 120.0, 130.0]
+    # ±1 keeps exactly one strike each side of the ATM strike
+    assert [r.strike for r in limit_strikes(chain, 1).rows] == [100.0, 110.0, 120.0]
+    # None / window wider than the ladder is a no-op
     assert limit_strikes(chain, None).rows == rows
+    assert limit_strikes(chain, 99).rows == rows
