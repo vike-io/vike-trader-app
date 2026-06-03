@@ -63,6 +63,7 @@ class ResultsPanel(QtWidgets.QWidget):
     _SIGNED = {"net_profit", "expected_payoff", "avg_win"}
 
     _TRADE_COLS = ["#", "Side", "Entry", "Exit", "Size", "PnL", "Return", "MFE", "MAE"]
+    _BY_SYMBOL_COLS = ["Symbol", "Trades", "Win %", "PnL"]
     _RUN_COLS = ["#", "Return", "Max DD", "Trades", "Sharpe"]
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
@@ -100,6 +101,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._build_equity_tab()
         self._build_performance_tab()
         self._build_trades_tab()
+        self._build_by_symbol_tab()
         self._build_runs_tab()
         self._build_distribution_tab()
 
@@ -204,6 +206,18 @@ class ResultsPanel(QtWidgets.QWidget):
         hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         self._trades.cellClicked.connect(self._on_trade_clicked)
         self._tabs.addTab(self._trades, "Trades")
+
+    def _build_by_symbol_tab(self) -> None:
+        self._by_symbol_table = QtWidgets.QTableWidget(0, len(self._BY_SYMBOL_COLS))
+        self._by_symbol_table.setHorizontalHeaderLabels(self._BY_SYMBOL_COLS)
+        self._by_symbol_table.verticalHeader().setVisible(False)
+        self._by_symbol_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._by_symbol_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._by_symbol_table.setAlternatingRowColors(True)
+        hdr = self._by_symbol_table.horizontalHeader()
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self._tabs.addTab(self._by_symbol_table, "By Symbol")
 
     def _build_runs_tab(self) -> None:
         self._runs_table = QtWidgets.QTableWidget(0, len(self._RUN_COLS))
@@ -386,6 +400,38 @@ class ResultsPanel(QtWidgets.QWidget):
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self._trades.setItem(r, c, item)
 
+    def _fill_by_symbol(self, report) -> None:
+        pnl_map = getattr(report, "per_symbol_pnl", None)
+        if not pnl_map:
+            self._by_symbol_table.setRowCount(0)
+            return
+        # Count trades and wins per symbol
+        trades_by_sym: dict[str, int] = {s: 0 for s in pnl_map}
+        wins_by_sym: dict[str, int] = {s: 0 for s in pnl_map}
+        for t in report.trades:
+            sym = getattr(t, "symbol", "")
+            if sym in trades_by_sym:
+                trades_by_sym[sym] += 1
+                if t.pnl > 0:
+                    wins_by_sym[sym] += 1
+        # Sort rows by PnL descending
+        sorted_syms = sorted(pnl_map, key=lambda s: pnl_map[s], reverse=True)
+        self._by_symbol_table.setRowCount(len(sorted_syms))
+        for r, sym in enumerate(sorted_syms):
+            n = trades_by_sym[sym]
+            wins = wins_by_sym[sym]
+            pnl = pnl_map[sym]
+            win_pct = f"{wins / n * 100:.2f}%" if n > 0 else "—"
+            up = pnl >= 0
+            cells = [sym, str(n), win_pct, self._money(pnl)]
+            for c, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                if c == 3:
+                    item.setForeground(QtGui.QColor(theme.UP if up else theme.DOWN))
+                if c >= 1:
+                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                self._by_symbol_table.setItem(r, c, item)
+
     def _on_trade_clicked(self, row: int, _col: int) -> None:
         """Trade-row click — selection only; price-chart focus lives in the Chart space now."""
         return
@@ -445,6 +491,7 @@ class ResultsPanel(QtWidgets.QWidget):
 
         mm = report_extras.mfe_mae(report.trades, bars) if bars else None
         self._fill_trades(report.trades, mm)
+        self._fill_by_symbol(report)
         self._update_distribution(report_extras.trade_returns(report.trades))
         self._tabs.setCurrentIndex(0)  # land on the Equity tab — the headline view
 
@@ -508,6 +555,7 @@ class ResultsPanel(QtWidgets.QWidget):
         for lbl in self._hero_sub.values():
             lbl.setText("")
         self._trades.setRowCount(0)
+        self._by_symbol_table.setRowCount(0)
 
     def clear(self) -> None:
         """Reset to blank state (including run history)."""
@@ -524,6 +572,7 @@ class ResultsPanel(QtWidgets.QWidget):
         for lbl in self._hero_sub.values():
             lbl.setText("")
         self._trades.setRowCount(0)
+        self._by_symbol_table.setRowCount(0)
         self._runs_table.setRowCount(0)
 
 

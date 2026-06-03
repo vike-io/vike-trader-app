@@ -33,11 +33,11 @@ def test_results_panel_has_equity_tab_not_chart(app):
 
 def test_results_panel_tab_order(app):
     panel = ResultsPanel()
-    assert _tab_titles(panel) == ["Equity", "Performance", "Trades", "Runs", "Distribution"]
+    assert _tab_titles(panel) == ["Equity", "Performance", "Trades", "By Symbol", "Runs", "Distribution"]
 
 
 def test_mount_chart_tab_appends_chart(app):
     panel = ResultsPanel()
     panel.mount_chart_tab(QtWidgets.QWidget())
     assert _tab_titles(panel) == [
-        "Equity", "Performance", "Trades", "Runs", "Distribution", "Chart"]
+        "Equity", "Performance", "Trades", "By Symbol", "Runs", "Distribution", "Chart"]

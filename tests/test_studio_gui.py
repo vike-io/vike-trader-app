@@ -208,7 +208,7 @@ def test_distribution_tab_and_mfe_mae_columns(app):
     tab.set_config(TesterConfig(taker_fee=0.0))
     tab.set_text(_GOOD)
     tab.run_code()
-    assert tab.results._tabs.count() == 5            # Equity|Performance|Trades|Runs|Distribution
+    assert tab.results._tabs.count() == 6            # Equity|Performance|Trades|By Symbol|Runs|Distribution
     assert tab.results._trades.columnCount() == 9    # ... + MFE + MAE columns
     assert tab.results._dist is not None
 
@@ -307,3 +307,40 @@ def test_show_portfolio_report_displays(app):
     tab = StudioTab()
     tab.show_portfolio_report(report, "MySet")   # must not raise
     assert tab.results.last_report is not None
+
+
+def test_by_symbol_tab_populates_for_portfolio_report(app):
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+    from vike_trader_app.ui.studio import StudioTab
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    a = [Bar(ts=i, open=10.0, high=10, low=10, close=10.0 + i) for i in range(5)]
+    b = [Bar(ts=i, open=5.0, high=5, low=5, close=5.0 + i) for i in range(5)]
+    report = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=1000.0)).report()
+    tab = StudioTab()
+    tab.show_portfolio_report(report, "DS")
+    # the By Symbol table exists and has one row per symbol in per_symbol_pnl
+    rows = tab.results._by_symbol_table.rowCount()
+    assert rows == len(report.per_symbol_pnl)
+    syms = {tab.results._by_symbol_table.item(r, 0).text() for r in range(rows)}
+    assert syms == set(report.per_symbol_pnl)
+
+
+def test_by_symbol_tab_empty_for_single_symbol_run(app):
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.ui.studio import StudioTab
+
+    tab = StudioTab()
+    tab.editor.setText(TEMPLATES[0].code)
+    tab.set_bars([Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
+                  for i in range(60)])
+    tab.run_code()                       # single-symbol run -> per_symbol_pnl is None
+    assert tab.results._by_symbol_table.rowCount() == 0
