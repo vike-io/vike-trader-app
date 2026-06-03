@@ -232,6 +232,7 @@ class PortfolioEngine:
                 fees=entry_fee_portion + exit_fee_portion,
                 entry_ts=self._entry_ts[symbol],
                 exit_ts=ts,
+                symbol=symbol,
             )
         )
         remaining = abs(pos.size) - closing

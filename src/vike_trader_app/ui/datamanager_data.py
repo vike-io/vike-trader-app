@@ -72,6 +72,22 @@ def quality_summary(bars: list, interval_ms: int) -> str:
     return f"{len(bars):,} bars — issues:\n" + "\n".join(f"  • {p}" for p in problems)
 
 
+def inactive_candidates(infos, *, zero_bars: bool = True, last_before_ms: int | None = None):
+    """Cached series to prune: ``(symbol, interval)`` for each dead/stale ``DatasetInfo``.
+
+    A series is a candidate when it has zero bars (``zero_bars``) OR — only if ``last_before_ms`` is
+    given — its last bar is older than that cutoff (``end_ts < last_before_ms``). Order is preserved.
+    """
+    out = []
+    for info in infos:
+        dead = zero_bars and info.n_bars == 0
+        stale = (last_before_ms is not None and info.n_bars > 0
+                 and info.end_ts < last_before_ms)
+        if dead or stale:
+            out.append((info.symbol, info.interval))
+    return out
+
+
 def series_size_bytes(root: str, symbol: str, interval: str) -> int:
     """Total on-disk bytes for a cached series — legacy single file + all month partitions."""
     total = 0

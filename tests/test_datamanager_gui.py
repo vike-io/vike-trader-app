@@ -264,3 +264,36 @@ def test_test_dataset_runs_portfolio_and_emits_report(app, tmp_path, monkeypatch
     tab.panel.test_dataset_requested.emit(DataSet("DS", ["BTCUSDT", "ETHUSDT"], interval="1m"))
     assert reports[0][0].name == "DS"
     assert set(reports[0][1]) == {"BTCUSDT", "ETHUSDT"}
+
+
+def test_datamanager_truncate_removes_bars(app, tmp_path):
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.data import parquet_source as ps
+    root = str(tmp_path)
+    ps.append_series([Bar(ts=i * 86_400_000, open=1, high=1, low=1, close=1, volume=1.0) for i in range(1, 11)],
+                     root, "BTCUSDT", "1m")
+    tab = DataManagerTab(root=root, pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+    n = tab.truncate_series("BTCUSDT", "1m", before_ms=4 * 86_400_000)   # dialog-free
+    assert n == 3
+    assert [b.ts for b in ps.read_series(root, "BTCUSDT", "1m")] == [i * 86_400_000 for i in range(4, 11)]
+    assert "Truncated BTCUSDT 1m" in tab._log_view.toPlainText()
+
+
+def test_datamanager_remove_inactive(app, tmp_path, monkeypatch):
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
+
+    class _Info:
+        def __init__(self, symbol, n_bars, end_ts):
+            self.symbol, self.interval, self.n_bars, self.start_ts, self.end_ts = symbol, "1m", n_bars, 0, end_ts
+
+    monkeypatch.setattr(tab, "_catalog", lambda: type("C", (), {
+        "list_datasets": staticmethod(lambda: [_Info("DEAD", 0, 0), _Info("LIVE", 100, 9_000)])})())
+    deleted = []
+    monkeypatch.setattr(tab, "_delete", lambda s, i: deleted.append((s, i)))
+    removed = tab.remove_inactive()                 # dialog-free: prune 0-bar series
+    assert removed == [("DEAD", "1m")]
+    assert deleted == [("DEAD", "1m")]
+    assert "Removed 1 inactive" in tab._log_view.toPlainText()

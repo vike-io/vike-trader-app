@@ -133,6 +133,41 @@ def append_series(new_bars: list[Bar], root: str, symbol: str, interval: str) ->
         write_bars_parquet(_merge(existing, month_bars), path)
 
 
+def truncate_series(root: str, symbol: str, interval: str, *,
+                    before_ts: int | None = None, after_ts: int | None = None) -> int:
+    """Delete cached bars with ``ts < before_ts`` and/or ``ts > after_ts``. Returns bars removed.
+
+    Rewrites only the month partition(s) that actually change (atomic temp-then-replace), unlinking
+    any partition emptied by the cut. A legacy single file is migrated to partitions first so the
+    cut is partition-aware. ``before_ts``/``after_ts`` are inclusive bounds on what is KEPT
+    (a bar at exactly ``before_ts`` or ``after_ts`` is kept).
+    """
+    if before_ts is None and after_ts is None:
+        return 0
+    _migrate_legacy(root, symbol, interval)
+    d = series_dir(root, symbol, interval)
+    if not d.is_dir():
+        return 0
+
+    def keep(ts: int) -> bool:
+        return (before_ts is None or ts >= before_ts) and (after_ts is None or ts <= after_ts)
+
+    removed = 0
+    for path in sorted(d.glob("*.parquet")):
+        bars = read_bars_parquet(path)
+        kept = [b for b in bars if keep(b.ts)]
+        if len(kept) == len(bars):
+            continue                         # untouched partition
+        removed += len(bars) - len(kept)
+        if not kept:
+            path.unlink()                    # whole month cut away
+        else:
+            tmp = path.with_suffix(".parquet.tmp")
+            write_bars_parquet(kept, tmp)    # atomic: write temp then replace
+            tmp.replace(path)
+    return removed
+
+
 def delete_series(root: str, symbol: str, interval: str) -> None:
     """Remove a cached series — the legacy single file and the whole month-partition directory."""
     legacy = legacy_path(root, symbol, interval)
