@@ -47,12 +47,24 @@ def test_shim_forwards_orders_and_reads_to_engine():
     assert captured["equity"] == eng.equity_now()
 
 
-def test_shim_resting_orders_raise_in_portfolio_mode():
+def test_shim_forwards_resting_orders_to_engine():
+    eng = PortfolioEngine({"A": [_bar(1, 100.0), _bar(2, 100.0)]}, PortfolioStrategy(), cash=10_000.0)
+    shim = SymbolEngineShim(eng, "A", None)
+    shim.submit_limit(+1, 1.0, 95.0)
+    shim.submit_stop(+1, 1.0, 105.0)
+    shim.submit_trailing(-1, 1.0, 5.0)
+    assert len(eng._pending["A"]) == 3
+    assert {o.kind for o in eng._pending["A"]} == {"limit", "stop", "trailing"}
+    shim.cancel_all()
+    assert eng._pending["A"] == []
+
+
+def test_shim_multitimeframe_still_unsupported():
     import pytest
     eng = PortfolioEngine({"A": [_bar(1, 1.0)]}, PortfolioStrategy(), cash=10.0)
     shim = SymbolEngineShim(eng, "A", None)
     with pytest.raises(NotImplementedError):
-        shim.submit_limit(+1, 1.0, 0.5)
+        shim.bars_for("1h")
 
 
 class BuyHold(Strategy):
@@ -132,3 +144,75 @@ def test_cap_does_not_block_adding_to_an_open_symbol():
     # both buys filled -> position size 2 -> with flat price, no PnL but the run completes and the
     # add was not blocked (key present in per_symbol_pnl confirms run succeeded)
     assert "A" in result.per_symbol_pnl
+
+
+def test_limit_order_fills_in_portfolio_mode():
+    from vike_trader_app.core.model import Bar as _Bar
+
+    def _o(ts, o, h, l, c):
+        return _Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class LimitBuy(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.limit_buy(1.0, 95.0)   # rest until price dips to 95
+
+    a = [_o(0, 100, 101, 99, 100), _o(1, 100, 102, 98, 101), _o(2, 100, 101, 94, 96)]
+    runner = MultiSymbolStrategyRunner(LimitBuy, {"A": a}, TesterConfig(cash=1000.0))
+    result = runner.run()
+    # the limit filled at 95 on bar 2 (low 94 <= 95); position is long 1 @ ~95
+    assert result.per_symbol_pnl["A"] != 0.0 or result.final_equity != 1000.0
+
+
+def test_resting_order_inert_on_synthetic_flat_fill_bars():
+    # align_bars forward-fills gap symbols with zero-volume O=H=L=C bars; a far-off resting order
+    # must NOT spuriously trigger on them.
+    from vike_trader_app.core.model import Bar as _Bar
+
+    class LimitFarAway(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.limit_buy(1.0, 1.0)   # absurdly low -> should never trigger
+
+    a = [_Bar(ts=i, open=100, high=100, low=100, close=100, volume=0.0) for i in range(4)]  # flat synthetic-like
+    runner = MultiSymbolStrategyRunner(LimitFarAway, {"A": a}, TesterConfig(cash=1000.0))
+    result = runner.run()
+    assert not result.trades and result.final_equity == 1000.0
+
+
+def test_single_symbol_portfolio_matches_engine_with_costs():
+    # A 1-symbol portfolio run must equal the single-symbol BacktestEngine on the same bars,
+    # strategy, and cost config (slippage + maker/taker + multiplier), proving the unified cost model.
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.engine import BacktestEngine
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _o(ts, o, h, l, c):
+        return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class BuyThenClose(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(2.0)
+            elif self.index == 3:
+                self.close()
+
+    bars = [_o(0, 100, 101, 99, 100), _o(1, 100, 105, 99, 104),
+            _o(2, 104, 110, 103, 108), _o(3, 108, 109, 105, 106), _o(4, 106, 107, 104, 105)]
+    cfg = dict(cash=1000.0, fee_rate=0.0, maker_fee=0.001, taker_fee=0.002,
+               slippage=0.0005, multiplier=2.0)
+    config = TesterConfig(**cfg)
+
+    # single-symbol reference
+    eng = BacktestEngine(list(bars), BuyThenClose(), **cfg)
+    ref = eng.run()
+
+    # 1-symbol portfolio
+    result = MultiSymbolStrategyRunner(BuyThenClose, {"X": list(bars)}, config).run()
+
+    assert result.final_equity == __import__("pytest").approx(ref.final_equity, rel=1e-9)
+    assert len(result.trades) == len(ref.trades) == 1
+    assert result.trades[0].pnl == __import__("pytest").approx(ref.trades[0].pnl, rel=1e-9)
+    assert result.trades[0].fees == __import__("pytest").approx(ref.trades[0].fees, rel=1e-9)

@@ -8,7 +8,9 @@ engine. Equity = cash + sum(position size * last close).
 
 from dataclasses import dataclass, field
 
+from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
+from .orders import Order, order_fill_price
 
 
 @dataclass
@@ -125,7 +127,10 @@ class CrossSectionalStrategy(PortfolioStrategy):
 class PortfolioEngine:
     """Runs a `PortfolioStrategy` over aligned per-symbol bar series."""
 
-    def __init__(self, bars_by_symbol, strategy, fee_rate: float = 0.0, cash: float = 10_000.0):
+    def __init__(self, bars_by_symbol, strategy, fee_rate: float = 0.0, cash: float = 10_000.0,
+                 slippage: float = 0.0, maker_fee: float | None = None,
+                 taker_fee: float | None = None, multiplier: float = 1.0,
+                 leverage: float | None = None, maint_margin: float = 0.0):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -135,10 +140,16 @@ class PortfolioEngine:
         self.strategy = strategy
         self.fee_rate = fee_rate
         self.cash = cash
+        self.slippage = slippage
+        self.maker_fee = maker_fee if maker_fee is not None else fee_rate
+        self.taker_fee = taker_fee if taker_fee is not None else fee_rate
+        self.multiplier = multiplier
+        self.leverage = leverage
+        self.maint_margin = maint_margin
         self.trades: list[Trade] = []
         self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
         self._pos: dict[str, Position] = {s: Position() for s in self.symbols}
-        self._pending: dict[str, list[tuple[int, float]]] = {s: [] for s in self.symbols}
+        self._pending: dict[str, list[Order]] = {s: [] for s in self.symbols}
         self._entry_fee: dict[str, float] = {s: 0.0 for s in self.symbols}
         self._entry_ts: dict[str, int] = {s: 0 for s in self.symbols}
         self._price: dict[str, float] = {
@@ -154,17 +165,79 @@ class PortfolioEngine:
         return self._price[symbol]
 
     def equity_now(self) -> float:
-        return self.cash + sum(self._pos[s].size * self._price[s] for s in self.symbols)
+        return self.cash + sum(self._pos[s].size * self._price[s] * self.multiplier for s in self.symbols)
+
+    # --- leverage / risk helpers ---
+    def _cap_to_leverage(self, symbol: str, side_sign: int, size: float) -> float:
+        """Shrink an opening/adding market order so projected TOTAL account notional <= leverage*equity.
+        Account-level: sums notional across all symbols (+ pending market orders). Reducing/closing
+        orders (opposite to the current position) are never shrunk."""
+        if self.leverage is None:
+            return size
+        eq = self.equity_now()
+        if eq <= 0.0:
+            return 0.0
+        pos = self._pos[symbol]
+        # only cap orders that increase exposure on this symbol (open-from-flat or same-direction add)
+        if pos.size != 0 and (pos.size > 0) != (side_sign > 0):
+            return size                                  # reducing/closing: never capped
+        max_notional = self.leverage * eq
+        # current total notional across all symbols + this symbol's already-pending market opens
+        cur = sum(abs(self._pos[s].size) * self._price[s] * self.multiplier for s in self.symbols)
+        pending = sum(o.side * o.size for o in self._pending[symbol] if o.kind == "market") * \
+            self._price[symbol] * self.multiplier
+        room_notional = max_notional - cur - abs(pending)
+        if room_notional <= 0.0:
+            return 0.0
+        room = room_notional / (self._price[symbol] * self.multiplier)
+        return size if size <= room else room
+
+    def _check_liquidation(self, cur: dict) -> None:
+        """Account-level margin call: if total equity at every position's adverse extreme is at or
+        below maint_margin * total adverse notional, force-close ALL positions at their adverse marks."""
+        if self.maint_margin <= 0.0:
+            return
+        held = [s for s in self.symbols if self._pos[s].size != 0]
+        if not held:
+            return
+        eq_adv = self.cash
+        notional_adv = 0.0
+        for s in held:
+            pos = self._pos[s]
+            adverse = cur[s].low if pos.size > 0 else cur[s].high
+            eq_adv += pos.size * adverse * self.multiplier
+            notional_adv += abs(pos.size) * adverse * self.multiplier
+        if eq_adv <= self.maint_margin * notional_adv:
+            for s in held:
+                pos = self._pos[s]
+                adverse = cur[s].low if pos.size > 0 else cur[s].high
+                side = -1 if pos.size > 0 else 1
+                self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float) -> None:
-        self._pending[symbol].append((side_sign, size))
+        size = self._cap_to_leverage(symbol, side_sign, size)
+        if size > 0.0:
+            self._pending[symbol].append(Order("market", side_sign, size))
 
     def submit_close(self, symbol: str) -> None:
         pos = self._pos[symbol]
         if pos.size != 0:
             side = -1 if pos.size > 0 else 1
-            self._pending[symbol].append((side, abs(pos.size)))
+            self._pending[symbol].append(Order("market", side, abs(pos.size)))
+
+    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float) -> None:
+        self._pending[symbol].append(Order("limit", side_sign, size, price=price))
+
+    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float) -> None:
+        self._pending[symbol].append(Order("stop", side_sign, size, price=price))
+
+    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float) -> None:
+        self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
+                                           extreme=self._price[symbol]))
+
+    def cancel_all(self, symbol: str) -> None:
+        self._pending[symbol] = []
 
     # --- run loop ---
     def run(self) -> PortfolioResult:
@@ -179,27 +252,38 @@ class PortfolioEngine:
                 bar = self.bars[s][i]
                 self._price[s] = bar.close
                 cur[s] = bar
+                if bar.funding is not None and self._pos[s].size != 0:
+                    self.cash -= funding_charge(self._pos[s].size, bar.close, bar.funding, self.multiplier)
+            self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
             self.strategy.on_bar(ts, cur)
             equity_curve.append(self.equity_now())
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
-            s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price)
+            s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price) * self.multiplier
             for s in self.symbols
         }
         return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol)
 
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
-        pending, self._pending[symbol] = self._pending[symbol], []
-        for side_sign, size in pending:
-            self._apply_fill(symbol, side_sign, size, bar.open, bar.ts)
+        still = []
+        for o in self._pending[symbol]:
+            fp = order_fill_price(o, bar)
+            if fp is None:
+                still.append(o)               # rest until triggered
+            else:
+                self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
+        self._pending[symbol] = still
 
-    def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int) -> None:
-        fee = size * price * self.fee_rate
+    def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int,
+                    is_maker: bool = False) -> None:
+        price = adverse_fill_price(price, side_sign, self.slippage)
+        rate = self.maker_fee if is_maker else self.taker_fee
+        fee = _fee(size, price, rate, self.multiplier)
         delta = side_sign * size
         pos = self._pos[symbol]
         self.cash -= fee  # transaction cost
-        self.cash -= delta * price  # signed notional moves cash in every case
+        self.cash -= delta * price * self.multiplier  # signed notional moves cash in every case
 
         if pos.size == 0:  # open from flat
             pos.size = delta
@@ -221,7 +305,7 @@ class PortfolioEngine:
         portion = closing / abs(pos.size)
         entry_fee_portion = self._entry_fee[symbol] * portion
         exit_fee_portion = fee * (closing / abs(delta)) if delta != 0 else 0.0
-        realized = (price - pos.avg_price) * (sign * closing)  # signed: works for shorts
+        realized = (price - pos.avg_price) * (sign * closing) * self.multiplier  # signed: works for shorts
         self._realized[symbol] += realized
         self.trades.append(
             Trade(

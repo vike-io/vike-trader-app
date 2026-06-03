@@ -2,8 +2,9 @@
 
 Runs one copy of a single-symbol ``Strategy`` per symbol; each copy's order calls are forwarded
 to one ``PortfolioEngine`` (one cash account, next-open fills, per-symbol PnL). The single-symbol
-engine is not touched. Resting orders (limit/stop/trailing) and multi-timeframe are not supported
-in portfolio mode yet — they raise so a strategy that needs them fails loudly rather than silently.
+engine is not touched. Resting orders (limit/stop/trailing) are forwarded to the shared engine and
+evaluated bar-by-bar via ``order_fill_price``. Multi-timeframe (bars_for/forming_for) is still
+unsupported in portfolio mode — those raise NotImplementedError.
 """
 
 from .model import Bar
@@ -77,19 +78,33 @@ class SymbolEngineShim:
 
     def order_target_value(self, value: float) -> None:
         price = self._engine.price_of(self._symbol)
-        self.order_target(value / price if price else 0.0)
+        denom = price * self._engine.multiplier
+        self.order_target(value / denom if denom else 0.0)
 
     def order_target_percent(self, pct: float) -> None:
         self.order_target_value(pct * self._engine.equity_now())
+
+    # --- resting orders forwarded to the shared engine ---
+    # NOTE: resting orders bypass the MaxOpenPositions cap for now (the cap is checked in
+    # submit() for market entries only). This is an accepted v1 limitation — cap-at-fill
+    # for resting orders is deferred to W2-C.
+    def submit_limit(self, side_sign: int, size: float, price: float) -> None:
+        self._engine.submit_limit(self._symbol, side_sign, size, price)
+
+    def submit_stop(self, side_sign: int, size: float, price: float) -> None:
+        self._engine.submit_stop(self._symbol, side_sign, size, price)
+
+    def submit_trailing(self, side_sign: int, size: float, trail: float) -> None:
+        self._engine.submit_trailing(self._symbol, side_sign, size, trail)
+
+    def cancel_all(self) -> None:
+        self._engine.cancel_all(self._symbol)
 
     # --- unsupported in portfolio mode (fail loudly) ---
     def _unsupported(self, *_a, **_k):
         raise NotImplementedError("resting/multi-timeframe orders are not supported in portfolio mode yet")
 
-    submit_limit = submit_stop = submit_trailing = bars_for = forming_for = _unsupported
-
-    def cancel_all(self) -> None:
-        pass  # no resting orders to cancel in portfolio mode
+    bars_for = forming_for = _unsupported   # multi-timeframe still unsupported in portfolio mode
 
     # --- helpers ---
     def _can_open(self) -> bool:
@@ -151,7 +166,11 @@ class MultiSymbolStrategyRunner:
     def run(self) -> PortfolioResult:
         aligned = align_bars(self.bars_by_symbol)
         driver = _MultiSymbolDriver(self.strategy_cls, list(aligned), self.max_open_positions)
-        engine = PortfolioEngine(aligned, driver, fee_rate=self.config.fee_rate, cash=self.config.cash)
+        engine = PortfolioEngine(aligned, driver,
+                                 fee_rate=self.config.fee_rate, cash=self.config.cash,
+                                 slippage=self.config.slippage, maker_fee=self.config.maker_fee,
+                                 taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
+                                 leverage=self.config.leverage, maint_margin=self.config.maint_margin)
         return engine.run()
 
     def report(self):

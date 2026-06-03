@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
+from .orders import Order, order_fill_price
 from .timeframe import parse_timeframe, resample
 
 
@@ -18,18 +19,6 @@ class Result:
     trades: list[Trade]
     equity_curve: list[float]
     final_equity: float
-
-
-@dataclass
-class _Order:
-    """A pending order. ``kind`` in {market, limit, stop, trailing}."""
-
-    kind: str
-    side: int            # +1 buy / -1 sell
-    size: float
-    price: float | None = None    # limit/stop trigger
-    trail: float | None = None    # trailing distance (absolute)
-    extreme: float | None = None  # running best price since submission (trailing only)
 
 
 class BacktestEngine:
@@ -64,7 +53,7 @@ class BacktestEngine:
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
-        self._pending: list[_Order] = []
+        self._pending: list[Order] = []
         self._entry_fee = 0.0
         self._entry_ts = 0
         self._price = bars[0].open if bars else 0.0
@@ -81,7 +70,7 @@ class BacktestEngine:
     def submit(self, side_sign: int, size: float) -> None:
         size = self._cap_to_leverage(side_sign, size)
         if size > 0.0:
-            self._pending.append(_Order("market", side_sign, size))
+            self._pending.append(Order("market", side_sign, size))
 
     def _cap_to_leverage(self, side_sign: int, size: float) -> float:
         """Shrink a market order so the resulting position notional <= leverage * equity.
@@ -110,13 +99,13 @@ class BacktestEngine:
         return size if size <= room else room
 
     def submit_limit(self, side_sign: int, size: float, price: float) -> None:
-        self._pending.append(_Order("limit", side_sign, size, price=price))
+        self._pending.append(Order("limit", side_sign, size, price=price))
 
     def submit_stop(self, side_sign: int, size: float, price: float) -> None:
-        self._pending.append(_Order("stop", side_sign, size, price=price))
+        self._pending.append(Order("stop", side_sign, size, price=price))
 
     def submit_trailing(self, side_sign: int, size: float, trail: float) -> None:
-        self._pending.append(_Order("trailing", side_sign, size, trail=trail, extreme=self._price))
+        self._pending.append(Order("trailing", side_sign, size, trail=trail, extreme=self._price))
 
     def cancel_all(self) -> None:
         self._pending = []
@@ -124,7 +113,7 @@ class BacktestEngine:
     def submit_close(self) -> None:
         if self.position.size != 0:
             side = -1 if self.position.size > 0 else 1
-            self._pending.append(_Order("market", side, abs(self.position.size)))
+            self._pending.append(Order("market", side, abs(self.position.size)))
 
     def order_target(self, target_size: float) -> None:
         """Market order to move the position to ``target_size`` signed shares."""
@@ -209,44 +198,14 @@ class BacktestEngine:
         return self.equity_now()
 
     def _fill_pending(self, bar: Bar) -> None:
-        still: list[_Order] = []
+        still: list[Order] = []
         for o in self._pending:
-            fill_price = self._order_fill_price(o, bar)
+            fill_price = order_fill_price(o, bar)
             if fill_price is None:
                 still.append(o)  # rest until triggered
             else:
                 self._apply_fill(o.side, o.size, fill_price, bar.ts, is_maker=o.kind == "limit")
         self._pending = still
-
-    def _order_fill_price(self, o: _Order, bar: Bar):
-        """Fill price for an order against ``bar``, or None if it doesn't trigger.
-
-        Trailing stops check the prior extreme's trigger first, then ratchet the
-        extreme with this bar — so a bar making a new high can't stop out on its own low.
-        """
-        if o.kind == "market":
-            return bar.open
-        if o.kind == "limit":  # buy on a dip to price; sell on a rally to price
-            if o.side > 0:
-                return o.price if bar.low <= o.price else None
-            return o.price if bar.high >= o.price else None
-        if o.kind == "stop":  # buy on breakout up; sell on breakdown
-            if o.side > 0:
-                return o.price if bar.high >= o.price else None
-            return o.price if bar.low <= o.price else None
-        # trailing: side<0 protects a long (sell-stop trailing the high);
-        #           side>0 protects a short (buy-stop trailing the low).
-        if o.side < 0:
-            trigger = o.extreme - o.trail
-            if bar.low <= trigger:
-                return trigger
-            o.extreme = max(o.extreme, bar.high)
-            return None
-        trigger = o.extreme + o.trail
-        if bar.high >= trigger:
-            return trigger
-        o.extreme = min(o.extreme, bar.low)
-        return None
 
     def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> None:
         price = adverse_fill_price(price, side_sign, self.slippage)  # adverse: buys up, sells down
