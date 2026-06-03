@@ -54,3 +54,30 @@ def test_ask_ai_appends_suggested_symbols(app, tmp_path):
     panel.apply_ai_suggestion("ETHUSDT, SOLUSDT")  # dialog-free: parse + append, deduped
     text = panel._symbols.toPlainText()
     assert "ETHUSDT" in text and "SOLUSDT" in text and text.count("BTCUSDT") == 1
+
+
+def test_test_symbol_does_not_emit_without_selection(app, tmp_path):
+    save_dataset(DataSet("Set3", ["BTCUSDT", "ETHUSDT"]), str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("Set3")
+    panel._symbols_list.setCurrentRow(-1)  # nothing selected
+    fired = []
+    panel.test_symbol_requested.connect(lambda *a: fired.append(a))
+    panel._on_test_symbol()
+    assert fired == []
+
+
+def test_ask_ai_shows_error_without_crashing(app, tmp_path, monkeypatch):
+    save_dataset(DataSet("Set4", ["BTCUSDT"]), str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("Set4")
+    panel._ai_query.setText("anything")
+    import vike_trader_app.ai.symbol_suggest as mod
+
+    def _boom(*a, **k):
+        raise RuntimeError("no AI here")
+
+    monkeypatch.setattr(mod, "suggest_symbols", _boom)
+    panel._on_ask_ai()  # must not raise
+    assert "AI unavailable" in panel._ai_status.text()
+    assert panel.btn_ai.isEnabled()  # re-enabled in finally

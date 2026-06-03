@@ -1,8 +1,8 @@
 """DataSet Symbols panel (right pane, 'Symbols' sub-tab).
 
-Edit a DataSet's symbol list / linked provider / interval, and request a backtest of a single
-symbol or the whole DataSet. The Ask-the-AI box is added in a later task. Public ops are
-dialog-free for testability.
+Edit a DataSet's symbol list / linked provider / interval, request a backtest of a single
+symbol or the whole DataSet, and ask the AI to suggest symbols. Public ops are dialog-free
+for testability.
 """
 
 from PySide6 import QtCore, QtWidgets
@@ -119,11 +119,14 @@ class DataSetPanel(QtWidgets.QWidget):
         if not query:
             return
         self._ai_status.setText("Asking…")
+        self.btn_ai.setEnabled(False)  # the call is synchronous — block re-entrant clicks
         QtWidgets.QApplication.processEvents()
         try:
             symbols = suggest_symbols(query, group=provider_group(self.current_dataset()))
         except Exception as exc:  # noqa: BLE001 - missing [ai] extra / key / network: show, don't crash
             self._ai_status.setText(f"AI unavailable: {exc}")
             return
+        finally:
+            self.btn_ai.setEnabled(True)
         self.apply_ai_suggestion(" ".join(symbols))
         self._ai_status.setText(f"added {len(symbols)} symbol(s)")
