@@ -22,6 +22,16 @@ def test_classify_buckets():
     assert classify(_item("Quiet day", tags=("Earnings",))) == "Earnings"          # tag informs bucket
 
 
+def test_classify_avoids_substring_false_positives():
+    # word-boundary matching: keywords must not fire inside unrelated longer words
+    assert classify(_item("Fed announces emergency rate decision")) == "Macro"   # not M&A ('merge')
+    assert classify(_item("Tech stocks emerge from slump")) != "M&A"             # 'merge' in 'emerge'
+    assert classify(_item("Nonprofit launches climate fund")) != "Earnings"      # 'profit' in 'nonprofit'
+    assert classify(_item("Urban planning reshapes the city")) != "Regulation"   # 'ban' in 'urban'
+    assert classify(_item("Lebanon governor steps down")) != "Earnings"          # 'eps' in 'steps'
+    assert classify(_item("Election results show a tight race")) != "Earnings"   # generic 'results'
+
+
 def test_rss_parses_category_tags():
     xml = (b"<?xml version='1.0'?><rss><channel>"
            b"<item><title>X</title><link>http://x</link>"

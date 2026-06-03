@@ -7,6 +7,8 @@ means "no constraint" (all). Emits ``selectionChanged`` when the set of checked 
 """
 from __future__ import annotations
 
+import time
+
 from PySide6 import QtCore, QtWidgets
 
 from . import theme
@@ -19,6 +21,7 @@ class _Popover(QtWidgets.QFrame):
 
     def __init__(self, title: str, options: list[str], parent=None):
         super().__init__(parent, QtCore.Qt.Popup)
+        self._on_hide = None
         self.setObjectName("filterPop")
         self.setStyleSheet(
             f"#filterPop{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
@@ -112,6 +115,11 @@ class _Popover(QtWidgets.QFrame):
             self._all.setCheckState(QtCore.Qt.PartiallyChecked)
         self._all.blockSignals(False)
 
+    def hideEvent(self, e):  # noqa: N802 - Qt override; notify the owner button it just closed
+        super().hideEvent(e)
+        if self._on_hide:
+            self._on_hide()
+
     # ---- API ----
     def selected(self) -> set[str]:
         return {opt for opt, cb in self._boxes.items() if cb.isChecked()}
@@ -142,12 +150,22 @@ class MultiSelectFilter(QtWidgets.QToolButton):
             "QToolButton::menu-indicator{width:0px;}")
         self._pop = _Popover(label, options, self)
         self._pop.selectionChanged.connect(self._on_changed)
+        self._pop._on_hide = self._note_closed
+        self._closed_at = 0.0
         self.clicked.connect(self._toggle_pop)
         self._refresh_text()
+
+    def _note_closed(self) -> None:
+        self._closed_at = time.monotonic()
 
     def _toggle_pop(self) -> None:
         if self._pop.isVisible():
             self._pop.hide()
+            return
+        # A Qt.Popup grabs the mouse: clicking the open pill first auto-hides the popover, then
+        # this click arrives — without this guard it would immediately re-open. Ignore a click
+        # that lands right after the popover closed itself.
+        if time.monotonic() - self._closed_at < 0.20:
             return
         below = self.mapToGlobal(QtCore.QPoint(0, self.height() + 4))
         self._pop.move(below)

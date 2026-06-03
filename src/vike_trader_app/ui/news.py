@@ -17,7 +17,6 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..data.news.aggregator import apply_filter, merge
 from ..data.news.classify import CATEGORIES, classify
-from ..data.news.feeds_store import SavedFeedStore
 from ..data.news.fetch import fetch_iter
 from ..data.news.models import NewsFilter, NewsItem
 from ..data.news.providers import PROVIDERS
@@ -170,10 +169,8 @@ class _NewsWorker(QtCore.QThread):
 class NewsTab(QtWidgets.QWidget):
     """Filter toolbar + list/reader split over a merged, deduped, time-sorted news feed."""
 
-    def __init__(self, store: SavedFeedStore | None = None, providers=None,
-                 parent: QtWidgets.QWidget | None = None):
+    def __init__(self, providers=None, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
-        self._store = store if store is not None else SavedFeedStore()
         self._providers = list(providers) if providers is not None else list(PROVIDERS)
         self._items: list[NewsItem] = []
         self._symbol: str | None = None

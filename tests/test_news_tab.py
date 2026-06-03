@@ -6,9 +6,8 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
-from vike_trader_app.data.news.feeds_store import SavedFeedStore  # noqa: E402
 from vike_trader_app.data.news.models import NewsItem  # noqa: E402
 from vike_trader_app.ui.news import NewsTab  # noqa: E402
 
@@ -27,8 +26,8 @@ def _items():
     ]
 
 
-def test_tab_populates_and_reader_renders(app, tmp_path):
-    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+def test_tab_populates_and_reader_renders(app):
+    tab = NewsTab()
     tab.on_items_received(_items())
     assert tab._list.count() == 2
     tab._list.setCurrentRow(0)                       # newest first → "BTC soars"
@@ -36,15 +35,15 @@ def test_tab_populates_and_reader_renders(app, tmp_path):
     assert tab._current_item().url == "https://x/1"
 
 
-def test_market_filter_reduces_list(app, tmp_path):
-    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+def test_market_filter_reduces_list(app):
+    tab = NewsTab()
     tab.on_items_received(_items())
     tab._market.set_selected({"Crypto"})             # TV multi-select dropdown → _refresh_list
     assert tab._list.count() == 1
 
 
-def test_category_filter_reduces_list(app, tmp_path):
-    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+def test_category_filter_reduces_list(app):
+    tab = NewsTab()
     tab.on_items_received([
         NewsItem(id="a", title="Apple Q3 earnings beat estimates", url="u1", summary="",
                  source="CNBC", market="stocks", published_ms=3000),
@@ -53,11 +52,11 @@ def test_category_filter_reduces_list(app, tmp_path):
     ])
     tab._category.set_selected({"Earnings"})         # derived classifier → only the Apple item
     assert tab._list.count() == 1
-    assert "Apple" in tab._list.item(0).data(__import__("PySide6.QtCore", fromlist=["Qt"]).Qt.UserRole).title
+    assert "Apple" in tab._list.item(0).data(QtCore.Qt.UserRole).title
 
 
-def test_close_reader_then_row_reopens(app, tmp_path):
-    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+def test_close_reader_then_row_reopens(app):
+    tab = NewsTab()
     tab.on_items_received(_items())
     assert not tab._reader.isHidden()                # reader open by default
     tab.close_reader()                               # TV's X button
@@ -67,18 +66,16 @@ def test_close_reader_then_row_reopens(app, tmp_path):
     assert "BTC soars" in tab._title.text()
 
 
-def test_set_symbol_with_follow_filters(app, tmp_path):
-    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+def test_set_symbol_with_follow_filters(app):
+    tab = NewsTab()
     tab.on_items_received(_items())
     tab._follow.setChecked(True)
     tab.set_symbol("BTCUSDT")
     assert tab._list.count() == 1                    # only the BTC item matches
 
 
-def test_empty_filter_shows_actionable_placeholder_and_honest_count(app, tmp_path):
-    from PySide6 import QtCore
-
-    tab = NewsTab(store=SavedFeedStore(str(tmp_path / "f.json")))
+def test_empty_filter_shows_actionable_placeholder_and_honest_count(app):
+    tab = NewsTab()
     tab.on_items_received(_items())                  # 1 crypto(BTC) + 1 forex
     tab._follow.setChecked(True)
     tab.set_symbol("BTCUSDT")
