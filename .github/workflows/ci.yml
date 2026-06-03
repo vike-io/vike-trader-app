@@ -81,6 +81,7 @@ jobs:
           tests/test_journal_gui.py
           tests/test_screener_gui.py
           tests/test_studio_gui.py
+          tests/test_studio_results.py
           tests/test_tools_gui.py
           tests/test_options_tab_gui.py
           tests/test_options_service.py
