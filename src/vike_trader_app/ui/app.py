@@ -1022,7 +1022,8 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..core.portfolio_adapter import MultiSymbolStrategyRunner
             from ..tester import TesterConfig
 
-            report = MultiSymbolStrategyRunner(cls, bars_by_symbol, TesterConfig()).report()
+            ranges = getattr(dataset, "ranges", None) or None  # dynamic/survivorship-free membership
+            report = MultiSymbolStrategyRunner(cls, bars_by_symbol, TesterConfig(), ranges=ranges).report()
         except Exception as exc:  # noqa: BLE001 - missing module / resting orders unsupported in portfolio mode
             self.studio.results.show_error(f"Portfolio test failed: {exc}")
             self.tabs.setCurrentWidget(self.studio)

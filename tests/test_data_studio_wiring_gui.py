@@ -41,3 +41,16 @@ def test_test_dataset_runs_portfolio_into_studio(app):
     win.datamanager.test_dataset_requested.emit(DataSet("DS", ["A", "B"], interval="1m"), {"A": a, "B": b})
     assert win.tabs.currentWidget() is win.studio
     assert win.studio.results.last_report is not None
+
+
+def test_test_dynamic_dataset_runs_with_membership_ranges(app):
+    # a dynamic DataSet (per-symbol DateRange membership) runs through the portfolio path without error
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    from vike_trader_app.data.datasets import DataSet, DateRange
+    win = MainWindow()
+    win.studio.editor.setText(TEMPLATES[0].code)
+    a, b = _bars(60), _bars(60)
+    ds = DataSet("Dyn", ["A", "B"], interval="1m", ranges={"B": [DateRange(b[30].ts, None)]})  # B joins mid-run
+    win.datamanager.test_dataset_requested.emit(ds, {"A": a, "B": b})
+    assert win.tabs.currentWidget() is win.studio
+    assert win.studio.results.last_report is not None
