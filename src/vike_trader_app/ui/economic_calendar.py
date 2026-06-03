@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import theme
+from . import icons, theme
 from .calendar_delegate import importance_bar_pixmap, value_color
 from ..data.calendar.model import week_start_utc
 from ..data.calendar.taxonomy import currency_country
@@ -196,7 +196,11 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._tree.setRootIsDecorated(False)
         self._tree.setIndentation(0)
         self._tree.setAlternatingRowColors(False)
-        self._tree.header().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        # Content-size every column (Time/Country/importance/Actual/Forecast/Prior) so the country
+        # flag+name fits instead of cropping to "United Ki…"; Event stays the one Stretch column.
+        hdr = self._tree.header()
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
         self._toolbar = self._build_toolbar()
         root.addWidget(self._toolbar)   # hidden when embedded in CalendarSpace (controls move to top nav)
@@ -227,9 +231,13 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         self._btn_today = QtWidgets.QPushButton("Today")
         self._btn_today.clicked.connect(self.go_today)
-        prev = QtWidgets.QPushButton("‹")
+        prev = QtWidgets.QPushButton()
+        prev.setIcon(icons.chevron_icon("left", theme.TEXT2))
+        prev.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))
         prev.clicked.connect(self.go_prev_week)
-        nxt = QtWidgets.QPushButton("›")
+        nxt = QtWidgets.QPushButton()
+        nxt.setIcon(icons.chevron_icon("right", theme.TEXT2))
+        nxt.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))
         nxt.clicked.connect(self.go_next_week)
         self._lbl_range = QtWidgets.QLabel("")
         self._chk_high = QtWidgets.QCheckBox("High only")
@@ -255,7 +263,10 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     def _build_country_button(self) -> QtWidgets.QToolButton:
         btn = QtWidgets.QToolButton()
-        btn.setText("Countries ▾")
+        btn.setText("Countries")
+        btn.setIcon(icons.chevron_icon("down", theme.TEXT2))   # unified chevron, not the old ▾ glyph
+        btn.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))
+        btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         btn.clicked.connect(self._open_country_dialog)   # TV-style modal (not a checkbox menu)
         return btn
 
@@ -275,7 +286,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     def _sync_country_button(self) -> None:
         n = len(self._countries) if self._countries else 0
-        self._btn_countries.setText("Countries ▾" if not n else f"Countries ({n}) ▾")
+        self._btn_countries.setText("Countries" if not n else f"Countries ({n})")
 
     def _on_tz_changed(self, idx: int) -> None:
         self.set_timezone(_TZ_CHOICES[idx][1])

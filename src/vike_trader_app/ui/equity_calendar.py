@@ -12,9 +12,19 @@ from datetime import datetime, timedelta, timezone
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import dropdowns, theme
+from . import dropdowns, icons, theme
 
 _DAY_MS = 24 * 3600 * 1000
+
+
+def _nav_button(direction: str) -> QtWidgets.QPushButton:
+    """A week-nav button (‹ / ›) using the unified thin chevron icon at the shared arrow size,
+    so left/right read identically to the up/down chevrons elsewhere (the TradingView look)."""
+    b = QtWidgets.QPushButton()
+    b.setIcon(icons.chevron_icon(direction, theme.TEXT2))
+    b.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))
+    b.setCursor(QtCore.Qt.PointingHandCursor)
+    return b
 _HOUR_LABEL = {"bmo": "Pre-mkt", "amc": "After-hrs", "dmh": "Mid-day"}
 
 # TV day-card categories (row order + label).
@@ -243,9 +253,9 @@ class EquityCalendarTab(QtWidgets.QWidget):
         h.setContentsMargins(0, 0, 0, 0)
         btn_today = QtWidgets.QPushButton("Today")
         btn_today.clicked.connect(self.go_today)
-        prev = QtWidgets.QPushButton("‹")
+        prev = _nav_button("left")
         prev.clicked.connect(lambda: self._nav(-_DAY_MS * 7))
-        nxt = QtWidgets.QPushButton("›")
+        nxt = _nav_button("right")
         nxt.clicked.connect(lambda: self._nav(_DAY_MS * 7))
         self._lbl_range = QtWidgets.QLabel("")
         self._search = QtWidgets.QLineEdit()
@@ -528,9 +538,9 @@ class CalendarSpace(QtWidgets.QWidget):
         btn_today = QtWidgets.QPushButton("Today")
         btn_today.setCursor(QtCore.Qt.PointingHandCursor)
         btn_today.clicked.connect(lambda: (self.economic.go_today(), self._sync_range()))
-        prev = QtWidgets.QPushButton("‹")
+        prev = _nav_button("left")
         prev.clicked.connect(lambda: (self.economic.go_prev_week(), self._sync_range()))
-        nxt = QtWidgets.QPushButton("›")
+        nxt = _nav_button("right")
         nxt.clicked.connect(lambda: (self.economic.go_next_week(), self._sync_range()))
         self._range_lbl = QtWidgets.QLabel("")
         self._range_lbl.setStyleSheet(

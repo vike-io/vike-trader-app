@@ -1021,7 +1021,7 @@ class StudioTab(QtWidgets.QWidget):
         # the Run/Walk-forward/Templates/Settings/Export cluster).
         self._btn_collapse_top = QtWidgets.QToolButton()
         self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_up", theme.TEXT2))
-        self._btn_collapse_top.setIconSize(QtCore.QSize(18, 18))
+        self._btn_collapse_top.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))  # unified arrow size
         self._btn_collapse_top.setToolTip("Collapse / expand chart & report")
         self._btn_collapse_top.clicked.connect(self._toggle_top_panel)
 
