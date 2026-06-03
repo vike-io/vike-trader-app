@@ -9,6 +9,7 @@ engine. Equity = cash + sum(position size * last close).
 from dataclasses import dataclass, field
 
 from .model import Bar, Position, Trade
+from .orders import Order, order_fill_price
 
 
 @dataclass
@@ -138,7 +139,7 @@ class PortfolioEngine:
         self.trades: list[Trade] = []
         self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
         self._pos: dict[str, Position] = {s: Position() for s in self.symbols}
-        self._pending: dict[str, list[tuple[int, float]]] = {s: [] for s in self.symbols}
+        self._pending: dict[str, list[Order]] = {s: [] for s in self.symbols}
         self._entry_fee: dict[str, float] = {s: 0.0 for s in self.symbols}
         self._entry_ts: dict[str, int] = {s: 0 for s in self.symbols}
         self._price: dict[str, float] = {
@@ -158,13 +159,26 @@ class PortfolioEngine:
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float) -> None:
-        self._pending[symbol].append((side_sign, size))
+        self._pending[symbol].append(Order("market", side_sign, size))
 
     def submit_close(self, symbol: str) -> None:
         pos = self._pos[symbol]
         if pos.size != 0:
             side = -1 if pos.size > 0 else 1
-            self._pending[symbol].append((side, abs(pos.size)))
+            self._pending[symbol].append(Order("market", side, abs(pos.size)))
+
+    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float) -> None:
+        self._pending[symbol].append(Order("limit", side_sign, size, price=price))
+
+    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float) -> None:
+        self._pending[symbol].append(Order("stop", side_sign, size, price=price))
+
+    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float) -> None:
+        self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
+                                           extreme=self._price[symbol]))
+
+    def cancel_all(self, symbol: str) -> None:
+        self._pending[symbol] = []
 
     # --- run loop ---
     def run(self) -> PortfolioResult:
@@ -190,9 +204,14 @@ class PortfolioEngine:
         return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol)
 
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
-        pending, self._pending[symbol] = self._pending[symbol], []
-        for side_sign, size in pending:
-            self._apply_fill(symbol, side_sign, size, bar.open, bar.ts)
+        still = []
+        for o in self._pending[symbol]:
+            fp = order_fill_price(o, bar)
+            if fp is None:
+                still.append(o)               # rest until triggered
+            else:
+                self._apply_fill(symbol, o.side, o.size, fp, bar.ts)
+        self._pending[symbol] = still
 
     def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int) -> None:
         fee = size * price * self.fee_rate
