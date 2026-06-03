@@ -379,6 +379,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.addTab(self.alerts, "Alerts")
         self.datamanager = DataManagerTab(pins_path=_PINS_PATH)
         self.tabs.addTab(self.datamanager, "Data")
+        self.datamanager.test_symbol_requested.connect(self._on_test_symbol)
+        self.datamanager.test_dataset_requested.connect(self._on_test_dataset)
         self.news = NewsTab()
         self.tabs.addTab(self.news, "News")
         self.economic_calendar = EconomicCalendarTab()
@@ -1002,6 +1004,31 @@ class MainWindow(QtWidgets.QMainWindow):
             self.studio.set_agent_client(ClaudeClient())
         except Exception:  # noqa: BLE001 - missing [ai] extra / bad key -> stay in no-AI mode
             pass
+
+    # --- Data tab → Studio ---
+    def _on_test_symbol(self, symbol, bars) -> None:
+        """Data tab → Studio: load one symbol's bars and switch to the Studio space."""
+        if not bars:
+            return
+        self.studio.set_bars(bars)
+        self.tabs.setCurrentWidget(self.studio)
+
+    def _on_test_dataset(self, dataset, bars_by_symbol) -> None:
+        """Data tab → Studio: run the editor's strategy across the whole DataSet (portfolio backtest)."""
+        from ..core.portfolio_adapter import MultiSymbolStrategyRunner
+        from ..tester import TesterConfig
+
+        cls = self.studio.current_strategy_cls()
+        if cls is None or not bars_by_symbol:
+            return
+        try:
+            report = MultiSymbolStrategyRunner(cls, bars_by_symbol, TesterConfig()).report()
+        except Exception as exc:  # noqa: BLE001 - e.g. resting orders unsupported in portfolio mode
+            self.studio.results.show_error(f"Portfolio test failed: {exc}")
+            self.tabs.setCurrentWidget(self.studio)
+            return
+        self.studio.show_portfolio_report(report, dataset.name)
+        self.tabs.setCurrentWidget(self.studio)
 
     # --- data / strategy loading ---
     def load_bars(self, bars, strategy_factory=None, *, record=True):

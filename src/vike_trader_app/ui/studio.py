@@ -1162,6 +1162,18 @@ class StudioTab(QtWidgets.QWidget):
         """Return editor text."""
         return self.editor.text()
 
+    def current_strategy_cls(self):
+        """Compile the strategy currently in the editor; return its class, or None if it doesn't compile."""
+        from vike_trader_app.core.strategy_loader import load_strategy_from_string
+        try:
+            return load_strategy_from_string(self.editor.text(), validate=True)
+        except Exception:  # noqa: BLE001 - an empty/invalid editor just yields no strategy
+            return None
+
+    def show_portfolio_report(self, report, name: str = "") -> None:
+        """Display a portfolio backtest report in the results panel (no per-bar price chart)."""
+        self.results.add_run(report, [], {})
+
     # --- run ---
 
     def run_code(self) -> None:
