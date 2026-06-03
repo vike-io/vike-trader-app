@@ -128,28 +128,29 @@ def test_datamanager_import_csv_aggregates_to_target(app, tmp_path):
     assert len(ps.read_series(str(tmp_path), "BTCUSDT", "5m")) == 1
 
 
-def test_datamanager_download_series_routes_to_chosen_provider(app, tmp_path, monkeypatch):
+def test_datamanager_download_series_routes_through_chain(app, tmp_path, monkeypatch):
     import vike_trader_app.ui.datamanager as dm
+    from vike_trader_app.core.model import Bar
 
     captured = {}
 
-    class _Src:
-        name = "bybit"
+    def fake_fetch_for(sym, iv, s, e, root=None, linked_provider=None, progress=None):
+        captured["sym"] = sym
+        captured["linked"] = linked_provider
+        return [Bar(ts=1, open=1, high=1, low=1, close=1)], "bybit"
 
-        def fetch_bars_range(self, *a, **k):
-            return []
-
-    def fake_select(symbol, provider=None):
-        captured["provider"] = provider
-        return _Src()
-
-    monkeypatch.setattr(dm, "select_source", fake_select)
-    monkeypatch.setattr(dm, "get_bars", lambda *a, **k: [])
+    # download_series builds a fetcher closure that calls fetch_for; make get_bars invoke it once.
+    monkeypatch.setattr("vike_trader_app.data.provider_chain.fetch_for", fake_fetch_for)
+    monkeypatch.setattr(dm, "get_bars",
+                        lambda symbol, interval, start, end, root=None, fetcher=None, progress=None:
+                        fetcher(symbol, interval, start, end) if fetcher else [])
     tab = dm.DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
     tab.refresh()
-    tab.download_series("BTCUSDT", "1m", 5, provider="bybit")
-    assert captured["provider"] == "bybit"
-    assert "via bybit" in tab._log_view.toPlainText()
+    n = tab.download_series("BTCUSDT", "1m", 5, provider="bybit")
+    assert n == 1
+    assert captured["sym"] == "BTCUSDT"
+    assert captured["linked"] == "bybit"          # the chosen provider becomes the linked-first
+    assert "via provider chain" in tab._log_view.toPlainText()
 
 
 def test_datamanager_download_dataset_iterates_symbols(app, tmp_path, monkeypatch):
@@ -192,3 +193,74 @@ def test_datamanager_profiles_live_beside_parquet_not_inside(app, tmp_path):
     tab.refresh()  # seeds presets at the config root
     assert (tmp_path / "profiles").is_dir()          # storage/profiles — beside the cache
     assert not (data_root / "profiles").exists()     # not storage/parquet/profiles
+
+
+# --- Task 12: tree + sub-tabs structural tests ---
+
+def test_data_tab_has_tree_and_subtabs(app, tmp_path):
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
+    assert tab.tree is not None
+    titles = [tab.subtabs.tabText(i) for i in range(tab.subtabs.count())]
+    assert titles == ["Symbols", "Cached Series", "Historical Providers"]
+
+
+def test_selecting_dataset_loads_symbols_panel(app, tmp_path):
+    from vike_trader_app.data.datasets import DataSet, save_dataset
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    save_dataset(DataSet("Sel", ["BTCUSDT"], provider="binance"), str(tmp_path))
+    tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
+    tab.tree.reload()
+    tab.tree.dataset_selected.emit("Sel")
+    assert "BTCUSDT" in tab.panel._symbols.toPlainText()
+
+
+# --- Task 13: Cached-Series filter test ---
+
+def test_cached_table_filters_to_selected_dataset(app, tmp_path, monkeypatch):
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
+
+    class _Info:
+        def __init__(self, symbol):
+            self.symbol, self.interval, self.n_bars, self.start_ts, self.end_ts = (
+                symbol, "1m", 10, 0, 60_000
+            )
+
+    monkeypatch.setattr(tab, "_catalog", lambda: type("C", (), {
+        "list_datasets": staticmethod(lambda: [_Info("BTCUSDT"), _Info("ETHUSDT"), _Info("XRPUSDT")])})())
+    tab.set_symbol_filter(["BTCUSDT", "ETHUSDT"])
+    tab.refresh()
+    shown = {tab._table.item(r, 0).text() for r in range(tab._table.rowCount())}
+    assert shown == {"BTCUSDT", "ETHUSDT"}
+    tab.set_symbol_filter(None)
+    tab.refresh()
+    assert tab._table.rowCount() == 3
+
+
+# --- Task 14: Test symbol / Test DataSet glue ---
+
+def test_test_symbol_loads_bars_and_emits(app, tmp_path, monkeypatch):
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
+    fake = [Bar(ts=1, open=1, high=1, low=1, close=1)]
+    monkeypatch.setattr("vike_trader_app.ui.datamanager.get_bars", lambda *a, **k: fake)
+    got = {}
+    tab.test_symbol_requested.connect(lambda sym, bars: got.update(sym=sym, bars=bars))
+    tab.panel.test_symbol_requested.emit("BTCUSDT", "1m")
+    assert got["sym"] == "BTCUSDT" and got["bars"] == fake
+
+
+def test_test_dataset_runs_portfolio_and_emits_report(app, tmp_path, monkeypatch):
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.data.datasets import DataSet
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
+    monkeypatch.setattr("vike_trader_app.ui.datamanager.get_bars",
+                        lambda sym, *a, **k: [Bar(ts=1, open=1, high=1, low=1, close=1)])
+    reports = []
+    tab.test_dataset_requested.connect(lambda ds, bars_by_symbol: reports.append((ds, bars_by_symbol)))
+    tab.panel.test_dataset_requested.emit(DataSet("DS", ["BTCUSDT", "ETHUSDT"], interval="1m"))
+    assert reports[0][0].name == "DS"
+    assert set(reports[0][1]) == {"BTCUSDT", "ETHUSDT"}

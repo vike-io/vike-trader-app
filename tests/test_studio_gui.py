@@ -272,3 +272,38 @@ def test_concurrent_prompt_is_refused(app):
     tab._worker = _Busy()
     tab._on_prompt("second prompt")      # a worker is "running" -> must not start another
     assert isinstance(tab._worker, _Busy)  # unchanged; the submit was refused
+
+
+def test_current_strategy_cls_none_for_empty_editor(app):
+    from vike_trader_app.ui.studio import StudioTab
+    tab = StudioTab()
+    tab.editor.setText("")
+    assert tab.current_strategy_cls() is None
+
+
+def test_current_strategy_cls_compiles_template(app):
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    from vike_trader_app.ui.studio import StudioTab
+    tab = StudioTab()
+    tab.editor.setText(TEMPLATES[0].code)
+    cls = tab.current_strategy_cls()
+    assert cls is not None and callable(cls)
+
+
+def test_show_portfolio_report_displays(app):
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.tester.config import TesterConfig
+    from vike_trader_app.ui.studio import StudioTab
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    bars = {"A": [Bar(ts=i, open=10.0, high=10, low=10, close=10.0 + i) for i in range(5)]}
+    report = MultiSymbolStrategyRunner(BuyHold, bars, TesterConfig(cash=1000.0)).report()
+    tab = StudioTab()
+    tab.show_portfolio_report(report, "MySet")   # must not raise
+    assert tab.results.last_report is not None

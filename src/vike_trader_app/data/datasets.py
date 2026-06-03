@@ -32,6 +32,23 @@ def parse_symbols(text: str) -> list[str]:
     return out
 
 
+def provider_group(d: "DataSet") -> str | None:
+    """The tree node a DataSet belongs under: 'Binance' (crypto) or 'Dukascopy' (FX), or None.
+
+    A linked provider decides directly (crypto providers -> Binance node, dukascopy/yahoo -> Dukascopy
+    node). Unlinked sets are inferred from their first symbol; an empty unlinked set has no group.
+    """
+    from .sources import CRYPTO_PROVIDERS, is_forex_symbol
+
+    if d.provider in CRYPTO_PROVIDERS:
+        return "Binance"
+    if d.provider in ("dukascopy", "yahoo"):
+        return "Dukascopy"
+    if not d.symbols:
+        return None
+    return "Dukascopy" if is_forex_symbol(d.symbols[0]) else "Binance"
+
+
 def datasets_dir(root: str) -> Path:
     return Path(root) / "datasets"
 
@@ -75,6 +92,11 @@ def preset_datasets() -> dict[str, DataSet]:
             "Crypto Majors",
             ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT", "DOGEUSDT"],
             provider=None, interval="1m",
+        ),
+        "FX Majors": DataSet(
+            "FX Majors",
+            ["EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "USDCAD"],
+            provider="dukascopy", interval="1h",
         ),
     }
 

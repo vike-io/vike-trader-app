@@ -53,6 +53,9 @@ def config_root_for(data_root: str) -> str:
 class DataManagerTab(QtWidgets.QWidget):
     """Catalog table + toolbar over the local data cache."""
 
+    test_symbol_requested = QtCore.Signal(str, object)        # (symbol, bars)
+    test_dataset_requested = QtCore.Signal(object, object)    # (DataSet, {symbol: bars})
+
     def __init__(self, root: str | None = None, pins_path: str | None = None,
                  config_root: str | None = None, parent=None):
         super().__init__(parent)
@@ -61,11 +64,36 @@ class DataManagerTab(QtWidgets.QWidget):
         self._config_root = config_root or config_root_for(self._root)
         self._pins_path = pins_path or _PINS_PATH
         self._cat = None  # built lazily on first refresh — don't read the catalog at app startup
+        self._symbol_filter = None
         self._presets_ready = False  # broker-profile presets seeded lazily on first refresh
 
-        root_layout = QtWidgets.QVBoxLayout(self)
-        root_layout.setContentsMargins(8, 8, 8, 8)
-        root_layout.setSpacing(6)
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        outer.addWidget(splitter, 1)
+
+        from .dataset_tree import DataSetTree
+        self.tree = DataSetTree(self._config_root)
+        self.tree.dataset_selected.connect(self._on_dataset_selected)
+        splitter.addWidget(self.tree)
+
+        self.subtabs = QtWidgets.QTabWidget()
+        splitter.addWidget(self.subtabs)
+        splitter.setStretchFactor(1, 1)
+
+        from .dataset_panel import DataSetPanel
+        from .providers_panel import ProvidersPanel
+        self.panel = DataSetPanel(self._config_root)
+        self.providers = ProvidersPanel(self._config_root)
+        self.panel.test_symbol_requested.connect(self._on_test_symbol_req)
+        self.panel.test_dataset_requested.connect(self._on_test_dataset_req)
+
+        cached = QtWidgets.QWidget()
+        cached_layout = QtWidgets.QVBoxLayout(cached)
+        cached_layout.setContentsMargins(0, 0, 0, 0)
+        cached_layout.setSpacing(6)
 
         bar = QtWidgets.QHBoxLayout()
         bar.setSpacing(6)
@@ -73,36 +101,32 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_update_all = QtWidgets.QPushButton("⟳ Update all")
         self.btn_download = QtWidgets.QPushButton("⤓ Download / Extend…")
         self.btn_import = QtWidgets.QPushButton("⤒ Import CSV…")
-        self.btn_import.setToolTip("Import an OHLCV CSV (auto-detect format; optional TZ shift + aggregate)")
-        self.btn_datasets = QtWidgets.QPushButton("🗂 DataSets…")
-        self.btn_datasets.setToolTip("Named symbol collections — download/update a whole universe at once")
         self.btn_inspect = QtWidgets.QPushButton("🔍 Inspect")
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
         self.btn_profiles = QtWidgets.QPushButton("⚙ Instruments…")
-        self.btn_profiles.setToolTip("Edit broker profiles & instrument specs (tick / pip / step / size)")
         self.btn_delete = QtWidgets.QPushButton("🗑 Delete")
         self.btn_update_all.setToolTip("Fetch up-to-now for every cached series")
+        self.btn_import.setToolTip("Import an OHLCV CSV (auto-detect format; optional TZ shift + aggregate)")
         self.btn_inspect.setToolTip("Check the selected series for gaps / OHLC anomalies")
+        self.btn_profiles.setToolTip("Edit broker profiles & instrument specs (tick / pip / step / size)")
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_update_all.clicked.connect(self._on_update_all)
         self.btn_download.clicked.connect(self._on_download)
         self.btn_import.clicked.connect(self._on_import_csv)
-        self.btn_datasets.clicked.connect(self._on_datasets)
         self.btn_inspect.clicked.connect(self._on_inspect)
         self.btn_repair.clicked.connect(self._on_repair)
         self.btn_pin.clicked.connect(self._on_pin)
         self.btn_profiles.clicked.connect(self._on_profiles)
         self.btn_delete.clicked.connect(self._on_delete)
         for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_import,
-                  self.btn_datasets, self.btn_inspect, self.btn_repair, self.btn_pin,
-                  self.btn_profiles, self.btn_delete):
+                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_profiles, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
         self.count_label = QtWidgets.QLabel("")
         self.count_label.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
         bar.addWidget(self.count_label)
-        root_layout.addLayout(bar)
+        cached_layout.addLayout(bar)
 
         self._table = QtWidgets.QTableWidget(0, len(_COLS))
         self._table.setHorizontalHeaderLabels(_COLS)
@@ -113,30 +137,48 @@ class DataManagerTab(QtWidgets.QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         self._table.doubleClicked.connect(lambda *_: self._on_inspect())
-        root_layout.addWidget(self._table, 1)
+        cached_layout.addWidget(self._table, 1)
 
-        # operation log (downloads / repairs / inspect reports) — read-only, like QDM's log
         log_header = QtWidgets.QLabel("ACTIVITY LOG")
         log_header.setStyleSheet(
             f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 2px 0;"
         )
-        root_layout.addWidget(log_header)
+        cached_layout.addWidget(log_header)
         self._log_view = QtWidgets.QPlainTextEdit()
         self._log_view.setReadOnly(True)
-        self._log_view.setMinimumHeight(96)   # always visible, never squeezed to nothing
+        self._log_view.setMinimumHeight(96)
         self._log_view.setMaximumHeight(150)
         self._log_view.setPlaceholderText("Downloads, repairs and inspect reports appear here…")
         self._log_view.setStyleSheet(
             f"QPlainTextEdit{{background:{theme.PANEL2};color:{theme.TEXT2};border:1px solid "
             f"{theme.BORDER};border-radius:6px;font-family:{theme.FONT_MONO};font-size:11px;}}"
         )
-        root_layout.addWidget(self._log_view)
+        cached_layout.addWidget(self._log_view)
+
+        self.subtabs.addTab(self.panel, "Symbols")
+        self.subtabs.addTab(cached, "Cached Series")
+        self.subtabs.addTab(self.providers, "Historical Providers")
+
+        self.providers.testbed_result.connect(self._log)
+        self.tree.reload()
         # No refresh() here: the table populates lazily on first show (showEvent), so app startup
         # never reads the catalog for a tab the user may not open.
 
     def _log(self, msg: str) -> None:
         """Append a timestamped line to the operation log."""
         self._log_view.appendPlainText(f"{time.strftime('%H:%M:%S')}  {msg}")
+
+    def set_symbol_filter(self, symbols) -> None:
+        """Restrict the Cached-Series table to ``symbols`` (None = show everything)."""
+        self._symbol_filter = {s.upper() for s in symbols} if symbols else None
+
+    def _on_dataset_selected(self, name: str) -> None:
+        from ..data.datasets import load_dataset, preset_datasets
+        self.panel.load_dataset(name)
+        self.subtabs.setCurrentWidget(self.panel)
+        d = load_dataset(name, self._config_root) or preset_datasets().get(name)
+        self.set_symbol_filter(d.symbols if d else None)
+        self.refresh()
 
     def _make_catalog(self):
         """Prefer the DuckDB catalog — it answers count/min/max from Parquet *statistics* without
@@ -168,6 +210,8 @@ class DataManagerTab(QtWidgets.QWidget):
             self._presets_ready = True
         pins = {tuple(p) for p in load_pins(self._pins_path)}
         datasets = self._catalog().list_datasets()
+        if self._symbol_filter is not None:
+            datasets = [i for i in datasets if i.symbol.upper() in self._symbol_filter]
         self._table.setRowCount(len(datasets))
         for r, info in enumerate(datasets):
             pinned = (info.symbol, info.interval) in pins
@@ -277,12 +321,17 @@ class DataManagerTab(QtWidgets.QWidget):
         Returns the number of bars now cached for the window. The prompt-free path the Download
         dialog and tests call.
         """
+        from ..data.provider_chain import fetch_for
         now = int(time.time() * 1000)
-        src = select_source(symbol, provider=provider or None)
-        bars = get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root,
-                        fetcher=src.fetch_bars_range)
+
+        def fetcher(sym, iv, start, end, progress=None):
+            bars, _used = fetch_for(sym, iv, start, end, root=self._config_root,
+                                    linked_provider=provider or None, progress=progress)
+            return bars
+
+        bars = get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root, fetcher=fetcher)
         self.refresh()
-        self._log(f"Downloaded {symbol} {interval} via {src.name} ({days}d)")
+        self._log(f"Downloaded {symbol} {interval} ({days}d) via provider chain")
         return len(bars)
 
     def _on_download(self) -> None:
@@ -369,12 +418,38 @@ class DataManagerTab(QtWidgets.QWidget):
         self._log(f"DataSet '{dataset.name}': done ({ok}/{len(dataset.symbols)})")
         return ok
 
-    def _on_datasets(self) -> None:
-        """Open the DataSets manager; its 'Download all' runs through :meth:`download_dataset`."""
-        from .dataset_editor import DataSetEditorDialog
+    def _load_symbol_bars(self, symbol: str, interval: str, days: int = 365) -> list:
+        """Load up to ``days`` of history for one symbol (cached), routing via the provider chain."""
+        from ..data.provider_chain import fetch_for
+        now = int(time.time() * 1000)
 
-        DataSetEditorDialog(self._config_root, on_download=self.download_dataset, parent=self).exec()
-        self.refresh()
+        def fetcher(sym, iv, start, end, progress=None):
+            bars, _ = fetch_for(sym, iv, start, end, root=self._config_root, progress=progress)
+            return bars
+
+        return get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root, fetcher=fetcher)
+
+    def _on_test_symbol_req(self, symbol: str, interval: str) -> None:
+        self._log(f"Loading {symbol} {interval} for single-symbol test…")
+        try:
+            bars = self._load_symbol_bars(symbol, interval)
+        except Exception as exc:  # noqa: BLE001 - report, no crash
+            self._log(f"Test symbol {symbol} failed: {exc}")
+            return
+        self.test_symbol_requested.emit(symbol, bars)
+
+    def _on_test_dataset_req(self, dataset) -> None:
+        self._log(f"Loading {len(dataset.symbols)} symbols for portfolio test '{dataset.name}'…")
+        bars_by_symbol = {}
+        for sym in dataset.symbols:
+            try:
+                b = self._load_symbol_bars(sym, dataset.interval)
+            except Exception as exc:  # noqa: BLE001 - skip a failing symbol, keep going
+                self._log(f"  {sym}: failed — {exc}")
+                continue
+            if b:
+                bars_by_symbol[sym] = b
+        self.test_dataset_requested.emit(dataset, bars_by_symbol)
 
     def _delete(self, symbol: str, interval: str) -> None:
         """Remove a series' files (no prompt — the prompt lives in ``_on_delete``, so tests skip it)."""

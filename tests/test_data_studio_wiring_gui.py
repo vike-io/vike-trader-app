@@ -1,0 +1,43 @@
+"""Offscreen integration: Data tab Test buttons drive the Studio space on the main window."""
+
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+import pytest
+
+pytest.importorskip("PySide6")
+
+from PySide6 import QtWidgets  # noqa: E402
+
+from vike_trader_app.core.model import Bar  # noqa: E402
+from vike_trader_app.data.datasets import DataSet  # noqa: E402
+from vike_trader_app.ui.app import MainWindow  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def app():
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+def _bars(n=12):
+    return [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
+            for i in range(n)]
+
+
+def test_test_symbol_loads_studio_and_switches(app):
+    win = MainWindow()
+    bars = _bars()
+    win.datamanager.test_symbol_requested.emit("BTCUSDT", bars)
+    assert win.studio._bars == bars
+    assert win.tabs.currentWidget() is win.studio
+
+
+def test_test_dataset_runs_portfolio_into_studio(app):
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    win = MainWindow()
+    win.studio.editor.setText(TEMPLATES[0].code)   # a known-good strategy
+    a, b = _bars(60), _bars(60)
+    win.datamanager.test_dataset_requested.emit(DataSet("DS", ["A", "B"], interval="1m"), {"A": a, "B": b})
+    assert win.tabs.currentWidget() is win.studio
+    assert win.studio.results.last_report is not None
