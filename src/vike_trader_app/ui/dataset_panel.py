@@ -7,7 +7,8 @@ for testability.
 
 from PySide6 import QtCore, QtWidgets
 
-from ..data.datasets import DataSet, load_dataset, parse_symbols, preset_datasets, save_dataset
+from ..data.datasets import DataSet, DateRange, load_dataset, parse_symbols, preset_datasets, save_dataset
+from ..data.membership import parse_membership_csv
 
 _INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
 _PROVIDERS = ["Auto", "binance", "bybit", "okx", "coinbase", "kraken", "yahoo", "dukascopy"]
@@ -23,6 +24,8 @@ class DataSetPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self._root = root
         self._name = ""
+        # Current in-memory membership ranges (preserved across save)
+        self._ranges: dict[str, list[DateRange]] = {}
         layout = QtWidgets.QVBoxLayout(self)
 
         form = QtWidgets.QFormLayout()
@@ -54,6 +57,21 @@ class DataSetPanel(QtWidgets.QWidget):
         ai_layout.addWidget(self._ai_status)
         layout.addWidget(ai_box)
 
+        # ------------------------------------------------------------------
+        # Membership section (dynamic DataSet windows — read-only display)
+        # ------------------------------------------------------------------
+        membership_box = QtWidgets.QGroupBox("Membership (dynamic DataSet)")
+        membership_layout = QtWidgets.QVBoxLayout(membership_box)
+        self._membership_view = QtWidgets.QPlainTextEdit()
+        self._membership_view.setReadOnly(True)
+        self._membership_view.setPlaceholderText("No membership windows — static DataSet.")
+        self._membership_view.setMaximumHeight(100)
+        membership_layout.addWidget(self._membership_view)
+        self.btn_import_membership = QtWidgets.QPushButton("⤒ Import membership…")
+        self.btn_import_membership.clicked.connect(self._on_import_membership)
+        membership_layout.addWidget(self.btn_import_membership)
+        layout.addWidget(membership_box)
+
         bar = QtWidgets.QHBoxLayout()
         self.btn_save = QtWidgets.QPushButton("💾 Save")
         self.btn_test_symbol = QtWidgets.QPushButton("▶ Test symbol")
@@ -75,6 +93,9 @@ class DataSetPanel(QtWidgets.QWidget):
         self._symbols.setPlainText("\n".join(d.symbols))
         self._provider.setCurrentText(d.provider or "Auto")
         self._interval.setCurrentText(d.interval)
+        # Populate membership from the loaded dataset's ranges
+        self._ranges = dict(d.ranges)
+        self._refresh_membership_view()
 
     def _sync_list(self) -> None:
         self._symbols_list.clear()
@@ -87,6 +108,7 @@ class DataSetPanel(QtWidgets.QWidget):
             symbols=parse_symbols(self._symbols.toPlainText()),
             provider=None if choice == "Auto" else choice,
             interval=self._interval.currentText(),
+            ranges=dict(self._ranges),  # preserve current membership
         )
 
     def save(self) -> DataSet:
@@ -130,3 +152,65 @@ class DataSetPanel(QtWidgets.QWidget):
             self.btn_ai.setEnabled(True)
         self.apply_ai_suggestion(" ".join(symbols))
         self._ai_status.setText(f"added {len(symbols)} symbol(s)")
+
+    # ------------------------------------------------------------------
+    # Membership public API (dialog-free, testable)
+    # ------------------------------------------------------------------
+
+    def membership_summary(self) -> str:
+        """Return a human-readable string of the current membership windows.
+
+        One line per symbol: ``SYM: start … end`` (or ``open`` for open-ended windows).
+        Returns an empty string when there are no membership windows.
+        """
+        if not self._ranges:
+            return ""
+        lines = []
+        for sym, windows in sorted(self._ranges.items()):
+            for w in windows:
+                from datetime import datetime, timezone as _tz
+                start_dt = datetime.fromtimestamp(w.start_ts / 1000, tz=_tz.utc).strftime("%Y-%m-%d")
+                if w.end_ts is not None:
+                    end_dt = datetime.fromtimestamp(w.end_ts / 1000, tz=_tz.utc).strftime("%Y-%m-%d")
+                else:
+                    end_dt = "open"
+                lines.append(f"{sym}: {start_dt} … {end_dt}")
+        return "\n".join(lines)
+
+    def _refresh_membership_view(self) -> None:
+        summary = self.membership_summary()
+        self._membership_view.setPlainText(summary)
+
+    def apply_membership(self, ranges: dict[str, list[DateRange]]) -> None:
+        """Set in-memory dataset ranges, refresh the read-only display, and persist to disk.
+
+        Merges the new ranges into the current dataset (keeps symbols/provider/interval).
+        """
+        self._ranges = dict(ranges)
+        self._refresh_membership_view()
+        # Persist: save the full dataset with updated ranges
+        d = self.current_dataset()
+        save_dataset(d, self._root)
+
+    def import_membership_csv(self, text: str) -> dict[str, list[DateRange]]:
+        """Parse ``text`` as a membership CSV, then apply and persist.
+
+        Returns the parsed ranges dict.
+        """
+        ranges = parse_membership_csv(text)
+        self.apply_membership(ranges)
+        return ranges
+
+    def _on_import_membership(self) -> None:
+        """Button handler: open a file dialog, read the CSV, import it."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import membership CSV", "", "CSV / Text (*.csv *.txt);;All files (*)"
+        )
+        if not path:
+            return
+        try:
+            text = open(path, encoding="utf-8").read()
+        except OSError as exc:
+            QtWidgets.QMessageBox.warning(self, "Import failed", str(exc))
+            return
+        self.import_membership_csv(text)

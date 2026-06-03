@@ -81,3 +81,54 @@ def test_ask_ai_shows_error_without_crashing(app, tmp_path, monkeypatch):
     panel._on_ask_ai()  # must not raise
     assert "AI unavailable" in panel._ai_status.text()
     assert panel.btn_ai.isEnabled()  # re-enabled in finally
+
+
+def test_import_membership_sets_ranges_and_persists(app, tmp_path):
+    save_dataset(DataSet("M", ["AAA", "BBB"], interval="1d"), str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("M")
+    panel.import_membership_csv("AAA,2020-01-01,2020-12-31\nBBB,2021-06-01,\n")
+    back = load_dataset("M", str(tmp_path))
+    assert back.is_dynamic() and "AAA" in back.ranges and "BBB" in back.ranges
+    assert back.ranges["BBB"][0].end_ts is None
+    # a subsequent Save must not wipe the imported ranges
+    panel.save()
+    assert load_dataset("M", str(tmp_path)).is_dynamic()
+
+
+def test_membership_summary_shows_windows(app, tmp_path):
+    from vike_trader_app.data.datasets import DateRange
+    d = DataSet("S", ["AAA"], interval="1d",
+                ranges={"AAA": [DateRange(1577836800000, 1609459200000)]})
+    save_dataset(d, str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("S")
+    summary = panel.membership_summary()
+    assert "AAA" in summary
+    assert "2020-01-01" in summary
+    assert "2021-01-01" in summary
+
+
+def test_membership_summary_open_ended(app, tmp_path):
+    from vike_trader_app.data.datasets import DateRange
+    d = DataSet("T", ["BBB"], interval="1d",
+                ranges={"BBB": [DateRange(1577836800000, None)]})
+    save_dataset(d, str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("T")
+    summary = panel.membership_summary()
+    assert "open" in summary
+
+
+def test_save_preserves_ranges_after_load(app, tmp_path):
+    """Ensure save() does not wipe membership even if called before import."""
+    from vike_trader_app.data.datasets import DateRange
+    d = DataSet("R", ["AAA"], interval="1d",
+                ranges={"AAA": [DateRange(1577836800000, None)]})
+    save_dataset(d, str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("R")
+    panel.save()
+    back = load_dataset("R", str(tmp_path))
+    assert back.is_dynamic()
+    assert back.ranges["AAA"][0].end_ts is None
