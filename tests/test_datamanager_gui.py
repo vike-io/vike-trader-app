@@ -202,7 +202,7 @@ def test_data_tab_has_tree_and_subtabs(app, tmp_path):
     tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
     assert tab.tree is not None
     titles = [tab.subtabs.tabText(i) for i in range(tab.subtabs.count())]
-    assert titles == ["Symbols", "Cached Series", "Historical Providers", "Event Providers"]
+    assert titles == ["Symbols", "Cached Series", "Historical Providers", "Event Providers", "Streaming Providers"]
 
 
 def test_data_tab_has_event_providers_subtab(app, tmp_path):
