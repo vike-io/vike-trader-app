@@ -15,8 +15,9 @@ from ..analysis.metrics import sharpe, total_return
 from ..analysis.optimizer import grid_search
 from ..core.engine import BacktestEngine
 from . import dashboard_data as dd
+from . import theme
 
-_ORANGE = "#ff6a00"
+_EQUITY = theme.ACCENT
 _OBJECTIVES = {
     "Sharpe": lambda r: sharpe(r.equity_curve),
     "Net return": lambda r: total_return(r.equity_curve),
@@ -139,12 +140,12 @@ class OptimizerDialog(QtWidgets.QDialog):
     def _show_best(self, res) -> None:
         run = BacktestEngine(self.bars, self.strategy_cls.make(**res.params), fee_rate=self.fee_rate).run()
         eq = run.equity_curve
-        self.p_equity.clear(); self.p_equity.plot(eq, pen=_ORANGE)
-        self.p_dd.clear(); self.p_dd.plot(dd.drawdown_curve(eq), pen="#f85149")
+        self.p_equity.clear(); self.p_equity.plot(eq, pen=_EQUITY)
+        self.p_dd.clear(); self.p_dd.plot(dd.drawdown_curve(eq), pen=theme.DOWN)
         self.p_pnl.clear()
         pnl = dd.per_bar_pnl(eq)
-        self.p_pnl.addItem(pg.BarGraphItem(x=list(range(len(pnl))), height=pnl, width=0.8, brush="#3fb950"))
+        self.p_pnl.addItem(pg.BarGraphItem(x=list(range(len(pnl))), height=pnl, width=0.8, brush=theme.UP))
         self.p_hist.clear()
         centers, counts = dd.return_histogram(eq)
         if centers:
-            self.p_hist.addItem(pg.BarGraphItem(x=centers, height=counts, width=(centers[-1] - centers[0]) / max(len(centers), 1) or 1, brush=_ORANGE))
+            self.p_hist.addItem(pg.BarGraphItem(x=centers, height=counts, width=(centers[-1] - centers[0]) / max(len(centers), 1) or 1, brush=_EQUITY))

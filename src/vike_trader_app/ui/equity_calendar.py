@@ -381,7 +381,7 @@ class CalendarSpace(QtWidgets.QWidget):
             f"QPushButton{{background:transparent;border:none;color:{theme.TEXT3};"
             f"padding:6px 16px;border-radius:9px;font-size:13px;font-weight:600;}}"
             f"QPushButton:hover{{color:{theme.TEXT2};background:{theme.HOVER};}}"
-            f"QPushButton:checked{{background:#2a2a2a;color:{theme.TEXT};}}")
+            f"QPushButton:checked{{background:{theme.HOVER};color:{theme.TEXT};}}")
         self._pills: list[QtWidgets.QPushButton] = []
         for i, (name, page) in enumerate(self._pages):
             self._stack.addWidget(page)

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import metrics
+from ..ui import theme
 
 
 def monthly_returns(timestamps, equity):
@@ -48,8 +49,8 @@ def _polyline_svg(values, width=720, height=160, pad=8) -> str:
         y = height - pad - (v - lo) / span * (height - 2 * pad)
         pts.append(f"{x:.1f},{y:.1f}")
     return (
-        f'<svg width="{width}" height="{height}" style="background:#0d1117">'
-        f'<polyline fill="none" stroke="#ff6a00" stroke-width="1.5" points="{" ".join(pts)}"/></svg>'
+        f'<svg width="{width}" height="{height}" style="background:{theme.BG}">'
+        f'<polyline fill="none" stroke="{theme.ACCENT}" stroke-width="1.5" points="{" ".join(pts)}"/></svg>'
     )
 
 
@@ -95,8 +96,8 @@ def _histogram_svg(values, bins: int = 20, width=720, height=140, pad=8) -> str:
         h = (c / cmax) * (height - 2 * pad)
         x = pad + i * bw
         y = height - pad - h
-        rects.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw - 1:.1f}" height="{h:.1f}" fill="#3fb950"/>')
-    return f'<svg width="{width}" height="{height}" style="background:#0d1117">{"".join(rects)}</svg>'
+        rects.append(f'<rect x="{x:.1f}" y="{y:.1f}" width="{bw - 1:.1f}" height="{h:.1f}" fill="{theme.UP}"/>')
+    return f'<svg width="{width}" height="{height}" style="background:{theme.BG}">{"".join(rects)}</svg>'
 
 
 def write_tearsheet_html(path, result, title: str = "Backtest", timestamps=None, attribution=None) -> Path:
@@ -140,9 +141,9 @@ def write_tearsheet_html(path, result, title: str = "Backtest", timestamps=None,
     html = f"""<!doctype html>
 <html><head><meta charset="utf-8"><title>{title}</title>
 <style>
-body{{background:#0d1117;color:#c9d1d9;font:13px JetBrains Mono,monospace;margin:24px}}
-h1{{color:#ff6a00;font-size:18px}} h2{{font-size:14px;border-bottom:1px solid #30363d;padding-bottom:4px}}
-table{{border-collapse:collapse;margin:8px 0}} td,th{{border:1px solid #30363d;padding:4px 10px;text-align:right}}
+body{{background:{theme.BG};color:{theme.TEXT};font:13px JetBrains Mono,monospace;margin:24px}}
+h1{{color:{theme.ACCENT};font-size:18px}} h2{{font-size:14px;border-bottom:1px solid {theme.BORDER};padding-bottom:4px}}
+table{{border-collapse:collapse;margin:8px 0}} td,th{{border:1px solid {theme.BORDER};padding:4px 10px;text-align:right}}
 td:first-child{{text-align:left}}
 </style></head><body>
 <h1>{title}</h1>

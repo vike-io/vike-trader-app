@@ -7,6 +7,8 @@ recolored per state: dim when idle, accent when the space/panel is active, mid o
 
 from PySide6 import QtCore, QtGui
 
+from . import theme
+
 _S = 48
 
 
@@ -50,7 +52,7 @@ def _draw_studio(p, c):  # AI sparkle
 def _draw_tools(p, c):  # sliders
     for y in (13, 24, 35):
         p.drawLine(QtCore.QLineF(9, y, 39, y))
-    p.setBrush(QtGui.QColor("#0a0c10"))
+    p.setBrush(QtGui.QColor(theme.BG))
     for y, kx in [(13, 18), (24, 31), (35, 14)]:
         p.drawEllipse(_P(kx, y), 4.2, 4.2)
 
@@ -176,7 +178,7 @@ def _pixmap(name: str, color: str) -> QtGui.QPixmap:
     return pm
 
 
-def avatar(text: str, bg: str, fg: str = "#0a0c10") -> QtGui.QPixmap:
+def avatar(text: str, bg: str, fg: str = theme.BG) -> QtGui.QPixmap:
     """A round token / currency badge with a 1–2 char label (Market-watch instrument icon).
 
     True national-flag art needs bundled image assets (and Windows has no flag-emoji glyphs),

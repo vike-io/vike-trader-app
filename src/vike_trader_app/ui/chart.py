@@ -26,6 +26,7 @@ _ENTRY = theme.UP
 _EXIT = theme.DOWN
 _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
 _GRID = 0.5  # grid alpha (scales the BORDER tick pen) — subtle but visible, like TradingView
+_CARD_SHADOW = 30  # translucent margin around frameless picker cards, room for the drop shadow
 # TradingView-style range selector: (label, days of history to zoom the view to)
 _RANGES = [("1D", 1), ("5D", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365), ("5Y", 1825)]
 # Timeframe dropdown: (section, [(label, interval)]) — intervals our data sources support.
@@ -277,31 +278,32 @@ class _IndicatorPicker(QtWidgets.QDialog):
         # frameless rounded panel (no OS title bar) — the TradingView look
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.resize(470, 600)
+        self.resize(470 + 2 * _CARD_SHADOW, 600 + 2 * _CARD_SHADOW)
         self.setStyleSheet(
-            f"#pickerCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
+            f"#pickerCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
             f"border-radius:14px;}}"
-            f"QLineEdit{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
+            f"QLineEdit{{background:{theme.BG};border:1px solid {theme.BORDER};"
             f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
             f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
             f"QPushButton#tab{{background:transparent;border:none;color:{theme.TEXT3};"
             f"padding:6px 13px;border-radius:9px;font-size:13px;font-weight:600;}}"
             f"QPushButton#tab:hover{{color:{theme.TEXT2};}}"
-            f"QPushButton#tab:checked{{background:{theme.RAISE};color:{theme.TEXT};}}"
+            f"QPushButton#tab:checked{{background:{theme.HOVER};color:{theme.TEXT};}}"
             f"QListWidget#indList{{background:transparent;border:none;outline:none;}}"
             f"QListWidget#indList::item{{border:none;border-bottom:0px;border-radius:8px;"
             f"margin:1px 2px;padding:0;}}"
-            f"QListWidget#indList::item:hover{{background:{theme.RAISE};}}"
-            f"QListWidget#indList::item:selected{{background:{theme.RAISE};}}"
+            f"QListWidget#indList::item:hover{{background:{theme.HOVER};}}"
+            f"QListWidget#indList::item:selected{{background:{theme.HOVER};}}"
             f"QScrollBar:vertical{{background:transparent;width:9px;margin:4px 2px;}}"
-            f"QScrollBar::handle:vertical{{background:{theme.RAISE};border-radius:4px;min-height:30px;}}"
+            f"QScrollBar::handle:vertical{{background:{theme.BORDER};border-radius:4px;min-height:30px;}}"
             f"QScrollBar::add-line,QScrollBar::sub-line{{height:0;}}"
         )
-        _root = QtWidgets.QVBoxLayout(self)  # translucent root; the rounded card is the visible panel
-        _root.setContentsMargins(0, 0, 0, 0)
+        _root = QtWidgets.QVBoxLayout(self)  # translucent root; the margin gives the drop shadow room to draw
+        _root.setContentsMargins(_CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW)
         card = QtWidgets.QFrame()
         card.setObjectName("pickerCard")
         _root.addWidget(card)
+        theme.apply_shadow(card, radius=22, y=6, alpha=160)
         outer = QtWidgets.QVBoxLayout(card)
         outer.setContentsMargins(16, 16, 16, 12)
         outer.setSpacing(11)
@@ -451,24 +453,25 @@ class _IndicatorSettings(QtWidgets.QDialog):
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setStyleSheet(
-            f"#setCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
+            f"#setCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
             f"border-radius:14px;}}"
             f"QLabel{{color:{theme.TEXT2};background:transparent;}}"
             f"QTabBar::tab{{background:transparent;color:{theme.TEXT3};padding:6px 14px;"
             f"border:none;border-bottom:2px solid transparent;font-weight:600;}}"
             f"QTabBar::tab:selected{{color:{theme.TEXT};border-bottom:2px solid {theme.ACCENT};}}"
             f"QTabWidget::pane{{border:none;}}"
-            f"QSpinBox,QDoubleSpinBox,QComboBox{{background:{theme.PANEL2};color:{theme.TEXT};"
+            f"QSpinBox,QDoubleSpinBox,QComboBox{{background:{theme.BG};color:{theme.TEXT};"
             f"border:1px solid {theme.BORDER};border-radius:6px;padding:4px 8px;min-width:90px;}}"
-            f"QPushButton{{background:{theme.RAISE};color:{theme.TEXT};border:1px solid {theme.BORDER};"
+            f"QPushButton{{background:{theme.BG};color:{theme.TEXT};border:1px solid {theme.BORDER};"
             f"border-radius:7px;padding:6px 14px;}}"
-            f"QPushButton#ok{{background:{theme.ACCENT};color:#06210f;border:none;font-weight:700;}}"
+            f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-weight:700;}}"
         )
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(_CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW)
         card = QtWidgets.QFrame()
         card.setObjectName("setCard")
         root.addWidget(card)
+        theme.apply_shadow(card, radius=22, y=6, alpha=160)
         v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(16, 14, 16, 12)
         v.setSpacing(10)
@@ -772,16 +775,17 @@ class _ObjectTree(QtWidgets.QDialog):
         self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setStyleSheet(
-            f"#treeCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
+            f"#treeCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
             f"border-radius:14px;}}"
             f"QLabel{{background:transparent;}}"
         )
-        self.resize(300, 380)
+        self.resize(300 + 2 * _CARD_SHADOW, 380 + 2 * _CARD_SHADOW)
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(_CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW)
         card = QtWidgets.QFrame()
         card.setObjectName("treeCard")
         root.addWidget(card)
+        theme.apply_shadow(card, radius=22, y=6, alpha=160)
         self._v = QtWidgets.QVBoxLayout(card)
         self._v.setContentsMargins(14, 12, 14, 12)
         self._v.setSpacing(6)
@@ -1048,7 +1052,7 @@ class PriceChart(pg.PlotWidget):
         )
         self.addItem(self._last_line, ignoreBounds=True)
         self._last_line.hide()
-        self._last_badge = pg.TextItem(color="#0e0e11", anchor=(0, 0.5), fill=pg.mkBrush(_UP))
+        self._last_badge = pg.TextItem(color=theme.BG, anchor=(0, 0.5), fill=pg.mkBrush(_UP))
         self.addItem(self._last_badge, ignoreBounds=True)
         self._last_badge.hide()
 
@@ -1152,7 +1156,7 @@ class PriceChart(pg.PlotWidget):
         self._top_bar.move(0, 4)
 
         # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
-        _tag_qss = (f"color:#fff;background:{theme.RAISE};border-radius:2px;padding:0 4px;"
+        _tag_qss = (f"color:{theme.TEXT};background:{theme.BORDER};border-radius:2px;padding:0 4px;"
                     f"font-family:{theme.FONT_MONO};font-size:10px;")
         self._cx_price_tag = QtWidgets.QLabel(self)
         self._cx_time_tag = QtWidgets.QLabel(self)
@@ -1271,7 +1275,7 @@ class PriceChart(pg.PlotWidget):
         dlg.chosen.connect(self.add_indicator)
         btn = getattr(self, "_ind_btn", None)  # drop it just under the ƒx Indicators button
         if btn is not None:
-            dlg.move(btn.mapToGlobal(QtCore.QPoint(0, btn.height() + 4)))
+            dlg.move(btn.mapToGlobal(QtCore.QPoint(-_CARD_SHADOW, btn.height() + 4 - _CARD_SHADOW)))
         self._ind_dlg = dlg  # keep a ref; dismisses on outside-click / pick (WA_DeleteOnClose)
         dlg.show()
         dlg.activateWindow()
@@ -1542,7 +1546,7 @@ class PriceChart(pg.PlotWidget):
         self._tree_dlg = dlg  # keep a ref
         btn = getattr(self, "_ind_btn", None)
         if btn is not None:
-            dlg.move(btn.mapToGlobal(QtCore.QPoint(0, btn.height() + 4)))
+            dlg.move(btn.mapToGlobal(QtCore.QPoint(-_CARD_SHADOW, btn.height() + 4 - _CARD_SHADOW)))
         dlg.show()
 
     def _indicator_action(self, uid: int, action: str):
