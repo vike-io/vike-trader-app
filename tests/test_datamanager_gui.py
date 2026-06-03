@@ -202,7 +202,18 @@ def test_data_tab_has_tree_and_subtabs(app, tmp_path):
     tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
     assert tab.tree is not None
     titles = [tab.subtabs.tabText(i) for i in range(tab.subtabs.count())]
-    assert titles == ["Symbols", "Cached Series", "Historical Providers"]
+    assert titles == ["Symbols", "Cached Series", "Historical Providers", "Event Providers"]
+
+
+def test_data_tab_has_event_providers_subtab(app, tmp_path):
+    """The Event Providers sub-tab exists and its panel is an EventProvidersPanel instance."""
+    from vike_trader_app.ui.datamanager import DataManagerTab
+    from vike_trader_app.ui.event_providers_panel import EventProvidersPanel
+    tab = DataManagerTab(root=str(tmp_path), config_root=str(tmp_path))
+    assert isinstance(tab.event_providers, EventProvidersPanel)
+    # Confirm the tab is actually registered
+    tab_titles = [tab.subtabs.tabText(i) for i in range(tab.subtabs.count())]
+    assert "Event Providers" in tab_titles
 
 
 def test_selecting_dataset_loads_symbols_panel(app, tmp_path):

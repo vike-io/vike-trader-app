@@ -34,11 +34,18 @@ def fetch_feed(url: str, *, timeout: float = _TIMEOUT) -> bytes | None:
         return None
 
 
-def _resolve_jobs(specs, symbol):
-    """(spec, url) for every enabled provider whose URL resolves for ``symbol``."""
+def _resolve_jobs(specs, symbol, enabled: set[str] | None = None):
+    """(spec, url) for every enabled provider whose URL resolves for ``symbol``.
+
+    When ``enabled`` is a set of provider names (from the event-providers config), a provider
+    must also appear in that set to be included. When ``enabled`` is None the config filter is
+    not applied — existing behavior is fully preserved.
+    """
     jobs = []
     for spec in specs:
         if not spec.enabled:
+            continue
+        if enabled is not None and spec.name not in enabled:
             continue
         url = build_url(spec, symbol)
         if url:
@@ -56,13 +63,17 @@ def _fetch_parse(spec, url, fetcher) -> list[NewsItem]:
         return []
 
 
-def fetch_iter(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> Iterator[list[NewsItem]]:
+def fetch_iter(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8,
+              enabled: set[str] | None = None) -> Iterator[list[NewsItem]]:
     """Yield each feed's parsed items **as soon as that feed completes** (incremental render).
 
     Feeds still run concurrently; results arrive in completion order so the UI can paint the
     first feed without waiting for the slowest. Empty/dead feeds yield nothing.
+
+    ``enabled``: when a set of provider names is supplied (from the event-providers config),
+    only those providers are fetched. None = no config filter (existing behavior).
     """
-    jobs = _resolve_jobs(specs, symbol)
+    jobs = _resolve_jobs(specs, symbol, enabled=enabled)
     if not jobs:
         return
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
@@ -73,9 +84,14 @@ def fetch_iter(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> It
                 yield items
 
 
-def fetch_all(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8) -> list[NewsItem]:
-    """Eager variant: every feed's items flattened into one list (one-shot callers/tests)."""
+def fetch_all(specs, symbol, *, fetcher=fetch_feed, max_workers: int = 8,
+              enabled: set[str] | None = None) -> list[NewsItem]:
+    """Eager variant: every feed's items flattened into one list (one-shot callers/tests).
+
+    ``enabled``: when a set of provider names is supplied (from the event-providers config),
+    only those providers are fetched. None = no config filter (existing behavior).
+    """
     items: list[NewsItem] = []
-    for chunk in fetch_iter(specs, symbol, fetcher=fetcher, max_workers=max_workers):
+    for chunk in fetch_iter(specs, symbol, fetcher=fetcher, max_workers=max_workers, enabled=enabled):
         items.extend(chunk)
     return items

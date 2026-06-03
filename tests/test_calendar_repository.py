@@ -86,3 +86,53 @@ def test_force_refetches_within_window(tmp_path):
     repo.get_week(WK)
     repo.get_week(WK, force=True)     # force bypasses the fresh window
     assert calls["n"] == 2
+
+
+# --- W3-C: default_repository config_root filtering ---
+
+def test_default_repository_no_config_root_is_unchanged(tmp_path):
+    """Calling default_repository() without config_root returns all 5 actuals providers."""
+    from vike_trader_app.data.calendar.repository import default_repository
+    repo = default_repository(root=str(tmp_path))
+    # All 5 actuals providers should be present
+    names = [p.name for p in repo._actuals]
+    assert names == ["FRED", "BLS", "BEA", "Census", "ECB"]
+
+
+def test_default_repository_config_root_no_file_is_unchanged(tmp_path):
+    """config_root given but no event_providers.json → same as no config_root (all providers)."""
+    from vike_trader_app.data.calendar.repository import default_repository
+    config_root = str(tmp_path / "config")
+    (tmp_path / "config").mkdir()
+    repo = default_repository(root=str(tmp_path / "cal"), config_root=config_root)
+    names = [p.name for p in repo._actuals]
+    assert names == ["FRED", "BLS", "BEA", "Census", "ECB"]
+
+
+def test_default_repository_config_root_with_file_filters_actuals(tmp_path):
+    """When config file exists and disables a provider, that actuals provider is excluded."""
+    from vike_trader_app.data.calendar.repository import default_repository
+    from vike_trader_app.data.event_providers_config import (
+        EventProviderEntry, EventProvidersConfig, save_event_providers_config,
+    )
+    config_root = str(tmp_path / "config")
+    (tmp_path / "config").mkdir()
+
+    # Build a config that disables BLS and BEA
+    cfg = EventProvidersConfig([
+        EventProviderEntry("FRED", True),
+        EventProviderEntry("BLS", False),
+        EventProviderEntry("BEA", False),
+        EventProviderEntry("Census", True),
+        EventProviderEntry("ECB", True),
+        EventProviderEntry("ForexFactory", True),
+    ])
+    save_event_providers_config(cfg, config_root)
+
+    repo = default_repository(root=str(tmp_path / "cal"), config_root=config_root)
+    names = [p.name for p in repo._actuals]
+    assert "BLS" not in names
+    assert "BEA" not in names
+    assert "FRED" in names
+    assert "Census" in names
+    assert "ECB" in names
