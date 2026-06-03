@@ -169,7 +169,8 @@ class MultiSymbolStrategyRunner:
         engine = PortfolioEngine(aligned, driver,
                                  fee_rate=self.config.fee_rate, cash=self.config.cash,
                                  slippage=self.config.slippage, maker_fee=self.config.maker_fee,
-                                 taker_fee=self.config.taker_fee, multiplier=self.config.multiplier)
+                                 taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
+                                 leverage=self.config.leverage, maint_margin=self.config.maint_margin)
         return engine.run()
 
     def report(self):

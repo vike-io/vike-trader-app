@@ -161,3 +161,62 @@ def test_portfolio_trades_are_tagged_with_symbol():
     result = eng.run()
     assert result.trades, "expected a completed round-trip"
     assert all(t.symbol == "A" for t in result.trades)
+
+
+# ---------------------------------------------------------------------------
+# W2-D: account-level leverage cap, liquidation, and per-symbol funding
+# ---------------------------------------------------------------------------
+
+def test_portfolio_leverage_caps_account_notional():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+
+    def _b(ts, px):
+        return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class OverBuy(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 100.0)   # 100*100=10000 notional, but leverage 1 x 1000 equity = max 1000
+
+    eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)]}, OverBuy(), cash=1000.0, leverage=1.0)
+    eng.run()
+    # capped to ~10 units (1000 notional at price 100), not 100
+    assert eng._pos["A"].size <= 10.0 + 1e-9
+    assert eng._pos["A"].size > 0.0
+
+
+def test_portfolio_liquidation_force_closes_underwater_position():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+
+    class LongOnce(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 10.0)
+
+    # buy ~10 @100 with tiny cash so a crash wipes equity below maint margin -> liquidation
+    bars = [Bar(ts=1, open=100, high=100, low=100, close=100, volume=1),
+            Bar(ts=2, open=100, high=100, low=100, close=100, volume=1),   # fills @100
+            Bar(ts=3, open=60, high=60, low=40, close=50, volume=1)]        # crash: adverse low 40
+    eng = PortfolioEngine({"A": bars}, LongOnce(), cash=200.0, leverage=10.0, maint_margin=0.1)
+    eng.run()
+    assert eng._pos["A"].size == 0.0    # liquidated
+
+
+def test_portfolio_funding_charged_per_symbol():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+
+    class HoldLong(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 1.0)
+
+    # bar 2 has funding 0.01; holding 1 unit @ close 100 -> longs pay 1*100*0.01 = 1.0
+    bars = [Bar(ts=1, open=100, high=100, low=100, close=100, volume=1),
+            Bar(ts=2, open=100, high=100, low=100, close=100, volume=1, funding=0.01)]
+    eng = PortfolioEngine({"A": bars}, HoldLong(), cash=1000.0)
+    eng.run()
+    # cash reduced by the 1.0 funding charge (no fees in this config)
+    assert eng.cash < 1000.0 - 100.0   # paid 100 notional for the unit AND ~1.0 funding
