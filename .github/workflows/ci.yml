@@ -84,3 +84,8 @@ jobs:
           tests/test_tools_gui.py
           tests/test_options_tab_gui.py
           tests/test_options_service.py
+          tests/test_datamanager_gui.py
+          tests/test_dataset_tree_gui.py
+          tests/test_dataset_panel_gui.py
+          tests/test_providers_panel_gui.py
+          tests/test_data_studio_wiring_gui.py
