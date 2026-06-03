@@ -440,14 +440,14 @@ class _IndicatorSettings(dropdowns.PopupCard):
         super().__init__(parent, object_name="setCard", extra_qss=(
             f"QLabel{{color:{theme.TEXT2};background:transparent;}}"
             f"QTabBar::tab{{background:transparent;color:{theme.TEXT3};padding:6px 14px;"
-            f"border:none;border-bottom:2px solid transparent;font-weight:600;}}"
+            f"border:none;border-bottom:2px solid transparent;font-size:13px;font-weight:600;}}"
             f"QTabBar::tab:selected{{color:{theme.TEXT};border-bottom:2px solid {theme.ACCENT};}}"
             f"QTabWidget::pane{{border:none;}}"
             f"QSpinBox,QDoubleSpinBox,QComboBox{{background:{theme.BG};color:{theme.TEXT};"
             f"border:1px solid {theme.BORDER};border-radius:6px;padding:4px 8px;min-width:90px;}}"
             f"QPushButton{{background:{theme.BG};color:{theme.TEXT};border:1px solid {theme.BORDER};"
             f"border-radius:7px;padding:6px 14px;}}"
-            f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-weight:700;}}"
+            f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-size:14px;font-weight:700;}}"
         ))
         self._spec = ind.spec
         card = self.card

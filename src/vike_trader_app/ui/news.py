@@ -59,14 +59,21 @@ def _ago(ms: int) -> str:
 
 
 class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
-    """TradingView-style two-line row: source logo · source · relative time, then headline.
+    """TradingView-style row: source logo · time · source, then the headline.
 
-    Real logo if cached (logo_store), else a colored-initial badge. 12-13px muted meta, 16px
-    Medium headline, generous row height, hairline separator inset to the text column.
+    The headline WRAPS to up to ``MAX_LINES`` lines and the row height grows to fit — a long
+    title flows onto the next line instead of being clipped with an ellipsis (TV News-Flow
+    behaviour). Real logo if cached (logo_store), else a colored-initial badge.
     """
 
-    ROW_H = 78
-    AV = 32
+    AV = 30          # source avatar size
+    LEFT = 16        # row left padding (also the avatar gutter)
+    GUTTER = 12      # gap from avatar to the text column
+    PAD_TOP = 14
+    META_H = 16      # the "time · source" line height
+    GAP = 6          # meta line → headline
+    PAD_BOT = 14
+    MAX_LINES = 3    # headline wraps up to this many lines, then elides (rare at list widths)
 
     def __init__(self, parent=None, logo_store: "LogoStore | None" = None):
         super().__init__(parent)
@@ -76,8 +83,44 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
         pm = self._logos.pixmap(source, size) if self._logos else None
         return pm if pm is not None else _avatar_for(source, size)
 
+    @staticmethod
+    def _title_font(base: "QtGui.QFont") -> "QtGui.QFont":
+        f = QtGui.QFont(base)
+        f.setPixelSize(15)                          # TV headline size
+        f.setWeight(QtGui.QFont.Weight.Medium)      # ~500, lighter than bold
+        return f
+
+    def _avail_w(self, total_w: int) -> int:
+        return total_w - (self.LEFT + self.AV + self.GUTTER) - self.LEFT
+
+    def _wrapped_line_count(self, font, text: str, width: int) -> int:
+        """How many lines (1..MAX_LINES) the headline needs once word-wrapped at ``width``."""
+        if width <= 0 or not text:
+            return 1
+        layout = QtGui.QTextLayout(text, font)
+        opt = QtGui.QTextOption()
+        opt.setWrapMode(QtGui.QTextOption.WrapMode.WordWrap)
+        layout.setTextOption(opt)
+        layout.beginLayout()
+        n = 0
+        while n < self.MAX_LINES:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            n += 1
+        layout.endLayout()
+        return max(1, n)
+
     def sizeHint(self, opt, idx):
-        return QtCore.QSize(opt.rect.width(), self.ROW_H)
+        w = opt.rect.width()
+        it = idx.data(QtCore.Qt.UserRole)
+        line_h = QtGui.QFontMetrics(self._title_font(opt.font)).lineSpacing()
+        if not isinstance(it, NewsItem) or w <= 0:
+            lines = 1
+        else:
+            lines = self._wrapped_line_count(self._title_font(opt.font), it.title, self._avail_w(w))
+        return QtCore.QSize(w, self.PAD_TOP + self.META_H + self.GAP + lines * line_h + self.PAD_BOT)
 
     def paint(self, p, opt, idx):
         it = idx.data(QtCore.Qt.UserRole)
@@ -92,30 +135,58 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
             p.fillRect(r, QtGui.QColor(theme.RAISE))
         elif opt.state & QtWidgets.QStyle.State_MouseOver:
             p.fillRect(r, QtGui.QColor(theme.HOVER))
-        p.drawPixmap(r.left() + 16, r.top() + (self.ROW_H - self.AV) // 2, self._badge(it.source, self.AV))
-        x = r.left() + 16 + self.AV + 12
-        right = r.right() - 16
 
-        meta_font = QtGui.QFont(p.font())
-        meta_font.setPixelSize(13)
+        x = r.left() + self.LEFT + self.AV + self.GUTTER
+        right = r.right() - self.LEFT
+        # Avatar is top-anchored to the source line so multi-line rows still read cleanly.
+        p.drawPixmap(r.left() + self.LEFT, r.top() + self.PAD_TOP, self._badge(it.source, self.AV))
+
+        meta_font = QtGui.QFont(opt.font)
+        meta_font.setPixelSize(12)                           # TV meta size
         meta_font.setWeight(QtGui.QFont.Weight.Normal)
         p.setFont(meta_font)
         p.setPen(QtGui.QColor(theme.TEXT3))
-        p.drawText(x, r.top() + 28, f"{_ago(it.published_ms)}  ·  {it.source}")   # TV order: time · source
+        meta_rect = QtCore.QRect(x, r.top() + self.PAD_TOP, right - x, self.META_H)
+        p.drawText(meta_rect, QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter,
+                   f"{_ago(it.published_ms)}  ·  {it.source}")   # TV order: time · source
 
-        title_font = QtGui.QFont(p.font())
-        title_font.setPixelSize(16)                          # TV headline size
-        title_font.setWeight(QtGui.QFont.Weight.Medium)      # ~500, lighter than bold (TV look)
-        p.setFont(title_font)
+        p.setFont(self._title_font(opt.font))
         p.setPen(QtGui.QColor(theme.TEXT))
-        title = QtGui.QFontMetrics(title_font).elidedText(it.title, QtCore.Qt.ElideRight, right - x)
-        p.drawText(x, r.top() + 54, title)
+        self._draw_wrapped_title(p, it.title, x, r.top() + self.PAD_TOP + self.META_H + self.GAP,
+                                 right - x)
 
         sep = QtGui.QColor(theme.BORDER)
         sep.setAlpha(140)
         p.setPen(sep)
         p.drawLine(x, r.bottom(), right, r.bottom())
         p.restore()
+
+    def _draw_wrapped_title(self, p, text: str, x: int, top: int, width: int) -> None:
+        """Paint the headline word-wrapped to ≤ MAX_LINES lines; elide only the final line."""
+        fm = p.fontMetrics()
+        layout = QtGui.QTextLayout(text, p.font())
+        opt = QtGui.QTextOption()
+        opt.setWrapMode(QtGui.QTextOption.WrapMode.WordWrap)
+        layout.setTextOption(opt)
+        layout.beginLayout()
+        y = top
+        line_h = fm.lineSpacing()
+        n = 0
+        while n < self.MAX_LINES:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            start, length = line.textStart(), line.textLength()
+            if n == self.MAX_LINES - 1 and start + length < len(text):
+                # Text overflows the last allowed line — elide the remainder onto one line.
+                elided = fm.elidedText(text[start:], QtCore.Qt.ElideRight, width)
+                p.drawText(QtCore.QPointF(x, y + fm.ascent()), elided)
+            else:
+                line.draw(p, QtCore.QPointF(x, y))
+            y += line_h
+            n += 1
+        layout.endLayout()
 
 
 class _NewsWorker(QtCore.QThread):
@@ -190,6 +261,9 @@ class NewsTab(QtWidgets.QWidget):
         self._list.setMouseTracking(True)                          # hover highlight
         self._list.setStyleSheet(
             f"QListWidget{{background:{theme.CHART_BG};border:none;outline:none;}}")
+        # Never scroll a news feed horizontally — rows elide to the viewport width, so the
+        # vertical scrollbar claiming a few px must not pop a stray horizontal bar (TV parity).
+        self._list.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self._list.currentRowChanged.connect(self._on_row_changed)
         self._list.itemClicked.connect(lambda _it: self._open_reader())  # re-click reopens a closed reader
         self._split.addWidget(self._list)
@@ -283,6 +357,7 @@ class NewsTab(QtWidgets.QWidget):
         self._meta.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;")
         self._body = QtWidgets.QTextBrowser()
         self._body.setOpenExternalLinks(False)
+        self._body.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)  # text wraps; no sideways scroll
         self._body.setStyleSheet("QTextBrowser{border:none;background:transparent;}")
         self._chips = QtWidgets.QLabel("")          # TV-style topic tags, at the bottom
         self._chips.setTextFormat(QtCore.Qt.RichText)

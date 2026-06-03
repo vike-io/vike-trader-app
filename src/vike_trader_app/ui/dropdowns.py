@@ -98,16 +98,22 @@ class ChecklistPopover(QtWidgets.QFrame):
     """
 
     selectionChanged = QtCore.Signal()
-    _MARGIN = 16  # tight translucent margin for the drop shadow; CARD_MARGIN(30) left a big empty frame
+    # OPAQUE, zero-margin popup: the card fills 100% of the popup window, so no BG can show as a
+    # dark "box" around it. Translucent-margin + drop-shadow was abandoned because Qt.Popup +
+    # WA_TranslucentBackground is unreliable on the Windows compositor — the global
+    # `QWidget{background:BG}` painted the margin as a black frame (offscreen render() hid it).
+    _MARGIN = 0
 
     def __init__(self, title: str, options, *, mode: str = "multi", row_icons=None,
                  header_widgets=None, width: int = 224, parent=None):
         super().__init__(parent, QtCore.Qt.Popup)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
+        self.setObjectName("clpop")
         self._mode = mode
         self._on_hide = None
         self._opts = _norm_options(options)
         self.setStyleSheet(
+            # Window frame == the card surface (covers corner triangles left by the card radius).
+            f"#clpop{{background:{theme.SURFACE};border-radius:{theme.RADIUS_POPUP}px;}}"
             f"#filterPop{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
             f"border-radius:{theme.RADIUS_POPUP}px;}}"
             f"#filterPop QLabel#hdr{{color:{theme.TEXT};font-size:14px;font-weight:600;"
@@ -128,7 +134,6 @@ class ChecklistPopover(QtWidgets.QFrame):
         card = QtWidgets.QFrame()
         card.setObjectName("filterPop")
         outer.addWidget(card)
-        theme.apply_popup_shadow(card)
         v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(10, 10, 10, 8)
         v.setSpacing(8)

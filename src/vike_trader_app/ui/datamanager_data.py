@@ -36,6 +36,16 @@ def row_cells(info, pinned: bool, size_bytes: int) -> list[str]:
     ]
 
 
+def source_label(symbol: str) -> str:
+    """Human datasource for a cached series, inferred from Auto routing (the provider isn't
+    persisted per series). Forex pairs route to Dukascopy (deep history, stitched with Yahoo for
+    the recent edge); everything else is crypto via Binance. A series force-downloaded from another
+    exchange (bybit/okx/…) can't be distinguished after the fact, so this shows the default route."""
+    from ..data.sources import is_forex_symbol
+
+    return "Dukascopy" if is_forex_symbol(symbol) else "Binance"
+
+
 def instrument_label(spec) -> str:
     """A compact cell for the Data Manager's Instrument column, e.g. ``crypto · tick 0.01``."""
     return f"{spec.asset_class} · tick {spec.tick_size:g}"

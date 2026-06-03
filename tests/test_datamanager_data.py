@@ -68,6 +68,14 @@ def test_instrument_label_is_compact():
     assert instrument_label(InstrumentSpec("EURUSD", "forex", 0.00001)) == "forex · tick 1e-05"
 
 
+def test_source_label_routes_crypto_vs_forex():
+    from vike_trader_app.ui.datamanager_data import source_label
+
+    assert source_label("BTCUSDT") == "Binance"      # crypto -> Binance history
+    assert source_label("EURUSD") == "Dukascopy"     # 6-letter forex pair -> Dukascopy (+Yahoo edge)
+    assert source_label("EURUSDT") == "Binance"       # 7-letter stablecoin pair is crypto, not forex
+
+
 def test_instrument_detail_has_spec_and_profile():
     from vike_trader_app.data.instruments import InstrumentSpec
     from vike_trader_app.ui.datamanager_data import instrument_detail

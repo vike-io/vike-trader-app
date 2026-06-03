@@ -163,21 +163,25 @@ def stylesheet() -> str:
         color: {TEXT}; border-bottom: 2px solid {ACCENT};
     }}
 
-    /* buttons — SURFACE card separated by its border (GitHub-style) */
+    /* buttons — SURFACE card separated by its border (GitHub-style).
+       NOTE: every font-weight rule MUST also set an explicit font-size. The base `*` rule sizes
+       fonts in px (pointSize() == -1); a weight-only rule makes Qt's stylesheet engine re-apply
+       setPointSize(-1) -> "QFont::setPointSize: Point size <= 0 (-1)" spam at startup. */
     QPushButton {{
         background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
-        border-radius: {RADIUS_MD}px; padding: 7px 14px; min-height: 16px; font-weight: 600;
+        border-radius: {RADIUS_MD}px; padding: 7px 14px; min-height: 16px;
+        font-size: 14px; font-weight: 600;
     }}
     QPushButton:hover {{ background: {HOVER}; }}
     QPushButton:pressed {{ background: {BG}; }}
     QPushButton:disabled {{ color: {TEXT3}; background: {SURFACE}; border-color: {BORDER}; }}
     QPushButton#play {{
-        background: {ACCENT}; color: {ON_ACCENT}; border: none; font-weight: 700;
+        background: {ACCENT}; color: {ON_ACCENT}; border: none; font-size: 14px; font-weight: 700;
     }}
     QPushButton#play:hover {{ background: {ACCENT_HOVER}; }}
     QPushButton#validate {{
         background: rgba(255,176,0,0.10); color: {WARN};
-        border: 1px solid rgba(255,176,0,0.45); font-weight: 600;
+        border: 1px solid rgba(255,176,0,0.45); font-size: 14px; font-weight: 600;
     }}
     QPushButton#validate:hover {{ background: rgba(255,176,0,0.18); }}
 

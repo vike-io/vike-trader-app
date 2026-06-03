@@ -434,6 +434,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def _on_expiries(expiries) -> None:
             self._options_all_expiries = list(expiries)
+            if not self._options_all_expiries:
+                tab.no_data(tab.underlying.currentText())   # don't leave a stale chain on screen
+                return
             tab.set_expiries(_filtered())   # the strip auto-selects the nearest -> _select fires
 
         svc.expiriesReady.connect(_on_expiries)
@@ -441,7 +444,8 @@ class MainWindow(QtWidgets.QMainWindow):
         def _load_underlying(sym: str) -> None:
             svc.stop_polling()
             self._options_expiry = None
-            svc.set_underlying(sym)
+            tab.begin_load(sym)             # clear grid + show "Loading…" so a slow/empty fetch
+            svc.set_underlying(sym)         # can't leave the previous symbol's chain displayed
             svc.set_strikes(tab.strikes_value())
             svc.load_expiries()
 
@@ -871,7 +875,7 @@ class MainWindow(QtWidgets.QMainWindow):
             cap.setStyleSheet(f"color:{theme.TEXT3};font-size:9px;letter-spacing:.5px;border:none;")
             val = QtWidgets.QLabel("—")
             val.setStyleSheet(
-                f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-weight:700;border:none;"
+                f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
             )
             self._acct[key] = val
             cell.addWidget(cap)
@@ -902,11 +906,11 @@ class MainWindow(QtWidgets.QMainWindow):
         color = theme.UP if pnl >= 0 else theme.DOWN
         self._acct["pnl"].setText(f"{sign}${abs(pnl):,.2f}")
         self._acct["pnl"].setStyleSheet(
-            f"color:{color};font-family:{theme.FONT_MONO};font-weight:700;border:none;"
+            f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
         )
         self._acct["ret"].setText(f"{ret:+.2f}%")
         self._acct["ret"].setStyleSheet(
-            f"color:{color};font-family:{theme.FONT_MONO};font-weight:700;border:none;"
+            f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
         )
 
     def _wire_panels_toggle(self) -> None:
@@ -1600,10 +1604,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
 def _install_qt_log_filter():
     """Silence known-benign Qt warnings (missing bundled fonts dir, platform size-hint
-    notice) while letting every other Qt message through to stderr."""
+    notice, and the font-fallback point-size notice it triggers) while letting every other
+    Qt message through to stderr.
+
+    'QFont::setPointSize: Point size <= 0 (-1)' is a downstream symptom of the same missing-font
+    fallback ('Cannot find font directory'): when a requested family isn't installed, Qt resolves
+    a substitute whose point size is unset (-1) and warns while keeping the valid size. No
+    functional impact — text still renders via the fallback family."""
     import sys
 
-    _benign = ("Cannot find font directory", "propagateSizeHints")
+    _benign = ("Cannot find font directory", "propagateSizeHints",
+               "QFont::setPointSize: Point size", "QFont::setPixelSize: Pixel size")
 
     def handler(mode, ctx, msg):  # noqa: ANN001
         if any(s in msg for s in _benign):
