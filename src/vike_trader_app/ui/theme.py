@@ -1,47 +1,104 @@
-"""vike.io visual theme: color tokens + a Qt stylesheet (QSS).
+"""vike.io visual theme: HSL-authored color tokens + shape/spacing scale + a Qt stylesheet.
 
-Palette extracted from the live vike.io CSS — GitHub-dark canvas, orange brand
-accent, JetBrains Mono throughout. Shared by the widgets and the pyqtgraph charts.
+One blue (GitHub-dark) hue family for every surface (hue 215) and all text (hue 214),
+with a single green accent. Colors are authored in HSL via ``hsl()`` and emitted as hex,
+so both the QSS and pyqtgraph consume them unchanged. Shared by the widgets and charts.
+
+Surface model (Option A — "chrome is one flat tone"):
+  * BG       -> chrome: window, chart title bar, bottom bar, left rail, dock titles, dialogs.
+  * SURFACE  -> floating content: panels, tables, lists, group boxes, inputs, buttons,
+                combo popups, menus, tooltips, scrollbar handles.
+  * HOVER    -> hover / selected feedback.
+  * BORDER   -> every border, and the chart grid.
 """
 
-# --- color tokens ---
-# Canvas + sidebar sampled 1:1 from the live vike.io shell (the wallet page):
-# the GitHub-dark blue-tinted canvas `#0d1117` is BOTH the page background and the
-# left sidebar there, and cards sit a step lighter on `#1c2129`.
-BG = "#0d1117"        # vike canvas — app background + left icon rail (the "sidebar")
-CHART_BG = "#0d1117"  # chart panel, title bar + bottom bar — matches the canvas (one flat tone)
-PANEL = "#0e0e0e"
-PANEL2 = "#161616"
-RAISE = "#1e1e1e"
-HOVER = "#1a1a1a"
-BORDER = "#242424"
-BORDER2 = "#333333"
-TEXT = "#e6edf3"
-TEXT2 = "#9aa4b1"
-TEXT3 = "#6b7480"
-ACCENT = "#3fe08a"
-ACCENT_HOVER = "#63e8a4"
-BLUE = "#58a6ff"
-UP = "#3fb950"
-DOWN = "#f85149"
-# Candle body/wick colors sampled 1:1 from the live TradeLocker (TradingView) chart.
-# Softer than the semantic UP/DOWN above — those stay for trade markers / P&L / equity.
-CANDLE_UP = "#5bbd91"
-CANDLE_DOWN = "#da555a"
-FAST = "#58a6ff"
-SLOW = "#a855f7"
-WARN = "#ffb000"
-ROW_ODD = "#0f1319"
+from __future__ import annotations
 
-# verdict colors
+from colorsys import hls_to_rgb
+
+# NOTE: no top-level Qt import — this module stays pure-Python so the headless
+# analysis layer (tearsheet, interactive) can import the color tokens too. The only
+# Qt-dependent helper (apply_shadow) imports PySide6 lazily inside its body.
+
+
+def hsl(h: float, s: float, l: float) -> str:
+    """Author a color in HSL (h in degrees, s and l in percent); return ``#rrggbb``."""
+    r, g, b = hls_to_rgb(h / 360.0, l / 100.0, s / 100.0)
+    return f"#{round(r * 255):02x}{round(g * 255):02x}{round(b * 255):02x}"
+
+
+# --- surfaces: one hue (215); lightness does the work (7 -> 11 -> 15 -> 21) ---
+BG = hsl(215, 28, 7)        # canvas / chrome: window, title bar, bottom bar, rail, chart, dialogs
+SURFACE = hsl(215, 21, 11)  # floating content: panels, tables, inputs, buttons, menus, tooltips
+HOVER = hsl(215, 15, 15)    # hover / selected
+BORDER = hsl(215, 12, 21)   # every border + the chart grid
+
+# Back-compat aliases — the 9 old surface/border tokens collapse onto the 4 above, so
+# existing call sites keep working while the palette holds only the distinct values.
+CHART_BG = BG
+PANEL = SURFACE
+PANEL2 = SURFACE
+RAISE = SURFACE
+BORDER2 = BORDER
+ROW_ODD = BG
+
+# --- text: one hue (214) ---
+TEXT = hsl(214, 36, 93)
+TEXT2 = hsl(214, 13, 65)
+TEXT3 = hsl(214, 9, 46)
+
+# --- accent + semantic (own hues, deliberately distinct) ---
+ACCENT = hsl(148, 72, 56)
+ACCENT_HOVER = hsl(148, 74, 65)
+ON_ACCENT = hsl(148, 40, 10)  # dark text/icon sitting on the green accent
+BLUE = hsl(212, 100, 67)
+UP = hsl(128, 49, 49)
+DOWN = hsl(3, 93, 63)
+WARN = hsl(41, 100, 50)
+# candle bodies/wicks — sampled 1:1 from the live TradeLocker chart, kept softer than UP/DOWN
+CANDLE_UP = hsl(153, 43, 55)
+CANDLE_DOWN = hsl(358, 64, 59)
+# chart overlay/series accents
+FAST = BLUE
+SLOW = hsl(271, 91, 65)
+
+# verdict colors (single source — consumers should use this, not local dicts)
 VERDICT = {"Low": UP, "Medium": WARN, "High": DOWN}
 
-# Typography: a sans UI font for all chrome (buttons, labels, tabs, headings) and
-# a monospace face reserved for code + tabular numbers. Mixing the two — instead of
-# mono-everywhere — is the single biggest "product vs. raw dev-tool" visual cue.
+# --- shape + spacing scale (unify radii/paddings the way colors are unified) ---
+RADIUS_SM = 6
+RADIUS_MD = 8
+RADIUS_LG = 10
+SPACE_1 = 4
+SPACE_2 = 8
+SPACE_3 = 12
+SPACE_4 = 16
+CONTROL_H = 32  # unified control height for buttons / inputs
+
+# --- typography: sans UI font for chrome, mono for code + tabular numbers ---
 FONT_UI = '"Inter", "Segoe UI", system-ui, "Helvetica Neue", sans-serif'
 FONT_MONO = '"JetBrains Mono", "Cascadia Code", Consolas, monospace'
 FONT = FONT_MONO  # back-compat alias
+
+
+def color_for(value: float) -> str:
+    """Token color for a signed number: green up, red down, muted at zero."""
+    if value > 0:
+        return UP
+    if value < 0:
+        return DOWN
+    return TEXT2
+
+
+def apply_shadow(widget, *, radius: int = 24, y: int = 8, alpha: int = 170) -> None:
+    """Soft drop shadow so floating SURFACE cards (menus, popups, dialogs) lift off the flat chrome."""
+    from PySide6 import QtGui, QtWidgets
+
+    eff = QtWidgets.QGraphicsDropShadowEffect(widget)
+    eff.setBlurRadius(radius)
+    eff.setOffset(0, y)
+    eff.setColor(QtGui.QColor(0, 0, 0, alpha))
+    widget.setGraphicsEffect(eff)
 
 
 def stylesheet() -> str:
@@ -54,25 +111,25 @@ def stylesheet() -> str:
     }}
     QMainWindow, QWidget {{ background: {BG}; }}
 
-    /* dock panels */
+    /* dock panels — title bar is chrome (BG), body content sits on SURFACE cards */
     QDockWidget {{
         titlebar-close-icon: none; titlebar-normal-icon: none;
         color: {TEXT2}; font-size: 11px; font-weight: 700;
     }}
     QDockWidget::title {{
-        background: {PANEL2}; padding: 8px 12px;
+        background: {BG}; padding: {SPACE_2}px {SPACE_3}px;
         border: 1px solid {BORDER}; border-bottom: none;
         text-transform: uppercase; letter-spacing: 1px;
     }}
     QDockWidget > QWidget {{ border: 1px solid {BORDER}; }}
 
-    /* generic panels */
-    .Panel {{ background: {PANEL}; border: 1px solid {BORDER}; border-radius: 10px; }}
+    /* generic panels / cards */
+    .Panel {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_LG}px; }}
 
     /* group boxes (e.g. the Tools-tab calculators) — themed card with an inset title */
     QGroupBox {{
-        background: {PANEL}; border: 1px solid {BORDER}; border-radius: 10px;
-        margin-top: 14px; padding: 10px 12px 12px 12px;
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_LG}px;
+        margin-top: 14px; padding: {SPACE_3}px;
     }}
     QGroupBox::title {{
         subcontrol-origin: margin; subcontrol-position: top left;
@@ -85,7 +142,7 @@ def stylesheet() -> str:
     QTabBar {{ qproperty-drawBase: 0; }}
     QTabBar::tab {{
         background: transparent; color: {TEXT3};
-        padding: 8px 16px; margin-right: 2px;
+        padding: {SPACE_2}px {SPACE_4}px; margin-right: 2px;
         border: none; border-bottom: 2px solid transparent;
         font-size: 13px; font-weight: 600;
     }}
@@ -94,16 +151,16 @@ def stylesheet() -> str:
         color: {TEXT}; border-bottom: 2px solid {ACCENT};
     }}
 
-    /* buttons */
+    /* buttons — SURFACE card separated by its border (GitHub-style) */
     QPushButton {{
-        background: {RAISE}; color: {TEXT}; border: 1px solid {BORDER};
-        border-radius: 8px; padding: 8px 15px; font-weight: 600;
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+        border-radius: {RADIUS_MD}px; padding: 7px 14px; min-height: 16px; font-weight: 600;
     }}
-    QPushButton:hover {{ background: #262c36; border-color: {BORDER2}; }}
-    QPushButton:pressed {{ background: {PANEL2}; }}
-    QPushButton:disabled {{ color: {TEXT3}; background: {PANEL}; border-color: {BORDER}; }}
+    QPushButton:hover {{ background: {HOVER}; }}
+    QPushButton:pressed {{ background: {BG}; }}
+    QPushButton:disabled {{ color: {TEXT3}; background: {SURFACE}; border-color: {BORDER}; }}
     QPushButton#play {{
-        background: {ACCENT}; color: #1a0d00; border: none; font-weight: 700;
+        background: {ACCENT}; color: {ON_ACCENT}; border: none; font-weight: 700;
     }}
     QPushButton#play:hover {{ background: {ACCENT_HOVER}; }}
     QPushButton#validate {{
@@ -114,16 +171,25 @@ def stylesheet() -> str:
 
     /* combo / inputs */
     QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox, QDateEdit {{
-        background: {RAISE}; color: {TEXT}; border: 1px solid {BORDER};
-        border-radius: 8px; padding: 7px 11px; selection-background-color: {ACCENT};
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+        border-radius: {RADIUS_MD}px; padding: 7px 11px; min-height: 16px;
+        selection-background-color: {ACCENT}; selection-color: {ON_ACCENT};
     }}
     QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
     QDoubleSpinBox:focus, QDateEdit:focus {{ border-color: {ACCENT}; }}
-    QComboBox:hover {{ border-color: {BORDER2}; }}
     QComboBox QAbstractItemView {{
-        background: {PANEL}; border: 1px solid {BORDER}; border-radius: 8px;
-        selection-background-color: {ACCENT}; selection-color: {BG}; padding: 4px;
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_MD}px;
+        selection-background-color: {ACCENT}; selection-color: {ON_ACCENT}; padding: 4px;
     }}
+
+    /* menus — floating SURFACE cards (shadow added in code via apply_shadow) */
+    QMenu {{
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_MD}px;
+        padding: 4px;
+    }}
+    QMenu::item {{ padding: 6px 18px; border-radius: {RADIUS_SM}px; color: {TEXT2}; }}
+    QMenu::item:selected {{ background: {HOVER}; color: {TEXT}; }}
+    QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
 
     /* slider */
     QSlider::groove:horizontal {{ height: 5px; background: {BG}; border: 1px solid {BORDER}; border-radius: 5px; }}
@@ -135,38 +201,40 @@ def stylesheet() -> str:
 
     /* tables — mono cells for tabular alignment, sans uppercase headers */
     QTableWidget, QTableView {{
-        background: {PANEL}; alternate-background-color: {ROW_ODD};
+        background: {SURFACE}; alternate-background-color: {ROW_ODD};
         gridline-color: transparent; border: none; font-size: 13px;
         font-family: {FONT_MONO};
     }}
     QTableWidget::item {{ padding: 5px 8px; color: {TEXT2}; }}
+    QTableWidget::item:hover {{ background: {HOVER}; }}
     QTableWidget::item:selected {{ background: {HOVER}; color: {TEXT}; }}
     QHeaderView::section {{
-        background: {PANEL}; color: {TEXT3}; padding: 8px 8px;
+        background: {SURFACE}; color: {TEXT3}; padding: {SPACE_2}px;
         border: none; border-bottom: 1px solid {BORDER};
         font-family: {FONT_UI}; font-size: 12px; font-weight: 700;
         text-transform: uppercase; letter-spacing: 0.5px;
     }}
 
     /* lists */
-    QListWidget {{ background: {PANEL}; border: none; outline: none; }}
-    QListWidget::item {{ border-bottom: 1px solid rgba(48,54,61,0.4); padding: 2px; }}
+    QListWidget {{ background: {SURFACE}; border: none; outline: none; }}
+    QListWidget::item {{ border-bottom: 1px solid {BORDER}; padding: 2px; }}
+    QListWidget::item:hover {{ background: {HOVER}; }}
     QListWidget::item:selected {{ background: {HOVER}; }}
 
-    /* scrollbars */
+    /* scrollbars — handle = BORDER so it reads on both BG and SURFACE */
     QScrollBar:vertical {{ background: transparent; width: 10px; margin: 0; }}
-    QScrollBar::handle:vertical {{ background: {RAISE}; border-radius: 5px; min-height: 28px; }}
-    QScrollBar::handle:vertical:hover {{ background: {BORDER2}; }}
+    QScrollBar::handle:vertical {{ background: {BORDER}; border-radius: 5px; min-height: 28px; }}
+    QScrollBar::handle:vertical:hover {{ background: {TEXT3}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
     QScrollBar:horizontal {{ background: transparent; height: 10px; }}
-    QScrollBar::handle:horizontal {{ background: {RAISE}; border-radius: 5px; min-width: 28px; }}
+    QScrollBar::handle:horizontal {{ background: {BORDER}; border-radius: 5px; min-width: 28px; }}
+    QScrollBar::handle:horizontal:hover {{ background: {TEXT3}; }}
 
     /* splitter */
     QSplitter::handle {{ background: {BG}; }}
     QSplitter::handle:hover {{ background: {BORDER}; }}
 
-    /* dock separators — a 6px canvas-coloured gutter so panels read as separate cards
-       (TradeLocker-style breathing room) instead of butting edge-to-edge */
+    /* dock separators — a canvas-coloured gutter so panels read as separate cards */
     QMainWindow::separator {{ background: {BG}; width: 8px; height: 8px; }}
     QMainWindow::separator:hover {{ background: {BORDER}; }}
 
@@ -174,7 +242,7 @@ def stylesheet() -> str:
     QDialog {{ background: {BG}; }}
 
     QToolTip {{
-        background: {PANEL2}; color: {TEXT}; border: 1px solid {BORDER};
-        border-radius: 6px; padding: 4px 8px;
+        background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+        border-radius: {RADIUS_SM}px; padding: 4px 8px;
     }}
     """

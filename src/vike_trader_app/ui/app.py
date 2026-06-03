@@ -513,12 +513,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _build_icon_rail(self) -> QtWidgets.QWidget:
         rail = QtWidgets.QWidget()
-        rail.setFixedWidth(54)
+        rail.setFixedWidth(62)
         # Sidebar = the vike canvas colour; no right border (removed per the user — the
         # separator is the full-width horizontal rule under the title bar instead).
         rail.setStyleSheet(f"background:{theme.BG};")
         col = QtWidgets.QVBoxLayout(rail)
-        col.setContentsMargins(7, 10, 7, 10)
+        col.setContentsMargins(8, 10, 8, 10)
         col.setSpacing(6)
 
         # No brand mark or "SPACES" caption — the V lives in the OS title bar, and the rail opens
@@ -528,18 +528,18 @@ class MainWindow(QtWidgets.QMainWindow):
         # No filled box behind icons: the active icon is shown by its green colour alone
         # (transparent background), per the user. Hover stays a faint colour-only cue.
         btn_qss = (
-            f"QToolButton{{background:transparent;border:none;border-radius:11px;"
-            f"color:{theme.TEXT3};font-size:18px;}}"
+            f"QToolButton{{background:transparent;border:none;border-radius:13px;"
+            f"color:{theme.TEXT3};font-size:22px;}}"
             f"QToolButton:hover{{background:transparent;color:{theme.TEXT2};}}"
             f"QToolButton:checked{{background:transparent;color:{theme.ACCENT};}}"
         )
         for i, (glyph, name) in enumerate(self._RAIL_ITEMS):
             b = QtWidgets.QToolButton()
             b.setIcon(icons.rail_icon(name.lower(), theme.TEXT3, theme.ACCENT, theme.TEXT2))
-            b.setIconSize(QtCore.QSize(22, 22))
+            b.setIconSize(QtCore.QSize(28, 28))
             b.setToolTip(self._chip_tip(name))
             b.setCheckable(True)
-            b.setFixedSize(40, 40)
+            b.setFixedSize(46, 46)
             b.setCursor(QtCore.Qt.PointingHandCursor)
             b.setStyleSheet(btn_qss)
             b.clicked.connect(lambda _c, idx=i: self.tabs.setCurrentIndex(idx))
@@ -554,11 +554,11 @@ class MainWindow(QtWidgets.QMainWindow):
         for key, icon_name, tip, sc in self._PANELS:
             b = QtWidgets.QToolButton()
             b.setIcon(icons.rail_icon(icon_name, theme.TEXT3, theme.ACCENT, theme.TEXT2))
-            b.setIconSize(QtCore.QSize(22, 22))
+            b.setIconSize(QtCore.QSize(28, 28))
             b.setToolTip(self._chip_tip(tip, sc))
             b.setCheckable(True)
             b.setChecked(True)
-            b.setFixedSize(40, 40)
+            b.setFixedSize(46, 46)
             b.setCursor(QtCore.Qt.PointingHandCursor)
             b.setStyleSheet(btn_qss)
             self._panel_btns[key] = b

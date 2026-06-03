@@ -688,7 +688,7 @@ class SegmentedControl(QtWidgets.QWidget):
                 f"padding:6px 14px;color:{theme.TEXT3};font-weight:600;}}"
                 f"QPushButton:hover{{color:{theme.TEXT2};}}"
                 f"QPushButton:checked{{background:{theme.RAISE};color:{theme.TEXT};}}"
-                f"QPushButton:disabled{{color:#3a4048;}}"
+                f"QPushButton:disabled{{color:{theme.TEXT3};}}"
             )
             btn.clicked.connect(lambda _c, o=opt: self.valueChanged.emit(o))
             self._group.addButton(btn)

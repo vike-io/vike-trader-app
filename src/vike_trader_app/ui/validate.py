@@ -3,8 +3,7 @@
 from PySide6 import QtWidgets
 
 from ..analysis.report import build_overfit_report
-
-_COLORS = {"Low": "#26a69a", "Medium": "#ffb300", "High": "#ef5350"}
+from . import theme
 
 
 def show_validation(parent, bars, strategy_cls, fee_rate: float = 0.001) -> None:
@@ -31,7 +30,7 @@ class ValidationDialog(QtWidgets.QDialog):
         self.setMinimumWidth(460)
         layout = QtWidgets.QVBoxLayout(self)
 
-        color = _COLORS.get(report.verdict.level, "#888888")
+        color = theme.VERDICT.get(report.verdict.level, theme.TEXT2)
         head = QtWidgets.QLabel(f"⚠ Overfit risk: {report.verdict.level}")
         head.setStyleSheet(f"font-size:18px; font-weight:700; color:{color};")
         layout.addWidget(head)
