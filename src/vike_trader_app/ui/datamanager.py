@@ -105,11 +105,13 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
         self.btn_profiles = QtWidgets.QPushButton("⚙ Instruments…")
+        self.btn_truncate = QtWidgets.QPushButton("✂ Truncate…")
         self.btn_delete = QtWidgets.QPushButton("🗑 Delete")
         self.btn_update_all.setToolTip("Fetch up-to-now for every cached series")
         self.btn_import.setToolTip("Import an OHLCV CSV (auto-detect format; optional TZ shift + aggregate)")
         self.btn_inspect.setToolTip("Check the selected series for gaps / OHLC anomalies")
         self.btn_profiles.setToolTip("Edit broker profiles & instrument specs (tick / pip / step / size)")
+        self.btn_truncate.setToolTip("Delete cached bars before/after a date")
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_update_all.clicked.connect(self._on_update_all)
         self.btn_download.clicked.connect(self._on_download)
@@ -118,9 +120,11 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_repair.clicked.connect(self._on_repair)
         self.btn_pin.clicked.connect(self._on_pin)
         self.btn_profiles.clicked.connect(self._on_profiles)
+        self.btn_truncate.clicked.connect(self._on_truncate)
         self.btn_delete.clicked.connect(self._on_delete)
         for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_import,
-                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_profiles, self.btn_delete):
+                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_profiles,
+                  self.btn_truncate, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
         self.count_label = QtWidgets.QLabel("")
@@ -472,6 +476,31 @@ class DataManagerTab(QtWidgets.QWidget):
         if ok == QtWidgets.QMessageBox.Yes:
             self._delete(symbol, interval)
 
+    def truncate_series(self, symbol: str, interval: str, *, before_ms: int | None = None,
+                        after_ms: int | None = None) -> int:
+        """Delete cached bars before/after the given epoch-ms bound(s); returns bars removed (no dialog)."""
+        from ..data.parquet_source import truncate_series as _truncate
+        n = _truncate(self._root, symbol, interval, before_ts=before_ms, after_ts=after_ms)
+        self.refresh()
+        self._log(f"Truncated {symbol} {interval}: removed {n:,} bar(s)")
+        return n
+
+    def _on_truncate(self) -> None:
+        sel = self._selected()
+        if sel is None:
+            return
+        symbol, interval = sel
+        dlg = _TruncateDialog(self, default=sel)
+        if dlg.exec() != QtWidgets.QDialog.Accepted:
+            return
+        before_ms, after_ms = dlg.values()   # one is set, the other None
+        ok = QtWidgets.QMessageBox.question(
+            self, "Truncate data",
+            f"Delete {symbol} {interval} bars "
+            f"{'before' if before_ms is not None else 'after'} the chosen date? This can't be undone.")
+        if ok == QtWidgets.QMessageBox.Yes:
+            self.truncate_series(symbol, interval, before_ms=before_ms, after_ms=after_ms)
+
     def showEvent(self, event):  # noqa: N802 - Qt override: refresh when the space is opened
         super().showEvent(event)
         self.refresh()
@@ -567,3 +596,40 @@ class _ImportCsvDialog(QtWidgets.QDialog):
         choice = self._interval.currentText()
         target = None if choice.startswith("as-is") else choice
         return self._path.text().strip(), self._symbol.text().strip(), self._tz.value(), target
+
+
+class _TruncateDialog(QtWidgets.QDialog):
+    """Choose a date and a direction (before / after) to delete cached bars for a series."""
+
+    def __init__(self, parent=None, default: tuple[str, str] | None = None):
+        super().__init__(parent)
+        symbol, interval = default if default else ("", "")
+        self.setWindowTitle(f"Truncate {symbol} {interval}" if symbol else "Truncate data")
+        form = QtWidgets.QFormLayout(self)
+
+        self._date = QtWidgets.QDateEdit()
+        self._date.setCalendarPopup(True)
+        self._date.setDate(QtCore.QDate.currentDate())
+
+        self._before = QtWidgets.QRadioButton("Delete before date (keep ≥ chosen date)")
+        self._after = QtWidgets.QRadioButton("Delete after date (keep ≤ chosen date)")
+        self._before.setChecked(True)
+
+        form.addRow("Date", self._date)
+        form.addRow(self._before)
+        form.addRow(self._after)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def values(self) -> tuple[int | None, int | None]:
+        """Return ``(before_ms, after_ms)`` with exactly one set based on the chosen radio."""
+        date = self._date.date()
+        ms = QtCore.QDateTime(date, QtCore.QTime(0, 0), QtCore.Qt.UTC).toMSecsSinceEpoch()
+        if self._before.isChecked():
+            return ms, None    # delete bars before this date
+        return None, ms        # delete bars after this date
