@@ -2,7 +2,14 @@
 """WealthLab-style portfolio backtest: one single-symbol Strategy per symbol, shared cash."""
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio_adapter import align_bars
+from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
+from vike_trader_app.core.portfolio_adapter import (
+    MultiSymbolStrategyRunner,
+    SymbolEngineShim,
+    align_bars,
+)
+from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.tester.config import TesterConfig
 
 
 def _bar(ts, px):
@@ -18,10 +25,6 @@ def test_align_bars_unions_timestamps_and_forward_fills():
     assert aligned["B"][0].close == 20.0
     assert aligned["A"][2].close == 11.0
     assert len({len(v) for v in aligned.values()}) == 1
-
-
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
-from vike_trader_app.core.portfolio_adapter import SymbolEngineShim
 
 
 def test_shim_forwards_orders_and_reads_to_engine():
@@ -50,11 +53,6 @@ def test_shim_resting_orders_raise_in_portfolio_mode():
     shim = SymbolEngineShim(eng, "A", None)
     with pytest.raises(NotImplementedError):
         shim.submit_limit(+1, 1.0, 0.5)
-
-
-from vike_trader_app.core.strategy import Strategy
-from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
-from vike_trader_app.tester.config import TesterConfig
 
 
 class BuyHold(Strategy):

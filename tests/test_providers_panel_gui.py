@@ -9,7 +9,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtWidgets  # noqa: E402
 
 from vike_trader_app.data.providers_config import DEFAULT_ORDER, load_providers_config  # noqa: E402
 from vike_trader_app.ui.providers_panel import ProvidersPanel  # noqa: E402
