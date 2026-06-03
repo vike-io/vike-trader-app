@@ -29,29 +29,77 @@ _SPINE = theme.HOVER     # subtly raised centre Strike column (the spine)
 _BAND = theme.HOVER      # ATM spot-price marker band
 _GREEN = {"bid", "bidpct"}   # Deribit-style: bid family rendered in UP green
 _RED = {"ask", "askpct"}     # ask family rendered in DOWN red
+_DERIBIT_UNDERLYINGS = ["BTC", "ETH", "SOL"]                          # Deribit crypto options (fixed)
+_STOCK_UNDERLYINGS = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "TSLA"]   # yfinance stock options (editable)
 
 
-class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
-    """Paints a thin magnitude bar under the two Volume columns (blue calls / red puts)."""
+class _GridDelegate(QtWidgets.QStyledItemDelegate):
+    """Paints the options grid: volume magnitude bars (blue calls / red puts), the cell text in
+    its model foreground colour, the centre Strike-spine vertical dividers, and the horizontal
+    price line on the ATM row.
+
+    Drawing the text ourselves is deliberate: the global ``QTableWidget::item { color: ... }`` QSS
+    rule overrides per-item ``setForeground`` at paint time, so green-bid / red-ask never showed.
+    We blank the style's text and draw the glyph in the model colour to honour it.
+    """
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.call_col = -1
         self.put_col = -1
+        self.spine_left = -1     # Strike column — left edge of the centre spine
+        self.spine_right = -1    # IV column — right edge of the centre spine
+        self.atm_row = -1        # ATM marker row — gets the full-width price line
 
     def paint(self, painter, option, index) -> None:
-        col = index.column()
-        if col in (self.call_col, self.put_col):
+        # Paint everything ourselves (no super().paint): the global QStyleSheetStyle draws the
+        # model's display text in its ::item colour regardless of opt.text, which ghosted behind
+        # our coloured glyph. So we fill bg/selection, then draw the text in the model colour.
+        col, row = index.column(), index.row()
+        opt = QtWidgets.QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        r = opt.rect
+        painter.save()
+        if opt.state & (QtWidgets.QStyle.State_Selected | QtWidgets.QStyle.State_MouseOver):
+            painter.fillRect(r, QtGui.QColor(theme.HOVER))
+        elif opt.backgroundBrush.style() != QtCore.Qt.NoBrush:
+            painter.fillRect(r, opt.backgroundBrush)   # ITM hatch / strike spine / ATM band
+        painter.restore()
+
+        if col in (self.call_col, self.put_col):   # volume magnitude bar
             frac = index.data(QtCore.Qt.UserRole) or 0.0
             if frac > 0:
                 painter.save()
-                r = option.rect
-                color = QtGui.QColor(_CALL_BAR if col == self.call_col else _PUT_BAR)
-                color.setAlpha(120)
-                width = int((r.width() - 8) * min(frac, 1.0))
-                painter.fillRect(r.x() + 4, r.bottom() - 6, width, 3, color)
+                bar = QtGui.QColor(_CALL_BAR if col == self.call_col else _PUT_BAR)
+                bar.setAlpha(120)
+                painter.fillRect(r.x() + 4, r.bottom() - 6,
+                                 int((r.width() - 8) * min(frac, 1.0)), 3, bar)
                 painter.restore()
-        super().paint(painter, option, index)
+
+        if opt.text:                               # cell text in its model foreground colour
+            fg = index.data(QtCore.Qt.ForegroundRole)
+            color = fg.color() if isinstance(fg, QtGui.QBrush) else QtGui.QColor(_CELL)
+            painter.save()
+            painter.setFont(opt.font)
+            painter.setPen(color)
+            align = int(opt.displayAlignment) or int(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
+            painter.drawText(r.adjusted(8, 0, -8, 0), align, opt.text)
+            painter.restore()
+
+        if col in (self.spine_left, self.spine_right):   # vertical Strike-spine dividers
+            painter.save()
+            painter.setPen(QtGui.QColor(theme.BORDER))
+            x = r.left() if col == self.spine_left else r.right() - 1
+            painter.drawLine(x, r.top(), x, r.bottom())
+            painter.restore()
+
+        if row == self.atm_row:                    # horizontal price line across the ATM marker row
+            painter.save()
+            pen = QtGui.QPen(QtGui.QColor(theme.ACCENT))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.drawLine(r.left(), r.top() + 1, r.right(), r.top() + 1)
+            painter.restore()
 
 
 def _columns(view: str) -> tuple[list[str], list[str], list[str]]:
@@ -142,9 +190,9 @@ class OptionsTab(QtWidgets.QWidget):
 
         controls = QtWidgets.QHBoxLayout()
         controls.setSpacing(8)
-        self.underlying = QtWidgets.QComboBox()
-        self.underlying.setEditable(True)
-        self.underlying.addItems(["BTC", "ETH", "SOL", "^VIX", "SPY", "QQQ", "AAPL", "MSFT"])
+        self.provider = QtWidgets.QComboBox()
+        self.provider.addItems(["Deribit", "yfinance"])   # crypto (Deribit) | stock options (yfinance)
+        self.underlying = QtWidgets.QComboBox()            # populated per provider by _apply_provider
         self.exp_range = QtWidgets.QComboBox()
         self.exp_range.addItems(["Next 30d", "Next 60d", "Next 90d", "All"])
         self.strikes = QtWidgets.QComboBox()
@@ -159,7 +207,7 @@ class OptionsTab(QtWidgets.QWidget):
         self.status_label = QtWidgets.QLabel("—")
         self.status_label.setStyleSheet(f"color:{theme.TEXT3};border:none;background:transparent;")
         # TV-style: self-labeling dropdowns, left-aligned, no separate text labels.
-        for w in (self.underlying, self.exp_range, self.strikes,
+        for w in (self.provider, self.underlying, self.exp_range, self.strikes,
                   self.view_toggle, self.refresh_btn):
             controls.addWidget(w)
         controls.addStretch(1)
@@ -193,24 +241,45 @@ class OptionsTab(QtWidgets.QWidget):
             "font-size:12px;font-weight:600;text-transform:none;letter-spacing:0;"
             f"padding:7px 10px;border:none;border-bottom:1px solid {theme.BORDER};}}")
         self.table.verticalHeader().setDefaultSectionSize(36)
-        self._bar = _VolumeBarDelegate(self.table)
+        self._bar = _GridDelegate(self.table)
         self.table.setItemDelegate(self._bar)
         root.addWidget(self.table, 1)
 
-        # Picking a preset fires `activated`; typing a custom ticker + Enter fires the
-        # line-edit's `returnPressed` (activated alone misses novel text).
+        # Provider scopes the underlying list; picking a preset fires `activated`; for the editable
+        # (yfinance) combo, typing a custom ticker + Enter fires the line-edit's `returnPressed`.
+        self.provider.activated.connect(lambda _i: self._apply_provider(emit=True))
         self.underlying.activated.connect(self._emit_underlying)
-        self.underlying.lineEdit().returnPressed.connect(self._emit_underlying)
         self.expiry_strip.selected.connect(self.expiryChanged)   # strip drives the single expiry
         self.strikes.activated.connect(self.refreshRequested.emit)
         self.exp_range.activated.connect(self.rangeChanged.emit)
         self.view_toggle.activated.connect(self._on_view_changed)
         self.refresh_btn.clicked.connect(self.refreshRequested.emit)
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
+        self._apply_provider(emit=False)   # populate the underlying list for the default provider
 
     # --- signals out ---------------------------------------------------------
     def _emit_underlying(self) -> None:
         self.underlyingChanged.emit(self.underlying.currentText())
+
+    def _apply_provider(self, *, emit: bool = True) -> None:
+        """Scope the underlying list to the chosen provider: Deribit -> BTC/ETH/SOL (fixed);
+        yfinance -> editable stock presets. Emits underlyingChanged only on a user-driven switch
+        (emit=False at construction keeps startup network-free)."""
+        deribit = self.provider.currentText() == "Deribit"
+        self.underlying.blockSignals(True)
+        self.underlying.clear()
+        self.underlying.setEditable(not deribit)   # Deribit: fixed coins; yfinance: type any ticker
+        self.underlying.addItems(_DERIBIT_UNDERLYINGS if deribit else _STOCK_UNDERLYINGS)
+        self.underlying.setCurrentIndex(0)
+        self.underlying.blockSignals(False)
+        if not deribit and self.underlying.lineEdit() is not None:
+            try:
+                self.underlying.lineEdit().returnPressed.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            self.underlying.lineEdit().returnPressed.connect(self._emit_underlying)
+        if emit:
+            self._emit_underlying()
 
     def _on_view_changed(self) -> None:
         self._view = "greeks" if self.view_toggle.currentText() == "Greeks" else "chain"
@@ -259,6 +328,8 @@ class OptionsTab(QtWidgets.QWidget):
         strike_col = len(call_fields)
         self._bar.call_col = call_fields.index("volume")
         self._bar.put_col = strike_col + 2 + put_fields.index("volume")
+        self._bar.spine_left = strike_col          # Strike col — left edge of the centre spine
+        self._bar.spine_right = strike_col + 1      # IV col — right edge of the centre spine
         # map each column to (field, side) so header clicks know what to sort on
         self._col_field = {i: (f, "C") for i, f in enumerate(call_fields)}
         self._col_field[strike_col] = ("strike", None)
@@ -306,6 +377,7 @@ class OptionsTab(QtWidgets.QWidget):
         self._render()
 
     def _render(self) -> None:
+        self._bar.atm_row = -1
         call_fields, put_fields, ncols, strike_col = self._setup_columns()
         chain = self._chain
         if chain is None:
@@ -318,6 +390,7 @@ class OptionsTab(QtWidgets.QWidget):
         if show_atm and spot is not None:
             pos = next((i for i, r in enumerate(rows) if r.strike >= spot), len(rows))
             self._marker_row(chain, ncols, pos)
+            self._bar.atm_row = pos
 
     def _fill_strike_row(self, ri: int, row: StrikeRow, call_fields: list[str],
                          put_fields: list[str], strike_col: int, spot: float | None, dte: int,
