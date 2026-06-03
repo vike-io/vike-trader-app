@@ -15,6 +15,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import dropdowns, icons, theme
 
 _DAY_MS = 24 * 3600 * 1000
+_CAL_GAP = 8   # one unified distance for the Calendar space: between day-cards AND between rows
 
 
 def _nav_button(direction: str) -> QtWidgets.QPushButton:
@@ -223,7 +224,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._worker = None
 
         root = QtWidgets.QVBoxLayout(self)
-        root.addWidget(self._build_toolbar())
+        self._toolbar = self._build_toolbar()
+        root.addWidget(self._toolbar)
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;")
         root.addWidget(self._status)
@@ -438,8 +440,31 @@ class CalendarSpace(QtWidgets.QWidget):
             pills.addWidget(b)
             self._pills.append(b)
         pills.addStretch(1)
+        # Shared "Covered only" + symbol filter live ON the tabs row (right side), height-matched to
+        # the pills — instead of each equity tab carrying its own toolbar on a separate row below.
+        row_ctl_qss = (
+            f"QCheckBox{{color:{theme.TEXT2};font-size:13px;spacing:6px;}}"
+            f"QCheckBox:hover{{color:{theme.TEXT};}}"
+            f"QLineEdit{{background:{theme.SURFACE};color:{theme.TEXT};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_MD}px;padding:6px 11px;font-size:13px;}}"
+            f"QLineEdit:focus{{border-color:{theme.ACCENT};}}")
+        self._row_covered = QtWidgets.QCheckBox("Covered only")
+        self._row_covered.setChecked(True)
+        self._row_covered.setCursor(QtCore.Qt.PointingHandCursor)
+        self._row_covered.setStyleSheet(row_ctl_qss)
+        self._row_covered.toggled.connect(self.earnings._on_covered_toggled)
+        self._row_search = QtWidgets.QLineEdit()
+        self._row_search.setPlaceholderText("Filter symbol…")
+        self._row_search.setStyleSheet(row_ctl_qss)
+        self._row_search.setFixedWidth(150)
+        self._row_search.textChanged.connect(self._on_row_search)
+        pills.addWidget(self._row_covered)
+        pills.addWidget(self._row_search)
         pills.addWidget(self._build_category_dropdown())   # TV "All categories", right side
         self.economic._cmb_cat.setVisible(False)           # de-dupe: this dropdown replaces it
+        # The per-tab toolbars (Covered/filter) are now redundant — the shared row controls drive them.
+        for tab in (self.earnings, self.dividends, self.ipo):
+            tab._toolbar.setVisible(False)
 
         # TV-style day-card strip (Economic/Earnings/Dividends/IPO counts), ABOVE the pills.
         self._selected_day = -1
@@ -448,7 +473,7 @@ class CalendarSpace(QtWidgets.QWidget):
         strip = QtWidgets.QWidget()
         sl = QtWidgets.QHBoxLayout(strip)
         sl.setContentsMargins(0, 0, 0, 0)
-        sl.setSpacing(8)
+        sl.setSpacing(_CAL_GAP)            # gap between day-cards
         for i in range(7):
             card = _DayCard(i)
             card.clicked.connect(self._on_day_clicked)
@@ -456,7 +481,7 @@ class CalendarSpace(QtWidgets.QWidget):
             sl.addWidget(card)
 
         root = QtWidgets.QVBoxLayout(self)
-        root.setSpacing(10)
+        root.setSpacing(_CAL_GAP)          # same gap between every calendar row (nav/cards/pills/table)
         root.addWidget(self._build_topnav())   # TV: date-nav row ABOVE the day-cards
         root.addWidget(strip)
         bar = QtWidgets.QWidget()
@@ -470,6 +495,9 @@ class CalendarSpace(QtWidgets.QWidget):
                 w.setVisible(False)
         self.economic._cmb_tz.setVisible(False)
         self.economic._toolbar.setVisible(False)   # High-only/Countries moved to the top nav (TV layout)
+        # Tighter table header (the default ~32px section read too tall) across every calendar tree.
+        for tab in (self.economic, self.earnings, self.dividends, self.ipo):
+            tab._tree.header().setStyleSheet("QHeaderView::section{padding-top:3px;padding-bottom:3px;}")
         self.set_page(0)
         self._sync_range()
 
@@ -487,6 +515,19 @@ class CalendarSpace(QtWidgets.QWidget):
         if hasattr(self, "_top_high"):           # economic-only date-nav filters
             self._top_high.setVisible(idx == 0)
             self._top_countries.setVisible(idx == 0)
+        if hasattr(self, "_row_search"):
+            self._row_search.setVisible(idx != 0)        # symbol filter: equity tabs only
+            self._row_covered.setVisible(idx == 1)       # "Covered only": Earnings only
+            if idx != 0:                                  # re-apply the shared filter to the new tab
+                self._active_equity()._on_filter(self._row_search.text())
+
+    def _active_equity(self):
+        return {1: self.earnings, 2: self.dividends, 3: self.ipo}.get(self._stack.currentIndex())
+
+    def _on_row_search(self, text: str) -> None:
+        tab = self._active_equity()
+        if tab is not None:
+            tab._on_filter(text)
 
     # ---- TV "All categories" dropdown (filters the Economic page) — shared single-select pill ----
     def _build_category_dropdown(self) -> QtWidgets.QWidget:
