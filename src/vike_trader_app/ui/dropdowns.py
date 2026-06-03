@@ -292,9 +292,9 @@ class FilterPill(QtWidgets.QToolButton):
         # Right padding reserves room for the chevron drawn in paintEvent (so the label never
         # overlaps it); left/right are otherwise the unified pill insets.
         self.setStyleSheet(
-            f"QToolButton{{background:{theme.SURFACE};color:{theme.TEXT2};"
+            f"QToolButton{{background:{theme.SURFACE};color:{theme.TEXT};"
             f"border:1px solid {theme.BORDER};border-radius:{theme.RADIUS_MD}px;"
-            f"padding:7px 28px 7px 14px;font-size:13px;text-align:left;}}"
+            f"padding:7px 38px 7px 14px;font-size:{theme.FONT_DROPDOWN}px;text-align:left;}}"
             f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             "QToolButton::menu-indicator{width:0px;}"
         )

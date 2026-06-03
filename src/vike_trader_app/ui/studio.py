@@ -68,10 +68,10 @@ class ResultsPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        # _GAP outer frame on the top/sides so the tab strip lines up with the bottom cards'
-        # _GAP insets (StudioTab's root margin is 0 — this is the single source of the top gap).
-        # Bottom inset stays 0: the vertical splitter handle (_GAP) provides the gap to the cards.
-        root.setContentsMargins(_GAP, _GAP, _GAP, 0)
+        # Zero card inset — the StudioTab root margin (the outer frame) and the splitter handles are
+        # the ONLY gaps, so every content-to-content distance equals _GAP (see StudioTab for the
+        # full model). Card insets here would double up with the handle and break that uniformity.
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(_GAP)
 
         # verdict banner (above the tabs — always visible when set)
@@ -573,9 +573,9 @@ class ChatPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        # Uniform _GAP inset on all sides so this card's content lines up with the editor card's
-        # (its layout `ep` uses the same _GAP inset) — the heading top matches the Run-toolbar top.
-        root.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
+        # Zero inset — StudioTab's root margin + the splitter handles are the only gaps, so every
+        # content-to-content distance equals _GAP (a card inset here would double up with the handle).
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(_GAP)
 
         # --- empty state (shown until the first message) ---
@@ -973,11 +973,11 @@ class StudioTab(QtWidgets.QWidget):
 
         root = QtWidgets.QVBoxLayout(self)
         # No root inset — every visible gap is a single, uniform _GAP instead of doubling up
-        # (root + card margins). The _GAP outer frame comes from the cards' own _GAP insets
-        # (and the ResultsPanel's _GAP top/side inset below); the inter-card / top-vs-bottom
-        # gutters come from the two splitter handle widths (also _GAP). So left == right == top ==
-        # bottom == inter-card gutter == _GAP.
-        root.setContentsMargins(0, 0, 0, 0)
+        # The outer frame is ONE _GAP root margin; every inter-pane gap is ONE _GAP splitter
+        # handle; the panes themselves have ZERO inset (see ResultsPanel/ChatPanel/editor_pane).
+        # So every content-to-content distance — window→content, results↔cards, chat↔editor — is
+        # exactly _GAP. (Previously card insets doubled up with the handles: 6 / 12 / 18.)
+        root.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
         root.setSpacing(0)
 
         # toolbar — TradeLocker-style: sits directly ABOVE the code editor (its pane header),
@@ -1022,6 +1022,13 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_collapse_top = QtWidgets.QToolButton()
         self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_up", theme.TEXT2))
         self._btn_collapse_top.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))  # unified arrow size
+        self._btn_collapse_top.setCursor(QtCore.Qt.PointingHandCursor)
+        # Borderless: a bare chevron like the dropdown carets (no boxy default-QToolButton frame),
+        # just a subtle hover. Same glyph/size/weight as every other arrow.
+        self._btn_collapse_top.setStyleSheet(
+            f"QToolButton{{background:transparent;border:none;padding:3px;"
+            f"border-radius:{theme.RADIUS_SM}px;}}"
+            f"QToolButton:hover{{background:{theme.HOVER};}}")
         self._btn_collapse_top.setToolTip("Collapse / expand chart & report")
         self._btn_collapse_top.clicked.connect(self._toggle_top_panel)
 
@@ -1032,9 +1039,8 @@ class StudioTab(QtWidgets.QWidget):
         # editor pane = toolbar header + code editor (so the buttons sit above the editor)
         editor_pane = QtWidgets.QWidget()
         ep = QtWidgets.QVBoxLayout(editor_pane)
-        # _GAP inset on all sides — matches the AI card's ChatPanel root margin so both bottom
-        # cards' top content (Run toolbar here, "✦ AI STUDIO" heading there) sit at the same inset.
-        ep.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
+        # Zero inset (see ChatPanel) — the splitter handle + StudioTab root margin are the only gaps.
+        ep.setContentsMargins(0, 0, 0, 0)
         ep.setSpacing(_GAP)
         toolbar_flow = QtWidgets.QWidget()
         toolbar_flow.setLayout(toolbar)

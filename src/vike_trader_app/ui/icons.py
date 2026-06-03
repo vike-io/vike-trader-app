@@ -171,36 +171,29 @@ def _draw_save(p, c):  # floppy-disk save glyph: body + folded corner, shutter, 
     p.drawRect(_R(17, 26, 14, 10))              # label rectangle (lower-middle)
 
 
-def _draw_chevron_up(p, c):  # upward chevron
+# The four chevrons are EXACT 90° rotations of one geometry with a near-square bounding box
+# (~16×14), so up/down and left/right read as the same on-screen size in any orientation — the
+# old shallow 22×11 V looked tall as ‹ › but flat/small as ⌄, which read as different sizes.
+_CHEVRON_PEN = 2.2   # lighter stroke (≈ font-weight 300) — only for the directional chevrons,
+                     # not the 3.0-weight rail icons. WIDE & SHALLOW like TradingView's caret:
+                     # down/up are ~26×14 (→ ~10 wide × 6 tall on screen); left/right are that rotated.
+
+
+def _chevron(p, pts):
+    pen = p.pen()
+    pen.setWidthF(_CHEVRON_PEN)
+    p.setPen(pen)
     path = QtGui.QPainterPath()
-    path.moveTo(13, 29)
-    path.lineTo(24, 18)
-    path.lineTo(35, 29)
+    path.moveTo(*pts[0])
+    for pt in pts[1:]:
+        path.lineTo(*pt)
     p.drawPath(path)
 
 
-def _draw_chevron_down(p, c):  # downward chevron
-    path = QtGui.QPainterPath()
-    path.moveTo(13, 19)
-    path.lineTo(24, 30)
-    path.lineTo(35, 19)
-    p.drawPath(path)
-
-
-def _draw_chevron_left(p, c):  # leftward chevron ‹ — same V size as up/down, rotated 90°
-    path = QtGui.QPainterPath()
-    path.moveTo(29, 13)
-    path.lineTo(18, 24)
-    path.lineTo(29, 35)
-    p.drawPath(path)
-
-
-def _draw_chevron_right(p, c):  # rightward chevron › — mirror of chevron_left
-    path = QtGui.QPainterPath()
-    path.moveTo(19, 13)
-    path.lineTo(30, 24)
-    path.lineTo(19, 35)
-    p.drawPath(path)
+def _draw_chevron_down(p, c):   _chevron(p, [(11, 17), (24, 31), (37, 17)])   # ⌄ wide, shallow
+def _draw_chevron_up(p, c):     _chevron(p, [(11, 31), (24, 17), (37, 31)])   # ^
+def _draw_chevron_left(p, c):   _chevron(p, [(31, 11), (17, 24), (31, 37)])   # ‹ (down rotated 90°)
+def _draw_chevron_right(p, c):  _chevron(p, [(17, 11), (31, 24), (17, 37)])   # ›
 
 
 def _draw_scale(p, c):  # balance/justice scale: central post on a base, top beam, two hanging pans
@@ -250,7 +243,8 @@ _DRAW = {
 
 # One on-screen size for EVERY directional chevron in the app (dropdown ▾, week-nav ‹ ›, the
 # Studio collapse ^/⌄) so up/down and left/right read identically — the TradingView look.
-ARROW_PX = 14
+# Single source of truth lives in theme so the QComboBox QSS arrow can share the exact value.
+ARROW_PX = theme.ARROW_PX
 
 
 def chevron_icon(direction: str, color: str) -> QtGui.QIcon:
