@@ -65,12 +65,12 @@ def test_studio_run_bad_strategy_shows_error(app):
 
 
 def test_studio_layout_reports_top_editor_chat_bottom(app):
-    # New layout: results/chart tab strip on top; editor | AI-studio chat as two cards below.
+    # New layout: results/chart tab strip on top; AI-studio chat | editor as two cards below.
     tab = StudioTab()
     assert tab._vsplit.count() == 2                       # [results, bottom-row]
     assert tab._vsplit.widget(0) is tab.results          # reports + chart tabs on top
-    assert tab._bottom.count() == 2                       # editor | chat, two half-width cards
-    assert tab._bottom.widget(1) is tab.chat             # AI Studio chat is the right card
+    assert tab._bottom.count() == 2                       # chat | editor, two half-width cards
+    assert tab._bottom.widget(0) is tab.chat             # AI Studio chat is the left card
 
 
 def test_chat_without_client_is_graceful(app):

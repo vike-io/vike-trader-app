@@ -193,6 +193,7 @@ class OptionsTab(QtWidgets.QWidget):
         self.provider = QtWidgets.QComboBox()
         self.provider.addItems(["Deribit", "yfinance"])   # crypto (Deribit) | stock options (yfinance)
         self.underlying = QtWidgets.QComboBox()            # populated per provider by _apply_provider
+        self.underlying.setMinimumWidth(96)                # fit typed tickers (GOOGL/ZZZZZ), not "ZZ…"
         self.exp_range = QtWidgets.QComboBox()
         self.exp_range.addItems(["Next 30d", "Next 60d", "Next 90d", "All"])
         self.strikes = QtWidgets.QComboBox()
@@ -250,10 +251,12 @@ class OptionsTab(QtWidgets.QWidget):
         self.provider.activated.connect(lambda _i: self._apply_provider(emit=True))
         self.underlying.activated.connect(self._emit_underlying)
         self.expiry_strip.selected.connect(self.expiryChanged)   # strip drives the single expiry
-        self.strikes.activated.connect(self.refreshRequested.emit)
-        self.exp_range.activated.connect(self.rangeChanged.emit)
+        # activated(int)/clicked(bool) carry an arg; these signals take none -> drop it (else
+        # "TypeError: refreshRequested()/rangeChanged() only accepts 0 argument(s), 1 given").
+        self.strikes.activated.connect(lambda *_: self.refreshRequested.emit())
+        self.exp_range.activated.connect(lambda *_: self.rangeChanged.emit())
         self.view_toggle.activated.connect(self._on_view_changed)
-        self.refresh_btn.clicked.connect(self.refreshRequested.emit)
+        self.refresh_btn.clicked.connect(lambda *_: self.refreshRequested.emit())
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
         self._apply_provider(emit=False)   # populate the underlying list for the default provider
 
@@ -300,6 +303,22 @@ class OptionsTab(QtWidgets.QWidget):
     def set_expiries(self, expiries) -> None:
         """Populate the expiry tab strip; selecting the nearest expiry fires expiryChanged."""
         self.expiry_strip.set_expiries(expiries)
+
+    def begin_load(self, underlying: str) -> None:
+        """Clear the grid + expiry strip and show a loading note the moment the underlying
+        changes — so a slow/empty fetch can never leave the PREVIOUS symbol's chain on screen
+        (the "I typed a symbol but got the same data" bug)."""
+        self._chain = None
+        self._sort = None
+        self._render()                       # _setup_columns() resets the table to 0 rows
+        self.expiry_strip.set_expiries([])
+        self.set_status(f"Loading {underlying}…")
+
+    def no_data(self, underlying: str) -> None:
+        """No expiries came back for this underlying — say so instead of showing a stale grid."""
+        self._chain = None
+        self._render()
+        self.set_status(f"No options data for {underlying}")
 
     @staticmethod
     def _source_note(source: str) -> str:

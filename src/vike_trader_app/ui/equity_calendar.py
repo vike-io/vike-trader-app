@@ -535,6 +535,9 @@ class CalendarSpace(QtWidgets.QWidget):
                            for i in range(self.economic._cmb_tz.count())])
         self._tz.setCurrentIndex(self.economic._cmb_tz.currentIndex())
         self._tz.currentIndexChanged.connect(self.economic._cmb_tz.setCurrentIndex)
+        # Size to the widest label (+arrow +QSS padding) so "UTC+8" etc. don't elide to "U...8".
+        self._tz.setSizeAdjustPolicy(QtWidgets.QComboBox.AdjustToContents)
+        self._tz.setMinimumWidth(104)
         h.addWidget(self._tz)
         return bar
 

@@ -285,7 +285,7 @@ class ResultsPanel(QtWidgets.QWidget):
         reason = verdict.reasons[0] if verdict.reasons else ""
         self._banner.setText(f"⚠  OVERFIT RISK · {level.upper()}  —  {reason}")
         self._banner.setStyleSheet(
-            f"padding:8px 10px;border-radius:6px;font-weight:700;"
+            f"padding:8px 10px;border-radius:6px;font-size:13px;font-weight:700;"
             f"color:{color};background:rgba(0,0,0,0.25);border:1px solid {color};"
         )
         self._banner.setVisible(True)
@@ -539,7 +539,9 @@ class ChatPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        # Right inset clears the 10px chat-log scrollbar gutter so the cards + input never sit
+        # flush against the scrollbar / splitter edge — matching the editor card's framed inset.
+        root.setContentsMargins(10, 8, 12, 8)
         root.setSpacing(8)
 
         # --- empty state (shown until the first message) ---
@@ -558,6 +560,7 @@ class ChatPanel(QtWidgets.QWidget):
 
         # input row
         input_row = QtWidgets.QHBoxLayout()
+        input_row.setContentsMargins(0, 0, 2, 0)   # keep the field/button clear of the scrollbar gutter
         input_row.setSpacing(6)
         self._prompt_input = QtWidgets.QLineEdit()
         self._prompt_input.setPlaceholderText("Describe a strategy …")
@@ -977,15 +980,15 @@ class StudioTab(QtWidgets.QWidget):
         ep.addWidget(toolbar_row)
         ep.addWidget(self.editor, 1)
 
-        # Bottom: two half-width cards — code editor (left) | AI Studio chat (right).
+        # Bottom: two half-width cards — AI Studio chat (left) | code editor (right).
         self._bottom = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        self._bottom.addWidget(editor_pane)
         self._bottom.addWidget(self.chat)
+        self._bottom.addWidget(editor_pane)
         self._bottom.setStretchFactor(0, 1)
         self._bottom.setStretchFactor(1, 1)
         self._bottom.setSizes([1000, 1000])
-        self._bottom.setCollapsible(0, False)
-        self._bottom.setCollapsible(1, True)
+        self._bottom.setCollapsible(0, True)   # chat (left) may collapse
+        self._bottom.setCollapsible(1, False)  # editor (right) is the primary work area
 
         # Top: the tabbed results (Equity | Performance | Trades | Runs | Distribution [| Chart]).
         # mount_chart() adds the price chart as the trailing "Chart" tab. Reports/chart on top,
@@ -995,7 +998,10 @@ class StudioTab(QtWidgets.QWidget):
         self._vsplit.addWidget(self._bottom)
         self._vsplit.setStretchFactor(0, 3)
         self._vsplit.setStretchFactor(1, 2)
-        self._vsplit.setCollapsible(0, False)
+        # The results/chart panel (top) can be shrunk all the way down — drag the divider up to
+        # give the editor + chat the full height, or hide the chart/report entirely.
+        self.results.setMinimumHeight(0)
+        self._vsplit.setCollapsible(0, True)
         self._vsplit.setCollapsible(1, True)
         root.addWidget(self._vsplit, stretch=1)
 

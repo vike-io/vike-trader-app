@@ -288,7 +288,7 @@ class WatchlistPanel(QtWidgets.QListWidget):
         name = QtWidgets.QLabel(
             f"{base}<span style='color:{theme.TEXT3};font-size:9px'>{quote}</span>"
         )
-        name.setStyleSheet(f"color:{theme.TEXT};font-weight:600;border:none;")
+        name.setStyleSheet(f"color:{theme.TEXT};font-size:14px;font-weight:600;border:none;")
 
         # right column: price/bid-ask (top) + change% (bottom), right-aligned
         vbox = QtWidgets.QVBoxLayout()

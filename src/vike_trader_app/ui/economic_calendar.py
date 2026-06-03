@@ -296,7 +296,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             card.setProperty("class", "Panel")
             v = QtWidgets.QVBoxLayout(card)
             title = QtWidgets.QLabel("")
-            title.setStyleSheet(f"color:{theme.TEXT};font-weight:600;")
+            title.setStyleSheet(f"color:{theme.TEXT};font-size:13px;font-weight:600;")
             count = QtWidgets.QLabel("")
             count.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;")
             v.addWidget(title)

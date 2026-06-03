@@ -26,10 +26,11 @@ from .datamanager_data import (
     quality_summary,
     row_cells,
     series_size_bytes,
+    source_label,
 )
 
 _PINS_PATH = "storage/pins.json"
-_COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌", "Instrument"]
+_COLS = ["Symbol", "Timeframe", "Bars", "From", "To", "Size", "📌", "Source", "Instrument"]
 _DAY_MS = 86_400_000
 _INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
 # explicit providers selectable in the Download / DataSet dialogs (besides "Auto")
@@ -176,6 +177,12 @@ class DataManagerTab(QtWidgets.QWidget):
                 if c >= 2:  # numeric / date / size / pin columns read right
                     item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
                 self._table.setItem(r, c, item)
+            # Source: the datasource this symbol routes to (inferred — not stored per series)
+            src = QtWidgets.QTableWidgetItem(source_label(info.symbol))
+            src.setForeground(QtWidgets.QApplication.palette().mid())
+            src.setToolTip("Auto-routed datasource, inferred from the symbol (not stored per series).\n"
+                           "Forex: Dukascopy deep history + Yahoo recent edge · Crypto: Binance")
+            self._table.setItem(r, _COLS.index("Source"), src)
             spec = spec_for_symbol(info.symbol, self._config_root)  # self-describing: tick/decimals
             cell = QtWidgets.QTableWidgetItem(instrument_label(spec))
             cell.setForeground(QtWidgets.QApplication.palette().mid())

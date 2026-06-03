@@ -65,8 +65,8 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
     Medium headline, generous row height, hairline separator inset to the text column.
     """
 
-    ROW_H = 78
-    AV = 32
+    ROW_H = 72       # TV News-Flow row density (was 78 — slightly looser than TV)
+    AV = 30
 
     def __init__(self, parent=None, logo_store: "LogoStore | None" = None):
         super().__init__(parent)
@@ -97,19 +97,19 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
         right = r.right() - 16
 
         meta_font = QtGui.QFont(p.font())
-        meta_font.setPixelSize(13)
+        meta_font.setPixelSize(12)                           # TV meta size (was 13)
         meta_font.setWeight(QtGui.QFont.Weight.Normal)
         p.setFont(meta_font)
         p.setPen(QtGui.QColor(theme.TEXT3))
-        p.drawText(x, r.top() + 28, f"{_ago(it.published_ms)}  ·  {it.source}")   # TV order: time · source
+        p.drawText(x, r.top() + 26, f"{_ago(it.published_ms)}  ·  {it.source}")   # TV order: time · source
 
         title_font = QtGui.QFont(p.font())
-        title_font.setPixelSize(16)                          # TV headline size
+        title_font.setPixelSize(15)                          # TV headline size (was 16)
         title_font.setWeight(QtGui.QFont.Weight.Medium)      # ~500, lighter than bold (TV look)
         p.setFont(title_font)
         p.setPen(QtGui.QColor(theme.TEXT))
         title = QtGui.QFontMetrics(title_font).elidedText(it.title, QtCore.Qt.ElideRight, right - x)
-        p.drawText(x, r.top() + 54, title)
+        p.drawText(x, r.top() + 50, title)
 
         sep = QtGui.QColor(theme.BORDER)
         sep.setAlpha(140)
