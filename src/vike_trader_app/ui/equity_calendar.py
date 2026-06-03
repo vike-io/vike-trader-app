@@ -151,16 +151,14 @@ def _earnings_cfg():
 
 
 def _dividends_cfg():
+    # Company column (enriched via fetch_dividends_enriched) so Dividends has the SAME
+    # Symbol · Company(stretch) · … shape as Earnings/IPO — consistent Symbol width across tabs,
+    # and Company is the wide free-text column that fills the row (no lopsided empty ticker column).
     def row(d):
-        return [d.symbol, d.ex_date, d.pay_date or "—", _fmt(d.amount, " $"),
+        return [d.symbol, d.name or "—", d.ex_date, d.pay_date or "—", _fmt(d.amount, " $"),
                 _fmt(d.yield_pct, "%") if d.yield_pct is not None else "—", d.frequency or "—"]
-    return {"columns": ["Symbol", "Ex-date", "Pay date", "Amount", "Yield", "Freq"],
-            # Dividends has no wide free-text column (the data source carries no company name), so
-            # there's nothing to make the one Stretch column the others use — stretching Symbol
-            # alone left a huge empty ticker column. Distribute the slack across ALL columns so the
-            # table fills the width evenly and reads like Economic (shared header/row styling), with
-            # no lopsided gap regardless of how the data lands.
-            "stretch_col": "all",
+    return {"columns": ["Symbol", "Company", "Ex-date", "Pay date", "Amount", "Yield", "Freq"],
+            "stretch_col": 1,        # Company is the wide free-text column (like Earnings/IPO)
             "row_fn": row, "date_of": lambda d: d.ex_date}
 
 
@@ -227,10 +225,12 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._tree.setRootIsDecorated(False)
         self._tree.setIndentation(0)
         self._tree.setAlternatingRowColors(False)
-        if stretch_col == "all":   # no single wide column — share the width evenly (Dividends)
-            self._tree.header().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        else:                      # one wide free-text column, the rest at default Interactive width
-            self._tree.header().setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
+        # Content-size every data column so they're snug AND consistent across the three equity
+        # tabs (the Symbol column is then the same width everywhere), then let the one wide
+        # free-text column (Company / Event) absorb the remaining width.
+        hdr = self._tree.header()
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
         root.addWidget(self._tree, 1)
 
         _app = QtWidgets.QApplication.instance()
@@ -391,11 +391,11 @@ class CalendarSpace(QtWidgets.QWidget):
     def __init__(self, economic_tab=None, parent=None):
         super().__init__(parent)
         from .economic_calendar import EconomicCalendarTab
-        from ..data.calendar.equity import Ipo, FmpDividends, fetch_earnings_enriched
+        from ..data.calendar.equity import Ipo, fetch_dividends_enriched, fetch_earnings_enriched
 
         self.economic = economic_tab or EconomicCalendarTab()
         self.earnings = EquityCalendarTab(fetch=fetch_earnings_enriched, **_earnings_cfg())
-        self.dividends = EquityCalendarTab(fetch=FmpDividends().fetch, **_dividends_cfg())
+        self.dividends = EquityCalendarTab(fetch=fetch_dividends_enriched, **_dividends_cfg())
         self.ipo = EquityCalendarTab(fetch=Ipo().fetch, **_ipo_cfg())
 
         self._stack = QtWidgets.QStackedWidget()

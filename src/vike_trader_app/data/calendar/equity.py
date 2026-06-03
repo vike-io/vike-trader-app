@@ -103,6 +103,7 @@ class DividendEvent:
     amount: float | None
     yield_pct: float | None
     frequency: str
+    name: str = ""               # company name (from profile2 enrichment; FMP carries none)
 
 
 @dataclass
@@ -289,6 +290,19 @@ def profiles(symbols, *, key: str | None = None, http=http_get_json,
         if got:
             _save_profiles(cache)
     return {s: cache.get(s, {}) for s in symbols}
+
+
+def fetch_dividends_enriched(frm: str, to: str, *, key: str | None = None,
+                             http=http_get_json) -> list[DividendEvent]:
+    """Dividends for the week with the company name filled in (FMP's dividends feed carries no
+    name), so the Dividends tab can show the same Symbol · Company columns as Earnings/IPO. Names
+    come from the shared Finnhub profile cache; a missing key / rate-limited symbol just leaves the
+    name blank (one empty cell, like an uncovered earnings row) — never an error."""
+    events = FmpDividends(key=key, http=http).fetch(frm, to)
+    profs = profiles([e.symbol for e in events], key=key, http=http)
+    for e in events:
+        e.name = (profs.get(e.symbol) or {}).get("name", "") or ""
+    return events
 
 
 def fetch_earnings_enriched(frm: str, to: str, *, key: str | None = None,

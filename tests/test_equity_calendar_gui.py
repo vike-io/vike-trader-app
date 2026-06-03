@@ -76,12 +76,15 @@ def test_fmt_helpers():
 
 def test_dividends_and_ipo_render(app):
     dt = EquityCalendarTab(
-        fetch=lambda f, to: [DividendEvent("KO", "2026-06-02", "2026-07-01", 0.485, 2.9, "Quarterly")],
+        fetch=lambda f, to: [DividendEvent("KO", "2026-06-02", "2026-07-01", 0.485, 2.9,
+                                           "Quarterly", name="Coca-Cola Co")],
         **_dividends_cfg())
     dt.load()
     assert dt.visible_event_count() == 1
     row = dt._tree.topLevelItem(0).child(0)
-    assert row.text(0) == "KO" and "$" in row.text(3) and "%" in row.text(4)
+    # cols: Symbol, Company, Ex-date, Pay date, Amount($), Yield(%), Freq
+    assert row.text(0) == "KO" and row.text(1) == "Coca-Cola Co"
+    assert "$" in row.text(4) and "%" in row.text(5)
 
     it = EquityCalendarTab(
         fetch=lambda f, to: [IpoEvent("2026-06-05", "WHK", "WhiteHawk", "NYSE", "25-27", 6.9e6, "expected")],
