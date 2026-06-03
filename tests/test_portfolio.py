@@ -220,3 +220,44 @@ def test_portfolio_funding_charged_per_symbol():
     eng.run()
     # cash reduced by the 1.0 funding charge (no fees in this config)
     assert eng.cash < 1000.0 - 100.0   # paid 100 notional for the unit AND ~1.0 funding
+
+
+def test_cash_gate_drops_unfundable_lower_weight_open():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+
+    def _b(ts, px):
+        return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class TwoBuys(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 8.0, weight=10.0)   # high priority: 8*100=800 notional
+                self.buy("B", 8.0, weight=1.0)    # low priority: another 800; only 1000 cash
+
+    eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
+                          TwoBuys(), cash=1000.0, cash_gate=True)
+    eng.run()
+    assert eng._pos["A"].size == 8.0          # higher weight funded
+    assert eng._pos["B"].size == 0.0          # lower weight dropped (insufficient cash)
+    assert any(d[0] == "B" for d in eng.dropped)
+
+
+def test_cash_gate_off_by_default_allows_negative_cash():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+
+    def _b(ts, px):
+        return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class TwoBuys(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 8.0)
+                self.buy("B", 8.0)
+
+    eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
+                          TwoBuys(), cash=1000.0)   # cash_gate default False
+    eng.run()
+    assert eng._pos["A"].size == 8.0 and eng._pos["B"].size == 8.0   # both fill, cash goes negative
+    assert eng.cash < 0.0
