@@ -58,6 +58,8 @@ tmp/*
 _shot_*.png
 _pytest.txt
 _val.txt
+# stdout/stderr from launching the GUI detached (Start-Process … > launch.out.log 2> launch.err.log)
+launch.*.log
 
 # ---- OS ----
 .DS_Store
