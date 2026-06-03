@@ -15,11 +15,17 @@ from ..data.options import columns as C
 from ..data.options.model import OptionChain, StrikeRow
 from . import theme
 
-_CALL_BAR = "#4c9ffe"   # TradingView-ish blue for call volume bars
-_PUT_BAR = theme.DOWN   # red for put volume bars
-# TV's options chain renders cell values bright (#dbdbdb) at 14px on ~41px rows. theme.TEXT2
-# (#9aa4b1) reads too dim/cramped next to it, so the chain uses a brighter cell tone + taller rows.
-_CELL = "#c9d1d9"
+_CALL_BAR = theme.BLUE   # blue magnitude bar for call volume
+_PUT_BAR = theme.DOWN    # red magnitude bar for put volume
+# TV/Deribit render chain values bright; theme.TEXT2 reads too dim next to the bright strike/IV.
+# The color unification collapsed PANEL2/PANEL/RAISE onto SURFACE, which erased the grid's
+# layering cues (ITM shading, ATM band, strike spine, section header all went invisible). These
+# reintroduce them from the live four-tone surface scale (BG < SURFACE < HOVER < BORDER):
+_CELL = theme.TEXT       # bright cell value, like TradingView
+_ITM = theme.BORDER      # diagonal-hatch tone for in-the-money cells (visible over SURFACE)
+_SPINE = theme.HOVER     # subtly raised centre Strike column (the spine)
+_BAND = theme.HOVER      # ATM spot-price marker band
+_SECTION = theme.BG      # recessed grouped-expiry section header
 
 
 class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
@@ -38,9 +44,9 @@ class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
                 painter.save()
                 r = option.rect
                 color = QtGui.QColor(_CALL_BAR if col == self.call_col else _PUT_BAR)
-                color.setAlpha(70)
+                color.setAlpha(120)
                 width = int((r.width() - 8) * min(frac, 1.0))
-                painter.fillRect(r.x() + 4, r.bottom() - 5, width, 2, color)
+                painter.fillRect(r.x() + 4, r.bottom() - 6, width, 3, color)
                 painter.restore()
         super().paint(painter, option, index)
 
@@ -68,6 +74,8 @@ class OptionsTab(QtWidgets.QWidget):
         self._chain: OptionChain | None = None
         self._chains: list[OptionChain] | None = None   # grouped (multi-expiry) view
         self._group_rows: dict[int, list[int]] = {}      # header row -> its data/marker rows
+        self._marker_rows: set[int] = set()              # spanned ATM-marker rows (span dropped while hidden)
+        self._ncols = 0                                  # current column count (to restore marker spans)
         self._col_field: dict[int, tuple[str, str | None]] = {}  # column -> (field, side)
         self._sort: tuple | None = None                  # None=strike order; else (field, side, desc)
         self._view = "chain"
@@ -117,14 +125,14 @@ class OptionsTab(QtWidgets.QWidget):
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setShowGrid(False)
-        # Match TV's options chain type scale: 13px cells (vs the global 12px), ~32px airy rows
-        # (vs ~24px), and a normal-case 12px/600 header (vs the global tiny 10px uppercase).
+        # Match TV/Deribit's options-chain type scale: 13px cells (vs the global 12px), ~36px airy
+        # rows (vs ~24px), and a normal-case 12px/600 header (vs the global tiny 10px uppercase).
         self.table.setStyleSheet(
             "QTableView{font-size:13px;}"
             f"QHeaderView::section{{background:{theme.CHART_BG};color:{theme.TEXT2};"
             "font-size:12px;font-weight:600;text-transform:none;letter-spacing:0;"
-            f"padding:6px 8px;border:none;border-bottom:1px solid {theme.BORDER};}}")
-        self.table.verticalHeader().setDefaultSectionSize(32)
+            f"padding:7px 10px;border:none;border-bottom:1px solid {theme.BORDER};}}")
+        self.table.verticalHeader().setDefaultSectionSize(36)
         self._bar = _VolumeBarDelegate(self.table)
         self.table.setItemDelegate(self._bar)
         root.addWidget(self.table, 1)
@@ -220,9 +228,9 @@ class OptionsTab(QtWidgets.QWidget):
         self._col_field[strike_col + 1] = ("iv", None)
         self._col_field.update({strike_col + 2 + i: (f, "P") for i, f in enumerate(put_fields)})
         hh = self.table.horizontalHeader()
+        # Content-size every column. Strike was Fixed at 76px — fine for VIX's 2-digit strikes, but
+        # it truncated Deribit BTC's 5-digit strikes ("64,000…"); content-sizing fits both.
         hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(strike_col, QtWidgets.QHeaderView.Fixed)
-        self.table.setColumnWidth(strike_col, 76)
         return call_fields, put_fields, len(headers), strike_col
 
     @staticmethod
@@ -262,7 +270,9 @@ class OptionsTab(QtWidgets.QWidget):
 
     def _render(self) -> None:
         self._group_rows = {}
+        self._marker_rows = set()
         call_fields, put_fields, ncols, strike_col = self._setup_columns()
+        self._ncols = ncols
         chain = self._chain
         if chain is None:
             return
@@ -277,7 +287,9 @@ class OptionsTab(QtWidgets.QWidget):
 
     def _render_groups(self) -> None:
         self._group_rows = {}
+        self._marker_rows = set()
         call_fields, put_fields, ncols, strike_col = self._setup_columns()
+        self._ncols = ncols
         for gi, chain in enumerate(self._chains or []):
             hdr = self.table.rowCount()
             self.table.insertRow(hdr)
@@ -286,8 +298,7 @@ class OptionsTab(QtWidgets.QWidget):
             rows = self._append_chain_rows(chain, call_fields, put_fields, ncols, strike_col)
             self._group_rows[hdr] = rows
             if gi != 0:  # collapse all but the nearest expiry by default
-                for r in rows:
-                    self.table.setRowHidden(r, True)
+                self._set_rows_hidden(rows, True)
 
     def _append_chain_rows(self, chain: OptionChain, call_fields: list[str],
                            put_fields: list[str], ncols: int, strike_col: int) -> list[int]:
@@ -330,14 +341,14 @@ class OptionsTab(QtWidgets.QWidget):
             else:
                 item.setForeground(QtGui.QColor(_CELL))   # bright like TV, not dim TEXT2
             if itm:
-                item.setBackground(QtGui.QBrush(QtGui.QColor(theme.PANEL2), QtCore.Qt.BDiagPattern))
+                item.setBackground(QtGui.QBrush(QtGui.QColor(_ITM), QtCore.Qt.BDiagPattern))
             self.table.setItem(ri, base + i, item)
 
     def _strike_iv(self, ri: int, row: StrikeRow, strike_col: int) -> None:
         strike = QtWidgets.QTableWidgetItem(f"{row.strike:,.2f}")
         strike.setTextAlignment(QtCore.Qt.AlignCenter)
         strike.setForeground(QtGui.QColor(theme.TEXT))
-        strike.setBackground(QtGui.QColor(theme.PANEL))
+        strike.setBackground(QtGui.QColor(_SPINE))
         self.table.setItem(ri, strike_col, strike)
         iv = (row.call.iv if row.call else None)
         if iv is None and row.put:
@@ -353,12 +364,13 @@ class OptionsTab(QtWidgets.QWidget):
         self.table.setSpan(pos, 0, 1, ncols)
         marker = QtWidgets.QTableWidgetItem(f"{chain.underlying}   {chain.underlying_price:,.2f}")
         marker.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignCenter)
-        marker.setForeground(QtGui.QColor(theme.ACCENT))   # accent text on a dark strip (TV-style)
-        marker.setBackground(QtGui.QColor(theme.PANEL2))
+        marker.setForeground(QtGui.QColor(theme.ACCENT))   # accent text on a raised band (TV-style)
+        marker.setBackground(QtGui.QColor(_BAND))
         font = marker.font()
         font.setBold(True)
         marker.setFont(font)
         self.table.setItem(pos, 0, marker)
+        self._marker_rows.add(pos)
         return pos
 
     def _set_group_header(self, hdr: int, chain: OptionChain, expanded: bool) -> None:
@@ -367,7 +379,7 @@ class OptionsTab(QtWidgets.QWidget):
             f"   {glyph}   {chain.expiry.label}   ·   {chain.expiry.dte}DTE   ·   {chain.source}")
         item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
         item.setForeground(QtGui.QColor(theme.TEXT))
-        item.setBackground(QtGui.QColor(theme.RAISE))
+        item.setBackground(QtGui.QColor(_SECTION))
         font = item.font()
         font.setBold(True)
         item.setFont(font)
@@ -377,13 +389,20 @@ class OptionsTab(QtWidgets.QWidget):
         if row in self._group_rows:   # clicking an expiry header toggles its section
             self._toggle_group(row)
 
+    def _set_rows_hidden(self, rows: list[int], hide: bool) -> None:
+        """Hide/show a group's rows. Qt still PAINTS hidden rows that carry a column span (the
+        full-width ATM marker), so drop the span while hidden and restore it when shown."""
+        for r in rows:
+            if r in self._marker_rows:
+                self.table.setSpan(r, 0, 1, 1 if hide else self._ncols)
+            self.table.setRowHidden(r, hide)
+
     def _toggle_group(self, hdr: int) -> None:
         rows = self._group_rows.get(hdr) or []
         if not rows:
             return
         hide = not self.table.isRowHidden(rows[0])
-        for r in rows:
-            self.table.setRowHidden(r, hide)
+        self._set_rows_hidden(rows, hide)
         item = self.table.item(hdr, 0)
         if item:
             item.setText(item.text().replace("▾", "▸") if hide else item.text().replace("▸", "▾"))
