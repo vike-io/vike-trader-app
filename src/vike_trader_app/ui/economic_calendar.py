@@ -201,6 +201,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         hdr = self._tree.header()
         hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
+        for col in (4, 5, 6):   # Actual/Forecast/Prior headers right-aligned to sit over their numbers
+            self._tree.headerItem().setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
         self._toolbar = self._build_toolbar()
         root.addWidget(self._toolbar)   # hidden when embedded in CalendarSpace (controls move to top nav)
@@ -444,6 +446,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         it.setIcon(2, QtGui.QIcon(importance_bar_pixmap(ev.importance)))
         color = theme.DOWN if (ev.actual is None and ev.ts_utc > self._now()) else value_color(ev.actual, ev.forecast)
         it.setForeground(4, QtGui.QColor(color))
+        for col in (4, 5, 6):   # Actual / Forecast / Prior — right-align the numbers (TradingView)
+            it.setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         return it
 
     # ---- filters ----

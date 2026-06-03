@@ -153,6 +153,7 @@ def _earnings_cfg():
     return {
         "columns": ["Time", "Symbol", "Company", "EPS est.", "EPS act.", "Surprise", "Mkt cap"],
         "stretch_col": 2,            # Company is the wide free-text column (like Economic's Event)
+        "right_cols": (3, 4, 5, 6),  # EPS est/act, Surprise, Mkt cap — right-aligned (TradingView)
         "row_fn": row, "date_of": lambda e: e.date,
         "sort_key": lambda e: -((e.market_cap or 0) + (0 if e.market_cap else (e.rev_estimate or 0) / 1e6)),
         "covered_of": lambda e: e.eps_estimate is not None,   # has analyst coverage
@@ -169,6 +170,7 @@ def _dividends_cfg():
                 _fmt(d.yield_pct, "%") if d.yield_pct is not None else "—", d.frequency or "—"]
     return {"columns": ["Symbol", "Company", "Ex-date", "Pay date", "Amount", "Yield", "Freq"],
             "stretch_col": 1,        # Company is the wide free-text column (like Earnings/IPO)
+            "right_cols": (4, 5),    # Amount, Yield — right-aligned numbers (TradingView)
             "row_fn": row, "date_of": lambda d: d.ex_date}
 
 
@@ -177,6 +179,7 @@ def _ipo_cfg():
         return [i.symbol or "—", i.name, i.exchange, i.price or "—", _fmt_big(i.shares), i.status]
     return {"columns": ["Symbol", "Company", "Exchange", "Price", "Shares", "Status"],
             "stretch_col": 1,        # Company is the wide free-text column (like Economic's Event)
+            "right_cols": (3, 4),    # Price, Shares — right-aligned numbers (TradingView)
             "row_fn": row, "date_of": lambda i: i.date}
 
 
@@ -202,12 +205,13 @@ class EquityCalendarTab(QtWidgets.QWidget):
     eventsChanged = QtCore.Signal()   # emitted after a week's events land (for day-card counts)
 
     def __init__(self, *, fetch, columns, row_fn, date_of, stretch_col=1,
-                 sort_key=None, covered_of=None, color_of=None, parent=None):
+                 sort_key=None, covered_of=None, color_of=None, right_cols=(), parent=None):
         super().__init__(parent)
         self._fetch, self._row_fn, self._date_of = fetch, row_fn, date_of
         self._sort_key = sort_key          # within-date ordering (e.g. biggest first)
         self._covered_of = covered_of      # predicate -> enables a "Covered only" toggle
         self._color_of = color_of          # event -> (col, hex|None) cell color (e.g. surprise)
+        self._right_cols = right_cols      # numeric columns to right-align (TradingView)
         self._covered_only = covered_of is not None   # default ON when supported
         self._events: list = []
         self._filter = ""
@@ -241,6 +245,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
         hdr = self._tree.header()
         hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
+        for col in self._right_cols:   # numeric headers right-aligned to sit over their numbers
+            self._tree.headerItem().setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         root.addWidget(self._tree, 1)
 
         _app = QtWidgets.QApplication.instance()
@@ -384,6 +390,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
                 col, color = self._color_of(ev)
                 if color:
                     item.setForeground(col, QtGui.QColor(color))
+            for col in self._right_cols:   # right-align the numeric columns (TradingView)
+                item.setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             parent.addChild(item)
         self._status.setText("" if rows else "No events for this week.")
 
