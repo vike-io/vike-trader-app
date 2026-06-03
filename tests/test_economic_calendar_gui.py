@@ -203,7 +203,7 @@ def test_calendar_space_country_pill_updates_label(app):
     t = _tab(app)
     space = CalendarSpace(economic_tab=t)
     space._top_countries.set_selected({"USD"})   # shared multi-select country pill (replaced the modal)
-    assert space._top_countries.text() == "Countries (1)  ▾"
+    assert space._top_countries.text() == "Countries (1)"   # chevron is now drawn, not in the text
     assert t._countries == {"USD"}               # drives economic.set_countries
 
 

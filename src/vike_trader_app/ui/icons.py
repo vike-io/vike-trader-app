@@ -187,6 +187,22 @@ def _draw_chevron_down(p, c):  # downward chevron
     p.drawPath(path)
 
 
+def _draw_chevron_left(p, c):  # leftward chevron ‹ — same V size as up/down, rotated 90°
+    path = QtGui.QPainterPath()
+    path.moveTo(29, 13)
+    path.lineTo(18, 24)
+    path.lineTo(29, 35)
+    p.drawPath(path)
+
+
+def _draw_chevron_right(p, c):  # rightward chevron › — mirror of chevron_left
+    path = QtGui.QPainterPath()
+    path.moveTo(19, 13)
+    path.lineTo(30, 24)
+    path.lineTo(19, 35)
+    p.drawPath(path)
+
+
 def _draw_scale(p, c):  # balance/justice scale: central post on a base, top beam, two hanging pans
     p.drawLine(QtCore.QLineF(24, 12, 24, 33))    # central post
     p.drawLine(QtCore.QLineF(12, 16, 36, 16))    # top beam
@@ -228,8 +244,18 @@ _DRAW = {
     "chart": _draw_chart, "news": _draw_news, "data": _draw_data, "calendar": _draw_calendar,
     "options": _draw_options, "save": _draw_save,
     "chevron_up": _draw_chevron_up, "chevron_down": _draw_chevron_down,
+    "chevron_left": _draw_chevron_left, "chevron_right": _draw_chevron_right,
     "scale": _draw_scale, "folder": _draw_folder, "gear": _draw_gear,
 }
+
+# One on-screen size for EVERY directional chevron in the app (dropdown ▾, week-nav ‹ ›, the
+# Studio collapse ^/⌄) so up/down and left/right read identically — the TradingView look.
+ARROW_PX = 14
+
+
+def chevron_icon(direction: str, color: str) -> QtGui.QIcon:
+    """A unified thin chevron QIcon. ``direction`` ∈ {up, down, left, right}."""
+    return glyph_icon(f"chevron_{direction}", color)
 
 
 def _pixmap(name: str, color: str) -> QtGui.QPixmap:

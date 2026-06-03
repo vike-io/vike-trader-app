@@ -113,8 +113,48 @@ def apply_popup_shadow(widget) -> None:
     apply_shadow(widget, radius=18, y=7, alpha=180)
 
 
+_ARROW_PNG: dict[str, str] = {}
+
+
+def _combo_arrow_png(color: str) -> str:
+    """Render once (cached) a thin down-chevron PNG for QComboBox::down-arrow, returning a
+    QSS-friendly (forward-slash) path so combo arrows match the unified chevrons used elsewhere
+    (the filter pills, week-nav, collapse toggle) instead of the native filled triangle.
+
+    Qt is imported lazily so importing the color tokens from the headless analysis layer stays
+    pure-Python; this runs only from stylesheet(), which is GUI-only."""
+    cached = _ARROW_PNG.get(color)
+    if cached:
+        return cached
+    import os
+    import tempfile
+
+    from PySide6 import QtCore, QtGui
+
+    pm = QtGui.QPixmap(28, 28)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(QtGui.QColor(color))
+    pen.setWidthF(2.4)
+    pen.setCapStyle(QtCore.Qt.RoundCap)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    p.setPen(pen)
+    path = QtGui.QPainterPath()
+    path.moveTo(8, 11)
+    path.lineTo(14, 18)
+    path.lineTo(20, 11)
+    p.drawPath(path)
+    p.end()
+    out = os.path.join(tempfile.gettempdir(), f"vike_combo_arrow_{color.lstrip('#')}.png")
+    pm.save(out)
+    _ARROW_PNG[color] = out.replace("\\", "/")
+    return _ARROW_PNG[color]
+
+
 def stylesheet() -> str:
     """Return the application-wide QSS implementing the vike look."""
+    combo_arrow = _combo_arrow_png(TEXT2)
     return f"""
     * {{
         font-family: {FONT_UI};
@@ -193,6 +233,11 @@ def stylesheet() -> str:
     }}
     QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
     QDoubleSpinBox:focus, QDateEdit:focus {{ border-color: {ACCENT}; }}
+    /* combo arrow — the unified thin chevron (matches the filter pills / nav / collapse), not
+       the native filled triangle */
+    QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right;
+        border: none; width: 22px; }}
+    QComboBox::down-arrow {{ image: url({combo_arrow}); width: 12px; height: 12px; }}
     /* combo popup list — one popup radius + one item row, hover-highlighted (not accent) */
     QComboBox QAbstractItemView {{
         background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_POPUP}px;

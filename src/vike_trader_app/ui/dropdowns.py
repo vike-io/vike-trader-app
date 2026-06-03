@@ -19,7 +19,7 @@ import time
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import theme
+from . import icons, theme
 
 
 def make_search(placeholder: str = "Search", *, bg: str = theme.BG) -> QtWidgets.QLineEdit:
@@ -274,8 +274,10 @@ class ChecklistPopover(QtWidgets.QFrame):
 class FilterPill(QtWidgets.QToolButton):
     """A TradingView-style pill that opens a :class:`ChecklistPopover`.
 
-    ``mode='multi'`` -> label shows "Name (n)  ▾"; empty selection == no constraint (all).
+    ``mode='multi'`` -> label shows "Name (n)"; empty selection == no constraint (all).
     ``mode='single'`` -> label shows the chosen option's text; one row checked at a time.
+    A unified thin chevron is drawn at the right (down when closed, up while the popover is open),
+    matching every other dropdown/nav arrow in the app (the TradingView look).
     """
 
     selectionChanged = QtCore.Signal()
@@ -287,10 +289,12 @@ class FilterPill(QtWidgets.QToolButton):
         self._mode = mode
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        # Right padding reserves room for the chevron drawn in paintEvent (so the label never
+        # overlaps it); left/right are otherwise the unified pill insets.
         self.setStyleSheet(
             f"QToolButton{{background:{theme.SURFACE};color:{theme.TEXT2};"
             f"border:1px solid {theme.BORDER};border-radius:{theme.RADIUS_MD}px;"
-            f"padding:7px 14px;font-size:13px;}}"
+            f"padding:7px 28px 7px 14px;font-size:13px;text-align:left;}}"
             f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             "QToolButton::menu-indicator{width:0px;}"
         )
@@ -302,12 +306,10 @@ class FilterPill(QtWidgets.QToolButton):
         self.clicked.connect(self._toggle_pop)
         self._refresh_text()
 
-    def _note_closed(self) -> None:
-        self._closed_at = time.monotonic()
-
     def _toggle_pop(self) -> None:
         if self._pop.isVisible():
             self._pop.hide()
+            self.update()       # repaint so the chevron flips back down
             return
         # A Qt.Popup grabs the mouse: clicking the open pill first auto-hides it, then this click
         # arrives — ignore a click that lands right after the popover closed itself.
@@ -316,6 +318,11 @@ class FilterPill(QtWidgets.QToolButton):
         m = self._pop._MARGIN  # offset so the card (inset by its shadow margin) drops under the pill
         self._pop.move(self.mapToGlobal(QtCore.QPoint(-m, self.height() + 4 - m)))
         self._pop.show()
+        self.update()           # repaint so the chevron flips up while open
+
+    def _note_closed(self) -> None:
+        self._closed_at = time.monotonic()
+        self.update()           # popover auto-closed (click outside) -> flip the chevron down
 
     def _on_changed(self) -> None:
         self._refresh_text()
@@ -324,10 +331,22 @@ class FilterPill(QtWidgets.QToolButton):
     def _refresh_text(self) -> None:
         if self._mode == "multi":
             n = len(self._pop.selected())
-            self.setText(f"{self._label} ({n})  ▾" if n else f"{self._label}  ▾")
+            self.setText(f"{self._label} ({n})" if n else self._label)
         else:
-            label = dict(self._pop._opts).get(self._pop.current(), self._label)
-            self.setText(f"{label}  ▾")
+            self.setText(dict(self._pop._opts).get(self._pop.current(), self._label))
+
+    def paintEvent(self, e):  # noqa: N802 - draw the unified chevron at the right (flips on open)
+        super().paintEvent(e)   # styled bg/border/label first
+        name = "chevron_up" if self._pop.isVisible() else "chevron_down"
+        color = theme.TEXT if self.underMouse() else theme.TEXT2
+        px = icons.ARROW_PX
+        x = self.width() - px - 11
+        y = (self.height() - px) / 2
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.SmoothPixmapTransform, True)
+        p.drawPixmap(QtCore.QRectF(x, y, px, px), icons._pixmap(name, color),
+                     QtCore.QRectF(0, 0, icons._S, icons._S))
+        p.end()
 
     # ---- multi API ----
     def selected(self) -> set[str]:
