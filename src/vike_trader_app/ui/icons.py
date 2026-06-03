@@ -171,35 +171,38 @@ def _draw_save(p, c):  # floppy-disk save glyph: body + folded corner, shutter, 
     p.drawRect(_R(17, 26, 14, 10))              # label rectangle (lower-middle)
 
 
-def _draw_chevron_up(p, c):  # upward chevron
+# The four chevrons are EXACT 90° rotations of one geometry with a near-square bounding box
+# (~16×14), so up/down and left/right read as the same on-screen size in any orientation — the
+# old shallow 22×11 V looked tall as ‹ › but flat/small as ⌄, which read as different sizes.
+def _draw_chevron_down(p, c):  # ⌄
     path = QtGui.QPainterPath()
-    path.moveTo(13, 29)
-    path.lineTo(24, 18)
-    path.lineTo(35, 29)
+    path.moveTo(16, 18)
+    path.lineTo(24, 32)
+    path.lineTo(32, 18)
     p.drawPath(path)
 
 
-def _draw_chevron_down(p, c):  # downward chevron
+def _draw_chevron_up(p, c):  # ^
     path = QtGui.QPainterPath()
-    path.moveTo(13, 19)
-    path.lineTo(24, 30)
-    path.lineTo(35, 19)
+    path.moveTo(16, 30)
+    path.lineTo(24, 16)
+    path.lineTo(32, 30)
     p.drawPath(path)
 
 
-def _draw_chevron_left(p, c):  # leftward chevron ‹ — same V size as up/down, rotated 90°
+def _draw_chevron_left(p, c):  # ‹
     path = QtGui.QPainterPath()
-    path.moveTo(29, 13)
-    path.lineTo(18, 24)
-    path.lineTo(29, 35)
+    path.moveTo(30, 16)
+    path.lineTo(16, 24)
+    path.lineTo(30, 32)
     p.drawPath(path)
 
 
-def _draw_chevron_right(p, c):  # rightward chevron › — mirror of chevron_left
+def _draw_chevron_right(p, c):  # ›
     path = QtGui.QPainterPath()
-    path.moveTo(19, 13)
-    path.lineTo(30, 24)
-    path.lineTo(19, 35)
+    path.moveTo(18, 16)
+    path.lineTo(32, 24)
+    path.lineTo(18, 32)
     p.drawPath(path)
 
 
@@ -250,7 +253,8 @@ _DRAW = {
 
 # One on-screen size for EVERY directional chevron in the app (dropdown ▾, week-nav ‹ ›, the
 # Studio collapse ^/⌄) so up/down and left/right read identically — the TradingView look.
-ARROW_PX = 14
+# Single source of truth lives in theme so the QComboBox QSS arrow can share the exact value.
+ARROW_PX = theme.ARROW_PX
 
 
 def chevron_icon(direction: str, color: str) -> QtGui.QIcon:

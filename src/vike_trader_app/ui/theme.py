@@ -76,6 +76,7 @@ SPACE_4 = 16
 CONTROL_H = 32  # unified control height for buttons / inputs
 
 # --- dropdown / popup unification (one spec for every dropdown) ---
+ARROW_PX = 14                   # one on-screen size for EVERY chevron (dropdown ▾, combo, ‹ › nav, collapse)
 RADIUS_POPUP = RADIUS_LG        # one radius for every floating popup surface (menus, combo lists, popovers, cards)
 DROPDOWN_ITEM_PAD = "8px 12px"  # one item-row padding (~32px row) for menus, combo lists, popover rows
 CARD_MARGIN = 30                # translucent margin reserved around frameless popup cards (room for the shadow)
@@ -131,19 +132,22 @@ def _combo_arrow_png(color: str) -> str:
 
     from PySide6 import QtCore, QtGui
 
-    pm = QtGui.QPixmap(28, 28)
+    # Same 48px canvas, path and 3.0 stroke as icons._draw_chevron_down, so the combo arrow is
+    # pixel-identical to the chevrons drawn for the pills / nav / collapse (kept in sync by hand —
+    # theme can't import icons without a cycle).
+    pm = QtGui.QPixmap(48, 48)
     pm.fill(QtCore.Qt.transparent)
     p = QtGui.QPainter(pm)
     p.setRenderHint(QtGui.QPainter.Antialiasing, True)
     pen = QtGui.QPen(QtGui.QColor(color))
-    pen.setWidthF(2.4)
+    pen.setWidthF(3.0)
     pen.setCapStyle(QtCore.Qt.RoundCap)
     pen.setJoinStyle(QtCore.Qt.RoundJoin)
     p.setPen(pen)
     path = QtGui.QPainterPath()
-    path.moveTo(8, 11)
-    path.lineTo(14, 18)
-    path.lineTo(20, 11)
+    path.moveTo(16, 18)
+    path.lineTo(24, 32)
+    path.lineTo(32, 18)
     p.drawPath(path)
     p.end()
     out = os.path.join(tempfile.gettempdir(), f"vike_combo_arrow_{color.lstrip('#')}.png")
@@ -236,8 +240,8 @@ def stylesheet() -> str:
     /* combo arrow — the unified thin chevron (matches the filter pills / nav / collapse), not
        the native filled triangle */
     QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right;
-        border: none; width: 22px; }}
-    QComboBox::down-arrow {{ image: url({combo_arrow}); width: 12px; height: 12px; }}
+        border: none; width: 24px; }}
+    QComboBox::down-arrow {{ image: url({combo_arrow}); width: {ARROW_PX}px; height: {ARROW_PX}px; }}
     /* combo popup list — one popup radius + one item row, hover-highlighted (not accent) */
     QComboBox QAbstractItemView {{
         background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_POPUP}px;
