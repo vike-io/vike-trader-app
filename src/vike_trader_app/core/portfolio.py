@@ -215,10 +215,10 @@ class PortfolioEngine:
                 self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
 
     # --- order intake ---
-    def submit(self, symbol: str, side_sign: int, size: float) -> None:
+    def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0) -> None:
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._pending[symbol].append(Order("market", side_sign, size))
+            self._pending[symbol].append(Order("market", side_sign, size, weight=weight))
 
     def submit_close(self, symbol: str) -> None:
         pos = self._pos[symbol]
@@ -226,15 +226,15 @@ class PortfolioEngine:
             side = -1 if pos.size > 0 else 1
             self._pending[symbol].append(Order("market", side, abs(pos.size)))
 
-    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float) -> None:
-        self._pending[symbol].append(Order("limit", side_sign, size, price=price))
+    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight))
 
-    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float) -> None:
-        self._pending[symbol].append(Order("stop", side_sign, size, price=price))
+    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._pending[symbol].append(Order("stop", side_sign, size, price=price, weight=weight))
 
-    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float) -> None:
+    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
-                                           extreme=self._price[symbol]))
+                                           extreme=self._price[symbol], weight=weight))
 
     def cancel_all(self, symbol: str) -> None:
         self._pending[symbol] = []

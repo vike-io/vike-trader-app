@@ -67,10 +67,10 @@ class BacktestEngine:
         strategy._engine = self
 
     # --- order intake (called from the strategy) ---
-    def submit(self, side_sign: int, size: float) -> None:
+    def submit(self, side_sign: int, size: float, weight: float = 0.0) -> None:
         size = self._cap_to_leverage(side_sign, size)
         if size > 0.0:
-            self._pending.append(Order("market", side_sign, size))
+            self._pending.append(Order("market", side_sign, size, weight=weight))
 
     def _cap_to_leverage(self, side_sign: int, size: float) -> float:
         """Shrink a market order so the resulting position notional <= leverage * equity.
@@ -98,14 +98,14 @@ class BacktestEngine:
             return 0.0
         return size if size <= room else room
 
-    def submit_limit(self, side_sign: int, size: float, price: float) -> None:
-        self._pending.append(Order("limit", side_sign, size, price=price))
+    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._pending.append(Order("limit", side_sign, size, price=price, weight=weight))
 
-    def submit_stop(self, side_sign: int, size: float, price: float) -> None:
-        self._pending.append(Order("stop", side_sign, size, price=price))
+    def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._pending.append(Order("stop", side_sign, size, price=price, weight=weight))
 
-    def submit_trailing(self, side_sign: int, size: float, trail: float) -> None:
-        self._pending.append(Order("trailing", side_sign, size, trail=trail, extreme=self._price))
+    def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
+        self._pending.append(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
 
     def cancel_all(self) -> None:
         self._pending = []
