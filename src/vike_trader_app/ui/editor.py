@@ -35,7 +35,7 @@ class PythonHighlighter(QtGui.QSyntaxHighlighter):
         str_fmt.setForeground(QtGui.QColor(theme.UP))
 
         comment_fmt = QtGui.QTextCharFormat()
-        comment_fmt.setForeground(QtGui.QColor(theme.TEXT3))
+        comment_fmt.setForeground(QtGui.QColor(theme.TEXT2))  # readable light-grey, not dim TEXT3
         comment_fmt.setFontItalic(True)
 
         name_fmt = QtGui.QTextCharFormat()
