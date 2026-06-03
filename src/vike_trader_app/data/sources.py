@@ -14,8 +14,9 @@ The stitch (``forex_fetch_bars_range``) and routing (``is_forex_symbol``, ``spli
 are pure/unit-tested; only the underlying source modules do network I/O.
 """
 
+import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable
 
 from ..core.model import Bar
@@ -145,11 +146,60 @@ SOURCES = {
 CRYPTO_PROVIDERS = ("binance", "bybit", "okx", "coinbase", "kraken")
 
 
-def select_source(symbol: str, provider: str | None = None) -> Source:
-    """Resolve the Source for ``symbol``. Explicit ``provider`` wins; else infer crypto/forex."""
+def _with_settings(src: Source, settings: dict) -> Source:
+    """Return a new Source whose fetch_bars_range is pre-bound with base_url/pause/api_key.
+
+    Only passes kwargs the underlying module's fetcher actually accepts (guarded via inspect).
+    If no effective kwargs result, returns ``src`` unchanged.
+    """
+    import inspect
+
+    base_url = settings.get("base_url") or None
+    pause = settings.get("pause") or None
+    key_env = settings.get("api_key_env") or ""
+    api_key = os.environ.get(key_env) if key_env else None
+
+    # Discover which kwargs the underlying fetcher accepts.
+    try:
+        sig = inspect.signature(src.fetch_bars_range)
+        param_names = set(sig.parameters)
+    except (ValueError, TypeError):
+        param_names = set()
+
+    kw: dict = {}
+    if base_url and "base_url" in param_names:
+        kw["base_url"] = base_url
+    if pause is not None and "pause" in param_names:
+        kw["pause"] = pause
+    if api_key and "api_key" in param_names:
+        kw["api_key"] = api_key
+
+    if not kw:
+        return src
+
+    original_fetch = src.fetch_bars_range
+
+    def _fetch(symbol, interval, start_ms, end_ms, progress=None):
+        return original_fetch(symbol, interval, start_ms, end_ms, progress=progress, **kw)
+
+    return replace(src, fetch_bars_range=_fetch)
+
+
+def select_source(symbol: str, provider: str | None = None, settings: dict | None = None) -> Source:
+    """Resolve the Source for ``symbol``.
+
+    Explicit ``provider`` wins; else infer crypto/forex. When ``settings`` is provided and
+    non-empty, returns a new Source whose fetcher is pre-bound with base_url/pause/api_key from
+    that dict (only passes kwargs the underlying module actually accepts).
+    """
     if provider is not None:
         try:
-            return SOURCES[provider]
+            src = SOURCES[provider]
         except KeyError:
             raise ValueError(f"unknown provider {provider!r}; expected one of {sorted(SOURCES)}") from None
-    return FOREX if is_forex_symbol(symbol) else CRYPTO
+    else:
+        src = FOREX if is_forex_symbol(symbol) else CRYPTO
+
+    if settings:
+        src = _with_settings(src, settings)
+    return src

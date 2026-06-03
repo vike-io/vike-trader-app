@@ -17,6 +17,7 @@ DEFAULT_ORDER = ["binance", "bybit", "okx", "coinbase", "kraken", "dukascopy", "
 class ProviderEntry:
     name: str
     enabled: bool = True
+    settings: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -46,7 +47,7 @@ def load_providers_config(root: str) -> ProvidersConfig:
     path = providers_config_path(root)
     if not path.exists():
         return ProvidersConfig.default()
-    saved = [ProviderEntry(d["name"], bool(d.get("enabled", True)))
+    saved = [ProviderEntry(d["name"], bool(d.get("enabled", True)), d.get("settings", {}))
              for d in json.loads(path.read_text(encoding="utf-8"))]
     seen = {p.name for p in saved}
     # Append any provider that exists today but wasn't in the saved file (disabled, at the end),
