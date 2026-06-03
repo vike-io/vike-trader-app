@@ -11,25 +11,24 @@ import time
 
 from PySide6 import QtCore, QtWidgets
 
-from . import theme
+from . import dropdowns, theme
 
 
 class _Popover(QtWidgets.QFrame):
     """The dark dropdown panel (header + search + checkbox list + Select all)."""
 
     selectionChanged = QtCore.Signal()
+    _MARGIN = 24  # translucent margin around the card, room for the drop shadow
 
     def __init__(self, title: str, options: list[str], parent=None):
         super().__init__(parent, QtCore.Qt.Popup)
+        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self._on_hide = None
-        self.setObjectName("filterPop")
         self.setStyleSheet(
-            f"#filterPop{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
-            f"border-radius:10px;}}"
+            f"#filterPop{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_POPUP}px;}}"
             f"#filterPop QLabel#hdr{{color:{theme.TEXT};font-size:14px;font-weight:600;"
             f"background:transparent;border:none;}}"
-            f"#filterPop QLineEdit{{background:{theme.RAISE};color:{theme.TEXT};"
-            f"border:1px solid {theme.BORDER};border-radius:7px;padding:6px 10px;font-size:14px;}}"
             f"#filterPop QCheckBox{{color:{theme.TEXT2};font-size:14px;spacing:10px;"
             f"padding:6px 6px;border-radius:6px;}}"
             f"#filterPop QCheckBox:hover{{color:{theme.TEXT};background:{theme.HOVER};}}"
@@ -40,7 +39,14 @@ class _Popover(QtWidgets.QFrame):
             f"#filterPop QScrollArea{{border:none;background:transparent;}}"
             f"#filterPop #divider{{background:{theme.BORDER};}}")
 
-        v = QtWidgets.QVBoxLayout(self)
+        # translucent root holds a card with the margin reserved for the shadow
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(self._MARGIN, self._MARGIN, self._MARGIN, self._MARGIN)
+        card = QtWidgets.QFrame()
+        card.setObjectName("filterPop")
+        outer.addWidget(card)
+        theme.apply_popup_shadow(card)
+        v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(10, 10, 10, 8)
         v.setSpacing(8)
 
@@ -48,8 +54,7 @@ class _Popover(QtWidgets.QFrame):
         hdr.setObjectName("hdr")
         v.addWidget(hdr)
 
-        self._search = QtWidgets.QLineEdit()
-        self._search.setPlaceholderText("Search")
+        self._search = dropdowns.make_search("Search")
         self._search.textChanged.connect(self._apply_filter)
         v.addWidget(self._search)
 
@@ -81,8 +86,8 @@ class _Popover(QtWidgets.QFrame):
         self._all.clicked.connect(self._on_select_all_clicked)
         v.addWidget(self._all)
 
-        self.setFixedWidth(224)
-        self.setMaximumHeight(min(560, 132 + 30 * len(options)))
+        card.setFixedWidth(224)
+        self.setMaximumHeight(min(560, 132 + 30 * len(options)) + 2 * self._MARGIN)
         self._sync_select_all()
 
     # ---- internal ----
@@ -144,8 +149,8 @@ class MultiSelectFilter(QtWidgets.QToolButton):
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         self.setStyleSheet(
-            f"QToolButton{{background:{theme.RAISE};color:{theme.TEXT2};"
-            f"border:1px solid {theme.BORDER};border-radius:8px;padding:7px 14px;font-size:13px;}}"
+            f"QToolButton{{background:{theme.SURFACE};color:{theme.TEXT2};"
+            f"border:1px solid {theme.BORDER};border-radius:{theme.RADIUS_MD}px;padding:7px 14px;font-size:13px;}}"
             f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             "QToolButton::menu-indicator{width:0px;}")
         self._pop = _Popover(label, options, self)
@@ -167,7 +172,8 @@ class MultiSelectFilter(QtWidgets.QToolButton):
         # that lands right after the popover closed itself.
         if time.monotonic() - self._closed_at < 0.20:
             return
-        below = self.mapToGlobal(QtCore.QPoint(0, self.height() + 4))
+        m = self._pop._MARGIN  # offset so the card (inset by its shadow margin) drops under the pill
+        below = self.mapToGlobal(QtCore.QPoint(-m, self.height() + 4 - m))
         self._pop.move(below)
         self._pop.show()
 

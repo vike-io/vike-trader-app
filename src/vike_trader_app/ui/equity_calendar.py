@@ -450,17 +450,14 @@ class CalendarSpace(QtWidgets.QWidget):
         btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
         btn.setCursor(QtCore.Qt.PointingHandCursor)
         btn.setStyleSheet(
-            f"QToolButton{{color:{theme.TEXT2};background:{theme.RAISE};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;padding:7px 12px;font-size:13px;}}"
+            f"QToolButton{{color:{theme.TEXT2};background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_MD}px;padding:7px 12px;font-size:13px;}}"
             f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             "QToolButton::menu-indicator{width:0px;}")
         menu = QtWidgets.QMenu(btn)
+        # surface/radius/item/selected come from the unified global QMenu QSS; only the
+        # checkable bits (hidden indicator + bold checked) are specified here.
         menu.setStyleSheet(
-            f"QMenu{{background:{theme.PANEL2};border:1px solid {theme.BORDER};border-radius:10px;"
-            f"padding:6px;}}"
-            f"QMenu::item{{color:{theme.TEXT2};padding:7px 28px 7px 14px;border-radius:7px;"
-            f"font-size:13px;}}"
-            f"QMenu::item:selected{{background:{theme.RAISE};color:{theme.TEXT};}}"
             f"QMenu::item:checked{{color:{theme.TEXT};font-weight:600;}}"
             "QMenu::indicator{width:0px;}")
         self._cat_actions: dict[str, QtGui.QAction] = {}
@@ -515,11 +512,11 @@ class CalendarSpace(QtWidgets.QWidget):
     def _build_topnav(self) -> QtWidgets.QWidget:
         bar = QtWidgets.QWidget()
         bar.setStyleSheet(
-            f"QPushButton{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;padding:6px 13px;color:{theme.TEXT2};font-size:13px;}}"
+            f"QPushButton{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_MD}px;padding:6px 13px;color:{theme.TEXT2};font-size:13px;}}"
             f"QPushButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
-            f"QComboBox{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}"
+            f"QComboBox{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_MD}px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}"
             f"QCheckBox{{color:{theme.TEXT2};font-size:13px;spacing:6px;padding:6px 4px;}}"
             f"QCheckBox:hover{{color:{theme.TEXT};}}")
         h = QtWidgets.QHBoxLayout(bar)

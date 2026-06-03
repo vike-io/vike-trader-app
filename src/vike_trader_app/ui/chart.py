@@ -26,7 +26,7 @@ _ENTRY = theme.UP
 _EXIT = theme.DOWN
 _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
 _GRID = 0.5  # grid alpha (scales the BORDER tick pen) — subtle but visible, like TradingView
-_CARD_SHADOW = 30  # translucent margin around frameless picker cards, room for the drop shadow
+_CARD_SHADOW = theme.CARD_MARGIN  # translucent margin around frameless picker cards (room for the shadow)
 # TradingView-style range selector: (label, days of history to zoom the view to)
 _RANGES = [("1D", 1), ("5D", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365), ("5Y", 1825)]
 # Timeframe dropdown: (section, [(label, interval)]) — intervals our data sources support.
@@ -281,7 +281,7 @@ class _IndicatorPicker(QtWidgets.QDialog):
         self.resize(470 + 2 * _CARD_SHADOW, 600 + 2 * _CARD_SHADOW)
         self.setStyleSheet(
             f"#pickerCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:14px;}}"
+            f"border-radius:{theme.RADIUS_POPUP}px;}}"
             f"QLineEdit{{background:{theme.BG};border:1px solid {theme.BORDER};"
             f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
             f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
@@ -303,7 +303,7 @@ class _IndicatorPicker(QtWidgets.QDialog):
         card = QtWidgets.QFrame()
         card.setObjectName("pickerCard")
         _root.addWidget(card)
-        theme.apply_shadow(card, radius=22, y=6, alpha=160)
+        theme.apply_popup_shadow(card)
         outer = QtWidgets.QVBoxLayout(card)
         outer.setContentsMargins(16, 16, 16, 12)
         outer.setSpacing(11)
@@ -454,7 +454,7 @@ class _IndicatorSettings(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setStyleSheet(
             f"#setCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:14px;}}"
+            f"border-radius:{theme.RADIUS_POPUP}px;}}"
             f"QLabel{{color:{theme.TEXT2};background:transparent;}}"
             f"QTabBar::tab{{background:transparent;color:{theme.TEXT3};padding:6px 14px;"
             f"border:none;border-bottom:2px solid transparent;font-weight:600;}}"
@@ -471,7 +471,7 @@ class _IndicatorSettings(QtWidgets.QDialog):
         card = QtWidgets.QFrame()
         card.setObjectName("setCard")
         root.addWidget(card)
-        theme.apply_shadow(card, radius=22, y=6, alpha=160)
+        theme.apply_popup_shadow(card)
         v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(16, 14, 16, 12)
         v.setSpacing(10)
@@ -776,7 +776,7 @@ class _ObjectTree(QtWidgets.QDialog):
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self.setStyleSheet(
             f"#treeCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:14px;}}"
+            f"border-radius:{theme.RADIUS_POPUP}px;}}"
             f"QLabel{{background:transparent;}}"
         )
         self.resize(300 + 2 * _CARD_SHADOW, 380 + 2 * _CARD_SHADOW)
@@ -785,7 +785,7 @@ class _ObjectTree(QtWidgets.QDialog):
         card = QtWidgets.QFrame()
         card.setObjectName("treeCard")
         root.addWidget(card)
-        theme.apply_shadow(card, radius=22, y=6, alpha=160)
+        theme.apply_popup_shadow(card)
         self._v = QtWidgets.QVBoxLayout(card)
         self._v.setContentsMargins(14, 12, 14, 12)
         self._v.setSpacing(6)

@@ -104,8 +104,8 @@ class OptionsTab(QtWidgets.QWidget):
         barw.setObjectName("optbar")
         barw.setStyleSheet(
             "#optbar QComboBox, #optbar QToolButton {"
-            f" background:{theme.RAISE}; color:{theme.TEXT2}; border:1px solid {theme.BORDER};"
-            " border-radius:8px; padding:6px 12px; font-size:13px; }"
+            f" background:{theme.SURFACE}; color:{theme.TEXT2}; border:1px solid {theme.BORDER};"
+            f" border-radius:{theme.RADIUS_MD}px; padding:6px 12px; font-size:13px; }}"
             "#optbar QComboBox:hover, #optbar QToolButton:hover {"
             f" color:{theme.TEXT}; border-color:{theme.TEXT3}; }}"
             "#optbar QComboBox::drop-down { border:none; width:18px; }")
