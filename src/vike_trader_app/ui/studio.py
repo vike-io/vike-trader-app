@@ -1171,8 +1171,13 @@ class StudioTab(QtWidgets.QWidget):
             return None
 
     def show_portfolio_report(self, report, name: str = "") -> None:
-        """Display a portfolio backtest report in the results panel (no per-bar price chart)."""
+        """Display a portfolio backtest report in the results panel (no per-bar price chart).
+
+        ``name`` (the DataSet) is surfaced in the results toast so the user sees which universe ran.
+        """
         self.results.add_run(report, [], {})
+        if name:
+            self.results.toast(f"✓ Portfolio · {name}")
 
     # --- run ---
 

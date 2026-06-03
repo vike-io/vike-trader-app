@@ -1015,15 +1015,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_test_dataset(self, dataset, bars_by_symbol) -> None:
         """Data tab → Studio: run the editor's strategy across the whole DataSet (portfolio backtest)."""
-        from ..core.portfolio_adapter import MultiSymbolStrategyRunner
-        from ..tester import TesterConfig
-
         cls = self.studio.current_strategy_cls()
         if cls is None or not bars_by_symbol:
             return
         try:
+            from ..core.portfolio_adapter import MultiSymbolStrategyRunner
+            from ..tester import TesterConfig
+
             report = MultiSymbolStrategyRunner(cls, bars_by_symbol, TesterConfig()).report()
-        except Exception as exc:  # noqa: BLE001 - e.g. resting orders unsupported in portfolio mode
+        except Exception as exc:  # noqa: BLE001 - missing module / resting orders unsupported in portfolio mode
             self.studio.results.show_error(f"Portfolio test failed: {exc}")
             self.tabs.setCurrentWidget(self.studio)
             return
