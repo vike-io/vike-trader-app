@@ -24,3 +24,20 @@ def fetch_chain(provider_names, symbol, interval, start_ms, end_ms, progress=Non
         if bars:
             return bars, name
     return [], None
+
+
+def resolve_order(symbol, linked_provider, cfg):
+    """Provider names to try for ``symbol``: linked provider first, then the enabled chain in order."""
+    order = cfg.enabled_in_order()
+    if linked_provider:
+        order = [linked_provider] + [n for n in order if n != linked_provider]
+    return order
+
+
+def fetch_for(symbol, interval, start_ms, end_ms, *, root, linked_provider=None,
+              progress=None, select=select_source):
+    """Load ``symbol`` via the persisted provider chain. Returns ``(bars, provider_used)``."""
+    from .providers_config import load_providers_config
+
+    order = resolve_order(symbol, linked_provider, load_providers_config(root))
+    return fetch_chain(order, symbol, interval, start_ms, end_ms, progress=progress, select=select)
