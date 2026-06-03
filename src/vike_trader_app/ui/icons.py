@@ -174,36 +174,26 @@ def _draw_save(p, c):  # floppy-disk save glyph: body + folded corner, shutter, 
 # The four chevrons are EXACT 90° rotations of one geometry with a near-square bounding box
 # (~16×14), so up/down and left/right read as the same on-screen size in any orientation — the
 # old shallow 22×11 V looked tall as ‹ › but flat/small as ⌄, which read as different sizes.
-def _draw_chevron_down(p, c):  # ⌄
+_CHEVRON_PEN = 2.2   # lighter stroke (≈ font-weight 300) — only for the directional chevrons,
+                     # not the 3.0-weight rail icons. WIDE & SHALLOW like TradingView's caret:
+                     # down/up are ~26×14 (→ ~10 wide × 6 tall on screen); left/right are that rotated.
+
+
+def _chevron(p, pts):
+    pen = p.pen()
+    pen.setWidthF(_CHEVRON_PEN)
+    p.setPen(pen)
     path = QtGui.QPainterPath()
-    path.moveTo(10, 10)
-    path.lineTo(24, 38)
-    path.lineTo(38, 10)
+    path.moveTo(*pts[0])
+    for pt in pts[1:]:
+        path.lineTo(*pt)
     p.drawPath(path)
 
 
-def _draw_chevron_up(p, c):  # ^
-    path = QtGui.QPainterPath()
-    path.moveTo(10, 38)
-    path.lineTo(24, 10)
-    path.lineTo(38, 38)
-    p.drawPath(path)
-
-
-def _draw_chevron_left(p, c):  # ‹
-    path = QtGui.QPainterPath()
-    path.moveTo(38, 10)
-    path.lineTo(10, 24)
-    path.lineTo(38, 38)
-    p.drawPath(path)
-
-
-def _draw_chevron_right(p, c):  # ›
-    path = QtGui.QPainterPath()
-    path.moveTo(10, 10)
-    path.lineTo(38, 24)
-    path.lineTo(10, 38)
-    p.drawPath(path)
+def _draw_chevron_down(p, c):   _chevron(p, [(11, 17), (24, 31), (37, 17)])   # ⌄ wide, shallow
+def _draw_chevron_up(p, c):     _chevron(p, [(11, 31), (24, 17), (37, 31)])   # ^
+def _draw_chevron_left(p, c):   _chevron(p, [(31, 11), (17, 24), (31, 37)])   # ‹ (down rotated 90°)
+def _draw_chevron_right(p, c):  _chevron(p, [(17, 11), (31, 24), (17, 37)])   # ›
 
 
 def _draw_scale(p, c):  # balance/justice scale: central post on a base, top beam, two hanging pans
