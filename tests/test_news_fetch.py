@@ -72,3 +72,37 @@ def test_fetch_all_equals_iter_aggregate():
     ]
     flat = [it for chunk in fetch_iter(specs, None, fetcher=lambda u: RSS) for it in chunk]
     assert len(fetch_all(specs, None, fetcher=lambda u: RSS)) == len(flat) == 2
+
+
+# --- W3-C: event-provider config filter ---
+
+def test_fetch_all_disabled_in_config_is_skipped():
+    """A provider disabled in the event-providers config is skipped even when spec.enabled=True."""
+    specs = [
+        ProviderSpec("A", "crypto", "https://a/rss", "broad"),
+        ProviderSpec("B", "crypto", "https://b/rss", "broad"),
+    ]
+    # Only "A" is in the enabled set from the config
+    items = fetch_all(specs, None, fetcher=lambda u: RSS, enabled={"A"})
+    assert len(items) == 1
+    assert items[0].source == "A"
+
+
+def test_fetch_all_none_enabled_leaves_all_jobs():
+    """enabled=None (no config file) → behavior is identical to before (both providers run)."""
+    specs = [
+        ProviderSpec("A", "crypto", "https://a/rss", "broad"),
+        ProviderSpec("B", "crypto", "https://b/rss", "broad"),
+    ]
+    items = fetch_all(specs, None, fetcher=lambda u: RSS, enabled=None)
+    assert {it.source for it in items} == {"A", "B"}
+
+
+def test_fetch_all_spec_disabled_wins_even_if_in_enabled_set():
+    """spec.enabled=False takes priority even when the provider name is in the config enabled set."""
+    specs = [
+        ProviderSpec("A", "crypto", "https://a/rss", "broad", enabled=False),
+        ProviderSpec("B", "crypto", "https://b/rss", "broad"),
+    ]
+    items = fetch_all(specs, None, fetcher=lambda u: RSS, enabled={"A", "B"})
+    assert len(items) == 1 and items[0].source == "B"

@@ -84,9 +84,13 @@ class DataManagerTab(QtWidgets.QWidget):
         splitter.setStretchFactor(1, 1)
 
         from .dataset_panel import DataSetPanel
+        from .event_providers_panel import EventProvidersPanel
         from .providers_panel import ProvidersPanel
+        from .streaming_providers_panel import StreamingProvidersPanel
         self.panel = DataSetPanel(self._config_root)
         self.providers = ProvidersPanel(self._config_root)
+        self.event_providers = EventProvidersPanel(self._config_root)
+        self.streaming_providers = StreamingProvidersPanel(self._config_root)
         self.panel.test_symbol_requested.connect(self._on_test_symbol_req)
         self.panel.test_dataset_requested.connect(self._on_test_dataset_req)
 
@@ -166,6 +170,8 @@ class DataManagerTab(QtWidgets.QWidget):
         self.subtabs.addTab(self.panel, "Symbols")
         self.subtabs.addTab(cached, "Cached Series")
         self.subtabs.addTab(self.providers, "Historical Providers")
+        self.subtabs.addTab(self.event_providers, "Event Providers")
+        self.subtabs.addTab(self.streaming_providers, "Streaming Providers")
 
         self.providers.testbed_result.connect(self._log)
         self.tree.reload()

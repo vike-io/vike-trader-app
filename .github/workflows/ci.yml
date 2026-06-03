@@ -90,3 +90,6 @@ jobs:
           tests/test_dataset_panel_gui.py
           tests/test_providers_panel_gui.py
           tests/test_data_studio_wiring_gui.py
+          tests/test_symbol_mappings_gui.py
+          tests/test_event_providers_panel_gui.py
+          tests/test_streaming_providers_panel_gui.py

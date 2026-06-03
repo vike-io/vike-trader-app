@@ -9,7 +9,7 @@ def _bar(ts):
 
 
 def _fake_select(results, calls):
-    """Build a ``select(symbol, provider=...)`` whose source returns ``results[provider]``."""
+    """Build a ``select(symbol, provider=..., settings=...)`` whose source returns ``results[provider]``."""
     class _Src:
         def __init__(self, name):
             self.name = name
@@ -21,7 +21,7 @@ def _fake_select(results, calls):
                 raise out
             return out or []
 
-    return lambda symbol, provider=None: _Src(provider)
+    return lambda symbol, provider=None, settings=None: _Src(provider)
 
 
 def test_chain_returns_first_provider_with_data():

@@ -114,3 +114,125 @@ def test_forex_fetch_bars_range_recent_only_skips_dukascopy():
                                   now_ms=now, yahoo_fetch=fake_yahoo, duka_fetch=fake_duka)
     assert [b.ts for b in bars] == [99 * DAY]
     assert called["duka"] is False  # nothing old -> Dukascopy not hit
+
+
+# --- Part 3: select_source with settings ---
+
+def test_select_source_no_settings_returns_static_source():
+    src = select_source("BTCUSDT", provider="binance")
+    from vike_trader_app.data.sources import SOURCES
+    assert src is SOURCES["binance"]
+
+
+def test_select_source_empty_settings_returns_static_source():
+    src = select_source("BTCUSDT", provider="binance", settings={})
+    from vike_trader_app.data.sources import SOURCES
+    assert src is SOURCES["binance"]
+
+
+def test_select_source_with_pause_wraps_fetcher():
+    """select_source(settings={"pause": 0.1}) returns a Source that passes pause to the fetcher."""
+    received_kw = {}
+
+    def fake_fetch(symbol, interval, start_ms, end_ms, base_url="https://api.binance.com",
+                   pause=0.0, progress=None):
+        received_kw["pause"] = pause
+        received_kw["base_url"] = base_url
+        return []
+
+    from vike_trader_app.data import sources as src_mod
+    from vike_trader_app.data.sources import SOURCES, Source
+
+    # Temporarily substitute binance's fetch_bars_range with our fake
+    original = SOURCES["binance"].fetch_bars_range
+    import dataclasses
+    patched_src = dataclasses.replace(SOURCES["binance"], fetch_bars_range=fake_fetch)
+
+    import vike_trader_app.data.sources as sm
+    original_sources = sm.SOURCES.copy()
+    sm.SOURCES["binance"] = patched_src
+
+    try:
+        wrapped = select_source("BTCUSDT", provider="binance", settings={"pause": 0.1})
+        wrapped.fetch_bars_range("BTCUSDT", "1m", 0, 1000)
+        assert received_kw.get("pause") == 0.1
+    finally:
+        sm.SOURCES["binance"] = original_sources["binance"]
+
+
+def test_select_source_with_base_url_wraps_fetcher():
+    """select_source(settings={"base_url": "https://proxy"}) passes base_url to the fetcher."""
+    received_kw = {}
+
+    def fake_fetch(symbol, interval, start_ms, end_ms, base_url="https://api.binance.com",
+                   pause=0.0, progress=None):
+        received_kw["base_url"] = base_url
+        return []
+
+    import dataclasses
+    import vike_trader_app.data.sources as sm
+    original_sources = sm.SOURCES.copy()
+    sm.SOURCES["binance"] = dataclasses.replace(sm.SOURCES["binance"], fetch_bars_range=fake_fetch)
+
+    try:
+        wrapped = select_source("BTCUSDT", provider="binance",
+                                settings={"base_url": "https://proxy.test"})
+        wrapped.fetch_bars_range("BTCUSDT", "1m", 0, 1000)
+        assert received_kw.get("base_url") == "https://proxy.test"
+    finally:
+        sm.SOURCES["binance"] = original_sources["binance"]
+
+
+def test_select_source_api_key_env_reads_from_environment(monkeypatch):
+    """api_key_env indirection: the env var name is stored; the value is read at fetch time."""
+    received_kw = {}
+    monkeypatch.setenv("MY_TEST_KEY", "secret123")
+
+    def fake_fetch(symbol, interval, start_ms, end_ms, api_key=None, progress=None):
+        received_kw["api_key"] = api_key
+        return []
+
+    import dataclasses
+    import vike_trader_app.data.sources as sm
+    original_sources = sm.SOURCES.copy()
+    sm.SOURCES["binance"] = dataclasses.replace(sm.SOURCES["binance"], fetch_bars_range=fake_fetch)
+
+    try:
+        wrapped = select_source("BTCUSDT", provider="binance",
+                                settings={"api_key_env": "MY_TEST_KEY"})
+        wrapped.fetch_bars_range("BTCUSDT", "1m", 0, 1000)
+        assert received_kw.get("api_key") == "secret123"
+    finally:
+        sm.SOURCES["binance"] = original_sources["binance"]
+
+
+def test_select_source_unset_api_key_env_does_not_pass_api_key(monkeypatch):
+    """When api_key_env names a missing env var, no api_key kwarg is passed."""
+    received_kw = {"api_key": "SENTINEL"}  # would be overwritten if passed
+
+    def fake_fetch(symbol, interval, start_ms, end_ms, api_key=None, progress=None):
+        received_kw["api_key"] = api_key
+        return []
+
+    import dataclasses
+    import vike_trader_app.data.sources as sm
+    monkeypatch.delenv("NONEXISTENT_KEY_XYZ", raising=False)
+    original_sources = sm.SOURCES.copy()
+    sm.SOURCES["binance"] = dataclasses.replace(sm.SOURCES["binance"], fetch_bars_range=fake_fetch)
+
+    try:
+        wrapped = select_source("BTCUSDT", provider="binance",
+                                settings={"api_key_env": "NONEXISTENT_KEY_XYZ"})
+        wrapped.fetch_bars_range("BTCUSDT", "1m", 0, 1000)
+        # api_key should be None (not passed, or passed as None from default)
+        assert received_kw.get("api_key") is None
+    finally:
+        sm.SOURCES["binance"] = original_sources["binance"]
+
+
+def test_select_source_with_settings_unchanged_when_all_empty():
+    """settings with only empty/zero values return the original static Source unchanged."""
+    from vike_trader_app.data.sources import SOURCES
+    src = select_source("BTCUSDT", provider="binance",
+                        settings={"pause": 0.0, "base_url": "", "api_key_env": ""})
+    assert src is SOURCES["binance"]

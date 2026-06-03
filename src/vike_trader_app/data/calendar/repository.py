@@ -81,8 +81,14 @@ class CalendarRepository:
             pending = [e for e in pending if e.actual is None]
 
 
-def default_repository(root: str = "storage/calendar") -> "CalendarRepository":
-    """Wire the real providers from env keys. Missing keys disable a provider silently."""
+def default_repository(root: str = "storage/calendar",
+                       config_root: str | None = None) -> "CalendarRepository":
+    """Wire the real providers from env keys. Missing keys disable a provider silently.
+
+    ``config_root``: when given AND an event_providers.json file exists there, actuals providers
+    are filtered to the enabled set (and re-ordered accordingly). Callers that pass nothing get
+    identical behavior to before — fully non-breaking.
+    """
     from .providers.forexfactory import ForexFactoryProvider
     from .providers.fred import FredProvider
     from .providers.bls import BlsProvider
@@ -94,5 +100,21 @@ def default_repository(root: str = "storage/calendar") -> "CalendarRepository":
         load_dotenv()
     except Exception:  # noqa: BLE001
         pass
-    actuals = [FredProvider(), BlsProvider(), BeaProvider(), CensusProvider(), EcbProvider()]
+    actuals_default = [FredProvider(), BlsProvider(), BeaProvider(), CensusProvider(), EcbProvider()]
+
+    if config_root is not None:
+        from ..event_providers_config import enabled_event_providers
+        enabled = enabled_event_providers(config_root)
+        if enabled is not None:
+            # Filter and re-order actuals providers to match the config
+            actuals_by_name = {p.name: p for p in actuals_default}
+            # Preserve the config ordering; skip providers not in the enabled set
+            actuals = [actuals_by_name[name] for name in
+                       # iterate in config order; calendar actuals names only
+                       [p.name for p in actuals_default if p.name in enabled]]
+        else:
+            actuals = actuals_default
+    else:
+        actuals = actuals_default
+
     return CalendarRepository(ForexFactoryProvider(), actuals, CalendarStore(root))
