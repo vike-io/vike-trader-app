@@ -44,6 +44,11 @@ def test_color_for_sign():
 
 
 def test_stylesheet_renders_without_placeholders():
+    import pytest
+
+    # theme.stylesheet() rasterises the combo-arrow PNG, which lazily imports PySide6 — skip in the
+    # non-UI CI job (no Qt) where the pure-helper tests above still run.
+    pytest.importorskip("PySide6")
     qss = theme.stylesheet()
     # No leftover f-string token placeholders.
     for name in ("{BG}", "{SURFACE}", "{HOVER}", "{BORDER}", "{ACCENT}", "{ON_ACCENT}"):
