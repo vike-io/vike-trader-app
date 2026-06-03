@@ -424,6 +424,7 @@ class CalendarSpace(QtWidgets.QWidget):
             for w in getattr(tab, "_nav_widgets", []):
                 w.setVisible(False)
         self.economic._cmb_tz.setVisible(False)
+        self.economic._toolbar.setVisible(False)   # High-only/Countries moved to the top nav (TV layout)
         self.set_page(0)
         self._sync_range()
 
@@ -438,6 +439,9 @@ class CalendarSpace(QtWidgets.QWidget):
             b.setChecked(i == idx)
         if hasattr(self, "_cat_btn"):
             self._cat_btn.setVisible(idx == 0)   # category filter only applies to Economic
+        if hasattr(self, "_top_high"):           # economic-only date-nav filters
+            self._top_high.setVisible(idx == 0)
+            self._top_countries.setVisible(idx == 0)
 
     # ---- TV "All categories" dropdown (filters the Economic page) ----
     def _build_category_dropdown(self) -> QtWidgets.QToolButton:
@@ -515,7 +519,9 @@ class CalendarSpace(QtWidgets.QWidget):
             f"border-radius:8px;padding:6px 13px;color:{theme.TEXT2};font-size:13px;}}"
             f"QPushButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             f"QComboBox{{background:{theme.PANEL2};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}")
+            f"border-radius:8px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}"
+            f"QCheckBox{{color:{theme.TEXT2};font-size:13px;spacing:6px;padding:6px 4px;}}"
+            f"QCheckBox:hover{{color:{theme.TEXT};}}")
         h = QtWidgets.QHBoxLayout(bar)
         h.setContentsMargins(0, 0, 0, 0)
         h.setSpacing(6)
@@ -533,6 +539,16 @@ class CalendarSpace(QtWidgets.QWidget):
             h.addWidget(w)
         h.addWidget(self._range_lbl)
         h.addStretch(1)
+        # Economic-only filters live here (right side of the date-nav, like TV's importance/G20),
+        # not in a separate row under the pills. Shown only on the Economic page (see set_page).
+        self._top_high = QtWidgets.QCheckBox("High only")
+        self._top_high.setCursor(QtCore.Qt.PointingHandCursor)
+        self._top_high.toggled.connect(self.economic._chk_high.setChecked)   # drives set_high_only
+        self._top_countries = QtWidgets.QPushButton("Countries  ▾")
+        self._top_countries.setCursor(QtCore.Qt.PointingHandCursor)
+        self._top_countries.clicked.connect(self._open_countries)
+        h.addWidget(self._top_high)
+        h.addWidget(self._top_countries)
         self._tz = QtWidgets.QComboBox()
         self._tz.setCursor(QtCore.Qt.PointingHandCursor)
         self._tz.addItems([self.economic._cmb_tz.itemText(i)
@@ -541,6 +557,12 @@ class CalendarSpace(QtWidgets.QWidget):
         self._tz.currentIndexChanged.connect(self.economic._cmb_tz.setCurrentIndex)
         h.addWidget(self._tz)
         return bar
+
+    def _open_countries(self) -> None:
+        self.economic._open_country_dialog()       # modal; sets economic._countries + rebuilds
+        n = len(self.economic._countries) if self.economic._countries else 0
+        self._top_countries.setText(f"Countries ({n})  ▾" if n else "Countries  ▾")
+        self.refresh_day_counts()
 
     def _sync_range(self) -> None:
         if hasattr(self, "_range_lbl"):

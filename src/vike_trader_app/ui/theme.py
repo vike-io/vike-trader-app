@@ -49,7 +49,7 @@ def stylesheet() -> str:
     return f"""
     * {{
         font-family: {FONT_UI};
-        font-size: 13px;
+        font-size: 14px;
         color: {TEXT};
     }}
     QMainWindow, QWidget {{ background: {BG}; }}
@@ -136,7 +136,7 @@ def stylesheet() -> str:
     /* tables — mono cells for tabular alignment, sans uppercase headers */
     QTableWidget, QTableView {{
         background: {PANEL}; alternate-background-color: {ROW_ODD};
-        gridline-color: transparent; border: none; font-size: 12px;
+        gridline-color: transparent; border: none; font-size: 13px;
         font-family: {FONT_MONO};
     }}
     QTableWidget::item {{ padding: 5px 8px; color: {TEXT2}; }}
@@ -144,7 +144,7 @@ def stylesheet() -> str:
     QHeaderView::section {{
         background: {PANEL}; color: {TEXT3}; padding: 8px 8px;
         border: none; border-bottom: 1px solid {BORDER};
-        font-family: {FONT_UI}; font-size: 10px; font-weight: 700;
+        font-family: {FONT_UI}; font-size: 12px; font-weight: 700;
         text-transform: uppercase; letter-spacing: 0.5px;
     }}
 

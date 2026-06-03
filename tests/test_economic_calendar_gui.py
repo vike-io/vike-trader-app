@@ -182,6 +182,31 @@ def test_day_cards_bucket_economic_by_display_tz(app):
     assert tue._rows["economic"][1].text() != "1"          # NOT on Tuesday (the UTC day)
 
 
+def test_calendar_space_top_filters_visibility_and_high_only(app):
+    # The economic-only filters (High-only / Countries) live in the shared top date-nav and show
+    # only on the Economic page; the High-only checkbox drives the economic tab's filter.
+    from vike_trader_app.ui.equity_calendar import CalendarSpace
+    t = _tab(app)
+    space = CalendarSpace(economic_tab=t)
+    space.set_page(0)
+    assert not space._top_high.isHidden() and not space._top_countries.isHidden()
+    space.set_page(1)                                  # Earnings page -> economic filters hidden
+    assert space._top_high.isHidden() and space._top_countries.isHidden()
+    space.set_page(0)
+    assert t.visible_event_count() == 3
+    space._top_high.setChecked(True)                   # drives economic.set_high_only via _chk_high
+    assert t.visible_event_count() == 2                # the medium-importance EUR row is hidden
+
+
+def test_calendar_space_open_countries_updates_label(app):
+    from vike_trader_app.ui.equity_calendar import CalendarSpace
+    t = _tab(app)
+    space = CalendarSpace(economic_tab=t)
+    t._open_country_dialog = lambda: setattr(t, "_countries", {"USD"})   # stub the modal
+    space._open_countries()
+    assert space._top_countries.text() == "Countries (1)  ▾"
+
+
 def test_category_filter(app):
     t = _tab(app)                  # GDP event has category "other" in the fixture builder
     t.set_category("inflation")

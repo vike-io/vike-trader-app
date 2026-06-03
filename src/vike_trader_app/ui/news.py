@@ -2,7 +2,9 @@
 
 Free Tier-0 RSS/JSON sources only (see data/news/providers.py). A background _NewsWorker polls
 off the UI thread and pushes batches via a signal; the aggregator merges them into the model on
-the UI thread. Pure network → safe off-thread (no Parquet/Catalog reads here).
+the UI thread. Pure network → safe off-thread (no Parquet/Catalog reads here). Real source logos
+are fetched lazily (news_logos), with a colored-initial fallback. TV-style multi-select filter
+dropdowns (Market / Category / Provider) + a closeable reader (X → full-width list).
 """
 
 from __future__ import annotations
@@ -14,15 +16,18 @@ import time
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..data.news.aggregator import apply_filter, merge
+from ..data.news.classify import CATEGORIES, classify
 from ..data.news.fetch import fetch_iter
-from ..data.news.feeds_store import SavedFeed, SavedFeedStore
 from ..data.news.models import NewsFilter, NewsItem
 from ..data.news.providers import PROVIDERS
 from . import icons, theme
+from .news_filter import MultiSelectFilter
+from .news_logos import LogoStore
 
-_MARKETS = {"All": None, "Crypto": "crypto", "Forex": "forex", "Stocks": "stocks"}
+# Market dropdown label -> NewsItem.market code
+_MARKETS = {"Crypto": "crypto", "Forex": "forex", "Stocks": "stocks", "Global": "global"}
 
-# Deterministic provider-badge palette (no real logos — colored initials, like Market watch).
+# Deterministic provider-badge palette (fallback when no real logo is cached yet).
 _AV_COLORS = ["#3fe08a", "#f0a93f", "#3f9be0", "#e0643f", "#b06fe0", "#3fe0c8", "#e03f8a", "#9be03f"]
 _av_cache: dict[str, "QtGui.QPixmap"] = {}
 
@@ -54,14 +59,22 @@ def _ago(ms: int) -> str:
 
 
 class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
-    """TradingView-style two-line row: provider badge · source · relative time, then headline.
+    """TradingView-style two-line row: source logo · source · relative time, then headline.
 
-    Matches TV news-flow's type scale: 12px muted meta, 14px DemiBold headline, generous row
-    height, hairline separator inset to the text column.
+    Real logo if cached (logo_store), else a colored-initial badge. 12-13px muted meta, 16px
+    Medium headline, generous row height, hairline separator inset to the text column.
     """
 
     ROW_H = 78
     AV = 32
+
+    def __init__(self, parent=None, logo_store: "LogoStore | None" = None):
+        super().__init__(parent)
+        self._logos = logo_store
+
+    def _badge(self, source: str, size: int) -> "QtGui.QPixmap":
+        pm = self._logos.pixmap(source, size) if self._logos else None
+        return pm if pm is not None else _avatar_for(source, size)
 
     def sizeHint(self, opt, idx):
         return QtCore.QSize(opt.rect.width(), self.ROW_H)
@@ -79,7 +92,7 @@ class _NewsRowDelegate(QtWidgets.QStyledItemDelegate):
             p.fillRect(r, QtGui.QColor(theme.RAISE))
         elif opt.state & QtWidgets.QStyle.State_MouseOver:
             p.fillRect(r, QtGui.QColor(theme.HOVER))
-        p.drawPixmap(r.left() + 16, r.top() + (self.ROW_H - self.AV) // 2, _avatar_for(it.source, self.AV))
+        p.drawPixmap(r.left() + 16, r.top() + (self.ROW_H - self.AV) // 2, self._badge(it.source, self.AV))
         x = r.left() + 16 + self.AV + 12
         right = r.right() - 16
 
@@ -156,76 +169,66 @@ class _NewsWorker(QtCore.QThread):
 class NewsTab(QtWidgets.QWidget):
     """Filter toolbar + list/reader split over a merged, deduped, time-sorted news feed."""
 
-    def __init__(self, store: SavedFeedStore | None = None, providers=None,
-                 parent: QtWidgets.QWidget | None = None):
+    def __init__(self, providers=None, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
-        self._store = store if store is not None else SavedFeedStore()
         self._providers = list(providers) if providers is not None else list(PROVIDERS)
         self._items: list[NewsItem] = []
         self._symbol: str | None = None
         self._worker: _NewsWorker | None = None
+        self._logos = LogoStore(self._providers, self)
+        self._logos.updated.connect(self._on_logos_updated)
+        self._split_sizes: list[int] | None = None
 
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
         root.addWidget(self._build_toolbar())
 
-        split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._split = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
         self._list = QtWidgets.QListWidget()
-        self._list.setItemDelegate(_NewsRowDelegate(self._list))   # TV-style two-line rows
+        self._list.setItemDelegate(_NewsRowDelegate(self._list, self._logos))   # TV-style rows
         self._list.setMouseTracking(True)                          # hover highlight
         self._list.setStyleSheet(
             f"QListWidget{{background:{theme.CHART_BG};border:none;outline:none;}}")
         self._list.currentRowChanged.connect(self._on_row_changed)
-        split.addWidget(self._list)
-        split.addWidget(self._build_reader())
-        split.setStretchFactor(0, 2)
-        split.setStretchFactor(1, 3)
-        root.addWidget(split, 1)
+        self._split.addWidget(self._list)
+        self._reader = self._build_reader()
+        self._split.addWidget(self._reader)
+        self._split.setStretchFactor(0, 2)        # TV proportion: list 2/3, reader 1/3
+        self._split.setStretchFactor(1, 1)
+        self._split.setSizes([1300, 650])
+        root.addWidget(self._split, 1)
 
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
         root.addWidget(self._status)
         self._last_update = ""
-        self._reload_feed_combo()
 
     # ---- construction helpers ----
     def _build_toolbar(self) -> QtWidgets.QWidget:
         wrap = QtWidgets.QWidget()
         wrap.setObjectName("newsbar")
         wrap.setStyleSheet(
-            "#newsbar QComboBox, #newsbar QToolButton, #newsbar QPushButton, #newsbar QLineEdit {"
+            "#newsbar QToolButton, #newsbar QPushButton, #newsbar QLineEdit {"
             f"  background:{theme.RAISE}; color:{theme.TEXT2}; border:1px solid {theme.BORDER};"
-            "   border-radius:16px; padding:6px 14px; font-size:13px; }"
+            "   border-radius:8px; padding:7px 14px; font-size:13px; }"
             "#newsbar QLineEdit {" f" color:{theme.TEXT}; " "}"
-            "#newsbar QComboBox:hover, #newsbar QToolButton:hover, #newsbar QPushButton:hover {"
-            f"  color:{theme.TEXT}; }}"
-            "#newsbar QToolButton:checked {" f" color:{theme.ACCENT}; border-color:{theme.ACCENT}; }}"
-            f"#newsbar QLabel {{ color:{theme.TEXT3}; font-size:13px; background:transparent; border:none; }}"
-            "#newsbar QComboBox::drop-down { border:none; width:18px; }")
+            "#newsbar QToolButton:hover, #newsbar QPushButton:hover {"
+            f"  color:{theme.TEXT}; border-color:{theme.TEXT3}; }}"
+            "#newsbar QToolButton:checked {" f" color:{theme.ACCENT}; border-color:{theme.ACCENT}; }}")
         bar = QtWidgets.QHBoxLayout(wrap)
         bar.setContentsMargins(2, 2, 2, 4)
         bar.setSpacing(8)
 
-        self._market = QtWidgets.QComboBox()
-        self._market.addItems(list(_MARKETS.keys()))
-        self._market.currentTextChanged.connect(lambda _t: self._refresh_list())
-
-        self._provider_btn = QtWidgets.QToolButton()
-        self._provider_btn.setText("Providers")
-        self._provider_btn.setPopupMode(QtWidgets.QToolButton.ToolButtonPopupMode.InstantPopup)
-        menu = QtWidgets.QMenu(self._provider_btn)
-        self._provider_actions: dict[str, QtGui.QAction] = {}
-        for name in sorted({p.name for p in self._providers}):
-            act = menu.addAction(name)
-            act.setCheckable(True)
-            act.toggled.connect(lambda _c: self._refresh_list())
-            self._provider_actions[name] = act
-        self._provider_btn.setMenu(menu)
-
-        self._search = QtWidgets.QLineEdit()
-        self._search.setPlaceholderText("Search headlines…")
-        self._search.textChanged.connect(lambda _t: self._refresh_list())
+        # TV-style multi-select filter dropdowns (empty selection == no constraint).
+        # TV left-aligns the filter pills in a row; search is NOT inline (it's the global search),
+        # so we keep our search but push it (with refresh) to the right, filters on the left.
+        self._market = MultiSelectFilter("Market", list(_MARKETS.keys()))
+        self._market.selectionChanged.connect(self._refresh_list)
+        self._category = MultiSelectFilter("Category", CATEGORIES)
+        self._category.selectionChanged.connect(self._refresh_list)
+        self._provider = MultiSelectFilter("Provider", sorted({p.name for p in self._providers}))
+        self._provider.selectionChanged.connect(self._refresh_list)
 
         self._follow = QtWidgets.QToolButton()
         self._follow.setText("⌖ Follow chart")
@@ -233,20 +236,19 @@ class NewsTab(QtWidgets.QWidget):
         self._follow.setChecked(True)                 # default ON (chart-centric app)
         self._follow.toggled.connect(self._on_follow_toggled)
 
-        self._feed_combo = QtWidgets.QComboBox()
-        self._feed_combo.currentTextChanged.connect(self._on_feed_combo)
-        self._save_btn = QtWidgets.QPushButton("Save feed")
-        self._save_btn.clicked.connect(self._save_feed)
-        self._del_btn = QtWidgets.QPushButton("Delete")
-        self._del_btn.clicked.connect(self._delete_feed)
+        self._search = QtWidgets.QLineEdit()
+        self._search.setPlaceholderText("Search headlines…")
+        self._search.setMaximumWidth(280)
+        self._search.textChanged.connect(lambda _t: self._refresh_list())
+
         self._refresh_btn = QtWidgets.QPushButton("↻")
         self._refresh_btn.clicked.connect(lambda: self._worker and self._worker.refresh_now())
 
-        for w in (QtWidgets.QLabel("Market:"), self._market, self._provider_btn,
-                  self._search, self._follow, QtWidgets.QLabel("Feed:"), self._feed_combo,
-                  self._save_btn, self._del_btn, self._refresh_btn):
-            bar.addWidget(w)
-        bar.setStretchFactor(self._search, 1)
+        for w in (self._market, self._category, self._provider, self._follow):
+            bar.addWidget(w)                          # filters left-aligned (TV placement)
+        bar.addStretch(1)
+        bar.addWidget(self._search)                   # search + refresh on the right
+        bar.addWidget(self._refresh_btn)
         return wrap
 
     def _build_reader(self) -> QtWidgets.QWidget:
@@ -260,9 +262,17 @@ class NewsTab(QtWidgets.QWidget):
         self._reader_av.setFixedSize(30, 30)
         self._source_lbl = QtWidgets.QLabel("")
         self._source_lbl.setStyleSheet(f"color:{theme.TEXT};font-size:13px;font-weight:600;")
+        self._close_btn = QtWidgets.QToolButton()
+        self._close_btn.setText("✕")
+        self._close_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._close_btn.setStyleSheet(
+            f"QToolButton{{color:{theme.TEXT3};border:none;font-size:16px;padding:2px 6px;}}"
+            f"QToolButton:hover{{color:{theme.TEXT};}}")
+        self._close_btn.clicked.connect(self.close_reader)
         head.addWidget(self._reader_av)
         head.addWidget(self._source_lbl)
         head.addStretch(1)
+        head.addWidget(self._close_btn)
         v.addLayout(head)
         self._title = QtWidgets.QLabel("Select a headline")
         self._title.setWordWrap(True)
@@ -270,31 +280,40 @@ class NewsTab(QtWidgets.QWidget):
             f"color:{theme.TEXT};font-size:26px;font-weight:700;line-height:128%;")
         self._meta = QtWidgets.QLabel("")
         self._meta.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;")
-        self._chips = QtWidgets.QLabel("")
-        self._chips.setTextFormat(QtCore.Qt.RichText)
-        self._chips.setVisible(False)
         self._body = QtWidgets.QTextBrowser()
         self._body.setOpenExternalLinks(False)
         self._body.setStyleSheet("QTextBrowser{border:none;background:transparent;}")
+        self._chips = QtWidgets.QLabel("")          # TV-style topic tags, at the bottom
+        self._chips.setTextFormat(QtCore.Qt.RichText)
+        self._chips.setWordWrap(True)
+        self._chips.setVisible(False)
         self._open_btn = QtWidgets.QPushButton("↗ Open original")
         self._open_btn.clicked.connect(self._open_original)
         self._open_btn.setEnabled(False)
-        for x in (self._title, self._meta, self._chips, self._body, self._open_btn):
+        for x in (self._title, self._meta, self._body, self._chips, self._open_btn):
             v.addWidget(x)
         v.setStretchFactor(self._body, 1)
         return w
 
     def _chip_html(self, it: NewsItem) -> str:
-        tags = ([it.market.capitalize()] if it.market else []) + list(it.symbols)
+        ordered = [classify(it), *it.tags, *(it.market.capitalize() if it.market else "",), *it.symbols]
+        seen: set[str] = set()
+        chips: list[str] = []
+        for c in ordered:
+            c = (c or "").strip()
+            if c and c.lower() not in seen:
+                seen.add(c.lower())
+                chips.append(c)
         cell = (f"<span style='background:{theme.RAISE};color:{theme.TEXT2};"
-                f"padding:3px 9px;margin-right:6px;font-size:11px;'>&nbsp;{{t}}&nbsp;</span>")
-        return "".join(cell.format(t=t) for t in tags)
+                f"padding:3px 10px;margin-right:6px;font-size:12px;'>&nbsp;{{t}}&nbsp;</span>")
+        return "".join(cell.format(t=html.escape(c)) for c in chips[:6])
 
     # ---- feed lifecycle ----
     def start_feed(self, symbol: str | None = None) -> None:
         """Lazily start the background poller (called when the News space is first opened)."""
         if symbol is not None:
             self._symbol = symbol
+        self._logos.prefetch_async()           # pull real source logos in the background (one shot)
         if self._worker is not None:
             return
         self._worker = _NewsWorker(self._providers, self._symbol, follow=self._follow.isChecked())
@@ -303,6 +322,7 @@ class NewsTab(QtWidgets.QWidget):
         self._worker.start()
 
     def stop_feed(self) -> None:
+        self._logos.stop()
         if self._worker is not None:
             self._worker.stop()
             self._worker.wait(8000)   # ≥ the 6s per-feed urllib timeout, so a stalled poll still joins
@@ -315,6 +335,19 @@ class NewsTab(QtWidgets.QWidget):
         if self._follow.isChecked():
             self._refresh_list()
 
+    # ---- reader open/close ----
+    def close_reader(self) -> None:
+        """Hide the reader → the list goes full-width (TV's X button)."""
+        if not self._reader.isHidden():                # isHidden() reflects the flag even when unshown
+            self._split_sizes = self._split.sizes()
+            self._reader.setVisible(False)
+
+    def _open_reader(self) -> None:
+        if self._reader.isHidden():
+            self._reader.setVisible(True)
+            if self._split_sizes:
+                self._split.setSizes(self._split_sizes)
+
     # ---- slots ----
     def on_items_received(self, items) -> None:
         self._items = merge(self._items, list(items))
@@ -324,25 +357,36 @@ class NewsTab(QtWidgets.QWidget):
     def _on_failed(self, message: str) -> None:
         self._status.setText(f"Feed error: {message}")     # status line, never a modal
 
+    def _on_logos_updated(self) -> None:
+        self._list.viewport().update()                     # repaint rows with freshly-cached logos
+        it = self._current_item()
+        if it is not None:
+            self._reader_av.setPixmap(self._badge(it.source, 30))
+
     def _on_follow_toggled(self, on: bool) -> None:
         if self._worker is not None:
             self._worker.set_follow(on)
         self._refresh_list()
 
+    def _badge(self, source: str, size: int) -> "QtGui.QPixmap":
+        pm = self._logos.pixmap(source, size)
+        return pm if pm is not None else _avatar_for(source, size)
+
     def _on_row_changed(self, _row: int) -> None:
         it = self._current_item()
         if it is None:
             return
-        self._reader_av.setPixmap(_avatar_for(it.source, 30))   # match the 30x30 reader avatar label
+        self._open_reader()                                # re-open if the user had closed it
+        self._reader_av.setPixmap(self._badge(it.source, 30))
         self._source_lbl.setText(it.source)
         self._title.setText(it.title)
         when = time.strftime("%b %d, %Y · %H:%M", time.localtime(it.published_ms / 1000)) if it.published_ms else ""
         self._meta.setText(f"{when}  ·  {_ago(it.published_ms)}" if when else "")
-        self._chips.setText(self._chip_html(it))
-        self._chips.setVisible(bool(it.market or it.symbols))
         summary = html.escape(it.summary or "(no summary — open the original)").replace("\n", "<br>")
         self._body.setHtml(
             f"<div style='color:{theme.TEXT2};font-size:16px;line-height:170%;'>{summary}</div>")
+        self._chips.setText(self._chip_html(it))
+        self._chips.setVisible(bool(self._chips.text()))
         self._open_btn.setEnabled(bool(it.url))
 
     def _open_original(self) -> None:
@@ -352,10 +396,11 @@ class NewsTab(QtWidgets.QWidget):
 
     # ---- filter + list ----
     def _current_filter(self) -> NewsFilter:
-        provs = frozenset(n for n, a in self._provider_actions.items() if a.isChecked())
+        markets = frozenset(_MARKETS[label] for label in self._market.selected())
         sym = self._symbol if self._follow.isChecked() else None
-        return NewsFilter(market=_MARKETS[self._market.currentText()],
-                          providers=provs, symbol=sym, query=self._search.text().strip())
+        return NewsFilter(markets=markets, providers=frozenset(self._provider.selected()),
+                          categories=frozenset(self._category.selected()),
+                          symbol=sym, query=self._search.text().strip())
 
     def _refresh_list(self) -> None:
         self._list.blockSignals(True)
@@ -375,10 +420,11 @@ class NewsTab(QtWidgets.QWidget):
     def _empty_hint(self) -> str:
         """Explain *why* the list is empty (e.g. Follow-chart scoping) — not just a blank pane."""
         f = self._current_filter()
-        scope = f"{self._market.currentText()} " if f.market else ""
+        markets = ", ".join(sorted(self._market.selected()))
+        scope = f"{markets} " if markets else ""
         if f.symbol:
             return (f"No {scope}headlines mention {f.symbol}. "
-                    f"Turn off “⊕ Follow chart” to see all {scope}news.")
+                    f"Turn off “⌖ Follow chart” to see all {scope}news.")
         if f.query:
             return f"No headlines match “{f.query}”."
         return f"No {scope}headlines right now."
@@ -391,55 +437,3 @@ class NewsTab(QtWidgets.QWidget):
     def _current_item(self) -> NewsItem | None:
         qi = self._list.currentItem()
         return qi.data(QtCore.Qt.UserRole) if qi is not None else None
-
-    # ---- saved feeds ----
-    def _reload_feed_combo(self) -> None:
-        self._feed_combo.blockSignals(True)
-        self._feed_combo.clear()
-        self._feed_combo.addItem("— saved feeds —")
-        for f in self._store.feeds():
-            self._feed_combo.addItem(f.name)
-        self._feed_combo.blockSignals(False)
-
-    def _save_feed(self) -> None:
-        name, ok = QtWidgets.QInputDialog.getText(self, "Save feed", "Name:")   # user-initiated → modal OK
-        if ok and name.strip():
-            self._save_feed_named(name.strip())
-
-    def _save_feed_named(self, name: str) -> None:
-        f = self._current_filter()
-        self._store.add(SavedFeed(
-            name=name,
-            market=self._market.currentText() if f.market else "",
-            providers=sorted(f.providers),
-            symbol=self._symbol or "",
-            query=f.query,
-            follow_chart=self._follow.isChecked(),
-        ))
-        self._reload_feed_combo()
-        self._feed_combo.setCurrentText(name)
-
-    def _on_feed_combo(self, name: str) -> None:
-        if name and not name.startswith("—"):
-            self._apply_saved(name)
-
-    def _apply_saved(self, name: str) -> None:
-        feed = next((f for f in self._store.feeds() if f.name == name), None)
-        if feed is None:
-            return
-        self._market.setCurrentText(feed.market or "All")
-        for n, act in self._provider_actions.items():
-            act.setChecked(n in feed.providers)
-        self._search.setText(feed.query)
-        self._follow.setChecked(feed.follow_chart)
-        if feed.symbol:                       # restore the saved symbol context (read back, not dead data)
-            self._symbol = feed.symbol
-            if self._worker is not None:
-                self._worker.set_symbol(feed.symbol)
-        self._refresh_list()
-
-    def _delete_feed(self) -> None:
-        name = self._feed_combo.currentText()
-        if name and not name.startswith("—"):
-            self._store.remove(name)
-            self._reload_feed_combo()

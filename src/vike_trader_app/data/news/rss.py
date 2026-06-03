@@ -62,6 +62,7 @@ def parse_feed(data: bytes | str, *, source: str, market: str) -> list[NewsItem]
     items: list[NewsItem] = []
     for node in (e for e in root.iter() if _localname(e.tag) in ("item", "entry")):
         title = link = summary = content = pub = ""
+        tags: list[str] = []
         for child in node:
             name = _localname(child.tag)
             if name == "title":
@@ -74,6 +75,10 @@ def parse_feed(data: bytes | str, *, source: str, market: str) -> list[NewsItem]
                 content = _strip_html(child.text or "")   # only a fallback; full bodies live here
             elif name in ("pubDate", "published", "updated", "date") and not pub:
                 pub = child.text or ""
+            elif name == "category":     # RSS <category>Text</category> or Atom <category term="..">
+                t = (child.text or "").strip() or child.attrib.get("term", "").strip()
+                if t and t not in tags:
+                    tags.append(t)
         if not title and not link:
             continue
         items.append(NewsItem(
@@ -84,5 +89,6 @@ def parse_feed(data: bytes | str, *, source: str, market: str) -> list[NewsItem]
             source=source,
             market=market,
             published_ms=_to_ms(pub),
+            tags=tuple(html.unescape(t) for t in tags[:6]),   # cap; feed taxonomies can be noisy
         ))
     return items
