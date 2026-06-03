@@ -224,10 +224,13 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._worker = None
 
         root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)   # CalendarSpace owns the frame; no extra inset here
+        root.setSpacing(_CAL_GAP)
         self._toolbar = self._build_toolbar()
         root.addWidget(self._toolbar)
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;")
+        self._status.setVisible(False)        # take no vertical space until it actually has text
         root.addWidget(self._status)
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setColumnCount(len(columns))
@@ -309,6 +312,7 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._refresh_range_label()
         self._tree.clear()
         self._status.setText("Loading…")
+        self._status.setVisible(True)
         if self._loading_week is None:
             self._start_worker()
 
@@ -395,7 +399,9 @@ class EquityCalendarTab(QtWidgets.QWidget):
             for col in self._right_cols:   # right-align the numeric columns (TradingView)
                 item.setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
             parent.addChild(item)
-        self._status.setText("" if rows else "No events for this week.")
+        msg = "" if rows else "No events for this week."
+        self._status.setText(msg)
+        self._status.setVisible(bool(msg))
 
     def _refresh_range_label(self) -> None:
         a = datetime.fromtimestamp(self._week_start / 1000, tz=timezone.utc)
@@ -481,7 +487,10 @@ class CalendarSpace(QtWidgets.QWidget):
             sl.addWidget(card)
 
         root = QtWidgets.QVBoxLayout(self)
-        root.setSpacing(_CAL_GAP)          # same gap between every calendar row (nav/cards/pills/table)
+        # Same _CAL_GAP everywhere: the outer frame (to the rail / right / bottom) AND the gap
+        # between every row (nav / cards / pills / table) are identical.
+        root.setContentsMargins(_CAL_GAP, _CAL_GAP, _CAL_GAP, _CAL_GAP)
+        root.setSpacing(_CAL_GAP)
         root.addWidget(self._build_topnav())   # TV: date-nav row ABOVE the day-cards
         root.addWidget(strip)
         bar = QtWidgets.QWidget()
@@ -495,9 +504,11 @@ class CalendarSpace(QtWidgets.QWidget):
                 w.setVisible(False)
         self.economic._cmb_tz.setVisible(False)
         self.economic._toolbar.setVisible(False)   # High-only/Countries moved to the top nav (TV layout)
-        # Tighter table header (the default ~32px section read too tall) across every calendar tree.
+        # Tighter table header (the default ~32px section read too tall) across every calendar tree;
+        # drop the tree frame so the table sits exactly _CAL_GAP below the tabs (no 1–2px frame inset).
         for tab in (self.economic, self.earnings, self.dividends, self.ipo):
             tab._tree.header().setStyleSheet("QHeaderView::section{padding-top:3px;padding-bottom:3px;}")
+            tab._tree.setFrameShape(QtWidgets.QFrame.NoFrame)
         self.set_page(0)
         self._sync_range()
 

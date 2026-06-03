@@ -176,33 +176,33 @@ def _draw_save(p, c):  # floppy-disk save glyph: body + folded corner, shutter, 
 # old shallow 22×11 V looked tall as ‹ › but flat/small as ⌄, which read as different sizes.
 def _draw_chevron_down(p, c):  # ⌄
     path = QtGui.QPainterPath()
-    path.moveTo(16, 18)
+    path.moveTo(16, 16)
     path.lineTo(24, 32)
-    path.lineTo(32, 18)
+    path.lineTo(32, 16)
     p.drawPath(path)
 
 
 def _draw_chevron_up(p, c):  # ^
     path = QtGui.QPainterPath()
-    path.moveTo(16, 30)
+    path.moveTo(16, 32)
     path.lineTo(24, 16)
-    path.lineTo(32, 30)
+    path.lineTo(32, 32)
     p.drawPath(path)
 
 
 def _draw_chevron_left(p, c):  # ‹
     path = QtGui.QPainterPath()
-    path.moveTo(30, 16)
+    path.moveTo(32, 16)
     path.lineTo(16, 24)
-    path.lineTo(30, 32)
+    path.lineTo(32, 32)
     p.drawPath(path)
 
 
 def _draw_chevron_right(p, c):  # ›
     path = QtGui.QPainterPath()
-    path.moveTo(18, 16)
+    path.moveTo(16, 16)
     path.lineTo(32, 24)
-    path.lineTo(18, 32)
+    path.lineTo(16, 32)
     p.drawPath(path)
 
 

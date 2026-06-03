@@ -188,8 +188,11 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         self._day_cards: list = []
 
         root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)   # CalendarSpace owns the frame; table sits flush below the tabs
+        root.setSpacing(8)
         self._status = QtWidgets.QLabel("")
         self._status.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;")
+        self._status.setVisible(False)        # take no vertical space until it actually has text
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setColumnCount(len(_COLS))
         self._tree.setHeaderLabels(_COLS)
@@ -370,7 +373,9 @@ class EconomicCalendarTab(QtWidgets.QWidget):
     _NO_DATA = "No data for this week — ForexFactory provides the current and next week only."
 
     def _update_status(self) -> None:
-        self._status.setText("" if self._events else self._NO_DATA)
+        msg = "" if self._events else self._NO_DATA
+        self._status.setText(msg)
+        self._status.setVisible(bool(msg))
 
     def _passes(self, ev) -> bool:
         if self._high_only and ev.importance < 2:
@@ -514,6 +519,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
     def _on_failed(self, msg) -> None:
         if self._loading_week == self._week_start:
             self._status.setText(f"Calendar error: {msg}")
+            self._status.setVisible(True)
 
     def _on_worker_finished(self) -> None:
         self._workers.discard(self.sender())
@@ -531,6 +537,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             count.setText("…")
         self._tree.clear()
         self._status.setText("Loading…")
+        self._status.setVisible(True)
 
     def _local(self, ts_ms: int) -> datetime:
         """Epoch ms → datetime in the selected display timezone (default: system local)."""
