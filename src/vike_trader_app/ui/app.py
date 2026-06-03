@@ -419,52 +419,49 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _wire_options(self) -> None:
         """Connect the Options tab <-> service. Fetching only starts when the tab is first
-        shown (keeps startup + headless tests network-free)."""
+        shown (keeps startup + headless tests network-free). One expiry at a time: the tab
+        strip picks it; the service fetches and polls just that expiry (Deribit-style)."""
         tab, svc = self.options, self._options_svc
-        svc.chainsReady.connect(tab.set_chains)   # grouped (multi-expiry) view
+        svc.chainReady.connect(tab.set_chain)     # single-expiry flat view
         svc.failed.connect(tab.set_status)
         self._options_all_expiries: list = []
-        self._options_shown: list = []
-        groups_max = 12  # cap on simultaneous expiry groups (bounds the per-expiry fetch count)
-
-        def _show(subset: list) -> None:
-            if not subset:
-                return
-            self._options_shown = list(subset)
-            svc.set_strikes(tab.strikes_value())
-            svc.start_polling_grouped(self._options_shown)
+        self._options_expiry = None               # the selected expiry (None until one is picked)
 
         def _filtered() -> list:
             days = tab.exp_range_days()
             within = [e for e in self._options_all_expiries if days is None or e.dte <= days]
-            return (within or self._options_all_expiries)[:groups_max]
+            return within or self._options_all_expiries
 
         def _on_expiries(expiries) -> None:
             self._options_all_expiries = list(expiries)
-            tab.set_expiries(expiries)        # dropdown = jump-to-expiry
-            _show(_filtered())                # default: expiries within the range filter
+            tab.set_expiries(_filtered())   # the strip auto-selects the nearest -> _select fires
 
         svc.expiriesReady.connect(_on_expiries)
 
         def _load_underlying(sym: str) -> None:
             svc.stop_polling()
+            self._options_expiry = None
             svc.set_underlying(sym)
             svc.set_strikes(tab.strikes_value())
             svc.load_expiries()
 
-        def _jump(iso: str) -> None:  # selecting an expiry pages the groups to start there
-            allx = self._options_all_expiries
-            idx = next((i for i, e in enumerate(allx) if e.date == iso), 0)
-            _show(allx[idx:idx + groups_max])
+        def _select(iso: str) -> None:
+            expiry = next((e for e in self._options_all_expiries if e.date == iso), None)
+            if expiry is None:
+                return
+            self._options_expiry = expiry
+            svc.stop_polling()
+            svc.set_expiry(expiry)
+            svc.set_strikes(tab.strikes_value())
+            svc.start_polling()             # single-expiry poll: refresh() -> chainReady
 
         def _refresh() -> None:
             svc.set_strikes(tab.strikes_value())
-            if self._options_shown:
-                svc.load_chains(self._options_shown)
+            svc.refresh()
 
         tab.underlyingChanged.connect(_load_underlying)
-        tab.expiryChanged.connect(_jump)
-        tab.rangeChanged.connect(lambda: _show(_filtered()))
+        tab.expiryChanged.connect(_select)
+        tab.rangeChanged.connect(lambda: tab.set_expiries(_filtered()))
         tab.refreshRequested.connect(_refresh)
         self._load_options_underlying = _load_underlying
 
@@ -472,8 +469,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._options_started:
             self._options_started = True
             self._load_options_underlying(self.options.underlying.currentText())
-        elif self._options_shown:
-            self._options_svc.start_polling_grouped(self._options_shown)  # resume on re-open
+        elif self._options_expiry is not None:
+            self._options_svc.start_polling()  # resume the selected expiry's poll on re-open
 
     # Order MUST match the addTab() order in _build_central — rail buttons map to tab
     # index by position here. Append new spaces last to keep existing indices stable.

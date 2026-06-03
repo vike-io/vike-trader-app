@@ -78,26 +78,21 @@ def test_greeks_toggle_switches_column_set():
         assert _cols(tab.table, label), f"missing column {label}"
 
 
-def test_grouped_view_collapsible_expiry_sections():
+def test_expiry_strip_selects_nearest_and_switches():
     _app()
     tab = OptionsTab()
-    ch1 = _chain()  # 02 Jul, 2 strikes
-    ch2 = OptionChain("ES", "equity", 7600.75, Expiry("2026-08-01", 60, "01 Aug"), 1, "polygon",
-                      (StrikeRow(strike=7600.0,
-                                 call=OptionQuote(strike=7600.0, type="C", bid=20.0, ask=21.0,
-                                                  iv=0.20, volume=100)),))
-    tab.set_chains([ch1, ch2])
-    # two group headers, each a full-width spanned row tracked in _group_rows
-    assert len(tab._group_rows) == 2
-    g1, g2 = sorted(tab._group_rows)
-    assert tab.table.columnSpan(g1, 0) == tab.table.columnCount()
-    # first expiry expanded, the rest collapsed by default
-    assert not tab.table.isRowHidden(tab._group_rows[g1][0])
-    assert tab.table.isRowHidden(tab._group_rows[g2][0])
-    # clicking the first header collapses its section
-    tab._on_cell_clicked(g1, 0)
-    assert tab.table.isRowHidden(tab._group_rows[g1][0])
-    assert "▸" in tab.table.item(g1, 0).text()
+    seen = []
+    tab.expiryChanged.connect(seen.append)
+    e1 = Expiry(date="2026-07-02", dte=30, label="02 Jul")
+    e2 = Expiry(date="2026-08-01", dte=60, label="01 Aug")
+    tab.set_expiries([e1, e2])
+    # populating the strip auto-selects + announces the nearest expiry (single-expiry, Deribit-style)
+    assert seen == ["2026-07-02"]
+    assert tab.expiry_strip.current() == "2026-07-02"
+    # clicking another pill switches the active expiry and announces it
+    tab.expiry_strip._buttons["2026-08-01"].click()
+    assert seen[-1] == "2026-08-01"
+    assert tab.expiry_strip.current() == "2026-08-01"
 
 
 def test_column_header_sort_reorders_and_drops_atm_marker():
@@ -118,7 +113,7 @@ def test_column_header_sort_reorders_and_drops_atm_marker():
     spanned = [r for r in range(tab.table.rowCount())
                if tab.table.columnSpan(r, 0) == tab.table.columnCount()]
     assert spanned == [] and tab.table.rowCount() == 3  # ATM marker dropped while sorted
-    assert [tab.table.item(r, strike_col).text() for r in range(3)] == ["110.00", "120.00", "100.00"]
+    assert [tab.table.item(r, strike_col).text() for r in range(3)] == ["110", "120", "100"]
 
     tab._on_header_clicked(strike_col)  # back to strike order
     assert tab._sort is None

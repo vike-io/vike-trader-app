@@ -1,10 +1,12 @@
-"""Options-chain space: TradingView/TradeStation-style CALLS | STRIKE·IV | PUTS grid.
+"""Options-chain space: Deribit/TradingView-style CALLS | STRIKE·IV | PUTS grid.
 
-Renders purely from an `OptionChain` pushed in via `set_chain()` — no network here (the
-`OptionsService` owns fetching). Two views via a toggle: "Chain" (LTP/Theor/Spread/Bid%/Ask%/
-Distance/Rel dist/Ann%/Volume, like the screenshot) and "Greeks" (Δ/Γ/Θ/V). Volume cells get a
-blue (calls) / red (puts) magnitude bar; ITM cells are hatch-shaded; an ATM marker row shows
-the underlying price mid-table. Errors go to a status label, never a modal.
+Renders one expiry at a time from an `OptionChain` pushed in via `set_chain()` — no network
+here (the `OptionsService` owns fetching). A horizontal expiry tab strip (Deribit-style) picks
+the active expiry. Two column sets via a toggle: "Chain" (LTP/Theor/Spread/Bid%/Ask%/Distance/
+Rel dist/Ann%/Volume) and "Greeks" (Δ/Γ/Θ/V). The bid family renders green and the ask family
+red (Deribit-style); volume cells get a blue (calls) / red (puts) magnitude bar; ITM cells are
+hatch-shaded; an ATM marker row shows the underlying price mid-table. Errors go to a status
+label, never a modal.
 """
 
 from __future__ import annotations
@@ -15,11 +17,18 @@ from ..data.options import columns as C
 from ..data.options.model import OptionChain, StrikeRow
 from . import theme
 
-_CALL_BAR = "#4c9ffe"   # TradingView-ish blue for call volume bars
-_PUT_BAR = theme.DOWN   # red for put volume bars
-# TV's options chain renders cell values bright (#dbdbdb) at 14px on ~41px rows. theme.TEXT2
-# (#9aa4b1) reads too dim/cramped next to it, so the chain uses a brighter cell tone + taller rows.
-_CELL = "#c9d1d9"
+_CALL_BAR = theme.BLUE   # blue magnitude bar for call volume
+_PUT_BAR = theme.DOWN    # red magnitude bar for put volume
+# TV/Deribit render chain values bright; theme.TEXT2 reads too dim next to the bright strike/IV.
+# The color unification collapsed PANEL2/PANEL/RAISE onto SURFACE, which erased the grid's
+# layering cues (ITM shading, ATM band, strike spine all rendered the same tone as the table).
+# These reintroduce them from the live four-tone surface scale (BG < SURFACE < HOVER < BORDER):
+_CELL = theme.TEXT       # bright cell value, like TradingView
+_ITM = theme.BORDER      # diagonal-hatch tone for in-the-money cells (visible over SURFACE)
+_SPINE = theme.HOVER     # subtly raised centre Strike column (the spine)
+_BAND = theme.HOVER      # ATM spot-price marker band
+_GREEN = {"bid", "bidpct"}   # Deribit-style: bid family rendered in UP green
+_RED = {"ask", "askpct"}     # ask family rendered in DOWN red
 
 
 class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
@@ -38,9 +47,9 @@ class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
                 painter.save()
                 r = option.rect
                 color = QtGui.QColor(_CALL_BAR if col == self.call_col else _PUT_BAR)
-                color.setAlpha(70)
+                color.setAlpha(120)
                 width = int((r.width() - 8) * min(frac, 1.0))
-                painter.fillRect(r.x() + 4, r.bottom() - 5, width, 2, color)
+                painter.fillRect(r.x() + 4, r.bottom() - 6, width, 3, color)
                 painter.restore()
         super().paint(painter, option, index)
 
@@ -55,6 +64,64 @@ def _columns(view: str) -> tuple[list[str], list[str], list[str]]:
     return call_fields, put_fields, headers
 
 
+class _ExpiryStrip(QtWidgets.QScrollArea):
+    """Deribit-style horizontal strip of expiry pills (single-select).
+
+    Emits ``selected(iso)`` when the user clicks a pill, and once on ``set_expiries`` for the
+    nearest expiry so the owner can load it. Scrolls horizontally when the expiries overflow.
+    """
+
+    selected = QtCore.Signal(str)   # expiry ISO date
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.setFixedHeight(46)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        self.setStyleSheet(
+            "QScrollArea{background:transparent;border:none;}"
+            f"QToolButton{{background:{theme.SURFACE};color:{theme.TEXT2};"
+            f"border:1px solid {theme.BORDER};border-radius:{theme.RADIUS_MD}px;"
+            "padding:6px 13px;font-size:13px;}"
+            f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
+            f"QToolButton:checked{{background:{theme.HOVER};color:{theme.TEXT};"
+            f"border-color:{theme.ACCENT};}}")
+        body = QtWidgets.QWidget()
+        self._row = QtWidgets.QHBoxLayout(body)
+        self._row.setContentsMargins(0, 4, 0, 4)
+        self._row.setSpacing(6)
+        self._row.addStretch(1)
+        self.setWidget(body)
+        self._group = QtWidgets.QButtonGroup(self)
+        self._group.setExclusive(True)
+        self._buttons: dict[str, QtWidgets.QToolButton] = {}
+
+    def set_expiries(self, expiries) -> None:
+        """Rebuild the pills; auto-select the first (nearest) expiry and announce it."""
+        for b in self._buttons.values():
+            self._group.removeButton(b)
+            b.deleteLater()
+        self._buttons.clear()
+        for e in expiries:
+            b = QtWidgets.QToolButton()
+            b.setText(e.label)
+            b.setToolTip(f"{e.label} · {e.dte}DTE · {e.date}")
+            b.setCheckable(True)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.clicked.connect(lambda _checked=False, iso=e.date: self.selected.emit(iso))
+            self._group.addButton(b)
+            self._row.insertWidget(self._row.count() - 1, b)   # before the trailing stretch
+            self._buttons[e.date] = b
+        if expiries:
+            self._buttons[expiries[0].date].setChecked(True)
+            self.selected.emit(expiries[0].date)
+
+    def current(self) -> str | None:
+        return next((iso for iso, b in self._buttons.items() if b.isChecked()), None)
+
+
 class OptionsTab(QtWidgets.QWidget):
     """The Options space (full-width central tab)."""
 
@@ -66,8 +133,6 @@ class OptionsTab(QtWidgets.QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._chain: OptionChain | None = None
-        self._chains: list[OptionChain] | None = None   # grouped (multi-expiry) view
-        self._group_rows: dict[int, list[int]] = {}      # header row -> its data/marker rows
         self._col_field: dict[int, tuple[str, str | None]] = {}  # column -> (field, side)
         self._sort: tuple | None = None                  # None=strike order; else (field, side, desc)
         self._view = "chain"
@@ -80,7 +145,6 @@ class OptionsTab(QtWidgets.QWidget):
         self.underlying = QtWidgets.QComboBox()
         self.underlying.setEditable(True)
         self.underlying.addItems(["BTC", "ETH", "SOL", "^VIX", "SPY", "QQQ", "AAPL", "MSFT"])
-        self.expiry = QtWidgets.QComboBox()
         self.exp_range = QtWidgets.QComboBox()
         self.exp_range.addItems(["Next 30d", "Next 60d", "Next 90d", "All"])
         self.strikes = QtWidgets.QComboBox()
@@ -95,7 +159,7 @@ class OptionsTab(QtWidgets.QWidget):
         self.status_label = QtWidgets.QLabel("—")
         self.status_label.setStyleSheet(f"color:{theme.TEXT3};border:none;background:transparent;")
         # TV-style: self-labeling dropdowns, left-aligned, no separate text labels.
-        for w in (self.underlying, self.expiry, self.exp_range, self.strikes,
+        for w in (self.underlying, self.exp_range, self.strikes,
                   self.view_toggle, self.refresh_btn):
             controls.addWidget(w)
         controls.addStretch(1)
@@ -112,19 +176,23 @@ class OptionsTab(QtWidgets.QWidget):
         barw.setLayout(controls)
         root.addWidget(barw)
 
+        # Deribit-style expiry tab strip: picks the single active expiry shown below.
+        self.expiry_strip = _ExpiryStrip()
+        root.addWidget(self.expiry_strip)
+
         self.table = QtWidgets.QTableWidget(0, 0)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.table.setShowGrid(False)
-        # Match TV's options chain type scale: 13px cells (vs the global 12px), ~32px airy rows
-        # (vs ~24px), and a normal-case 12px/600 header (vs the global tiny 10px uppercase).
+        # Match TV/Deribit's options-chain type scale: 13px cells (vs the global 12px), ~36px airy
+        # rows (vs ~24px), and a normal-case 12px/600 header (vs the global tiny 10px uppercase).
         self.table.setStyleSheet(
             "QTableView{font-size:13px;}"
             f"QHeaderView::section{{background:{theme.CHART_BG};color:{theme.TEXT2};"
             "font-size:12px;font-weight:600;text-transform:none;letter-spacing:0;"
-            f"padding:6px 8px;border:none;border-bottom:1px solid {theme.BORDER};}}")
-        self.table.verticalHeader().setDefaultSectionSize(32)
+            f"padding:7px 10px;border:none;border-bottom:1px solid {theme.BORDER};}}")
+        self.table.verticalHeader().setDefaultSectionSize(36)
         self._bar = _VolumeBarDelegate(self.table)
         self.table.setItemDelegate(self._bar)
         root.addWidget(self.table, 1)
@@ -133,36 +201,27 @@ class OptionsTab(QtWidgets.QWidget):
         # line-edit's `returnPressed` (activated alone misses novel text).
         self.underlying.activated.connect(self._emit_underlying)
         self.underlying.lineEdit().returnPressed.connect(self._emit_underlying)
-        self.expiry.activated.connect(self._emit_expiry)
+        self.expiry_strip.selected.connect(self.expiryChanged)   # strip drives the single expiry
         self.strikes.activated.connect(self.refreshRequested.emit)
         self.exp_range.activated.connect(self.rangeChanged.emit)
         self.view_toggle.activated.connect(self._on_view_changed)
         self.refresh_btn.clicked.connect(self.refreshRequested.emit)
-        self.table.cellClicked.connect(self._on_cell_clicked)
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
 
     # --- signals out ---------------------------------------------------------
     def _emit_underlying(self) -> None:
         self.underlyingChanged.emit(self.underlying.currentText())
 
-    def _emit_expiry(self) -> None:
-        iso = self.expiry.currentData()
-        if iso:
-            self.expiryChanged.emit(iso)
-
     def _on_view_changed(self) -> None:
         self._view = "greeks" if self.view_toggle.currentText() == "Greeks" else "chain"
-        self._rerender()  # redraw with the new column set, in whichever mode is active
-
-    def _rerender(self) -> None:
-        self._render_groups() if self._chains is not None else self._render()
+        self._render()  # redraw with the new column set
 
     # --- inputs --------------------------------------------------------------
     def strikes_value(self) -> int | None:
         return self.strikes.currentData()       # data carries the int window (6/12) or None=All
 
     def exp_range_days(self) -> int | None:
-        """Max DTE to show as groups, or None for all expiries."""
+        """Max DTE to list as expiry pills, or None for all expiries."""
         return {"Next 30d": 30, "Next 60d": 60, "Next 90d": 90, "All": None}[
             self.exp_range.currentText()]
 
@@ -170,11 +229,8 @@ class OptionsTab(QtWidgets.QWidget):
         self.status_label.setText(text)
 
     def set_expiries(self, expiries) -> None:
-        self.expiry.blockSignals(True)
-        self.expiry.clear()
-        for e in expiries:
-            self.expiry.addItem(f"{e.label}  ·  {e.dte}DTE", e.date)
-        self.expiry.blockSignals(False)
+        """Populate the expiry tab strip; selecting the nearest expiry fires expiryChanged."""
+        self.expiry_strip.set_expiries(expiries)
 
     @staticmethod
     def _source_note(source: str) -> str:
@@ -184,24 +240,13 @@ class OptionsTab(QtWidgets.QWidget):
         return ""
 
     def set_chain(self, chain: OptionChain) -> None:
-        """Single-expiry view (flat grid)."""
-        self._chain, self._chains = chain, None
+        """Show one expiry's flat chain grid."""
+        self._chain = chain
         self._render()
         px = "—" if chain.underlying_price is None else f"{chain.underlying_price:,.2f}"
         self.set_status(
             f"{chain.underlying} {px}  ·  {chain.source}  ·  {chain.expiry.label}"
             + self._source_note(chain.source))
-
-    def set_chains(self, chains: list[OptionChain]) -> None:
-        """Grouped view: each expiry as a collapsible section (first expanded)."""
-        self._chains = chains
-        self._render_groups()
-        if chains:
-            c = chains[0]
-            px = "—" if c.underlying_price is None else f"{c.underlying_price:,.2f}"
-            self.set_status(
-                f"{c.underlying} {px}  ·  {c.source}  ·  {len(chains)} expiries"
-                + self._source_note(c.source))
 
     # --- rendering -----------------------------------------------------------
     def _setup_columns(self) -> tuple[list[str], list[str], int, int]:
@@ -220,9 +265,9 @@ class OptionsTab(QtWidgets.QWidget):
         self._col_field[strike_col + 1] = ("iv", None)
         self._col_field.update({strike_col + 2 + i: (f, "P") for i, f in enumerate(put_fields)})
         hh = self.table.horizontalHeader()
+        # Content-size every column. Strike was Fixed at 76px — fine for VIX's 2-digit strikes, but
+        # it truncated Deribit BTC's 5-digit strikes ("64,000…"); content-sizing fits both.
         hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        hh.setSectionResizeMode(strike_col, QtWidgets.QHeaderView.Fixed)
-        self.table.setColumnWidth(strike_col, 76)
         return call_fields, put_fields, len(headers), strike_col
 
     @staticmethod
@@ -258,10 +303,9 @@ class OptionsTab(QtWidgets.QWidget):
             self._sort = (field, side, not self._sort[2])   # same column -> flip direction
         else:
             self._sort = (field, side, field in ("volume", "oi"))  # volume/OI default to desc
-        self._rerender()
+        self._render()
 
     def _render(self) -> None:
-        self._group_rows = {}
         call_fields, put_fields, ncols, strike_col = self._setup_columns()
         chain = self._chain
         if chain is None:
@@ -274,39 +318,6 @@ class OptionsTab(QtWidgets.QWidget):
         if show_atm and spot is not None:
             pos = next((i for i, r in enumerate(rows) if r.strike >= spot), len(rows))
             self._marker_row(chain, ncols, pos)
-
-    def _render_groups(self) -> None:
-        self._group_rows = {}
-        call_fields, put_fields, ncols, strike_col = self._setup_columns()
-        for gi, chain in enumerate(self._chains or []):
-            hdr = self.table.rowCount()
-            self.table.insertRow(hdr)
-            self.table.setSpan(hdr, 0, 1, ncols)
-            self._set_group_header(hdr, chain, expanded=(gi == 0))
-            rows = self._append_chain_rows(chain, call_fields, put_fields, ncols, strike_col)
-            self._group_rows[hdr] = rows
-            if gi != 0:  # collapse all but the nearest expiry by default
-                for r in rows:
-                    self.table.setRowHidden(r, True)
-
-    def _append_chain_rows(self, chain: OptionChain, call_fields: list[str],
-                           put_fields: list[str], ncols: int, strike_col: int) -> list[int]:
-        """Append one chain's strike rows (+ its ATM marker) to the table; return their indices."""
-        spot, dte, maxvol = chain.underlying_price, chain.expiry.dte, self._maxvol(chain)
-        srows, show_atm = self._sorted_rows(chain)
-        atm = (next((i for i, r in enumerate(srows) if r.strike >= spot), len(srows))
-               if (show_atm and spot is not None) else -1)
-        rows: list[int] = []
-        for i, srow in enumerate(srows):
-            if i == atm:
-                rows.append(self._marker_row(chain, ncols, self.table.rowCount()))
-            r = self.table.rowCount()
-            self.table.insertRow(r)
-            self._fill_strike_row(r, srow, call_fields, put_fields, strike_col, spot, dte, maxvol)
-            rows.append(r)
-        if show_atm and atm >= len(srows) and spot is not None:  # spot above every strike
-            rows.append(self._marker_row(chain, ncols, self.table.rowCount()))
-        return rows
 
     def _fill_strike_row(self, ri: int, row: StrikeRow, call_fields: list[str],
                          put_fields: list[str], strike_col: int, spot: float | None, dte: int,
@@ -327,17 +338,30 @@ class OptionsTab(QtWidgets.QWidget):
             if field == "volume":
                 item.setData(QtCore.Qt.UserRole, (raw / maxvol) if (raw and maxvol) else 0.0)
                 item.setForeground(QtGui.QColor(_CALL_BAR if side == "C" else _PUT_BAR))
+            elif raw is not None and field in _GREEN:
+                item.setForeground(QtGui.QColor(theme.UP))     # bid family — green (Deribit-style)
+            elif raw is not None and field in _RED:
+                item.setForeground(QtGui.QColor(theme.DOWN))   # ask family — red (Deribit-style)
             else:
                 item.setForeground(QtGui.QColor(_CELL))   # bright like TV, not dim TEXT2
             if itm:
-                item.setBackground(QtGui.QBrush(QtGui.QColor(theme.PANEL2), QtCore.Qt.BDiagPattern))
+                hatch = QtGui.QColor(_ITM)
+                hatch.setAlpha(150)   # soften the diagonal hatch so ITM reads subtly, not busy
+                item.setBackground(QtGui.QBrush(hatch, QtCore.Qt.BDiagPattern))
             self.table.setItem(ri, base + i, item)
 
+    @staticmethod
+    def _fmt_strike(strike: float) -> str:
+        """Strike label: drop the trailing ".00" on whole strikes (BTC 64,000) while keeping
+        fractional ones (VIX 14.5) — matching how Deribit/TradingView print strikes."""
+        s = f"{strike:,.2f}"
+        return s.rstrip("0").rstrip(".") if "." in s else s
+
     def _strike_iv(self, ri: int, row: StrikeRow, strike_col: int) -> None:
-        strike = QtWidgets.QTableWidgetItem(f"{row.strike:,.2f}")
+        strike = QtWidgets.QTableWidgetItem(self._fmt_strike(row.strike))
         strike.setTextAlignment(QtCore.Qt.AlignCenter)
         strike.setForeground(QtGui.QColor(theme.TEXT))
-        strike.setBackground(QtGui.QColor(theme.PANEL))
+        strike.setBackground(QtGui.QColor(_SPINE))
         self.table.setItem(ri, strike_col, strike)
         iv = (row.call.iv if row.call else None)
         if iv is None and row.put:
@@ -353,37 +377,10 @@ class OptionsTab(QtWidgets.QWidget):
         self.table.setSpan(pos, 0, 1, ncols)
         marker = QtWidgets.QTableWidgetItem(f"{chain.underlying}   {chain.underlying_price:,.2f}")
         marker.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignCenter)
-        marker.setForeground(QtGui.QColor(theme.ACCENT))   # accent text on a dark strip (TV-style)
-        marker.setBackground(QtGui.QColor(theme.PANEL2))
+        marker.setForeground(QtGui.QColor(theme.ACCENT))   # accent text on a raised band (TV-style)
+        marker.setBackground(QtGui.QColor(_BAND))
         font = marker.font()
         font.setBold(True)
         marker.setFont(font)
         self.table.setItem(pos, 0, marker)
         return pos
-
-    def _set_group_header(self, hdr: int, chain: OptionChain, expanded: bool) -> None:
-        glyph = "▾" if expanded else "▸"
-        item = QtWidgets.QTableWidgetItem(
-            f"   {glyph}   {chain.expiry.label}   ·   {chain.expiry.dte}DTE   ·   {chain.source}")
-        item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignLeft)
-        item.setForeground(QtGui.QColor(theme.TEXT))
-        item.setBackground(QtGui.QColor(theme.RAISE))
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
-        self.table.setItem(hdr, 0, item)
-
-    def _on_cell_clicked(self, row: int, _col: int) -> None:
-        if row in self._group_rows:   # clicking an expiry header toggles its section
-            self._toggle_group(row)
-
-    def _toggle_group(self, hdr: int) -> None:
-        rows = self._group_rows.get(hdr) or []
-        if not rows:
-            return
-        hide = not self.table.isRowHidden(rows[0])
-        for r in rows:
-            self.table.setRowHidden(r, hide)
-        item = self.table.item(hdr, 0)
-        if item:
-            item.setText(item.text().replace("▾", "▸") if hide else item.text().replace("▸", "▾"))
