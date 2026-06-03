@@ -59,6 +59,10 @@ class SymbolEngineShim:
         if size <= 0:
             return
         opening = self._engine.position_of(self._symbol).size == 0
+        # A cross-zero flip (close long + open short in one order) also goes through the
+        # `opening` branch when position is currently flat *after* the close portion, but
+        # for a symbol that was already open the slot count doesn't change — so skipping
+        # _can_open when `not opening` is correct: the symbol already occupies its one slot.
         if opening and not self._can_open():
             return  # MaxOpenPositions cap reached — skip the entry (WL semantics)
         self._engine.submit(self._symbol, side_sign, size)
@@ -92,7 +96,12 @@ class SymbolEngineShim:
         cap = getattr(self._driver, "max_open_positions", 0) if self._driver is not None else 0
         if not cap:
             return True
-        open_now = sum(1 for s in self._engine.symbols if self._engine.position_of(s).size != 0)
+        # Orders fill at the NEXT bar's open, so a symbol counts toward the cap if it already holds
+        # a position OR has an order queued earlier in THIS bar (engine clears _pending each step).
+        open_now = sum(
+            1 for s in self._engine.symbols
+            if self._engine.position_of(s).size != 0 or self._engine._pending[s]
+        )
         return open_now < cap
 
 
