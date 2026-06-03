@@ -8,8 +8,19 @@ storage convention.
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
+
+
+@dataclass(frozen=True)
+class DateRange:
+    """A membership window [start_ts, end_ts] in epoch ms. end_ts None = open-ended (still a member)."""
+
+    start_ts: int
+    end_ts: int | None = None
+
+    def contains(self, ts: int) -> bool:
+        return ts >= self.start_ts and (self.end_ts is None or ts <= self.end_ts)
 
 
 @dataclass
@@ -20,6 +31,18 @@ class DataSet:
     symbols: list[str] = field(default_factory=list)
     provider: str | None = None   # None = Auto (infer crypto/forex), else an explicit provider
     interval: str = "1m"
+    ranges: dict[str, list[DateRange]] = field(default_factory=dict)
+
+    def is_dynamic(self) -> bool:
+        """True when any symbol has explicit membership windows (WealthLab dynamic DataSet)."""
+        return any(self.ranges.values())
+
+    def active_at(self, symbol: str, ts: int) -> bool:
+        """Whether ``symbol`` is a member at ``ts``. A symbol with no ranges is always active."""
+        windows = self.ranges.get(symbol)
+        if not windows:
+            return True
+        return any(w.contains(ts) for w in windows)
 
 
 def parse_symbols(text: str) -> list[str]:
@@ -61,17 +84,44 @@ def dataset_path(root: str, name: str) -> Path:
     return datasets_dir(root) / f"{_slug(name)}.json"
 
 
+def _dataset_to_dict(d: DataSet) -> dict:
+    return {
+        "name": d.name,
+        "symbols": list(d.symbols),
+        "provider": d.provider,
+        "interval": d.interval,
+        "ranges": {
+            sym: [{"start_ts": w.start_ts, "end_ts": w.end_ts} for w in windows]
+            for sym, windows in d.ranges.items()
+        },
+    }
+
+
+def _dataset_from_dict(data: dict) -> DataSet:
+    ranges = {
+        sym: [DateRange(w["start_ts"], w.get("end_ts")) for w in windows]
+        for sym, windows in (data.get("ranges") or {}).items()
+    }
+    return DataSet(
+        name=data["name"],
+        symbols=list(data.get("symbols", [])),
+        provider=data.get("provider"),
+        interval=data.get("interval", "1m"),
+        ranges=ranges,
+    )
+
+
 def save_dataset(d: DataSet, root: str) -> None:
     path = dataset_path(root, d.name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(d), indent=2))
+    path.write_text(json.dumps(_dataset_to_dict(d), indent=2), encoding="utf-8")
 
 
 def load_dataset(name: str, root: str) -> DataSet | None:
     path = dataset_path(root, name)
     if not path.exists():
         return None
-    return DataSet(**json.loads(path.read_text()))
+    return _dataset_from_dict(json.loads(path.read_text()))
 
 
 def list_datasets(root: str) -> list[str]:
