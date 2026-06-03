@@ -321,12 +321,17 @@ class DataManagerTab(QtWidgets.QWidget):
         Returns the number of bars now cached for the window. The prompt-free path the Download
         dialog and tests call.
         """
+        from ..data.provider_chain import fetch_for
         now = int(time.time() * 1000)
-        src = select_source(symbol, provider=provider or None)
-        bars = get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root,
-                        fetcher=src.fetch_bars_range)
+
+        def fetcher(sym, iv, start, end, progress=None):
+            bars, _used = fetch_for(sym, iv, start, end, root=self._config_root,
+                                    linked_provider=provider or None, progress=progress)
+            return bars
+
+        bars = get_bars(symbol, interval, now - days * _DAY_MS, now, root=self._root, fetcher=fetcher)
         self.refresh()
-        self._log(f"Downloaded {symbol} {interval} via {src.name} ({days}d)")
+        self._log(f"Downloaded {symbol} {interval} ({days}d) via provider chain")
         return len(bars)
 
     def _on_download(self) -> None:

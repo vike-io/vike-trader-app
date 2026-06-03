@@ -128,28 +128,29 @@ def test_datamanager_import_csv_aggregates_to_target(app, tmp_path):
     assert len(ps.read_series(str(tmp_path), "BTCUSDT", "5m")) == 1
 
 
-def test_datamanager_download_series_routes_to_chosen_provider(app, tmp_path, monkeypatch):
+def test_datamanager_download_series_routes_through_chain(app, tmp_path, monkeypatch):
     import vike_trader_app.ui.datamanager as dm
+    from vike_trader_app.core.model import Bar
 
     captured = {}
 
-    class _Src:
-        name = "bybit"
+    def fake_fetch_for(sym, iv, s, e, root=None, linked_provider=None, progress=None):
+        captured["sym"] = sym
+        captured["linked"] = linked_provider
+        return [Bar(ts=1, open=1, high=1, low=1, close=1)], "bybit"
 
-        def fetch_bars_range(self, *a, **k):
-            return []
-
-    def fake_select(symbol, provider=None):
-        captured["provider"] = provider
-        return _Src()
-
-    monkeypatch.setattr(dm, "select_source", fake_select)
-    monkeypatch.setattr(dm, "get_bars", lambda *a, **k: [])
+    # download_series builds a fetcher closure that calls fetch_for; make get_bars invoke it once.
+    monkeypatch.setattr("vike_trader_app.data.provider_chain.fetch_for", fake_fetch_for)
+    monkeypatch.setattr(dm, "get_bars",
+                        lambda symbol, interval, start, end, root=None, fetcher=None, progress=None:
+                        fetcher(symbol, interval, start, end) if fetcher else [])
     tab = dm.DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
     tab.refresh()
-    tab.download_series("BTCUSDT", "1m", 5, provider="bybit")
-    assert captured["provider"] == "bybit"
-    assert "via bybit" in tab._log_view.toPlainText()
+    n = tab.download_series("BTCUSDT", "1m", 5, provider="bybit")
+    assert n == 1
+    assert captured["sym"] == "BTCUSDT"
+    assert captured["linked"] == "bybit"          # the chosen provider becomes the linked-first
+    assert "via provider chain" in tab._log_view.toPlainText()
 
 
 def test_datamanager_download_dataset_iterates_symbols(app, tmp_path, monkeypatch):
