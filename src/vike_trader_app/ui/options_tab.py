@@ -26,6 +26,8 @@ _ITM = theme.BORDER      # diagonal-hatch tone for in-the-money cells (visible o
 _SPINE = theme.HOVER     # subtly raised centre Strike column (the spine)
 _BAND = theme.HOVER      # ATM spot-price marker band
 _SECTION = theme.BG      # recessed grouped-expiry section header
+_GREEN = {"bid", "bidpct"}   # Deribit-style: bid family rendered in UP green
+_RED = {"ask", "askpct"}     # ask family rendered in DOWN red
 
 
 class _VolumeBarDelegate(QtWidgets.QStyledItemDelegate):
@@ -338,14 +340,27 @@ class OptionsTab(QtWidgets.QWidget):
             if field == "volume":
                 item.setData(QtCore.Qt.UserRole, (raw / maxvol) if (raw and maxvol) else 0.0)
                 item.setForeground(QtGui.QColor(_CALL_BAR if side == "C" else _PUT_BAR))
+            elif raw is not None and field in _GREEN:
+                item.setForeground(QtGui.QColor(theme.UP))     # bid family — green (Deribit-style)
+            elif raw is not None and field in _RED:
+                item.setForeground(QtGui.QColor(theme.DOWN))   # ask family — red (Deribit-style)
             else:
                 item.setForeground(QtGui.QColor(_CELL))   # bright like TV, not dim TEXT2
             if itm:
-                item.setBackground(QtGui.QBrush(QtGui.QColor(_ITM), QtCore.Qt.BDiagPattern))
+                hatch = QtGui.QColor(_ITM)
+                hatch.setAlpha(150)   # soften the diagonal hatch so ITM reads subtly, not busy
+                item.setBackground(QtGui.QBrush(hatch, QtCore.Qt.BDiagPattern))
             self.table.setItem(ri, base + i, item)
 
+    @staticmethod
+    def _fmt_strike(strike: float) -> str:
+        """Strike label: drop the trailing ".00" on whole strikes (BTC 64,000) while keeping
+        fractional ones (VIX 14.5) — matching how Deribit/TradingView print strikes."""
+        s = f"{strike:,.2f}"
+        return s.rstrip("0").rstrip(".") if "." in s else s
+
     def _strike_iv(self, ri: int, row: StrikeRow, strike_col: int) -> None:
-        strike = QtWidgets.QTableWidgetItem(f"{row.strike:,.2f}")
+        strike = QtWidgets.QTableWidgetItem(self._fmt_strike(row.strike))
         strike.setTextAlignment(QtCore.Qt.AlignCenter)
         strike.setForeground(QtGui.QColor(theme.TEXT))
         strike.setBackground(QtGui.QColor(_SPINE))

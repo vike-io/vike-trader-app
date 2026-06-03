@@ -118,7 +118,7 @@ def test_column_header_sort_reorders_and_drops_atm_marker():
     spanned = [r for r in range(tab.table.rowCount())
                if tab.table.columnSpan(r, 0) == tab.table.columnCount()]
     assert spanned == [] and tab.table.rowCount() == 3  # ATM marker dropped while sorted
-    assert [tab.table.item(r, strike_col).text() for r in range(3)] == ["110.00", "120.00", "100.00"]
+    assert [tab.table.item(r, strike_col).text() for r in range(3)] == ["110", "120", "100"]
 
     tab._on_header_clicked(strike_col)  # back to strike order
     assert tab._sort is None
