@@ -206,6 +206,11 @@ class ResultsPanel(QtWidgets.QWidget):
         self._dist.setLabel("left", "count")
         self._tabs.addTab(self._dist, "Distribution")
 
+    def mount_chart_tab(self, chart: QtWidgets.QWidget) -> None:
+        """Add the price chart as a 'Chart' tab after Distribution, so the reports and the chart
+        share one top tab strip (Equity | Performance | Trades | Runs | Distribution | Chart)."""
+        self._tabs.addTab(chart, "Chart")
+
     def _update_distribution(self, returns) -> None:
         self._dist.clear()
         edges, counts = report_extras.returns_histogram(returns, bins=20)
@@ -954,9 +959,6 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_export.clicked.connect(self._export_csv)
         toolbar.addWidget(self._btn_export)
 
-        # splitter
-        self._splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-
         self.chat = ChatPanel()
         self.editor = CodeEditor()
         self.results = ResultsPanel()
@@ -975,18 +977,27 @@ class StudioTab(QtWidgets.QWidget):
         ep.addWidget(toolbar_row)
         ep.addWidget(self.editor, 1)
 
-        self._splitter.addWidget(self.chat)
-        self._splitter.addWidget(editor_pane)
-        self._splitter.addWidget(self.results)
-        # Equal thirds: chat | editor | results each get 1/3 of the width under the chart.
-        for _i in range(3):
-            self._splitter.setStretchFactor(_i, 1)
-        self._splitter.setSizes([1000, 1000, 1000])
-        self._splitter.setCollapsible(0, True)
-        self._splitter.setCollapsible(1, False)
-        self._splitter.setCollapsible(2, False)
+        # Bottom: two half-width cards — code editor (left) | AI Studio chat (right).
+        self._bottom = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._bottom.addWidget(editor_pane)
+        self._bottom.addWidget(self.chat)
+        self._bottom.setStretchFactor(0, 1)
+        self._bottom.setStretchFactor(1, 1)
+        self._bottom.setSizes([1000, 1000])
+        self._bottom.setCollapsible(0, False)
+        self._bottom.setCollapsible(1, True)
 
-        root.addWidget(self._splitter, stretch=1)
+        # Top: the tabbed results (Equity | Performance | Trades | Runs | Distribution [| Chart]).
+        # mount_chart() adds the price chart as the trailing "Chart" tab. Reports/chart on top,
+        # editor | AI-studio chat below — one tab strip up top, two cards below.
+        self._vsplit = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self._vsplit.addWidget(self.results)
+        self._vsplit.addWidget(self._bottom)
+        self._vsplit.setStretchFactor(0, 3)
+        self._vsplit.setStretchFactor(1, 2)
+        self._vsplit.setCollapsible(0, False)
+        self._vsplit.setCollapsible(1, True)
+        root.addWidget(self._vsplit, stretch=1)
 
         self.chat.promptSubmitted.connect(self._on_prompt)
 
@@ -1005,25 +1016,14 @@ class StudioTab(QtWidgets.QWidget):
         self._toolbar.addWidget(bar, 1)
 
     def mount_bots(self, bots: QtWidgets.QWidget) -> None:
-        """Host the Bots panel as the leftmost pane of the Studio splitter (moved from a dock)."""
-        self._splitter.insertWidget(0, bots)
-        # rebalance panes: bots | chat | editor | results
-        for i, factor in enumerate((2, 2, 3, 3)):
-            self._splitter.setStretchFactor(i, factor)
-        self._splitter.setCollapsible(0, True)
+        """Host the Bots panel as the leftmost card of the bottom row (moved from a dock)."""
+        self._bottom.insertWidget(0, bots)
+        self._bottom.setCollapsible(0, True)
 
     def mount_chart(self, chart: QtWidgets.QWidget) -> None:
-        """Host the price chart as the hero, above the bots|chat|editor|results row."""
-        vsplit = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        idx = self.layout().indexOf(self._splitter)
-        self.layout().removeWidget(self._splitter)
-        vsplit.addWidget(chart)
-        vsplit.addWidget(self._splitter)
-        vsplit.setStretchFactor(0, 3)   # chart
-        vsplit.setStretchFactor(1, 4)   # the panes row
-        vsplit.setCollapsible(0, True)
-        self.layout().insertWidget(idx, vsplit, 1)
-        self._vsplit = vsplit
+        """Host the price chart (with its playback controls) as the 'Chart' tab in the results,
+        after Distribution — reports and the chart switch via the one top tab strip."""
+        self.results.mount_chart_tab(chart)
 
     # --- state setters ---
 

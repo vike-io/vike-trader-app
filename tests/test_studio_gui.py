@@ -64,10 +64,13 @@ def test_studio_run_bad_strategy_shows_error(app):
     assert getattr(tab.results, "last_report", None) is None
 
 
-def test_studio_has_three_panes(app):
+def test_studio_layout_reports_top_editor_chat_bottom(app):
+    # New layout: results/chart tab strip on top; editor | AI-studio chat as two cards below.
     tab = StudioTab()
-    splitters = tab.findChildren(QtWidgets.QSplitter)
-    assert splitters and splitters[0].count() == 3
+    assert tab._vsplit.count() == 2                       # [results, bottom-row]
+    assert tab._vsplit.widget(0) is tab.results          # reports + chart tabs on top
+    assert tab._bottom.count() == 2                       # editor | chat, two half-width cards
+    assert tab._bottom.widget(1) is tab.chat             # AI Studio chat is the right card
 
 
 def test_chat_without_client_is_graceful(app):
