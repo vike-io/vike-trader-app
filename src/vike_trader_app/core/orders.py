@@ -18,6 +18,7 @@ class Order:
     price: float | None = None    # limit/stop trigger
     trail: float | None = None    # trailing distance (absolute)
     extreme: float | None = None  # running best price since submission (trailing only)
+    weight: float = 0.0           # Transaction.Weight: cross-symbol fill priority (higher fills first)
 
 
 def order_fill_price(o: "Order", bar):

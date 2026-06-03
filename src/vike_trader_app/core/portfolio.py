@@ -48,11 +48,11 @@ class PortfolioStrategy:
     def price(self, symbol: str) -> float:
         return self._engine.price_of(symbol)
 
-    def buy(self, symbol: str, size: float) -> None:
-        self._engine.submit(symbol, +1, size)
+    def buy(self, symbol: str, size: float, weight: float = 0.0) -> None:
+        self._engine.submit(symbol, +1, size, weight=weight)
 
-    def sell(self, symbol: str, size: float) -> None:
-        self._engine.submit(symbol, -1, size)
+    def sell(self, symbol: str, size: float, weight: float = 0.0) -> None:
+        self._engine.submit(symbol, -1, size, weight=weight)
 
     def close(self, symbol: str) -> None:
         self._engine.submit_close(symbol)
@@ -130,7 +130,8 @@ class PortfolioEngine:
     def __init__(self, bars_by_symbol, strategy, fee_rate: float = 0.0, cash: float = 10_000.0,
                  slippage: float = 0.0, maker_fee: float | None = None,
                  taker_fee: float | None = None, multiplier: float = 1.0,
-                 leverage: float | None = None, maint_margin: float = 0.0):
+                 leverage: float | None = None, maint_margin: float = 0.0,
+                 cash_gate: bool = False):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -146,6 +147,8 @@ class PortfolioEngine:
         self.multiplier = multiplier
         self.leverage = leverage
         self.maint_margin = maint_margin
+        self.cash_gate = cash_gate
+        self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
         self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
         self._pos: dict[str, Position] = {s: Position() for s in self.symbols}
@@ -215,10 +218,10 @@ class PortfolioEngine:
                 self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
 
     # --- order intake ---
-    def submit(self, symbol: str, side_sign: int, size: float) -> None:
+    def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0) -> None:
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._pending[symbol].append(Order("market", side_sign, size))
+            self._pending[symbol].append(Order("market", side_sign, size, weight=weight))
 
     def submit_close(self, symbol: str) -> None:
         pos = self._pos[symbol]
@@ -226,15 +229,15 @@ class PortfolioEngine:
             side = -1 if pos.size > 0 else 1
             self._pending[symbol].append(Order("market", side, abs(pos.size)))
 
-    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float) -> None:
-        self._pending[symbol].append(Order("limit", side_sign, size, price=price))
+    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight))
 
-    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float) -> None:
-        self._pending[symbol].append(Order("stop", side_sign, size, price=price))
+    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._pending[symbol].append(Order("stop", side_sign, size, price=price, weight=weight))
 
-    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float) -> None:
+    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
-                                           extreme=self._price[symbol]))
+                                           extreme=self._price[symbol], weight=weight))
 
     def cancel_all(self, symbol: str) -> None:
         self._pending[symbol] = []
@@ -243,15 +246,16 @@ class PortfolioEngine:
     def run(self) -> PortfolioResult:
         equity_curve: list[float] = []
         for i in range(self.n):
-            for s in self.symbols:
-                bar = self.bars[s][i]
-                self._fill_pending(s, bar)  # fills before decisions => next-open
+            cur = {s: self.bars[s][i] for s in self.symbols}
+            if self.cash_gate:
+                self._fill_step_gated(cur)  # cross-symbol shared-cash priority + drop gate
+            else:
+                for s in self.symbols:
+                    self._fill_pending(s, cur[s])  # fills before decisions => next-open
             self.strategy.index = i
-            cur = {}
             for s in self.symbols:
-                bar = self.bars[s][i]
+                bar = cur[s]
                 self._price[s] = bar.close
-                cur[s] = bar
                 if bar.funding is not None and self._pos[s].size != 0:
                     self.cash -= funding_charge(self._pos[s].size, bar.close, bar.funding, self.multiplier)
             self._check_liquidation(cur)
@@ -274,6 +278,40 @@ class PortfolioEngine:
             else:
                 self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
+
+    def _fill_step_gated(self, cur):
+        """Collect every triggered fill across symbols this bar, then apply with a shared-cash gate.
+        Reductions/closes (which free cash) fill first; opening/adding fills are sorted by weight desc
+        (ties: trigger order) and applied only while they stay fundable — the rest are DROPPED (WL's
+        'dropped due to insufficient funds'). Trailing extremes ratchet exactly once via order_fill_price.
+        """
+        opens, frees = [], []
+        seq = 0
+        for s in self.symbols:
+            still = []
+            for o in self._pending[s]:
+                fp = order_fill_price(o, cur[s])
+                if fp is None:
+                    still.append(o)
+                    continue
+                pos = self._pos[s]
+                increasing = pos.size == 0 or (pos.size > 0) == (o.side > 0)
+                (opens if increasing else frees).append((s, o, fp, seq))
+                seq += 1
+            self._pending[s] = still
+        # reductions/closes first — they free cash and never get gated
+        for s, o, fp, _ in frees:
+            self._apply_fill(s, o.side, o.size, fp, cur[s].ts, is_maker=o.kind == "limit")
+        # opens/adds: highest weight first, ties by trigger order; drop the unfundable
+        for s, o, fp, _ in sorted(opens, key=lambda t: (-t[1].weight, t[3])):
+            slipped = adverse_fill_price(fp, o.side, self.slippage)
+            rate = self.maker_fee if o.kind == "limit" else self.taker_fee
+            fee = _fee(o.size, slipped, rate, self.multiplier)
+            cash_impact = -(o.side * o.size) * slipped * self.multiplier - fee  # buys cost, sells free
+            if self.cash + cash_impact < 0.0:
+                self.dropped.append((s, o.kind, o.size, o.weight))
+                continue
+            self._apply_fill(s, o.side, o.size, fp, cur[s].ts, is_maker=o.kind == "limit")
 
     def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int,
                     is_maker: bool = False) -> None:

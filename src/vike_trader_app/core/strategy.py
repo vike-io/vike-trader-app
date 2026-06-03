@@ -53,35 +53,35 @@ class Strategy:
         return self._engine.forming_for(tf)
 
     # --- actions (resolved by the engine) ---
-    def buy(self, size: float) -> None:
-        self._engine.submit(+1, size)
+    def buy(self, size: float, weight: float = 0.0) -> None:
+        self._engine.submit(+1, size, weight=weight)
 
-    def sell(self, size: float) -> None:
-        self._engine.submit(-1, size)
+    def sell(self, size: float, weight: float = 0.0) -> None:
+        self._engine.submit(-1, size, weight=weight)
 
     def close(self) -> None:
         self._engine.submit_close()
 
     # --- resting orders (fill on a future bar when the trigger is hit) ---
-    def limit_buy(self, size: float, price: float) -> None:
-        self._engine.submit_limit(+1, size, price)
+    def limit_buy(self, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_limit(+1, size, price, weight=weight)
 
-    def limit_sell(self, size: float, price: float) -> None:
-        self._engine.submit_limit(-1, size, price)
+    def limit_sell(self, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_limit(-1, size, price, weight=weight)
 
-    def stop_buy(self, size: float, price: float) -> None:
-        self._engine.submit_stop(+1, size, price)
+    def stop_buy(self, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_stop(+1, size, price, weight=weight)
 
-    def stop_sell(self, size: float, price: float) -> None:
-        self._engine.submit_stop(-1, size, price)
+    def stop_sell(self, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_stop(-1, size, price, weight=weight)
 
-    def trailing_stop(self, size: float, trail: float) -> None:
+    def trailing_stop(self, size: float, trail: float, weight: float = 0.0) -> None:
         """Protective trailing sell-stop for a long: exits ``trail`` below the peak."""
-        self._engine.submit_trailing(-1, size, trail)
+        self._engine.submit_trailing(-1, size, trail, weight=weight)
 
-    def trailing_stop_cover(self, size: float, trail: float) -> None:
+    def trailing_stop_cover(self, size: float, trail: float, weight: float = 0.0) -> None:
         """Protective trailing buy-stop for a short: covers ``trail`` above the trough."""
-        self._engine.submit_trailing(+1, size, trail)
+        self._engine.submit_trailing(+1, size, trail, weight=weight)
 
     def cancel_all(self) -> None:
         """Cancel all resting (and not-yet-filled) orders."""

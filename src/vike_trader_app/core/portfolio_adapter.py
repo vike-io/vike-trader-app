@@ -56,7 +56,7 @@ class SymbolEngineShim:
         return self._driver.drawdown_now() if self._driver is not None else 0.0
 
     # --- market orders ---
-    def submit(self, side_sign: int, size: float) -> None:
+    def submit(self, side_sign: int, size: float, weight: float = 0.0) -> None:
         if size <= 0:
             return
         opening = self._engine.position_of(self._symbol).size == 0
@@ -66,7 +66,7 @@ class SymbolEngineShim:
         # _can_open when `not opening` is correct: the symbol already occupies its one slot.
         if opening and not self._can_open():
             return  # MaxOpenPositions cap reached — skip the entry (WL semantics)
-        self._engine.submit(self._symbol, side_sign, size)
+        self._engine.submit(self._symbol, side_sign, size, weight=weight)
 
     def submit_close(self) -> None:
         self._engine.submit_close(self._symbol)
@@ -88,14 +88,14 @@ class SymbolEngineShim:
     # NOTE: resting orders bypass the MaxOpenPositions cap for now (the cap is checked in
     # submit() for market entries only). This is an accepted v1 limitation — cap-at-fill
     # for resting orders is deferred to W2-C.
-    def submit_limit(self, side_sign: int, size: float, price: float) -> None:
-        self._engine.submit_limit(self._symbol, side_sign, size, price)
+    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_limit(self._symbol, side_sign, size, price, weight=weight)
 
-    def submit_stop(self, side_sign: int, size: float, price: float) -> None:
-        self._engine.submit_stop(self._symbol, side_sign, size, price)
+    def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_stop(self._symbol, side_sign, size, price, weight=weight)
 
-    def submit_trailing(self, side_sign: int, size: float, trail: float) -> None:
-        self._engine.submit_trailing(self._symbol, side_sign, size, trail)
+    def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
+        self._engine.submit_trailing(self._symbol, side_sign, size, trail, weight=weight)
 
     def cancel_all(self) -> None:
         self._engine.cancel_all(self._symbol)
@@ -170,7 +170,8 @@ class MultiSymbolStrategyRunner:
                                  fee_rate=self.config.fee_rate, cash=self.config.cash,
                                  slippage=self.config.slippage, maker_fee=self.config.maker_fee,
                                  taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
-                                 leverage=self.config.leverage, maint_margin=self.config.maint_margin)
+                                 leverage=self.config.leverage, maint_margin=self.config.maint_margin,
+                                 cash_gate=self.config.cash_gate)
         return engine.run()
 
     def report(self):

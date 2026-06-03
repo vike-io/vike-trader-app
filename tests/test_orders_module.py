@@ -29,3 +29,24 @@ def test_trailing_sell_ratchets_then_triggers():
     assert o.extreme == 110.0
     # next bar: trigger 110-5=105, low 104 <= 105 -> fills at 105 (does NOT stop on its own low first)
     assert order_fill_price(o, _bar(108, 108, 104, 104)) == 105.0
+
+
+def test_order_weight_defaults_zero_and_is_settable():
+    assert Order("market", +1, 1.0).weight == 0.0
+    assert Order("market", +1, 1.0, weight=2.5).weight == 2.5
+
+
+def test_strategy_limit_buy_lands_weight_in_pending():
+    from vike_trader_app.core.engine import BacktestEngine
+    from vike_trader_app.core.strategy import Strategy
+
+    class _Rest(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.limit_buy(1.0, 95.0, weight=3.0)
+
+    eng = BacktestEngine([_bar(100, 101, 99, 100), _bar(100, 101, 99, 100)], _Rest())
+    eng.run()
+    # the resting limit never triggered (low 99 > 95), so it's still pending with its weight
+    assert eng._pending[0].weight == 3.0
+    assert eng._pending[0].kind == "limit"
