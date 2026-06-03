@@ -16,6 +16,12 @@ def test_resolve_order_linked_provider_goes_first_without_duplication():
     assert pcfg.resolve_order("BTCUSDT", "kraken", cfg) == ["kraken", "binance", "okx"]
 
 
+def test_resolve_order_disabled_linked_is_still_promoted():
+    # a DataSet linked to a provider overrides its disabled state in the config (promoted first)
+    cfg = ProvidersConfig([ProviderEntry("binance", True), ProviderEntry("okx", False)])
+    assert pcfg.resolve_order("BTCUSDT", "okx", cfg) == ["okx", "binance"]
+
+
 def test_fetch_for_walks_config_chain(tmp_path):
     save_providers_config(ProvidersConfig([ProviderEntry("dead", True), ProviderEntry("good", True)]),
                           str(tmp_path))

@@ -27,7 +27,12 @@ def fetch_chain(provider_names, symbol, interval, start_ms, end_ms, progress=Non
 
 
 def resolve_order(symbol, linked_provider, cfg):
-    """Provider names to try for ``symbol``: linked provider first, then the enabled chain in order."""
+    """Provider names to try, linked provider first, then the enabled chain in order.
+
+    ``symbol`` is accepted for parity with ``fetch_for`` and reserved for future per-symbol
+    routing; the current ordering is symbol-independent. A linked provider is always promoted
+    to the front even when it's disabled in the config (an explicit per-DataSet override).
+    """
     order = cfg.enabled_in_order()
     if linked_provider:
         order = [linked_provider] + [n for n in order if n != linked_provider]
