@@ -56,3 +56,48 @@ def test_fx_preset_seeded_and_dukascopy_linked():
     assert "FX Majors" in presets
     assert presets["FX Majors"].provider == "dukascopy"
     assert "EURUSD" in presets["FX Majors"].symbols
+
+
+def test_daterange_and_is_dynamic():
+    from vike_trader_app.data.datasets import DataSet, DateRange
+    plain = DataSet("P", ["BTCUSDT"])
+    assert plain.ranges == {} and plain.is_dynamic() is False
+    dyn = DataSet("D", ["AAA", "BBB"], ranges={"AAA": [DateRange(1000, 2000)]})
+    assert dyn.is_dynamic() is True
+
+
+def test_active_at_respects_windows():
+    from vike_trader_app.data.datasets import DataSet, DateRange
+    # AAA member 1000..2000 (inclusive); BBB has an open-ended window from 3000
+    d = DataSet("D", ["AAA", "BBB"], ranges={"AAA": [DateRange(1000, 2000)], "BBB": [DateRange(3000, None)]})
+    assert d.active_at("AAA", 999) is False
+    assert d.active_at("AAA", 1000) is True
+    assert d.active_at("AAA", 2000) is True
+    assert d.active_at("AAA", 2001) is False
+    assert d.active_at("BBB", 5000) is True       # open-ended
+    assert d.active_at("CCC", 5000) is True        # no ranges for a symbol -> always active
+    assert d.active_at("AAA", 1500) is True
+
+
+def test_save_load_roundtrips_ranges(tmp_path):
+    from vike_trader_app.data import datasets as ds
+    from vike_trader_app.data.datasets import DataSet, DateRange
+    d = DataSet("D", ["AAA", "BBB"], provider="binance", interval="1d",
+                ranges={"AAA": [DateRange(1000, 2000), DateRange(4000, None)]})
+    ds.save_dataset(d, str(tmp_path))
+    back = ds.load_dataset("D", str(tmp_path))
+    assert back == d
+    assert back.ranges["AAA"] == [DateRange(1000, 2000), DateRange(4000, None)]
+    assert back.is_dynamic() is True
+
+
+def test_load_old_format_without_ranges_is_back_compat(tmp_path):
+    import json
+    from pathlib import Path
+    from vike_trader_app.data import datasets as ds
+    # an OLD-format file written before ranges existed (no "ranges" key)
+    p = Path(str(tmp_path)) / "datasets"
+    p.mkdir(parents=True, exist_ok=True)
+    (p / "old.json").write_text(json.dumps({"name": "old", "symbols": ["X"], "provider": None, "interval": "1m"}))
+    back = ds.load_dataset("old", str(tmp_path))
+    assert back is not None and back.symbols == ["X"] and back.ranges == {} and back.is_dynamic() is False
