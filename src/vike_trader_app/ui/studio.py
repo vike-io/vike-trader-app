@@ -1022,6 +1022,13 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_collapse_top = QtWidgets.QToolButton()
         self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_up", theme.TEXT2))
         self._btn_collapse_top.setIconSize(QtCore.QSize(icons.ARROW_PX, icons.ARROW_PX))  # unified arrow size
+        self._btn_collapse_top.setCursor(QtCore.Qt.PointingHandCursor)
+        # Borderless: a bare chevron like the dropdown carets (no boxy default-QToolButton frame),
+        # just a subtle hover. Same glyph/size/weight as every other arrow.
+        self._btn_collapse_top.setStyleSheet(
+            f"QToolButton{{background:transparent;border:none;padding:3px;"
+            f"border-radius:{theme.RADIUS_SM}px;}}"
+            f"QToolButton:hover{{background:{theme.HOVER};}}")
         self._btn_collapse_top.setToolTip("Collapse / expand chart & report")
         self._btn_collapse_top.clicked.connect(self._toggle_top_panel)
 
