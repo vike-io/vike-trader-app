@@ -147,6 +147,8 @@ class _MultiSymbolDriver(PortfolioStrategy):
     def on_bar(self, ts: int, bars: dict) -> None:
         self._ensure_init()
         for sym, bar in bars.items():
+            if not self._engine.is_active(sym):  # inactive member this bar: don't run its strategy
+                continue
             inner = self._inner[sym]
             if self.index < getattr(inner, "WARMUP", 0):  # honor each strategy's warmup
                 continue
@@ -157,21 +159,36 @@ class _MultiSymbolDriver(PortfolioStrategy):
 class MultiSymbolStrategyRunner:
     """Run a single-symbol ``Strategy`` class across every symbol in a DataSet (portfolio backtest)."""
 
-    def __init__(self, strategy_cls, bars_by_symbol: dict, config, max_open_positions: int = 0):
+    def __init__(self, strategy_cls, bars_by_symbol: dict, config, max_open_positions: int = 0,
+                 ranges: dict | None = None):
         self.strategy_cls = strategy_cls
         self.bars_by_symbol = bars_by_symbol
         self.config = config
         self.max_open_positions = max_open_positions
+        # Optional per-symbol membership windows {symbol: [DateRange, ...]} (dynamic DataSet). Falsy
+        # (None / {}) leaves behavior identical to a static set — no activity mask is built.
+        self.ranges = ranges
+        self._engine = None  # the PortfolioEngine built by the most recent run() (probe/diagnostics)
 
     def run(self) -> PortfolioResult:
         aligned = align_bars(self.bars_by_symbol)
         driver = _MultiSymbolDriver(self.strategy_cls, list(aligned), self.max_open_positions)
+        active_mask = None
+        if self.ranges:
+            active_mask = {}
+            for s in aligned:
+                windows = self.ranges.get(s)
+                if not windows:
+                    active_mask[s] = [True] * len(aligned[s])
+                else:
+                    active_mask[s] = [any(w.contains(b.ts) for w in windows) for b in aligned[s]]
         engine = PortfolioEngine(aligned, driver,
                                  fee_rate=self.config.fee_rate, cash=self.config.cash,
                                  slippage=self.config.slippage, maker_fee=self.config.maker_fee,
                                  taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
                                  leverage=self.config.leverage, maint_margin=self.config.maint_margin,
-                                 cash_gate=self.config.cash_gate)
+                                 cash_gate=self.config.cash_gate, active_mask=active_mask)
+        self._engine = engine
         return engine.run()
 
     def report(self):

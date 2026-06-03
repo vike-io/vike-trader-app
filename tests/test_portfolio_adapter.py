@@ -216,3 +216,89 @@ def test_single_symbol_portfolio_matches_engine_with_costs():
     assert len(result.trades) == len(ref.trades) == 1
     assert result.trades[0].pnl == __import__("pytest").approx(ref.trades[0].pnl, rel=1e-9)
     assert result.trades[0].fees == __import__("pytest").approx(ref.trades[0].fees, rel=1e-9)
+
+
+# --- W4-B: per-symbol membership windows (dynamic / survivorship-free DataSets) ---
+
+
+def test_inactive_symbol_does_not_open():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.data.datasets import DateRange
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _b(ts, px):
+        return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    # B is only a member from ts=25 onward; it must not open on the ts=10 or ts=20 bars.
+    # A 4th bar (ts=40) lets B's first (active) order — submitted on the ts=30 bar — actually fill,
+    # so we can assert its entry timestamp instead of relying on a no-next-bar accident.
+    a = [_b(10, 100), _b(20, 100), _b(30, 100), _b(40, 100)]
+    b = [_b(10, 50), _b(20, 50), _b(30, 50), _b(40, 50)]
+    ranges = {"B": [DateRange(25, None)]}
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=10_000.0),
+                                       ranges=ranges)
+    res = runner.run()
+    eng = runner._engine  # probe: the PortfolioEngine the runner built this run
+
+    # A is always active: it buys on the ts=10 bar and fills at the ts=20 open -> entry_ts == 20.
+    # B is inactive on ts=10/ts=20 (skipped, no order), first buys on the ts=30 bar (active),
+    # which fills at the ts=40 open -> entry_ts == 40. If membership were ignored, B would have
+    # filled at the ts=20 open (entry_ts == 20) like A.
+    assert eng._pos["A"].size == 1.0 and eng._entry_ts["A"] == 20
+    assert eng._pos["B"].size == 1.0, "B must hold exactly one unit opened on its first active bar"
+    assert eng._entry_ts["B"] == 40, "B's position must not predate its activation (no fill while inactive)"
+    # And no completed trade for B ever closed (it only opened on the last fillable bar).
+    assert [t for t in res.trades if t.symbol == "B"] == []
+
+
+def test_auto_close_on_removal_no_lookahead():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.data.datasets import DateRange
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _o(ts, o, h, l, c):
+        return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    # A is a member only through ts=20; it buys at ts=10 (fills @ ts=20 open=100), then is removed at ts=30
+    # -> force-closed at ts=30's OPEN (107), NOT its high/low -> exit price 107, no look-ahead.
+    a = [_o(10, 100, 101, 99, 100), _o(20, 100, 105, 99, 104), _o(30, 107, 120, 106, 119)]
+    ranges = {"A": [DateRange(0, 20)]}
+    res = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=10_000.0), ranges=ranges).run()
+    closed = [t for t in res.trades if t.symbol == "A"]
+    assert len(closed) == 1
+    assert closed[0].exit_price == 107.0          # removal-bar OPEN, not 120 (high) -> no look-ahead
+    assert closed[0].entry_price == 100.0
+
+
+def test_empty_ranges_identical_to_no_mask():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _b(ts, px):
+        return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    a = [_b(10, 100), _b(20, 110), _b(30, 120)]
+    base = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=10_000.0)).run()
+    withr = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=10_000.0), ranges={}).run()
+    assert base.final_equity == withr.final_equity and len(base.trades) == len(withr.trades)

@@ -131,7 +131,7 @@ class PortfolioEngine:
                  slippage: float = 0.0, maker_fee: float | None = None,
                  taker_fee: float | None = None, multiplier: float = 1.0,
                  leverage: float | None = None, maint_margin: float = 0.0,
-                 cash_gate: bool = False):
+                 cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -148,6 +148,11 @@ class PortfolioEngine:
         self.leverage = leverage
         self.maint_margin = maint_margin
         self.cash_gate = cash_gate
+        # Optional per-symbol membership windows (dynamic / survivorship-free DataSets): for each
+        # symbol a list[bool] aligned to the bar series — True == active member that bar. None
+        # (default) == every symbol always active, i.e. today's behavior byte-for-byte.
+        self.active_mask = active_mask
+        self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
         self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
@@ -159,6 +164,11 @@ class PortfolioEngine:
             s: bars_by_symbol[s][0].open if self.n else 0.0 for s in self.symbols
         }
         strategy._engine = self
+
+    # --- membership (dynamic DataSet) ---
+    def is_active(self, symbol: str) -> bool:
+        """Whether ``symbol`` is an active member on the current step's bar. No mask == always active."""
+        return self.active_mask is None or self.active_mask[symbol][self._step]
 
     # --- reads exposed to the strategy ---
     def position_of(self, symbol: str) -> Position:
@@ -217,6 +227,16 @@ class PortfolioEngine:
                 side = -1 if pos.size > 0 else 1
                 self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
 
+    def _close_inactive(self, cur):
+        """Force-close any held position whose symbol is inactive this bar (WL removal-day exit),
+        at the bar's OPEN (next-open from the last active bar — no look-ahead)."""
+        if self.active_mask is None:
+            return
+        for s in self.symbols:
+            if self._pos[s].size != 0 and not self.is_active(s):
+                side = -1 if self._pos[s].size > 0 else 1
+                self._apply_fill(s, side, abs(self._pos[s].size), cur[s].open, cur[s].ts)
+
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0) -> None:
         size = self._cap_to_leverage(symbol, side_sign, size)
@@ -246,6 +266,7 @@ class PortfolioEngine:
     def run(self) -> PortfolioResult:
         equity_curve: list[float] = []
         for i in range(self.n):
+            self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
             if self.cash_gate:
                 self._fill_step_gated(cur)  # cross-symbol shared-cash priority + drop gate
@@ -258,6 +279,7 @@ class PortfolioEngine:
                 self._price[s] = bar.close
                 if bar.funding is not None and self._pos[s].size != 0:
                     self.cash -= funding_charge(self._pos[s].size, bar.close, bar.funding, self.multiplier)
+            self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
             self.strategy.on_bar(ts, cur)
@@ -276,6 +298,10 @@ class PortfolioEngine:
             if fp is None:
                 still.append(o)               # rest until triggered
             else:
+                pos = self._pos[symbol]
+                opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)  # open-from-flat or same-dir add
+                if opening and not self.is_active(symbol):
+                    continue                  # inactive member: drop opening/adding fills (reduces still apply)
                 self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
 
@@ -296,6 +322,8 @@ class PortfolioEngine:
                     continue
                 pos = self._pos[s]
                 increasing = pos.size == 0 or (pos.size > 0) == (o.side > 0)
+                if increasing and not self.is_active(s):
+                    continue              # inactive member: drop opening/adding fills before the cash gate
                 (opens if increasing else frees).append((s, o, fp, seq))
                 seq += 1
             self._pending[s] = still
