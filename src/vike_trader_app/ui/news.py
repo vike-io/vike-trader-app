@@ -191,6 +191,7 @@ class NewsTab(QtWidgets.QWidget):
         self._list.setStyleSheet(
             f"QListWidget{{background:{theme.CHART_BG};border:none;outline:none;}}")
         self._list.currentRowChanged.connect(self._on_row_changed)
+        self._list.itemClicked.connect(lambda _it: self._open_reader())  # re-click reopens a closed reader
         self._split.addWidget(self._list)
         self._reader = self._build_reader()
         self._split.addWidget(self._reader)
@@ -415,6 +416,11 @@ class NewsTab(QtWidgets.QWidget):
             ph.setFlags(QtCore.Qt.NoItemFlags)                   # no UserRole data → _current_item stays None
             self._list.addItem(ph)
         self._list.blockSignals(False)
+        # Default to the latest article (list is newest-first) so opening the News space or
+        # switching a filter auto-opens the most recent headline — but only when nothing is
+        # selected yet, so a 60s poll refresh never yanks the reader off what you're reading.
+        if filtered and self._list.currentRow() < 0:
+            self._list.setCurrentRow(0)   # fires _on_row_changed(0) -> opens newest in the reader
         self._update_status(len(filtered))
 
     def _empty_hint(self) -> str:

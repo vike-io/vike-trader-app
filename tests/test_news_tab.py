@@ -58,12 +58,12 @@ def test_category_filter_reduces_list(app):
 def test_close_reader_then_row_reopens(app):
     tab = NewsTab()
     tab.on_items_received(_items())
-    assert not tab._reader.isHidden()                # reader open by default
+    assert not tab._reader.isHidden()                # newest article open by default
+    assert "BTC soars" in tab._title.text()          # latest headline auto-selected
     tab.close_reader()                               # TV's X button
     assert tab._reader.isHidden()                    # list goes full-width
-    tab._list.setCurrentRow(0)                        # clicking a headline reopens the reader
+    tab._list.itemClicked.emit(tab._list.item(0))    # clicking a headline reopens the reader
     assert not tab._reader.isHidden()
-    assert "BTC soars" in tab._title.text()
 
 
 def test_set_symbol_with_follow_filters(app):

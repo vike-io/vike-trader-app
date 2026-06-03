@@ -198,13 +198,13 @@ def test_calendar_space_top_filters_visibility_and_high_only(app):
     assert t.visible_event_count() == 2                # the medium-importance EUR row is hidden
 
 
-def test_calendar_space_open_countries_updates_label(app):
+def test_calendar_space_country_pill_updates_label(app):
     from vike_trader_app.ui.equity_calendar import CalendarSpace
     t = _tab(app)
     space = CalendarSpace(economic_tab=t)
-    t._open_country_dialog = lambda: setattr(t, "_countries", {"USD"})   # stub the modal
-    space._open_countries()
+    space._top_countries.set_selected({"USD"})   # shared multi-select country pill (replaced the modal)
     assert space._top_countries.text() == "Countries (1)  ▾"
+    assert t._countries == {"USD"}               # drives economic.set_countries
 
 
 def test_category_filter(app):

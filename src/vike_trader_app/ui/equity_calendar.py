@@ -30,7 +30,12 @@ class _DayCard(QtWidgets.QFrame):
     def __init__(self, index: int, parent=None):
         super().__init__(parent)
         self._index = index
-        self.setProperty("class", "Panel")          # .Panel QSS: PANEL bg, BORDER, radius 10
+        self.setProperty("class", "Panel")
+        # One flat fill per card (TV-style): the global .Panel bg + `.Panel *{transparent}` so the
+        # per-row child widgets don't paint the window BG and band the card into two tones.
+        self._base_qss = (f".Panel{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+                          f"border-radius:{theme.RADIUS_LG}px;}} .Panel *{{background:transparent;}}")
+        self.setStyleSheet(self._base_qss)
         self.setCursor(QtCore.Qt.PointingHandCursor)
         v = QtWidgets.QVBoxLayout(self)
         v.setContentsMargins(12, 9, 12, 9)
@@ -74,11 +79,15 @@ class _DayCard(QtWidgets.QFrame):
                 row.setVisible(False)
 
     def set_selected(self, on: bool) -> None:
-        self.setStyleSheet(
-            f".Panel{{border:1px solid {theme.ACCENT};border-radius:10px;background:{theme.PANEL};}}"
-            if on else "")
+        if on:   # single flat lighter fill + accent border (like TV's selected day), no header strip
+            self.setStyleSheet(
+                f".Panel{{background:{theme.HOVER};border:1px solid {theme.ACCENT};"
+                f"border-radius:{theme.RADIUS_LG}px;}} .Panel *{{background:transparent;}}")
+        else:
+            self.setStyleSheet(self._base_qss)
         self._title.setStyleSheet(
-            f"color:{theme.ACCENT if on else theme.TEXT};font-weight:600;font-size:13px;border:none;")
+            f"color:{theme.ACCENT if on else theme.TEXT};font-weight:600;font-size:13px;"
+            "border:none;background:transparent;")
 
     def mousePressEvent(self, e):  # noqa: N802 - Qt override
         self.clicked.emit(self._index)
@@ -595,6 +604,17 @@ class CalendarSpace(QtWidgets.QWidget):
         self._selected_day = index
         for i, card in enumerate(self._day_cards):
             card.set_selected(i == index)
+        # Navigate: show the Economic table and scroll it to the clicked day's group.
+        self.set_page(0)
+        eco = self.economic
+        header = eco._date_header(eco.current_week_start() + index * _DAY_MS)
+        tree = eco._tree
+        for r in range(tree.topLevelItemCount()):
+            top = tree.topLevelItem(r)
+            if top.text(0) == header:
+                tree.scrollToItem(top, QtWidgets.QAbstractItemView.PositionAtTop)
+                tree.setCurrentItem(top)
+                break
 
 
 # ---- week helpers (UTC week, like the Economic calendar's nav unit) ----
