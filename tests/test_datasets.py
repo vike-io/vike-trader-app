@@ -38,3 +38,21 @@ def test_ensure_examples_seeds_once(tmp_path):
     assert "Crypto Majors" in written
     assert "Crypto Majors" in ds.list_datasets(str(tmp_path))
     assert ds.ensure_examples(str(tmp_path)) == []  # idempotent
+
+
+def test_provider_group_buckets_by_linked_provider_then_symbol():
+    # explicit linked provider wins
+    assert ds.provider_group(DataSet("x", ["BTCUSDT"], provider="binance")) == "Binance"
+    assert ds.provider_group(DataSet("x", ["EURUSD"], provider="dukascopy")) == "Dukascopy"
+    # unlinked -> inferred from the symbols (FX symbol vs crypto symbol)
+    assert ds.provider_group(DataSet("x", ["EURUSD"])) == "Dukascopy"
+    assert ds.provider_group(DataSet("x", ["BTCUSDT"])) == "Binance"
+    # unlinked + empty -> ungrouped (My DataSets only)
+    assert ds.provider_group(DataSet("x", [])) is None
+
+
+def test_fx_preset_seeded_and_dukascopy_linked():
+    presets = ds.preset_datasets()
+    assert "FX Majors" in presets
+    assert presets["FX Majors"].provider == "dukascopy"
+    assert "EURUSD" in presets["FX Majors"].symbols
