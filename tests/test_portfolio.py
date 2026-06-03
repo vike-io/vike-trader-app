@@ -144,3 +144,20 @@ def test_partial_scale_out_keeps_remainder_and_realizes_part():
     assert eng.position_of("AAA").avg_price == pytest.approx(100.0)
     # equity = cash + 6*150. cash = 10000 -10*100 (buy) +4*150 (sell) = 9600; +900 = 10500
     assert result.final_equity == pytest.approx(10_500.0)
+
+
+def test_portfolio_trades_are_tagged_with_symbol():
+    def _b(ts, px):
+        return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class Trader(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 1.0)
+            elif self.index == 2:
+                self.close("A")
+
+    eng = PortfolioEngine({"A": [_b(1, 10.0), _b(2, 11.0), _b(3, 12.0), _b(4, 13.0)]}, Trader(), cash=1000.0)
+    result = eng.run()
+    assert result.trades, "expected a completed round-trip"
+    assert all(t.symbol == "A" for t in result.trades)

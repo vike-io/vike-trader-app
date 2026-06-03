@@ -42,3 +42,4 @@ class Trade:
     fees: float = 0.0
     entry_ts: int = 0  # fill timestamp of the opening order (epoch ms)
     exit_ts: int = 0  # fill timestamp of the closing order (epoch ms)
+    symbol: str = ""  # originating symbol ("" for single-symbol engine)
