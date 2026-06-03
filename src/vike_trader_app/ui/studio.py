@@ -20,6 +20,11 @@ from .flowlayout import FlowLayout
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 
+# The one unified Studio gap: the outer frame inset, the inter-card gutter (chat↔editor splitter
+# handle) and the top↔bottom gutter (results↔cards splitter handle) are all this value, so every
+# visible distance in the Studio layout is identical. Tightened from 12 — the user found 12 too big.
+_GAP = 6
+
 
 # ---------------------------------------------------------------------------
 # ResultsPanel
@@ -56,10 +61,10 @@ class ResultsPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        # 12px outer frame on the top/sides so the tab strip lines up with the bottom cards'
-        # 12px insets (StudioTab's root margin is 0 — this is the single source of the top gap).
-        # Bottom inset stays 0: the vertical splitter handle (12px) provides the gap to the cards.
-        root.setContentsMargins(12, 12, 12, 0)
+        # _GAP outer frame on the top/sides so the tab strip lines up with the bottom cards'
+        # _GAP insets (StudioTab's root margin is 0 — this is the single source of the top gap).
+        # Bottom inset stays 0: the vertical splitter handle (_GAP) provides the gap to the cards.
+        root.setContentsMargins(_GAP, _GAP, _GAP, 0)
         root.setSpacing(6)
 
         # verdict banner (above the tabs — always visible when set)
@@ -542,9 +547,9 @@ class ChatPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        # Uniform 12px inset on all sides so this card's content lines up with the editor card's
-        # (its layout `ep` uses the same 12px inset) — the heading top matches the Run-toolbar top.
-        root.setContentsMargins(12, 12, 12, 12)
+        # Uniform _GAP inset on all sides so this card's content lines up with the editor card's
+        # (its layout `ep` uses the same _GAP inset) — the heading top matches the Run-toolbar top.
+        root.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
         root.setSpacing(8)
 
         # --- empty state (shown until the first message) ---
@@ -1001,9 +1006,9 @@ class StudioTab(QtWidgets.QWidget):
         # editor pane = toolbar header + code editor (so the buttons sit above the editor)
         editor_pane = QtWidgets.QWidget()
         ep = QtWidgets.QVBoxLayout(editor_pane)
-        # 12px inset on all sides — matches the AI card's ChatPanel root margin so both bottom
+        # _GAP inset on all sides — matches the AI card's ChatPanel root margin so both bottom
         # cards' top content (Run toolbar here, "✦ AI STUDIO" heading there) sit at the same inset.
-        ep.setContentsMargins(12, 12, 12, 12)
+        ep.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
         ep.setSpacing(5)
         toolbar_flow = QtWidgets.QWidget()
         toolbar_flow.setLayout(toolbar)
@@ -1029,7 +1034,7 @@ class StudioTab(QtWidgets.QWidget):
         self._bottom.setStretchFactor(0, 1)
         self._bottom.setStretchFactor(1, 1)
         self._bottom.setSizes([1000, 1000])
-        self._bottom.setHandleWidth(12)        # inter-card gutter == the uniform 12px outer gap
+        self._bottom.setHandleWidth(_GAP)      # inter-card gutter == the uniform outer gap
         self._bottom.setCollapsible(0, True)   # chat (left) may collapse
         self._bottom.setCollapsible(1, False)  # editor (right) is the primary work area
 
@@ -1039,7 +1044,7 @@ class StudioTab(QtWidgets.QWidget):
         self._vsplit = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self._vsplit.addWidget(self.results)
         self._vsplit.addWidget(self._bottom)
-        self._vsplit.setHandleWidth(12)        # top↔bottom gutter == the uniform 12px outer gap
+        self._vsplit.setHandleWidth(_GAP)      # top↔bottom gutter == the uniform outer gap
         # Default ~44% top (chart/report) / ~56% bottom (editor + AI studio) — give the cards room.
         # Why the top used to drift past 44%: ResultsPanel's sizeHint is ~510px tall because its
         # EquityChart (a pg.PlotWidget / QGraphicsView) advertises a 640×480 sizeHint. On the

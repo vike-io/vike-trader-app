@@ -22,13 +22,18 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import theme
 
 
-def make_search(placeholder: str = "Search") -> QtWidgets.QLineEdit:
-    """The single embedded search field for dropdowns: inset (BG) field, RADIUS_MD, accent focus."""
+def make_search(placeholder: str = "Search", *, bg: str = theme.BG) -> QtWidgets.QLineEdit:
+    """The single embedded search field for dropdowns: RADIUS_MD, accent focus.
+
+    ``bg`` defaults to the inset BG (for cards/menus on the SURFACE elevation). Pass
+    ``theme.SURFACE`` to make the field flush with its SURFACE card so the popup reads as ONE flat
+    background (the TradingView checklist look) — the field is then defined only by its border.
+    """
     e = QtWidgets.QLineEdit()
     e.setPlaceholderText(placeholder)
     e.setClearButtonEnabled(True)
     e.setStyleSheet(
-        f"QLineEdit{{background:{theme.BG};color:{theme.TEXT};border:1px solid {theme.BORDER};"
+        f"QLineEdit{{background:{bg};color:{theme.TEXT};border:1px solid {theme.BORDER};"
         f"border-radius:{theme.RADIUS_MD}px;padding:7px 11px;font-size:13px;}}"
         f"QLineEdit:focus{{border-color:{theme.ACCENT};}}"
     )
@@ -118,8 +123,11 @@ class ChecklistPopover(QtWidgets.QFrame):
             f"border-radius:{theme.RADIUS_POPUP}px;}}"
             f"#filterPop QLabel#hdr{{color:{theme.TEXT};font-size:14px;font-weight:600;"
             f"background:transparent;border:none;}}"
+            # Rows are transparent so they read as the SURFACE card, never the app-wide BG (a
+            # backgroundless QCheckBox would otherwise inherit `QWidget{{background:BG}}` and tint
+            # the list darker than the card — the "two background colours" defect).
             f"#filterPop QCheckBox{{color:{theme.TEXT2};font-size:14px;spacing:10px;"
-            f"padding:6px 6px;border-radius:6px;}}"
+            f"padding:6px 6px;border-radius:6px;background:transparent;}}"
             f"#filterPop QCheckBox:hover{{color:{theme.TEXT};background:{theme.HOVER};}}"
             f"#filterPop QCheckBox::indicator{{width:16px;height:16px;border:1px solid {theme.TEXT3};"
             f"border-radius:4px;background:transparent;}}"
@@ -147,7 +155,7 @@ class ChecklistPopover(QtWidgets.QFrame):
         hdr.setObjectName("hdr")
         v.addWidget(hdr)
 
-        self._search = make_search("Search")
+        self._search = make_search("Search", bg=theme.SURFACE)  # flush with the card → one flat bg
         self._search.textChanged.connect(self._apply_filter)
         v.addWidget(self._search)
 

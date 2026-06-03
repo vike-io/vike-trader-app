@@ -155,7 +155,12 @@ def _dividends_cfg():
         return [d.symbol, d.ex_date, d.pay_date or "—", _fmt(d.amount, " $"),
                 _fmt(d.yield_pct, "%") if d.yield_pct is not None else "—", d.frequency or "—"]
     return {"columns": ["Symbol", "Ex-date", "Pay date", "Amount", "Yield", "Freq"],
-            "stretch_col": 0,        # Symbol absorbs the slack (dividends have no wide text column)
+            # Dividends has no wide free-text column (the data source carries no company name), so
+            # there's nothing to make the one Stretch column the others use — stretching Symbol
+            # alone left a huge empty ticker column. Distribute the slack across ALL columns so the
+            # table fills the width evenly and reads like Economic (shared header/row styling), with
+            # no lopsided gap regardless of how the data lands.
+            "stretch_col": "all",
             "row_fn": row, "date_of": lambda d: d.ex_date}
 
 
@@ -222,7 +227,10 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._tree.setRootIsDecorated(False)
         self._tree.setIndentation(0)
         self._tree.setAlternatingRowColors(False)
-        self._tree.header().setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
+        if stretch_col == "all":   # no single wide column — share the width evenly (Dividends)
+            self._tree.header().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        else:                      # one wide free-text column, the rest at default Interactive width
+            self._tree.header().setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
         root.addWidget(self._tree, 1)
 
         _app = QtWidgets.QApplication.instance()
