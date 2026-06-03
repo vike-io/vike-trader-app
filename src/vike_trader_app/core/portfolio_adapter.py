@@ -94,3 +94,59 @@ class SymbolEngineShim:
             return True
         open_now = sum(1 for s in self._engine.symbols if self._engine.position_of(s).size != 0)
         return open_now < cap
+
+
+class _MultiSymbolDriver(PortfolioStrategy):
+    """A PortfolioStrategy that fans each step out to one single-symbol Strategy per symbol."""
+
+    def __init__(self, strategy_cls, symbols, max_open_positions: int = 0):
+        super().__init__()
+        self._cls = strategy_cls
+        self._symbols = list(symbols)
+        self.max_open_positions = max_open_positions
+        self._inner: dict = {}
+        self._peak = None  # equity peak for drawdown_now()
+
+    def _ensure_init(self) -> None:
+        if self._inner:
+            return
+        for sym in self._symbols:
+            strat = self._cls()
+            strat._engine = SymbolEngineShim(self._engine, sym, self)
+            self._inner[sym] = strat
+
+    def drawdown_now(self) -> float:
+        eq = self._engine.equity_now()
+        self._peak = eq if self._peak is None else max(self._peak, eq)
+        return 0.0 if not self._peak else max(0.0, 1.0 - eq / self._peak)
+
+    def on_bar(self, ts: int, bars: dict) -> None:
+        self._ensure_init()
+        for sym, bar in bars.items():
+            inner = self._inner[sym]
+            if self.index < getattr(inner, "WARMUP", 0):  # honor each strategy's warmup
+                continue
+            inner.index = self.index
+            inner.on_bar(bar)
+
+
+class MultiSymbolStrategyRunner:
+    """Run a single-symbol ``Strategy`` class across every symbol in a DataSet (portfolio backtest)."""
+
+    def __init__(self, strategy_cls, bars_by_symbol: dict, config, max_open_positions: int = 0):
+        self.strategy_cls = strategy_cls
+        self.bars_by_symbol = bars_by_symbol
+        self.config = config
+        self.max_open_positions = max_open_positions
+
+    def run(self) -> PortfolioResult:
+        aligned = align_bars(self.bars_by_symbol)
+        driver = _MultiSymbolDriver(self.strategy_cls, list(aligned), self.max_open_positions)
+        engine = PortfolioEngine(aligned, driver, fee_rate=self.config.fee_rate, cash=self.config.cash)
+        return engine.run()
+
+    def report(self):
+        """Run and wrap into a ``TesterReport`` (PortfolioResult is duck-compatible with Result)."""
+        from ..tester.report import TesterReport
+
+        return TesterReport.from_result(self.run(), periods_per_year=self.config.periods_per_year)

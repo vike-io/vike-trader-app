@@ -20,7 +20,7 @@ def test_align_bars_unions_timestamps_and_forward_fills():
     assert len({len(v) for v in aligned.values()}) == 1
 
 
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
 from vike_trader_app.core.portfolio_adapter import SymbolEngineShim
 
 
@@ -50,3 +50,40 @@ def test_shim_resting_orders_raise_in_portfolio_mode():
     shim = SymbolEngineShim(eng, "A", None)
     with pytest.raises(NotImplementedError):
         shim.submit_limit(+1, 1.0, 0.5)
+
+
+from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+from vike_trader_app.tester.config import TesterConfig
+
+
+class BuyHold(Strategy):
+    def on_bar(self, bar):
+        if self.position.size == 0:
+            self.buy(1.0)
+
+
+def test_runner_runs_strategy_per_symbol_shared_cash():
+    a = [_bar(1, 10.0), _bar(2, 12.0), _bar(3, 12.0)]
+    b = [_bar(1, 5.0), _bar(2, 5.0), _bar(3, 6.0)]
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=1000.0))
+    result = runner.run()
+    assert isinstance(result, PortfolioResult)
+    assert set(result.per_symbol_pnl) == {"A", "B"}
+    assert len(result.equity_curve) == 3
+
+
+def test_runner_max_open_positions_caps_entries():
+    a = [_bar(1, 1.0), _bar(2, 1.0)]
+    b = [_bar(1, 1.0), _bar(2, 1.0)]
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=1000.0),
+                                       max_open_positions=1)
+    result = runner.run()
+    assert any(result.per_symbol_pnl[s] == 0.0 for s in ("A", "B"))
+
+
+def test_runner_report_wraps_into_tester_report():
+    a = [_bar(1, 10.0), _bar(2, 12.0)]
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=1000.0))
+    report = runner.report()
+    assert report.final_equity == runner.run().final_equity
