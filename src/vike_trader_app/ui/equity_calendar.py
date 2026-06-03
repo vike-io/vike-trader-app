@@ -432,7 +432,7 @@ class CalendarSpace(QtWidgets.QWidget):
         pills.setSpacing(4)
         pill_qss = (
             f"QPushButton{{background:transparent;border:none;color:{theme.TEXT3};"
-            f"padding:6px 16px;border-radius:9px;font-size:13px;font-weight:600;}}"
+            f"padding:6px 16px;border-radius:9px;font-size:12px;font-weight:400;}}"
             f"QPushButton:hover{{color:{theme.TEXT2};background:{theme.HOVER};}}"
             f"QPushButton:checked{{background:{theme.HOVER};color:{theme.TEXT};}}")
         self._pills: list[QtWidgets.QPushButton] = []
@@ -589,7 +589,8 @@ class CalendarSpace(QtWidgets.QWidget):
             f"border-radius:{theme.RADIUS_MD}px;padding:6px 13px;color:{theme.TEXT2};font-size:13px;}}"
             f"QPushButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
             f"QComboBox{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:{theme.RADIUS_MD}px;padding:6px 10px;color:{theme.TEXT2};font-size:13px;}}"
+            f"border-radius:{theme.RADIUS_MD}px;padding:6px 10px;color:{theme.TEXT};"
+            f"font-size:{theme.FONT_DROPDOWN}px;}}"
             f"QCheckBox{{color:{theme.TEXT2};font-size:13px;spacing:6px;padding:6px 4px;}}"
             f"QCheckBox:hover{{color:{theme.TEXT};}}")
         h = QtWidgets.QHBoxLayout(bar)

@@ -76,7 +76,8 @@ SPACE_4 = 16
 CONTROL_H = 32  # unified control height for buttons / inputs
 
 # --- dropdown / popup unification (one spec for every dropdown) ---
-ARROW_PX = 14                   # one on-screen size for EVERY chevron (dropdown ▾, combo, ‹ › nav, collapse)
+ARROW_PX = 18                   # icon box for EVERY chevron (dropdown ▾, combo, ‹ › nav, collapse); glyph ≈ 14×14
+FONT_DROPDOWN = 16              # field text size for every dropdown/combo (matches TradingView's 16px)
 RADIUS_POPUP = RADIUS_LG        # one radius for every floating popup surface (menus, combo lists, popovers, cards)
 DROPDOWN_ITEM_PAD = "8px 12px"  # one item-row padding (~32px row) for menus, combo lists, popover rows
 CARD_MARGIN = 30                # translucent margin reserved around frameless popup cards (room for the shadow)
@@ -145,9 +146,9 @@ def _combo_arrow_png(color: str) -> str:
     pen.setJoinStyle(QtCore.Qt.RoundJoin)
     p.setPen(pen)
     path = QtGui.QPainterPath()
-    path.moveTo(16, 16)
-    path.lineTo(24, 32)
-    path.lineTo(32, 16)
+    path.moveTo(7, 7)
+    path.lineTo(24, 41)
+    path.lineTo(41, 7)
     p.drawPath(path)
     p.end()
     out = os.path.join(tempfile.gettempdir(), f"vike_combo_arrow_{color.lstrip('#')}.png")
@@ -237,6 +238,7 @@ def stylesheet() -> str:
     }}
     QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
     QDoubleSpinBox:focus, QDateEdit:focus {{ border-color: {ACCENT}; }}
+    QComboBox {{ font-size: {FONT_DROPDOWN}px; }}   /* unified dropdown field text size (TV: 16px) */
     /* combo arrow — the unified thin chevron (matches the filter pills / nav / collapse), not
        the native filled triangle */
     QComboBox::drop-down {{ subcontrol-origin: padding; subcontrol-position: center right;
