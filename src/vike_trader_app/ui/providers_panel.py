@@ -7,6 +7,8 @@ Part 4: each row now has an auto-built settings sub-form (QFormLayout in a group
 ``provider_settings.fields_for``. Values are persisted back into each ProviderEntry.settings and
 saved immediately on every edit. An in-memory ``_settings_map`` keyed by provider name tracks the
 current values so ``current_config()`` can reconstruct the full entries.
+
+W3-B: "Symbol Mappings…" button opens ``_SymbolMappingsDialog`` for per-provider symbol rewrites.
 """
 
 import time
@@ -15,13 +17,148 @@ from PySide6 import QtCore, QtWidgets
 
 from ..data.provider_settings import FieldSpec, fields_for
 from ..data.providers_config import (
+    DEFAULT_ORDER,
     ProviderEntry,
     ProvidersConfig,
     load_providers_config,
     save_providers_config,
 )
+from ..data.symbol_mappings import (
+    MappingRule,
+    SymbolMappings,
+    load_mappings,
+    save_mappings,
+)
 
 _INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
+
+_MAPPING_COLUMNS = ["Provider", "From (pattern)", "To (replacement)", "Regex"]
+
+
+class _SymbolMappingsDialog(QtWidgets.QDialog):
+    """Editor for per-provider symbol mappings (literal or regex).
+
+    Exposes dialog-free helpers for tests:
+    - ``current_mappings() -> SymbolMappings``
+    - ``set_rows(list[tuple[str, str, str, bool]])``
+    """
+
+    def __init__(self, root: str, parent=None):
+        super().__init__(parent)
+        self._root = root
+        self.setWindowTitle("Symbol Mappings")
+        self.resize(620, 380)
+
+        layout = QtWidgets.QVBoxLayout(self)
+
+        self._table = QtWidgets.QTableWidget(0, len(_MAPPING_COLUMNS))
+        self._table.setHorizontalHeaderLabels(_MAPPING_COLUMNS)
+        self._table.horizontalHeader().setStretchLastSection(False)
+        self._table.horizontalHeader().setSectionResizeMode(
+            1, QtWidgets.QHeaderView.Stretch
+        )
+        self._table.horizontalHeader().setSectionResizeMode(
+            2, QtWidgets.QHeaderView.Stretch
+        )
+        layout.addWidget(self._table, 1)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        self._btn_add = QtWidgets.QPushButton("Add Rule")
+        self._btn_remove = QtWidgets.QPushButton("Remove Rule")
+        self._btn_add.clicked.connect(self._add_row)
+        self._btn_remove.clicked.connect(self._remove_row)
+        btn_row.addWidget(self._btn_add)
+        btn_row.addWidget(self._btn_remove)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Load existing mappings
+        m = load_mappings(root)
+        self.set_rows([(r.provider, r.pattern, r.replacement, r.is_regex) for r in m.rules])
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _add_row(self, provider: str = "", pattern: str = "",
+                 replacement: str = "", is_regex: bool = False) -> int:
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+
+        # Column 0: Provider combo
+        combo = QtWidgets.QComboBox()
+        combo.addItems(DEFAULT_ORDER)
+        combo.setEditable(True)
+        if provider:
+            idx = combo.findText(provider)
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            else:
+                combo.setEditText(provider)
+        self._table.setCellWidget(row, 0, combo)
+
+        # Column 1: From pattern
+        from_edit = QtWidgets.QLineEdit(pattern)
+        self._table.setCellWidget(row, 1, from_edit)
+
+        # Column 2: To replacement
+        to_edit = QtWidgets.QLineEdit(replacement)
+        self._table.setCellWidget(row, 2, to_edit)
+
+        # Column 3: Regex checkbox (centred)
+        chk = QtWidgets.QCheckBox()
+        chk.setChecked(is_regex)
+        cell_widget = QtWidgets.QWidget()
+        cell_layout = QtWidgets.QHBoxLayout(cell_widget)
+        cell_layout.addWidget(chk)
+        cell_layout.setAlignment(QtCore.Qt.AlignCenter)
+        cell_layout.setContentsMargins(0, 0, 0, 0)
+        self._table.setCellWidget(row, 3, cell_widget)
+        # Store checkbox reference for easy retrieval
+        cell_widget._chk = chk
+        return row
+
+    def _remove_row(self) -> None:
+        rows = {idx.row() for idx in self._table.selectedIndexes()}
+        for row in sorted(rows, reverse=True):
+            self._table.removeRow(row)
+
+    def _on_accept(self) -> None:
+        save_mappings(self.current_mappings(), self._root)
+        self.accept()
+
+    # ------------------------------------------------------------------
+    # Public dialog-free API (used by tests)
+    # ------------------------------------------------------------------
+
+    def set_rows(self, rows: list[tuple]) -> None:
+        """Replace all rows with ``[(provider, pattern, replacement, is_regex), ...]``."""
+        self._table.setRowCount(0)
+        for provider, pattern, replacement, is_regex in rows:
+            self._add_row(provider, pattern, replacement, bool(is_regex))
+
+    def current_mappings(self) -> SymbolMappings:
+        """Return a ``SymbolMappings`` reflecting the current table state."""
+        rules = []
+        for row in range(self._table.rowCount()):
+            combo = self._table.cellWidget(row, 0)
+            provider = combo.currentText().strip() if combo else ""
+            from_edit = self._table.cellWidget(row, 1)
+            pattern = from_edit.text().strip() if from_edit else ""
+            to_edit = self._table.cellWidget(row, 2)
+            replacement = to_edit.text().strip() if to_edit else ""
+            chk_container = self._table.cellWidget(row, 3)
+            is_regex = chk_container._chk.isChecked() if chk_container else False
+            if provider and pattern:
+                rules.append(MappingRule(provider, pattern, replacement, is_regex))
+        return SymbolMappings(rules)
 
 
 class ProvidersPanel(QtWidgets.QWidget):
@@ -68,9 +205,12 @@ class ProvidersPanel(QtWidgets.QWidget):
         self._tb_interval.addItems(_INTERVALS)
         self.btn_load = QtWidgets.QPushButton("Load Data")
         self.btn_load.clicked.connect(self._on_load)
+        self.btn_symbol_mappings = QtWidgets.QPushButton("\U0001f517 Symbol Mappings…")
+        self.btn_symbol_mappings.clicked.connect(self._on_symbol_mappings)
         tb.addWidget(self._tb_symbol, 1)
         tb.addWidget(self._tb_interval)
         tb.addWidget(self.btn_load)
+        tb.addWidget(self.btn_symbol_mappings)
         layout.addLayout(tb)
 
     def _populate(self, cfg: ProvidersConfig) -> None:
@@ -248,3 +388,11 @@ class ProvidersPanel(QtWidgets.QWidget):
         sym = self._tb_symbol.text().strip()
         if sym:
             self.run_testbed(sym, self._tb_interval.currentText())
+
+    def _on_symbol_mappings(self) -> None:
+        dlg = _SymbolMappingsDialog(self._root, parent=self)
+        dlg.exec()
+
+    def open_symbol_mappings_dialog(self) -> "_SymbolMappingsDialog":
+        """Return a (non-modal) dialog instance for tests — does not exec."""
+        return _SymbolMappingsDialog(self._root, parent=self)
