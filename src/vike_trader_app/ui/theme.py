@@ -75,6 +75,11 @@ SPACE_3 = 12
 SPACE_4 = 16
 CONTROL_H = 32  # unified control height for buttons / inputs
 
+# --- dropdown / popup unification (one spec for every dropdown) ---
+RADIUS_POPUP = RADIUS_LG        # one radius for every floating popup surface (menus, combo lists, popovers, cards)
+DROPDOWN_ITEM_PAD = "8px 12px"  # one item-row padding (~32px row) for menus, combo lists, popover rows
+CARD_MARGIN = 30                # translucent margin reserved around frameless popup cards (room for the shadow)
+
 # --- typography: sans UI font for chrome, mono for code + tabular numbers ---
 FONT_UI = '"Inter", "Segoe UI", system-ui, "Helvetica Neue", sans-serif'
 FONT_MONO = '"JetBrains Mono", "Cascadia Code", Consolas, monospace'
@@ -99,6 +104,12 @@ def apply_shadow(widget, *, radius: int = 24, y: int = 8, alpha: int = 170) -> N
     eff.setOffset(0, y)
     eff.setColor(QtGui.QColor(0, 0, 0, alpha))
     widget.setGraphicsEffect(eff)
+
+
+def apply_popup_shadow(widget) -> None:
+    """The single drop shadow for every floating popup (cards, popovers) — soft + prominent,
+    tuned to TradeLocker's menu shadow. Use this everywhere instead of bespoke apply_shadow params."""
+    apply_shadow(widget, radius=28, y=12, alpha=130)
 
 
 def stylesheet() -> str:
@@ -177,17 +188,24 @@ def stylesheet() -> str:
     }}
     QLineEdit:focus, QComboBox:focus, QSpinBox:focus,
     QDoubleSpinBox:focus, QDateEdit:focus {{ border-color: {ACCENT}; }}
+    /* combo popup list — one popup radius + one item row, hover-highlighted (not accent) */
     QComboBox QAbstractItemView {{
-        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_MD}px;
-        selection-background-color: {ACCENT}; selection-color: {ON_ACCENT}; padding: 4px;
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_POPUP}px;
+        outline: none; padding: 4px;
     }}
+    QComboBox QAbstractItemView::item {{
+        padding: {DROPDOWN_ITEM_PAD}; border-radius: {RADIUS_SM}px; color: {TEXT2};
+        min-height: 16px;
+    }}
+    QComboBox QAbstractItemView::item:selected,
+    QComboBox QAbstractItemView::item:hover {{ background: {HOVER}; color: {TEXT}; }}
 
-    /* menus — floating SURFACE cards (shadow added in code via apply_shadow) */
+    /* menus — one popup radius + one item row (OS provides the drop shadow for top-level menus) */
     QMenu {{
-        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_MD}px;
+        background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_POPUP}px;
         padding: 4px;
     }}
-    QMenu::item {{ padding: 6px 18px; border-radius: {RADIUS_SM}px; color: {TEXT2}; }}
+    QMenu::item {{ padding: {DROPDOWN_ITEM_PAD}; border-radius: {RADIUS_SM}px; color: {TEXT2}; }}
     QMenu::item:selected {{ background: {HOVER}; color: {TEXT}; }}
     QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
 

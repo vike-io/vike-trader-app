@@ -9,7 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..data.calendar.taxonomy import (
     ALL_CURRENCIES, COUNTRY_REGIONS, TOP20_ECONOMIES, currency_country)
-from . import theme
+from . import dropdowns, theme
 from .economic_calendar import country_chip_pixmap   # reuse the flag-circle pixmap
 
 
@@ -31,8 +31,7 @@ class SelectCountriesDialog(QtWidgets.QDialog):
         title.setStyleSheet(f"color:{theme.TEXT};font-size:18px;font-weight:700;border:none;")
         root.addWidget(title)
 
-        self._search = QtWidgets.QLineEdit()
-        self._search.setPlaceholderText("Search")
+        self._search = dropdowns.make_search("Search")
         self._search.textChanged.connect(self._apply_filter)
         root.addWidget(self._search)
 
@@ -64,8 +63,8 @@ class SelectCountriesDialog(QtWidgets.QDialog):
         # region groups -> checkable, flag-iconed list
         self._list = QtWidgets.QListWidget()
         self._list.setStyleSheet(
-            f"QListWidget{{background:{theme.PANEL};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;outline:none;}} QListWidget::item{{padding:6px 8px;}}")
+            f"QListWidget{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_MD}px;outline:none;}} QListWidget::item{{padding:6px 8px;}}")
         self._items: dict[str, QtWidgets.QListWidgetItem] = {}
         for region, currencies in COUNTRY_REGIONS.items():
             hdr = QtWidgets.QListWidgetItem(region.upper())

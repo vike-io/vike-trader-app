@@ -9,7 +9,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QRectF
 
-from . import theme
+from . import dropdowns, theme
 from .chartdata import (
     axis_time_label,
     bar_spacing,
@@ -26,7 +26,7 @@ _ENTRY = theme.UP
 _EXIT = theme.DOWN
 _OVERLAY_COLORS = [theme.FAST, theme.SLOW, "#26c6da", "#66bb6a", "#ec407a"]
 _GRID = 0.5  # grid alpha (scales the BORDER tick pen) — subtle but visible, like TradingView
-_CARD_SHADOW = 30  # translucent margin around frameless picker cards, room for the drop shadow
+_CARD_SHADOW = theme.CARD_MARGIN  # translucent margin around frameless picker cards (room for the shadow)
 # TradingView-style range selector: (label, days of history to zoom the view to)
 _RANGES = [("1D", 1), ("5D", 5), ("1M", 30), ("3M", 90), ("6M", 180), ("1Y", 365), ("5Y", 1825)]
 # Timeframe dropdown: (section, [(label, interval)]) — intervals our data sources support.
@@ -266,22 +266,14 @@ def _indicator_code(name: str) -> str:
     return name.upper()
 
 
-class _IndicatorPicker(QtWidgets.QDialog):
+class _IndicatorPicker(dropdowns.PopupCard):
     """TradingView-style indicator picker: a search field + category pill tabs over a
     two-column (short CODE / full NAME) list of the whole 176-indicator registry."""
 
     chosen = QtCore.Signal(str)
 
     def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setWindowTitle("Indicators")
-        # frameless rounded panel (no OS title bar) — the TradingView look
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.resize(470 + 2 * _CARD_SHADOW, 600 + 2 * _CARD_SHADOW)
-        self.setStyleSheet(
-            f"#pickerCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:14px;}}"
+        super().__init__(parent, object_name="pickerCard", extra_qss=(
             f"QLineEdit{{background:{theme.BG};border:1px solid {theme.BORDER};"
             f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
             f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
@@ -297,13 +289,10 @@ class _IndicatorPicker(QtWidgets.QDialog):
             f"QScrollBar:vertical{{background:transparent;width:9px;margin:4px 2px;}}"
             f"QScrollBar::handle:vertical{{background:{theme.BORDER};border-radius:4px;min-height:30px;}}"
             f"QScrollBar::add-line,QScrollBar::sub-line{{height:0;}}"
-        )
-        _root = QtWidgets.QVBoxLayout(self)  # translucent root; the margin gives the drop shadow room to draw
-        _root.setContentsMargins(_CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW)
-        card = QtWidgets.QFrame()
-        card.setObjectName("pickerCard")
-        _root.addWidget(card)
-        theme.apply_shadow(card, radius=22, y=6, alpha=160)
+        ))
+        self.setWindowTitle("Indicators")
+        self.resize_card(470, 600)
+        card = self.card
         outer = QtWidgets.QVBoxLayout(card)
         outer.setContentsMargins(16, 16, 16, 12)
         outer.setSpacing(11)
@@ -441,20 +430,14 @@ class _Indicator:
         return f"{base} {' '.join(vals)}".strip() if vals else base
 
 
-class _IndicatorSettings(QtWidgets.QDialog):
+class _IndicatorSettings(dropdowns.PopupCard):
     """TradingView-style settings: an **Inputs** tab (parameters from the registry spec) and a
     **Style** tab (per-output colour). Emits ``applied(params, colors)`` on Ok."""
 
     applied = QtCore.Signal(dict, list)
 
     def __init__(self, ind: "_Indicator", parent=None):
-        super().__init__(parent)
-        self._spec = ind.spec
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.setStyleSheet(
-            f"#setCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:14px;}}"
+        super().__init__(parent, object_name="setCard", extra_qss=(
             f"QLabel{{color:{theme.TEXT2};background:transparent;}}"
             f"QTabBar::tab{{background:transparent;color:{theme.TEXT3};padding:6px 14px;"
             f"border:none;border-bottom:2px solid transparent;font-weight:600;}}"
@@ -465,13 +448,9 @@ class _IndicatorSettings(QtWidgets.QDialog):
             f"QPushButton{{background:{theme.BG};color:{theme.TEXT};border:1px solid {theme.BORDER};"
             f"border-radius:7px;padding:6px 14px;}}"
             f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-weight:700;}}"
-        )
-        root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(_CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW)
-        card = QtWidgets.QFrame()
-        card.setObjectName("setCard")
-        root.addWidget(card)
-        theme.apply_shadow(card, radius=22, y=6, alpha=160)
+        ))
+        self._spec = ind.spec
+        card = self.card
         v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(16, 14, 16, 12)
         v.setSpacing(10)
@@ -764,28 +743,16 @@ class _PaneLegend(QtWidgets.QWidget):
             row.set_value(text)
 
 
-class _ObjectTree(QtWidgets.QDialog):
+class _ObjectTree(dropdowns.PopupCard):
     """TradingView-style Object Tree: every active indicator grouped by where it lives (price
     pane vs each oscillator pane), each a legend row with the full ⋯ menu / eye / double-click.
     Rebuilds whenever the chart's indicator set changes."""
 
     def __init__(self, chart: "PriceChart", parent=None):
-        super().__init__(parent)
+        super().__init__(parent, object_name="treeCard", extra_qss="QLabel{background:transparent;}")
         self._chart = chart
-        self.setWindowFlags(QtCore.Qt.FramelessWindowHint | QtCore.Qt.Dialog)
-        self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
-        self.setStyleSheet(
-            f"#treeCard{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:14px;}}"
-            f"QLabel{{background:transparent;}}"
-        )
-        self.resize(300 + 2 * _CARD_SHADOW, 380 + 2 * _CARD_SHADOW)
-        root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(_CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW, _CARD_SHADOW)
-        card = QtWidgets.QFrame()
-        card.setObjectName("treeCard")
-        root.addWidget(card)
-        theme.apply_shadow(card, radius=22, y=6, alpha=160)
+        self.resize_card(300, 380)
+        card = self.card
         self._v = QtWidgets.QVBoxLayout(card)
         self._v.setContentsMargins(14, 12, 14, 12)
         self._v.setSpacing(6)
