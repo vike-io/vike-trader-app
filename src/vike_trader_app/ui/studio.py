@@ -20,10 +20,17 @@ from .flowlayout import FlowLayout
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 
-# The one unified Studio gap: the outer frame inset, the inter-card gutter (chat↔editor splitter
-# handle) and the top↔bottom gutter (results↔cards splitter handle) are all this value, so every
-# visible distance in the Studio layout is identical. Tightened from 12 — the user found 12 too big.
+# Studio spacing tokens — every distance in the Studio layout is ONE of these two values, so the
+# whole space reads as uniform. Tune here and the entire layout follows.
+#   _GAP — the gap BETWEEN sibling things: outer frame inset, both splitter handles (chat↔editor,
+#          results↔cards), grid spacing between KPI tiles, toolbar/input gaps, list spacing.
+#   _PAD — the padding INSIDE a card/tile (its border to its content): the panes, the KPI tiles,
+#          the example-prompt cards. Kept at 2×_GAP so the two relate cleanly.
 _GAP = 6
+_PAD = 12
+# Smallest a splitter pane may be dragged to before the collapse-to-zero kicks in (keeps the tab
+# strip / toolbar visible). Lets the chart be shrunk smoothly instead of snapping shut past ~50%.
+_PANE_MIN = 32
 
 
 # ---------------------------------------------------------------------------
@@ -65,24 +72,30 @@ class ResultsPanel(QtWidgets.QWidget):
         # _GAP insets (StudioTab's root margin is 0 — this is the single source of the top gap).
         # Bottom inset stays 0: the vertical splitter handle (_GAP) provides the gap to the cards.
         root.setContentsMargins(_GAP, _GAP, _GAP, 0)
-        root.setSpacing(6)
+        root.setSpacing(_GAP)
 
         # verdict banner (above the tabs — always visible when set)
         self._banner = QtWidgets.QLabel()
         self._banner.setVisible(False)
         self._banner.setWordWrap(True)
-        self._banner.setContentsMargins(8, 0, 8, 0)
         root.addWidget(self._banner)
 
-        # status / toast line (errors red, success green)
-        self._status = QtWidgets.QLabel()
-        self._status.setWordWrap(True)
-        self._status.setVisible(False)
-        self._status.setContentsMargins(8, 0, 8, 0)
-        root.addWidget(self._status)
-
         self._tabs = QtWidgets.QTabWidget()
+        # The app-wide `QTabWidget::pane { top:-1px }` pulls the pane (the chart) up 1px so it
+        # underlaps the transparent tab bar — the chart grid then pokes up THROUGH the tabs. Pin
+        # this pane flush (top:0) + a 1px BORDER separator so the chart sits cleanly below the tabs.
+        self._tabs.setStyleSheet(
+            f"QTabWidget::pane{{border:none;border-top:1px solid {theme.BORDER};top:0px;}}")
         root.addWidget(self._tabs, 1)
+
+        # status / toast line (errors red, success green) — a floating overlay pinned to the FAR
+        # RIGHT of the tab-strip row (the tabs sit on the left, so its right area is free). Being an
+        # overlay (not in the layout) it never shifts the tabs/chart down, so the vertical rhythm
+        # stays uniform; _position_status keeps it parked top-right on every resize.
+        self._status = QtWidgets.QLabel(self)
+        self._status.setVisible(False)
+        self._status.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._status.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
 
         self._build_equity_tab()
         self._build_performance_tab()
@@ -107,8 +120,8 @@ class ResultsPanel(QtWidgets.QWidget):
             f"background:{theme.PANEL2};border:1px solid {theme.BORDER};border-radius:10px;"
         )
         cv = QtWidgets.QVBoxLayout(cell)
-        cv.setContentsMargins(14, 11, 14, 11)
-        cv.setSpacing(3)
+        cv.setContentsMargins(_PAD, _PAD, _PAD, _PAD)
+        cv.setSpacing(3)   # caption→value→sub: tight typographic grouping inside the tile
         cap = QtWidgets.QLabel(caption.upper())
         cap.setStyleSheet(
             f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;border:none;"
@@ -133,13 +146,13 @@ class ResultsPanel(QtWidgets.QWidget):
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
         body = QtWidgets.QWidget()
         outer = QtWidgets.QVBoxLayout(body)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(14)
+        outer.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
+        outer.setSpacing(_GAP)
 
         # hero KPI tiles (2 columns)
         hero = QtWidgets.QGridLayout()
-        hero.setHorizontalSpacing(18)
-        hero.setVerticalSpacing(12)
+        hero.setHorizontalSpacing(_GAP)
+        hero.setVerticalSpacing(_GAP)
         self._hero_val: dict[str, QtWidgets.QLabel] = {}
         self._hero_sub: dict[str, QtWidgets.QLabel] = {}
         for i, (key, label) in enumerate(self._HERO):
@@ -156,8 +169,8 @@ class ResultsPanel(QtWidgets.QWidget):
 
         # detail grid (smaller)
         grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(18)
-        grid.setVerticalSpacing(8)
+        grid.setHorizontalSpacing(_GAP)
+        grid.setVerticalSpacing(_GAP)
         self._value_labels: dict[str, QtWidgets.QLabel] = {}
         for i, (key, label) in enumerate(self._DETAIL):
             cap = QtWidgets.QLabel(label.upper())
@@ -460,11 +473,23 @@ class ResultsPanel(QtWidgets.QWidget):
         self.show_report(report, bars, overlays)
         self.toast(f"✓ Backtest complete · run {n}")
 
+    def _position_status(self) -> None:
+        """Park the status overlay at the top-right of the tab-strip row."""
+        self._status.adjustSize()
+        x = max(self.width() - self._status.width() - _GAP, 0)
+        self._status.move(x, _GAP)
+        self._status.raise_()
+
+    def resizeEvent(self, e):  # noqa: N802 - keep the status overlay pinned top-right
+        super().resizeEvent(e)
+        self._position_status()
+
     def toast(self, msg: str) -> None:
         """Transient success line (green)."""
         self._status.setText(msg)
         self._status.setStyleSheet(f"color:{theme.UP};font-size:11px;padding:4px 8px;")
         self._status.setVisible(True)
+        self._position_status()
 
     def show_error(self, msg: str) -> None:
         """Display an error message; clear any previous report."""
@@ -474,6 +499,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._status.setText(msg)
         self._status.setStyleSheet(f"color:{theme.DOWN};font-size:11px;padding:4px 8px;")
         self._status.setVisible(True)
+        self._position_status()
         for lbl in self._value_labels.values():
             lbl.setText("—")
             lbl.setStyleSheet(self._metric_style("", None))
@@ -527,7 +553,7 @@ class _ExampleCard(QtWidgets.QFrame):
             f"_ExampleCard:hover{{border-color:{theme.ACCENT};}}"
         )
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setContentsMargins(13, 11, 13, 11)
+        lay.setContentsMargins(_PAD, _PAD, _PAD, _PAD)
         label = QtWidgets.QLabel(text)
         label.setWordWrap(True)
         label.setStyleSheet(f"color:{theme.TEXT2};border:none;background:transparent;")
@@ -550,7 +576,7 @@ class ChatPanel(QtWidgets.QWidget):
         # Uniform _GAP inset on all sides so this card's content lines up with the editor card's
         # (its layout `ep` uses the same _GAP inset) — the heading top matches the Run-toolbar top.
         root.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
-        root.setSpacing(8)
+        root.setSpacing(_GAP)
 
         # --- empty state (shown until the first message) ---
         self._empty = self._build_empty()
@@ -568,8 +594,8 @@ class ChatPanel(QtWidgets.QWidget):
 
         # input row
         input_row = QtWidgets.QHBoxLayout()
-        input_row.setContentsMargins(0, 0, 2, 0)   # keep the field/button clear of the scrollbar gutter
-        input_row.setSpacing(6)
+        input_row.setContentsMargins(0, 0, 0, 0)
+        input_row.setSpacing(_GAP)
         self._prompt_input = QtWidgets.QLineEdit()
         self._prompt_input.setPlaceholderText("Describe a strategy …")
         self._prompt_input.returnPressed.connect(self._submit)
@@ -584,10 +610,10 @@ class ChatPanel(QtWidgets.QWidget):
     def _build_empty(self) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(box)
-        # No own inset — the ChatPanel root's 12px margin already provides the card padding, so the
-        # "✦ AI STUDIO" heading sits flush at the 12px inset, level with the editor's Run toolbar.
+        # No own inset — the ChatPanel root's _GAP margin already provides the card padding, so the
+        # "✦ AI STUDIO" heading sits flush at the _GAP inset, level with the editor's Run toolbar.
         v.setContentsMargins(0, 0, 0, 0)
-        v.setSpacing(7)
+        v.setSpacing(_GAP)
 
         eyebrow = QtWidgets.QLabel("✦ AI STUDIO")
         eyebrow.setStyleSheet(f"color:{theme.ACCENT};font-size:10px;font-weight:700;letter-spacing:2px;")
@@ -599,7 +625,7 @@ class ChatPanel(QtWidgets.QWidget):
         v.addWidget(eyebrow)
         v.addWidget(heading)
         v.addWidget(subtitle)
-        v.addSpacing(6)
+        v.addSpacing(_GAP)
 
         for ex in _EXAMPLES:
             card = _ExampleCard(ex)
@@ -946,18 +972,18 @@ class StudioTab(QtWidgets.QWidget):
         self._ratio_applied = False  # one-time 44:56 re-assert guard (see showEvent)
 
         root = QtWidgets.QVBoxLayout(self)
-        # No root inset — every visible gap is a single, uniform ~12px instead of doubling up
-        # (root + card margins). The 12px outer frame comes from the cards' own 12px insets
-        # (and the ResultsPanel's 12px top/side inset below); the inter-card / top-vs-bottom
-        # gutters come from the two splitter handle widths (also 12). So left == right == top ==
-        # bottom == inter-card gutter == 12, not the old 6+12=18 on left/top vs tighter right/bottom.
+        # No root inset — every visible gap is a single, uniform _GAP instead of doubling up
+        # (root + card margins). The _GAP outer frame comes from the cards' own _GAP insets
+        # (and the ResultsPanel's _GAP top/side inset below); the inter-card / top-vs-bottom
+        # gutters come from the two splitter handle widths (also _GAP). So left == right == top ==
+        # bottom == inter-card gutter == _GAP.
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
         # toolbar — TradeLocker-style: sits directly ABOVE the code editor (its pane header),
         # not at the top of the whole Studio tab. A wrapping FlowLayout so the buttons never
         # force the editor pane (and the window) wider than the screen.
-        toolbar = FlowLayout(margin=0, h_spacing=6, v_spacing=6)
+        toolbar = FlowLayout(margin=0, h_spacing=_GAP, v_spacing=_GAP)
         self._toolbar = toolbar
         self._btn_run = QtWidgets.QPushButton("Run")
         self._btn_run.setObjectName("play")
@@ -1009,7 +1035,7 @@ class StudioTab(QtWidgets.QWidget):
         # _GAP inset on all sides — matches the AI card's ChatPanel root margin so both bottom
         # cards' top content (Run toolbar here, "✦ AI STUDIO" heading there) sit at the same inset.
         ep.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
-        ep.setSpacing(5)
+        ep.setSpacing(_GAP)
         toolbar_flow = QtWidgets.QWidget()
         toolbar_flow.setLayout(toolbar)
         _sp = toolbar_flow.sizePolicy()
@@ -1021,7 +1047,7 @@ class StudioTab(QtWidgets.QWidget):
         toolbar_row = QtWidgets.QWidget()
         tr = QtWidgets.QHBoxLayout(toolbar_row)
         tr.setContentsMargins(0, 0, 0, 0)
-        tr.setSpacing(6)
+        tr.setSpacing(_GAP)
         tr.addWidget(toolbar_flow, 1)
         tr.addWidget(self._btn_collapse_top, 0, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
         ep.addWidget(toolbar_row)
@@ -1035,6 +1061,7 @@ class StudioTab(QtWidgets.QWidget):
         self._bottom.setStretchFactor(1, 1)
         self._bottom.setSizes([1000, 1000])
         self._bottom.setHandleWidth(_GAP)      # inter-card gutter == the uniform outer gap
+        self._bottom.setMinimumHeight(_PANE_MIN)  # small floor so the chart can grow / cards shrink smoothly
         self._bottom.setCollapsible(0, True)   # chat (left) may collapse
         self._bottom.setCollapsible(1, False)  # editor (right) is the primary work area
 
@@ -1053,7 +1080,12 @@ class StudioTab(QtWidgets.QWidget):
         # Fix: cap the top's preferred height so it can't out-vote the bottom, use large
         # proportional sizes so the absolute request dominates, and re-assert the ratio once after
         # the first real geometry arrives (see _apply_vsplit_ratio).
-        self.results.setMinimumHeight(0)
+        # Smooth drag-resize: give each pane a SMALL positive minimum height. A 0 minimum makes
+        # Qt's qSmartMinSize fall back to the child's minimumSizeHint (the EquityChart's ~480px),
+        # so dragging the divider past ~that height snapped the chart straight to collapsed ("hides
+        # past 50%"). A small explicit floor (keeps the tab strip visible) lets the user shrink the
+        # chart all the way down smoothly; full hide is the toggle chevron's job.
+        self.results.setMinimumHeight(_PANE_MIN)
         self.results.setMaximumHeight(16_777_215)  # no hard cap on drag; only the hint is tamed
         _hint = self.results.sizePolicy()
         _hint.setVerticalStretch(44)               # advertise the 44:56 split as the size policy too
@@ -1069,6 +1101,9 @@ class StudioTab(QtWidgets.QWidget):
         self._vsplit.setCollapsible(0, True)
         self._vsplit.setCollapsible(1, True)
         root.addWidget(self._vsplit, stretch=1)
+        # Keep the collapse chevron in sync with manual divider drags (not just button clicks):
+        # drag the chart down to hidden and the arrow flips to "down"; drag it back and it flips up.
+        self._vsplit.splitterMoved.connect(self._on_splitter_moved)
 
         self.chat.promptSubmitted.connect(self._on_prompt)
 
@@ -1101,20 +1136,34 @@ class StudioTab(QtWidgets.QWidget):
             QtCore.QTimer.singleShot(16, lambda: self._apply_vsplit_ratio(top_frac, _tries - 1))
 
     def _toggle_top_panel(self) -> None:
-        """Collapse the top chart+report panel to give the bottom cards the full height, or
-        restore it. Remembers the pre-collapse top height so expand returns to it."""
+        """Toggle the top chart+report panel based on its ACTUAL current height (so it works the
+        same whether the chart was hidden by this button or by dragging the divider): if it's
+        hidden, restore it (and the bottom cards shift back down to make room); if it's shown,
+        remember its height and hide it (handing the full height to the cards)."""
         sizes = self._vsplit.sizes()
         total = sum(sizes)
-        if not self._top_collapsed:
+        if sizes[0] <= _PANE_MIN:               # hidden / minimal -> bring the chart back
+            top = self._saved_top_size or int(total * 0.44)
+            self._vsplit.setSizes([top, max(total - top, 0)])
+        else:                                   # shown -> remember height, then hide
             self._saved_top_size = sizes[0]
             self._vsplit.setSizes([0, total])
-            self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_down", theme.TEXT2))
-            self._top_collapsed = True
-        else:
-            top = self._saved_top_size or int(total * 0.44)
-            self._vsplit.setSizes([top, total - top])
-            self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_up", theme.TEXT2))
-            self._top_collapsed = False
+        self._sync_collapse_icon()
+
+    def _on_splitter_moved(self, _pos: int = 0, _index: int = 0) -> None:
+        """User dragged the divider: remember the chart height while it's visible (so the toggle
+        restores to it) and keep the chevron arrow pointing the right way."""
+        top = self._vsplit.sizes()[0]
+        if top > _PANE_MIN:
+            self._saved_top_size = top
+        self._sync_collapse_icon()
+
+    def _sync_collapse_icon(self) -> None:
+        """Point the chevron down when the chart is hidden (click to show), up when it's shown
+        (click to hide) — kept in sync with both the toggle and manual divider drags."""
+        self._top_collapsed = self._vsplit.sizes()[0] <= _PANE_MIN
+        name = "chevron_down" if self._top_collapsed else "chevron_up"
+        self._btn_collapse_top.setIcon(icons.glyph_icon(name, theme.TEXT2))
 
     # --- hosted panels (moved in from the Chart space / right dock) ---
 

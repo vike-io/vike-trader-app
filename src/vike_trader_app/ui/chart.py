@@ -1072,6 +1072,18 @@ class PriceChart(pg.PlotWidget):
         self._tf_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self._tf_btn.setStyleSheet(_btn_qss)
         _tf_menu = QtWidgets.QMenu(self._tf_btn)
+        # The toolbar's `QWidget{background:transparent}` rule cascades into this menu (same
+        # specificity as the app-wide QMenu rule, but more local, so it would win and leave the
+        # popup transparent/off-tone). Re-assert the unified dropdown surface explicitly here so the
+        # timeframe menu matches every other popup (SURFACE card, BORDER edge, popup radius).
+        _tf_menu.setStyleSheet(
+            f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
+            f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
+            f"color:{theme.TEXT2};}}"
+            f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+            f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
+        )
         for _sec, _items in _TIMEFRAMES:
             _tf_menu.addSection(_sec)
             for _lbl, _iv in _items:
