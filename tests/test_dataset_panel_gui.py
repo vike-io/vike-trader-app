@@ -44,3 +44,13 @@ def test_test_buttons_emit_requests(app, tmp_path):
     panel._on_test_dataset()
     assert sym_req == [("ETHUSDT", "1m")]
     assert ds_req[0].name == "Set2" and ds_req[0].symbols == ["BTCUSDT", "ETHUSDT"]
+
+
+def test_ask_ai_appends_suggested_symbols(app, tmp_path):
+    from vike_trader_app.data.datasets import DataSet, save_dataset
+    save_dataset(DataSet("AiSet", ["BTCUSDT"]), str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("AiSet")
+    panel.apply_ai_suggestion("ETHUSDT, SOLUSDT")  # dialog-free: parse + append, deduped
+    text = panel._symbols.toPlainText()
+    assert "ETHUSDT" in text and "SOLUSDT" in text and text.count("BTCUSDT") == 1
