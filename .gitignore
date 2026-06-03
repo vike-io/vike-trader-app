@@ -10,6 +10,9 @@ dist/
 .Python
 pip-wheel-metadata/
 
+# ---- Scratch screenshots / renders dropped in the repo root ----
+/*.png
+
 # ---- Virtual environments ----
 .venv/
 venv/

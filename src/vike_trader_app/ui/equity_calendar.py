@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from . import theme
+from . import dropdowns, theme
 
 _DAY_MS = 24 * 3600 * 1000
 _HOUR_LABEL = {"bmo": "Pre-mkt", "amc": "After-hrs", "dmh": "Mid-day"}
@@ -443,44 +443,20 @@ class CalendarSpace(QtWidgets.QWidget):
             self._top_high.setVisible(idx == 0)
             self._top_countries.setVisible(idx == 0)
 
-    # ---- TV "All categories" dropdown (filters the Economic page) ----
-    def _build_category_dropdown(self) -> QtWidgets.QToolButton:
-        btn = QtWidgets.QToolButton()
-        btn.setText("All categories  ▾")
-        btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        btn.setCursor(QtCore.Qt.PointingHandCursor)
-        btn.setStyleSheet(
-            f"QToolButton{{color:{theme.TEXT2};background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:{theme.RADIUS_MD}px;padding:7px 12px;font-size:13px;}}"
-            f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
-            "QToolButton::menu-indicator{width:0px;}")
-        menu = QtWidgets.QMenu(btn)
-        # surface/radius/item/selected come from the unified global QMenu QSS; only the
-        # checkable bits (hidden indicator + bold checked) are specified here.
-        menu.setStyleSheet(
-            f"QMenu::item:checked{{color:{theme.TEXT};font-weight:600;}}"
-            "QMenu::indicator{width:0px;}")
-        self._cat_actions: dict[str, QtGui.QAction] = {}
-        grp = QtGui.QActionGroup(menu)
-        grp.setExclusive(True)
-        for value, label in [("All", "All categories"), ("rates", "Rates"),
-                             ("inflation", "Inflation"), ("employment", "Employment"),
-                             ("gdp", "GDP"), ("trade", "Trade"), ("housing", "Housing"),
-                             ("other", "Other")]:
-            act = menu.addAction(label, lambda v=value, lab=label: self._choose_category(v, lab))
-            act.setCheckable(True)
-            act.setChecked(value == "All")
-            grp.addAction(act)
-            self._cat_actions[value] = act
-        btn.setMenu(menu)
-        self._cat_btn = btn
-        return btn
+    # ---- TV "All categories" dropdown (filters the Economic page) — shared single-select pill ----
+    def _build_category_dropdown(self) -> QtWidgets.QWidget:
+        opts = [("All", "All categories"), ("rates", "Rates"), ("inflation", "Inflation"),
+                ("employment", "Employment"), ("gdp", "GDP"), ("trade", "Trade"),
+                ("housing", "Housing"), ("other", "Other")]
+        pill = dropdowns.FilterPill("All categories", opts, mode="single")
+        pill.set_current("All")
+        pill.selectionChanged.connect(self._on_category_changed)
+        self._cat_btn = pill
+        return pill
 
-    def _choose_category(self, value: str, label: str) -> None:
-        self._cat_btn.setText(("All categories" if value == "All" else label) + "  ▾")
-        if value in self._cat_actions:
-            self._cat_actions[value].setChecked(True)
-        self.economic.set_category(value)
+    def _on_category_changed(self) -> None:
+        self.economic.set_category(self._cat_btn.current() or "All")
+        self.refresh_day_counts()
 
     # ---- TV day-card strip (aggregates all four calendars) ----
     def showEvent(self, event):  # noqa: N802 - prime equity fetches when the space first opens
@@ -541,9 +517,7 @@ class CalendarSpace(QtWidgets.QWidget):
         self._top_high = QtWidgets.QCheckBox("High only")
         self._top_high.setCursor(QtCore.Qt.PointingHandCursor)
         self._top_high.toggled.connect(self.economic._chk_high.setChecked)   # drives set_high_only
-        self._top_countries = QtWidgets.QPushButton("Countries  ▾")
-        self._top_countries.setCursor(QtCore.Qt.PointingHandCursor)
-        self._top_countries.clicked.connect(self._open_countries)
+        self._top_countries = self._build_country_pill()
         h.addWidget(self._top_high)
         h.addWidget(self._top_countries)
         self._tz = QtWidgets.QComboBox()
@@ -555,10 +529,43 @@ class CalendarSpace(QtWidgets.QWidget):
         h.addWidget(self._tz)
         return bar
 
-    def _open_countries(self) -> None:
-        self.economic._open_country_dialog()       # modal; sets economic._countries + rebuilds
-        n = len(self.economic._countries) if self.economic._countries else 0
-        self._top_countries.setText(f"Countries ({n})  ▾" if n else "Countries  ▾")
+    def _build_country_pill(self) -> QtWidgets.QWidget:
+        """Shared multi-select pill of currencies (flag-iconed, searchable) — replaces the modal.
+
+        Empty selection == all countries (matches economic.set_countries(None))."""
+        from ..data.calendar.taxonomy import (
+            ALL_CURRENCIES, COUNTRY_REGIONS, TOP20_ECONOMIES, currency_country)
+        from .economic_calendar import country_chip_pixmap
+        opts: list[tuple[str, str]] = []
+        icons: dict[str, QtGui.QIcon] = {}
+        for currencies in COUNTRY_REGIONS.values():
+            for cur in currencies:
+                name, iso = currency_country(cur)
+                opts.append((cur, name))
+                icons[cur] = QtGui.QIcon(country_chip_pixmap(iso))
+        # quick-picks: Entire world / Top 20 (header slot of the popover)
+        qp = QtWidgets.QWidget()
+        qpl = QtWidgets.QHBoxLayout(qp)
+        qpl.setContentsMargins(0, 0, 0, 0)
+        qpl.setSpacing(6)
+        b_world = QtWidgets.QPushButton("Entire world")
+        b_top = QtWidgets.QPushButton("Top 20")
+        for b in (b_world, b_top):
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.setStyleSheet(
+                f"QPushButton{{background:{theme.BG};color:{theme.BLUE};border:none;"
+                f"border-radius:{theme.RADIUS_SM}px;padding:4px 9px;font-size:11px;}}")
+            qpl.addWidget(b)
+        qpl.addStretch(1)
+        pill = dropdowns.FilterPill("Countries", opts, mode="multi",
+                                    row_icons=icons, header_widgets=[qp])
+        b_world.clicked.connect(lambda: pill.set_selected(set(ALL_CURRENCIES)))
+        b_top.clicked.connect(lambda: pill.set_selected(set(TOP20_ECONOMIES)))
+        pill.selectionChanged.connect(self._on_countries_changed)
+        return pill
+
+    def _on_countries_changed(self) -> None:
+        self.economic.set_countries(self._top_countries.selected() or None)
         self.refresh_day_counts()
 
     def _sync_range(self) -> None:
