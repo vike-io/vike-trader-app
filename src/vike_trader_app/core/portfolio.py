@@ -8,6 +8,7 @@ engine. Equity = cash + sum(position size * last close).
 
 from dataclasses import dataclass, field
 
+from .broker_sim import adverse_fill_price, fee as _fee
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 
@@ -126,7 +127,9 @@ class CrossSectionalStrategy(PortfolioStrategy):
 class PortfolioEngine:
     """Runs a `PortfolioStrategy` over aligned per-symbol bar series."""
 
-    def __init__(self, bars_by_symbol, strategy, fee_rate: float = 0.0, cash: float = 10_000.0):
+    def __init__(self, bars_by_symbol, strategy, fee_rate: float = 0.0, cash: float = 10_000.0,
+                 slippage: float = 0.0, maker_fee: float | None = None,
+                 taker_fee: float | None = None, multiplier: float = 1.0):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -136,6 +139,10 @@ class PortfolioEngine:
         self.strategy = strategy
         self.fee_rate = fee_rate
         self.cash = cash
+        self.slippage = slippage
+        self.maker_fee = maker_fee if maker_fee is not None else fee_rate
+        self.taker_fee = taker_fee if taker_fee is not None else fee_rate
+        self.multiplier = multiplier
         self.trades: list[Trade] = []
         self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
         self._pos: dict[str, Position] = {s: Position() for s in self.symbols}
@@ -155,7 +162,7 @@ class PortfolioEngine:
         return self._price[symbol]
 
     def equity_now(self) -> float:
-        return self.cash + sum(self._pos[s].size * self._price[s] for s in self.symbols)
+        return self.cash + sum(self._pos[s].size * self._price[s] * self.multiplier for s in self.symbols)
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float) -> None:
@@ -198,7 +205,7 @@ class PortfolioEngine:
             equity_curve.append(self.equity_now())
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
-            s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price)
+            s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price) * self.multiplier
             for s in self.symbols
         }
         return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol)
@@ -210,15 +217,18 @@ class PortfolioEngine:
             if fp is None:
                 still.append(o)               # rest until triggered
             else:
-                self._apply_fill(symbol, o.side, o.size, fp, bar.ts)
+                self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
 
-    def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int) -> None:
-        fee = size * price * self.fee_rate
+    def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int,
+                    is_maker: bool = False) -> None:
+        price = adverse_fill_price(price, side_sign, self.slippage)
+        rate = self.maker_fee if is_maker else self.taker_fee
+        fee = _fee(size, price, rate, self.multiplier)
         delta = side_sign * size
         pos = self._pos[symbol]
         self.cash -= fee  # transaction cost
-        self.cash -= delta * price  # signed notional moves cash in every case
+        self.cash -= delta * price * self.multiplier  # signed notional moves cash in every case
 
         if pos.size == 0:  # open from flat
             pos.size = delta
@@ -240,7 +250,7 @@ class PortfolioEngine:
         portion = closing / abs(pos.size)
         entry_fee_portion = self._entry_fee[symbol] * portion
         exit_fee_portion = fee * (closing / abs(delta)) if delta != 0 else 0.0
-        realized = (price - pos.avg_price) * (sign * closing)  # signed: works for shorts
+        realized = (price - pos.avg_price) * (sign * closing) * self.multiplier  # signed: works for shorts
         self._realized[symbol] += realized
         self.trades.append(
             Trade(

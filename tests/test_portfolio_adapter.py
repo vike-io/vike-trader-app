@@ -178,3 +178,41 @@ def test_resting_order_inert_on_synthetic_flat_fill_bars():
     runner = MultiSymbolStrategyRunner(LimitFarAway, {"A": a}, TesterConfig(cash=1000.0))
     result = runner.run()
     assert not result.trades and result.final_equity == 1000.0
+
+
+def test_single_symbol_portfolio_matches_engine_with_costs():
+    # A 1-symbol portfolio run must equal the single-symbol BacktestEngine on the same bars,
+    # strategy, and cost config (slippage + maker/taker + multiplier), proving the unified cost model.
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.engine import BacktestEngine
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _o(ts, o, h, l, c):
+        return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class BuyThenClose(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(2.0)
+            elif self.index == 3:
+                self.close()
+
+    bars = [_o(0, 100, 101, 99, 100), _o(1, 100, 105, 99, 104),
+            _o(2, 104, 110, 103, 108), _o(3, 108, 109, 105, 106), _o(4, 106, 107, 104, 105)]
+    cfg = dict(cash=1000.0, fee_rate=0.0, maker_fee=0.001, taker_fee=0.002,
+               slippage=0.0005, multiplier=2.0)
+    config = TesterConfig(**cfg)
+
+    # single-symbol reference
+    eng = BacktestEngine(list(bars), BuyThenClose(), **cfg)
+    ref = eng.run()
+
+    # 1-symbol portfolio
+    result = MultiSymbolStrategyRunner(BuyThenClose, {"X": list(bars)}, config).run()
+
+    assert result.final_equity == __import__("pytest").approx(ref.final_equity, rel=1e-9)
+    assert len(result.trades) == len(ref.trades) == 1
+    assert result.trades[0].pnl == __import__("pytest").approx(ref.trades[0].pnl, rel=1e-9)
+    assert result.trades[0].fees == __import__("pytest").approx(ref.trades[0].fees, rel=1e-9)

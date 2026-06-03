@@ -78,7 +78,8 @@ class SymbolEngineShim:
 
     def order_target_value(self, value: float) -> None:
         price = self._engine.price_of(self._symbol)
-        self.order_target(value / price if price else 0.0)
+        denom = price * self._engine.multiplier
+        self.order_target(value / denom if denom else 0.0)
 
     def order_target_percent(self, pct: float) -> None:
         self.order_target_value(pct * self._engine.equity_now())
@@ -165,7 +166,10 @@ class MultiSymbolStrategyRunner:
     def run(self) -> PortfolioResult:
         aligned = align_bars(self.bars_by_symbol)
         driver = _MultiSymbolDriver(self.strategy_cls, list(aligned), self.max_open_positions)
-        engine = PortfolioEngine(aligned, driver, fee_rate=self.config.fee_rate, cash=self.config.cash)
+        engine = PortfolioEngine(aligned, driver,
+                                 fee_rate=self.config.fee_rate, cash=self.config.cash,
+                                 slippage=self.config.slippage, maker_fee=self.config.maker_fee,
+                                 taker_fee=self.config.taker_fee, multiplier=self.config.multiplier)
         return engine.run()
 
     def report(self):
