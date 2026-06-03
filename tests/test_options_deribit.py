@@ -49,6 +49,7 @@ def test_build_chain_from_summary_groups_and_enriches():
     assert [r.strike for r in chain.rows] == [100000.0, 110000.0]
     row = chain.rows[0]
     assert row.call.iv == 0.625 and row.put.iv == 0.61        # mark_iv % -> decimal
-    assert row.call.bid == 0.05 and row.call.mark == 0.055
+    # Deribit premiums are coin units, scaled to USD by underlying_price (0.05 * 104000)
+    assert row.call.bid == 0.05 * 104000.0 and row.call.mark == 0.055 * 104000.0
     assert row.call.delta is not None                          # greeks enriched from IV
     assert chain.rows[1].put is None                           # only a call at 110000

@@ -95,6 +95,21 @@ def test_expiry_strip_selects_nearest_and_switches():
     assert tab.expiry_strip.current() == "2026-08-01"
 
 
+def test_provider_switch_scopes_underlyings():
+    _app()
+    tab = OptionsTab()
+    # default provider Deribit -> crypto coins, fixed (not editable)
+    assert tab.provider.currentText() == "Deribit"
+    assert [tab.underlying.itemText(i) for i in range(tab.underlying.count())] == ["BTC", "ETH", "SOL"]
+    assert not tab.underlying.isEditable()
+    # switch to yfinance -> editable stock presets
+    tab.provider.setCurrentText("yfinance")
+    tab._apply_provider(emit=False)
+    items = [tab.underlying.itemText(i) for i in range(tab.underlying.count())]
+    assert "SPY" in items and "AAPL" in items
+    assert tab.underlying.isEditable()
+
+
 def test_column_header_sort_reorders_and_drops_atm_marker():
     _app()
     tab = OptionsTab()

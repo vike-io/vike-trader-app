@@ -98,7 +98,7 @@ class ChecklistPopover(QtWidgets.QFrame):
     """
 
     selectionChanged = QtCore.Signal()
-    _MARGIN = theme.CARD_MARGIN  # translucent margin around the card, room for the drop shadow
+    _MARGIN = 16  # tight translucent margin for the drop shadow; CARD_MARGIN(30) left a big empty frame
 
     def __init__(self, title: str, options, *, mode: str = "multi", row_icons=None,
                  header_widgets=None, width: int = 224, parent=None):

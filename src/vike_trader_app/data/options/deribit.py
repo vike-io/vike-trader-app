@@ -27,6 +27,12 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
+def _usd(v: float | None, scale: float) -> float | None:
+    """Deribit quotes option premiums in coin units (fractions of BTC/ETH/SOL); scale to USD by
+    the underlying price so they line up with the USD Theor/Strike/Distance columns."""
+    return float(v) * scale if (v is not None and scale) else None
+
+
 def parse_instrument_name(name: str) -> tuple[str, str, float, str] | None:
     """`'BTC-27JUN26-100000-C'` -> `('BTC', '2026-06-27', 100000.0, 'C')`; None if not an option."""
     m = _NAME_RE.match(name or "")
@@ -66,10 +72,14 @@ def build_chain_from_summary(
         if spot is None and r.get("underlying_price") is not None:
             spot = float(r["underlying_price"])
         iv = r.get("mark_iv")
+        # Premiums arrive in coin units; scale to USD by this row's underlying price (fall back to
+        # the chain spot). Greeks/Theor come from IV+spot, so this only fixes the dollar columns.
+        px = r.get("underlying_price")
+        scale = float(px) if px is not None else (spot or 0.0)
         q = OptionQuote(
             strike=strike, type=typ,
-            bid=r.get("bid_price"), ask=r.get("ask_price"), last=None,
-            mark=r.get("mark_price"),
+            bid=_usd(r.get("bid_price"), scale), ask=_usd(r.get("ask_price"), scale), last=None,
+            mark=_usd(r.get("mark_price"), scale),
             iv=(iv / 100.0) if iv is not None else None,
             open_interest=r.get("open_interest"), volume=r.get("volume"),
         )

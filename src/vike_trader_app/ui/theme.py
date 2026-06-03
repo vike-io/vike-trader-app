@@ -107,9 +107,10 @@ def apply_shadow(widget, *, radius: int = 24, y: int = 8, alpha: int = 170) -> N
 
 
 def apply_popup_shadow(widget) -> None:
-    """The single drop shadow for every floating popup (cards, popovers) — soft + prominent,
-    tuned to TradeLocker's menu shadow. Use this everywhere instead of bespoke apply_shadow params."""
-    apply_shadow(widget, radius=28, y=12, alpha=130)
+    """The single drop shadow for every floating popup (cards, popovers) — tight and clearly
+    visible. A wide faint shadow (radius 28 / alpha 130) read as empty dead-space around small
+    popovers, so this is a narrower, stronger drop that fits a slim translucent margin."""
+    apply_shadow(widget, radius=18, y=7, alpha=180)
 
 
 def stylesheet() -> str:
