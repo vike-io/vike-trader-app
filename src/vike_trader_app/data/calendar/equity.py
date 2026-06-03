@@ -1,11 +1,18 @@
 """Equity calendars (Earnings / Dividends / IPO) for the Calendar space.
 
 Different data than the macro Economic calendar — company-level events from Finnhub
-(earnings, IPOs; free tier) and Financial Modeling Prep (dividends; FMP free tier).
-Each provider takes an injectable `http` (tests pass a fake) and reads its key from the
-environment; a missing key or a flaky source yields an empty list, never an exception.
+(earnings; free tier), Financial Modeling Prep (dividends; FMP free tier) and Nasdaq's
+public IPO calendar (IPOs; keyless, dense, forward-looking). Each provider takes an
+injectable `http` (tests pass a fake) and reads its key from the environment; a missing
+key or a flaky source yields an empty list, never an exception.
 
-Verified live (2026-06): Finnhub earnings ~234/2wk, Finnhub IPO; FMP dividends with yield.
+IPO uses Nasdaq as the primary source with Finnhub as the fallback: Finnhub's free-tier IPO
+calendar is sparse and forward-thin (verified live 2026-06: 9 rows this week, then 1/0/0 for
+the next 3 weeks), whereas Nasdaq's keyless month feed is far denser and forward-looking
+(12 rows this week, with priced/filed history) — FMP's IPO endpoint is paywalled (HTTP 402)
+on the free tier, so it is not used for IPOs.
+
+Verified live (2026-06): Finnhub earnings ~234/2wk; FMP dividends with yield; Nasdaq IPO.
 Neither vendor exposes options data on these free tiers — options stay with the existing
 Deribit/yfinance feature.
 """
@@ -15,6 +22,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 
 from .http import http_get_json
@@ -24,6 +32,10 @@ FINNHUB_IPO = "https://finnhub.io/api/v1/calendar/ipo?from={frm}&to={to}&token={
 FINNHUB_PROFILE = "https://finnhub.io/api/v1/stock/profile2?symbol={sym}&token={key}"
 FMP_DIVIDENDS = ("https://financialmodelingprep.com/stable/dividends-calendar"
                  "?from={frm}&to={to}&apikey={key}")
+# Nasdaq's public IPO calendar is month-based (?date=YYYY-MM) and needs no API key.
+NASDAQ_IPO = "https://api.nasdaq.com/api/ipo/calendar?date={month}"
+# api.nasdaq.com rejects the default urllib agent; mimic a browser like the dividend feed does not need to.
+_NASDAQ_HEADERS = {"User-Agent": "Mozilla/5.0 (vike-trader-app)", "Accept": "application/json"}
 _PROFILE_CACHE = "storage/calendar/profiles.json"
 
 
@@ -32,6 +44,35 @@ def _num(v):
         return float(v) if v not in (None, "", "None") else None
     except (TypeError, ValueError):
         return None
+
+
+def _num_str(v):
+    """Numeric from a display string like '7,900,000' or '$181,700,000' (Nasdaq fields)."""
+    if v in (None, "", "None"):
+        return None
+    try:
+        return float(str(v).replace(",", "").replace("$", "").strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm_mdy(s: str) -> str:
+    """Nasdaq dates are 'M/D/YYYY'; return ISO 'YYYY-MM-DD' ('' if unparseable)."""
+    try:
+        return datetime.strptime(s, "%m/%d/%Y").strftime("%Y-%m-%d")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _months_between(frm: str, to: str) -> list[str]:
+    """The 'YYYY-MM' month tags spanned by an inclusive [frm, to] ISO-date range (1–2 for a
+    week, occasionally 2 when the week straddles a month boundary)."""
+    a, b = date.fromisoformat(frm), date.fromisoformat(to)
+    out, y, m = [], a.year, a.month
+    while (y, m) <= (b.year, b.month):
+        out.append(f"{y:04d}-{m:02d}")
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return out
 
 
 @dataclass
@@ -108,13 +149,69 @@ class FinnhubIpo:
             return []
         try:
             rows = self._http(FINNHUB_IPO.format(frm=frm, to=to, key=self._key))
+            # Finnhub returns explicit JSON null for exchange/name/symbol on many rows, so a
+            # `.get(key, default)` keeps the None (the key IS present) — guard each with `or ""`.
             return [IpoEvent(
-                date=r.get("date", ""), symbol=r.get("symbol", "") or "", name=r.get("name", ""),
-                exchange=r.get("exchange", ""), price=str(r.get("price", "") or ""),
-                shares=_num(r.get("numberOfShares")), status=r.get("status", ""),
+                date=r.get("date", "") or "", symbol=r.get("symbol", "") or "", name=r.get("name", "") or "",
+                exchange=r.get("exchange", "") or "", price=str(r.get("price", "") or ""),
+                shares=_num(r.get("numberOfShares")), status=r.get("status", "") or "",
             ) for r in (rows or {}).get("ipoCalendar", [])]
         except Exception:  # noqa: BLE001
             return []
+
+
+class NasdaqIpo:
+    """Nasdaq's public IPO calendar — keyless, dense and forward-looking, far richer than the
+    free Finnhub feed. The feed is per-month (?date=YYYY-MM); we fetch every month the requested
+    [frm, to] week spans, flatten the `upcoming`/`priced`/`filed` sections into the shared
+    IpoEvent shape and keep only the rows whose date falls inside the window."""
+
+    name = "Nasdaq"
+    # (section, date field, status label). `upcoming` nests its rows under `upcomingTable`.
+    _SECTIONS = (("upcoming", "expectedPriceDate"), ("priced", "pricedDate"), ("filed", "filedDate"))
+
+    def __init__(self, http=http_get_json):
+        self._http = http
+
+    def fetch(self, frm: str, to: str) -> list[IpoEvent]:
+        try:
+            out: list[IpoEvent] = []
+            for month in _months_between(frm, to):
+                data = (self._http(NASDAQ_IPO.format(month=month), headers=_NASDAQ_HEADERS) or {}).get("data") or {}
+                for section, datefield in self._SECTIONS:
+                    block = data.get(section) or {}
+                    rows = block.get("rows") or (block.get("upcomingTable") or {}).get("rows") or []
+                    for r in rows:
+                        if not isinstance(r, dict):
+                            continue
+                        iso = _norm_mdy(r.get(datefield, "") or "")
+                        if not iso or not (frm <= iso <= to):   # keep only the requested week
+                            continue
+                        out.append(IpoEvent(
+                            date=iso, symbol=r.get("proposedTickerSymbol", "") or "",
+                            name=r.get("companyName", "") or "", exchange=r.get("proposedExchange", "") or "",
+                            price=str(r.get("proposedSharePrice", "") or ""),
+                            shares=_num_str(r.get("sharesOffered")), status=section,
+                        ))
+            return out
+        except Exception:  # noqa: BLE001 - a flaky source must never break the calendar
+            return []
+
+
+class Ipo:
+    """IPO calendar with Nasdaq as the primary (dense, forward-looking, keyless) source and
+    Finnhub as the fallback. Falls back when Nasdaq is unavailable/errors (returns []) so the tab
+    still shows the sparse-but-present Finnhub rows rather than going empty."""
+
+    name = "Nasdaq"
+
+    def __init__(self, key: str | None = None, http=http_get_json):
+        self._nasdaq = NasdaqIpo(http=http)
+        self._finnhub = FinnhubIpo(key=key, http=http)
+
+    def fetch(self, frm: str, to: str) -> list[IpoEvent]:
+        rows = self._nasdaq.fetch(frm, to)
+        return rows if rows else self._finnhub.fetch(frm, to)
 
 
 class FmpDividends:

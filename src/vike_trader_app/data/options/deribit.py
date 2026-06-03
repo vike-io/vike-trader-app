@@ -19,7 +19,15 @@ from .model import Expiry, OptionChain, OptionQuote, StrikeRow, limit_strikes, m
 _BASE = "https://www.deribit.com/api/v2/public/get_book_summary_by_currency"
 _MONTHS = {m: i for i, m in enumerate(
     ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"], start=1)}
-_NAME_RE = re.compile(r"^([A-Z]+)-(\d{1,2})([A-Z]{3})(\d{2})-(\d+(?:\.\d+)?)-([CP])$")
+# Two instrument-name shapes: legacy coin-settled "BTC-27JUN26-100000-C" and the newer USDC-margined
+# altcoin form "SOL_USDC-26JUN26-90-P" (the base carries a _USDC/_USDT settlement suffix). The suffix
+# is captured and discarded so the base coin normalizes to "SOL"/"BTC".
+_NAME_RE = re.compile(
+    r"^([A-Z]+)(?:_USD[CT])?-(\d{1,2})([A-Z]{3})(\d{2})-(\d+(?:\.\d+)?)-([CP])$")
+# Currency to query Deribit's book-summary with: BTC/ETH have their own coin-settled books; the
+# altcoins (SOL, and others) are listed only under the shared USDC book, so we query USDC and then
+# keep just the rows for the requested base coin.
+_BOOK_CURRENCY = {"BTC": "BTC", "ETH": "ETH", "SOL": "USDC"}
 _CACHE_TTL_MS = 5_000
 
 
@@ -45,20 +53,29 @@ def parse_instrument_name(name: str) -> tuple[str, str, float, str] | None:
     return cur, date_iso, float(strike), typ
 
 
-def list_expiries_from_summary(rows: list[dict], now_ms: int) -> list[Expiry]:
-    """Distinct option expiries present in a book-summary payload, ascending."""
+def list_expiries_from_summary(
+    rows: list[dict], now_ms: int, currency: str | None = None,
+) -> list[Expiry]:
+    """Distinct option expiries present in a book-summary payload, ascending. When `currency` is
+    given (e.g. "SOL"), only that base coin's instruments count — the shared USDC book mixes
+    several coins, so without this filter SOL's expiries would pick up BTC/ETH/XRP dates."""
     dates: set[str] = set()
     for r in rows:
         parsed = parse_instrument_name(r.get("instrument_name", ""))
-        if parsed:
+        if parsed and (currency is None or parsed[0] == currency):
             dates.add(parsed[1])
     return [make_expiry(d, now_ms) for d in sorted(dates)]
 
 
 def build_chain_from_summary(
-    currency: str, rows: list[dict], expiry_iso: str, now_ms: int,
+    currency: str, rows: list[dict], expiry_iso: str, now_ms: int, usd_quoted: bool = False,
 ) -> OptionChain:
-    """Group a book-summary payload into an `OptionChain` for one expiry, greeks enriched."""
+    """Group a book-summary payload into an `OptionChain` for one expiry, greeks enriched.
+
+    `usd_quoted` selects the premium unit convention: the coin-settled BTC/ETH books quote premiums
+    in COIN units (scaled to USD by the underlying price), while the USDC-margined altcoin book
+    (SOL etc.) already quotes premiums in USD — those pass through unscaled.
+    """
     t = years_to_expiry(expiry_iso, now_ms)
     spot: float | None = None
     by_strike: dict[float, dict[str, OptionQuote]] = {}
@@ -66,16 +83,18 @@ def build_chain_from_summary(
         parsed = parse_instrument_name(r.get("instrument_name", ""))
         if not parsed:
             continue
-        _cur, e_iso, strike, typ = parsed
-        if e_iso != expiry_iso:
+        base, e_iso, strike, typ = parsed
+        # The USDC book mixes coins (BTC_USDC/SOL_USDC/XRP_USDC); keep only the requested coin.
+        if base != currency or e_iso != expiry_iso:
             continue
         if spot is None and r.get("underlying_price") is not None:
             spot = float(r["underlying_price"])
         iv = r.get("mark_iv")
-        # Premiums arrive in coin units; scale to USD by this row's underlying price (fall back to
-        # the chain spot). Greeks/Theor come from IV+spot, so this only fixes the dollar columns.
+        # Coin-settled premiums arrive in coin units -> scale to USD by this row's underlying price
+        # (fall back to the chain spot). USDC-margined premiums are already USD -> scale 1.0.
+        # Greeks/Theor come from IV+spot, so this only affects the dollar columns.
         px = r.get("underlying_price")
-        scale = float(px) if px is not None else (spot or 0.0)
+        scale = 1.0 if usd_quoted else (float(px) if px is not None else (spot or 0.0))
         q = OptionQuote(
             strike=strike, type=typ,
             bid=_usd(r.get("bid_price"), scale), ask=_usd(r.get("ask_price"), scale), last=None,
@@ -113,20 +132,25 @@ class DeribitOptionsProvider:
     def list_underlyings(self) -> list[str]:
         return ["BTC", "ETH", "SOL"]
 
-    def _summary(self, currency: str, now_ms: int) -> list[dict]:
-        cached = self._cache.get(currency)
+    def _summary(self, underlying: str, now_ms: int) -> list[dict]:
+        # SOL (and other altcoins) live in the shared USDC book, not a same-named book; BTC/ETH
+        # keep their own coin-settled books. _BOOK_CURRENCY maps the coin to the book to query.
+        book = _BOOK_CURRENCY.get(underlying, underlying)
+        cached = self._cache.get(book)
         if cached and now_ms - cached[0] < _CACHE_TTL_MS:
             return cached[1]
-        data = _http_get_json(f"{_BASE}?currency={currency}&kind=option")
+        data = _http_get_json(f"{_BASE}?currency={book}&kind=option")
         rows = data.get("result", []) or []
-        self._cache[currency] = (now_ms, rows)
+        self._cache[book] = (now_ms, rows)
         return rows
 
     def list_expiries(self, underlying: str) -> list[Expiry]:
         now = _now_ms()
-        return list_expiries_from_summary(self._summary(underlying, now), now)
+        return list_expiries_from_summary(self._summary(underlying, now), now, underlying)
 
     def fetch_chain(self, underlying: str, expiry: Expiry, strikes: int | None = None) -> OptionChain:
         now = _now_ms()
-        chain = build_chain_from_summary(underlying, self._summary(underlying, now), expiry.date, now)
+        usd_quoted = _BOOK_CURRENCY.get(underlying, underlying) == "USDC"
+        chain = build_chain_from_summary(
+            underlying, self._summary(underlying, now), expiry.date, now, usd_quoted)
         return limit_strikes(chain, strikes)

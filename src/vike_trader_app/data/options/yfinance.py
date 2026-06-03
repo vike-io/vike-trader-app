@@ -13,7 +13,9 @@ import time
 from dataclasses import replace
 
 from .greeks import enrich_quote, implied_vol, years_to_expiry
-from .model import Expiry, OptionChain, OptionQuote, StrikeRow, limit_strikes, make_expiry
+from .model import (
+    Expiry, OptionChain, OptionQuote, StrikeRow, _expiry_ms, limit_strikes, make_expiry,
+)
 
 # Yahoo's free feed often returns 0 bid/ask (market closed) and a junk IV — observed values
 # range from ~1e-5 up to ~0.02. Real annualized option IV is effectively never this low, so
@@ -91,7 +93,17 @@ class YFinanceOptionsProvider:
 
     def list_expiries(self, underlying: str) -> list[Expiry]:
         now = _now_ms()
-        return [make_expiry(e, now) for e in self._ticker(underlying).options]
+        # Yahoo's `.options` can carry a just-passed expiry alongside today's; both clamp to DTE 0
+        # and render a SECOND "0DTE" pill. Drop already-expired dates and de-dupe so each expiry
+        # (and the single 0DTE) appears once. `_expiry_ms` settles at 08:00 UTC, matching make_expiry.
+        seen: set[str] = set()
+        out: list[Expiry] = []
+        for e in self._ticker(underlying).options:
+            if e in seen or _expiry_ms(e) + 86_400_000 <= now:  # past its settle day -> expired
+                continue
+            seen.add(e)
+            out.append(make_expiry(e, now))
+        return out
 
     def fetch_chain(self, underlying: str, expiry: Expiry, strikes: int | None = None) -> OptionChain:
         now = _now_ms()

@@ -13,12 +13,17 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import report_extras
-from . import theme
+from . import icons, theme
 from .chart import EquityChart
 from .editor import CodeEditor
 from .flowlayout import FlowLayout
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
+
+# The one unified Studio gap: the outer frame inset, the inter-card gutter (chat↔editor splitter
+# handle) and the top↔bottom gutter (results↔cards splitter handle) are all this value, so every
+# visible distance in the Studio layout is identical. Tightened from 12 — the user found 12 too big.
+_GAP = 6
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +61,10 @@ class ResultsPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        # _GAP outer frame on the top/sides so the tab strip lines up with the bottom cards'
+        # _GAP insets (StudioTab's root margin is 0 — this is the single source of the top gap).
+        # Bottom inset stays 0: the vertical splitter handle (_GAP) provides the gap to the cards.
+        root.setContentsMargins(_GAP, _GAP, _GAP, 0)
         root.setSpacing(6)
 
         # verdict banner (above the tabs — always visible when set)
@@ -539,9 +547,9 @@ class ChatPanel(QtWidgets.QWidget):
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         root = QtWidgets.QVBoxLayout(self)
-        # Right inset clears the 10px chat-log scrollbar gutter so the cards + input never sit
-        # flush against the scrollbar / splitter edge — matching the editor card's framed inset.
-        root.setContentsMargins(10, 8, 12, 8)
+        # Uniform _GAP inset on all sides so this card's content lines up with the editor card's
+        # (its layout `ep` uses the same _GAP inset) — the heading top matches the Run-toolbar top.
+        root.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
         root.setSpacing(8)
 
         # --- empty state (shown until the first message) ---
@@ -576,7 +584,9 @@ class ChatPanel(QtWidgets.QWidget):
     def _build_empty(self) -> QtWidgets.QWidget:
         box = QtWidgets.QWidget()
         v = QtWidgets.QVBoxLayout(box)
-        v.setContentsMargins(6, 16, 6, 6)
+        # No own inset — the ChatPanel root's 12px margin already provides the card padding, so the
+        # "✦ AI STUDIO" heading sits flush at the 12px inset, level with the editor's Run toolbar.
+        v.setContentsMargins(0, 0, 0, 0)
         v.setSpacing(7)
 
         eyebrow = QtWidgets.QLabel("✦ AI STUDIO")
@@ -931,10 +941,18 @@ class StudioTab(QtWidgets.QWidget):
         self._run_range = None       # None -> full bars, else (start_ts, end_ts)
         self._run_resolution = None  # None -> base bars, else coarse window ms to resample to
         self._apply_version = 0      # AI-applied-change version (for the diff-and-apply flow)
+        self._top_collapsed = False  # chart/report panel collapsed to give the cards full height
+        self._saved_top_size = None  # remembered top height to restore on expand
+        self._ratio_applied = False  # one-time 44:56 re-assert guard (see showEvent)
 
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(6, 6, 6, 6)
-        root.setSpacing(5)
+        # No root inset — every visible gap is a single, uniform ~12px instead of doubling up
+        # (root + card margins). The 12px outer frame comes from the cards' own 12px insets
+        # (and the ResultsPanel's 12px top/side inset below); the inter-card / top-vs-bottom
+        # gutters come from the two splitter handle widths (also 12). So left == right == top ==
+        # bottom == inter-card gutter == 12, not the old 6+12=18 on left/top vs tighter right/bottom.
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
         # toolbar — TradeLocker-style: sits directly ABOVE the code editor (its pane header),
         # not at the top of the whole Studio tab. A wrapping FlowLayout so the buttons never
@@ -945,22 +963,41 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_run.setObjectName("play")
         self._btn_run.clicked.connect(self.run_code)
         toolbar.addWidget(self._btn_run)
-        self._btn_optimize = QtWidgets.QPushButton("⚖ Walk-forward")
+        self._btn_optimize = QtWidgets.QPushButton("Walk-forward")
+        self._btn_optimize.setIcon(icons.glyph_icon("scale", theme.TEXT2))
+        self._btn_optimize.setIconSize(QtCore.QSize(18, 18))
         self._btn_optimize.setToolTip("Walk-forward optimize the PARAM_GRID + attach an overfit verdict")
         self._btn_optimize.clicked.connect(self._optimize)
         toolbar.addWidget(self._btn_optimize)
-        self._btn_templates = QtWidgets.QPushButton("📁")
+        self._btn_templates = QtWidgets.QPushButton()
+        self._btn_templates.setIcon(icons.glyph_icon("folder", theme.TEXT2))
+        self._btn_templates.setIconSize(QtCore.QSize(18, 18))
         self._btn_templates.setToolTip("Templates")
         self._btn_templates.clicked.connect(self._open_templates)
         toolbar.addWidget(self._btn_templates)
-        self._btn_config = QtWidgets.QPushButton("⚙")
+        self._btn_config = QtWidgets.QPushButton()
+        self._btn_config.setIcon(icons.glyph_icon("gear", theme.TEXT2))
+        self._btn_config.setIconSize(QtCore.QSize(18, 18))
         self._btn_config.setToolTip("Settings")
         self._btn_config.clicked.connect(self._open_config)
         toolbar.addWidget(self._btn_config)
         # Indicators moved to the chart's own toolbar (the ƒx button) — not duplicated here.
-        self._btn_export = QtWidgets.QPushButton("⤓ Export CSV")
+        self._btn_export = QtWidgets.QPushButton()
+        self._btn_export.setIcon(icons.glyph_icon("save", theme.TEXT2))
+        self._btn_export.setIconSize(QtCore.QSize(18, 18))
+        self._btn_export.setToolTip("Export CSV")
         self._btn_export.clicked.connect(self._export_csv)
         toolbar.addWidget(self._btn_export)
+        # Collapse / expand the top chart+report panel to hand its height to the editor + AI cards.
+        # Wired now; _toggle_top_panel reads self._vsplit at click-time (created further below).
+        # NOT added to the FlowLayout — it's pushed to the FAR RIGHT of the toolbar row below
+        # (a wrapping FlowLayout can't right-align, so a QHBoxLayout + stretch separates it from
+        # the Run/Walk-forward/Templates/Settings/Export cluster).
+        self._btn_collapse_top = QtWidgets.QToolButton()
+        self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_up", theme.TEXT2))
+        self._btn_collapse_top.setIconSize(QtCore.QSize(18, 18))
+        self._btn_collapse_top.setToolTip("Collapse / expand chart & report")
+        self._btn_collapse_top.clicked.connect(self._toggle_top_panel)
 
         self.chat = ChatPanel()
         self.editor = CodeEditor()
@@ -969,14 +1006,24 @@ class StudioTab(QtWidgets.QWidget):
         # editor pane = toolbar header + code editor (so the buttons sit above the editor)
         editor_pane = QtWidgets.QWidget()
         ep = QtWidgets.QVBoxLayout(editor_pane)
-        ep.setContentsMargins(0, 0, 0, 0)
+        # _GAP inset on all sides — matches the AI card's ChatPanel root margin so both bottom
+        # cards' top content (Run toolbar here, "✦ AI STUDIO" heading there) sit at the same inset.
+        ep.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
         ep.setSpacing(5)
-        toolbar_row = QtWidgets.QWidget()
-        toolbar_row.setLayout(toolbar)
-        _sp = toolbar_row.sizePolicy()
+        toolbar_flow = QtWidgets.QWidget()
+        toolbar_flow.setLayout(toolbar)
+        _sp = toolbar_flow.sizePolicy()
         _sp.setHeightForWidth(True)
         _sp.setVerticalPolicy(QtWidgets.QSizePolicy.Minimum)
-        toolbar_row.setSizePolicy(_sp)
+        toolbar_flow.setSizePolicy(_sp)
+        # Action buttons (wrapping FlowLayout) stay LEFT; the collapse chevron is pushed to the
+        # FAR RIGHT via the stretch — visually separated from the Run/Walk-forward/… cluster.
+        toolbar_row = QtWidgets.QWidget()
+        tr = QtWidgets.QHBoxLayout(toolbar_row)
+        tr.setContentsMargins(0, 0, 0, 0)
+        tr.setSpacing(6)
+        tr.addWidget(toolbar_flow, 1)
+        tr.addWidget(self._btn_collapse_top, 0, QtCore.Qt.AlignTop | QtCore.Qt.AlignRight)
         ep.addWidget(toolbar_row)
         ep.addWidget(self.editor, 1)
 
@@ -987,6 +1034,7 @@ class StudioTab(QtWidgets.QWidget):
         self._bottom.setStretchFactor(0, 1)
         self._bottom.setStretchFactor(1, 1)
         self._bottom.setSizes([1000, 1000])
+        self._bottom.setHandleWidth(_GAP)      # inter-card gutter == the uniform outer gap
         self._bottom.setCollapsible(0, True)   # chat (left) may collapse
         self._bottom.setCollapsible(1, False)  # editor (right) is the primary work area
 
@@ -996,16 +1044,77 @@ class StudioTab(QtWidgets.QWidget):
         self._vsplit = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         self._vsplit.addWidget(self.results)
         self._vsplit.addWidget(self._bottom)
-        self._vsplit.setStretchFactor(0, 3)
-        self._vsplit.setStretchFactor(1, 2)
+        self._vsplit.setHandleWidth(_GAP)      # top↔bottom gutter == the uniform outer gap
+        # Default ~44% top (chart/report) / ~56% bottom (editor + AI studio) — give the cards room.
+        # Why the top used to drift past 44%: ResultsPanel's sizeHint is ~510px tall because its
+        # EquityChart (a pg.PlotWidget / QGraphicsView) advertises a 640×480 sizeHint. On the
+        # deferred first-show layout pass the splitter blends the requested sizes with each child's
+        # sizeHint (weighted by stretch), and that tall top hint pulled the divider toward 50/50.
+        # Fix: cap the top's preferred height so it can't out-vote the bottom, use large
+        # proportional sizes so the absolute request dominates, and re-assert the ratio once after
+        # the first real geometry arrives (see _apply_vsplit_ratio).
+        self.results.setMinimumHeight(0)
+        self.results.setMaximumHeight(16_777_215)  # no hard cap on drag; only the hint is tamed
+        _hint = self.results.sizePolicy()
+        _hint.setVerticalStretch(44)               # advertise the 44:56 split as the size policy too
+        self.results.setSizePolicy(_hint)
+        _bsp = self._bottom.sizePolicy()
+        _bsp.setVerticalStretch(56)
+        self._bottom.setSizePolicy(_bsp)
+        self._vsplit.setSizes([4400, 5600])
+        self._vsplit.setStretchFactor(0, 44)
+        self._vsplit.setStretchFactor(1, 56)
         # The results/chart panel (top) can be shrunk all the way down — drag the divider up to
         # give the editor + chat the full height, or hide the chart/report entirely.
-        self.results.setMinimumHeight(0)
         self._vsplit.setCollapsible(0, True)
         self._vsplit.setCollapsible(1, True)
         root.addWidget(self._vsplit, stretch=1)
 
         self.chat.promptSubmitted.connect(self._on_prompt)
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802 - Qt override
+        """Re-assert the 44:56 vertical split once the tab first gets real geometry — the
+        deferred first-show layout can otherwise equilibrate toward 50/50 before the window is
+        sized. Deferred to the event loop so the splitter has its final height when we re-apply."""
+        super().showEvent(event)
+        if not self._ratio_applied:
+            self._ratio_applied = True
+            QtCore.QTimer.singleShot(0, self._apply_vsplit_ratio)
+
+    def _apply_vsplit_ratio(self, top_frac: float = 0.44, _tries: int = 6) -> None:
+        """Force the vertical splitter to ~44% top / ~56% bottom for the current height.
+
+        Re-tries on the next event-loop tick while the layout is still settling (a transient
+        bottom-pane minimum can clamp the first attempt below target right after first show)."""
+        if self._top_collapsed:
+            return
+        total = sum(self._vsplit.sizes())
+        if total <= 0:
+            if _tries > 0:
+                QtCore.QTimer.singleShot(16, lambda: self._apply_vsplit_ratio(top_frac, _tries - 1))
+            return
+        top = int(round(total * top_frac))
+        self._vsplit.setSizes([top, total - top])
+        # If a still-settling layout clamped us well off target, try once more next tick.
+        got = self._vsplit.sizes()[0]
+        if _tries > 0 and abs(got - top) > 0.05 * total:
+            QtCore.QTimer.singleShot(16, lambda: self._apply_vsplit_ratio(top_frac, _tries - 1))
+
+    def _toggle_top_panel(self) -> None:
+        """Collapse the top chart+report panel to give the bottom cards the full height, or
+        restore it. Remembers the pre-collapse top height so expand returns to it."""
+        sizes = self._vsplit.sizes()
+        total = sum(sizes)
+        if not self._top_collapsed:
+            self._saved_top_size = sizes[0]
+            self._vsplit.setSizes([0, total])
+            self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_down", theme.TEXT2))
+            self._top_collapsed = True
+        else:
+            top = self._saved_top_size or int(total * 0.44)
+            self._vsplit.setSizes([top, total - top])
+            self._btn_collapse_top.setIcon(icons.glyph_icon("chevron_up", theme.TEXT2))
+            self._top_collapsed = False
 
     # --- hosted panels (moved in from the Chart space / right dock) ---
 
