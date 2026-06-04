@@ -1,5 +1,7 @@
 """Cross-sectional top-k rotation: rank the universe each rebalance, hold the best k."""
 
+from datetime import datetime, timezone
+
 import pytest
 
 from vike_trader_app.core.model import Bar
@@ -60,3 +62,148 @@ def test_rebalance_cadence_only_fires_on_schedule():
     PortfolioEngine(bars, strat, cash=10_000.0).run()
     # score() only runs on indices divisible by rebalance_every (0,3,6) and after warmup
     assert set(strat.rebalanced_on) <= {0, 3, 6}
+
+
+# ---------------------------------------------------------------------------
+# Calendar rebalancing (rebalance_on="monthly")
+# ---------------------------------------------------------------------------
+
+def _ts_ms(year: int, month: int, day: int) -> int:
+    """Epoch-ms for midnight UTC on the given date."""
+    dt = datetime(year, month, day, tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _daily_bars(symbol: str, dates: list[tuple[int, int, int]], price_fn) -> list[Bar]:
+    """Build daily bars for ``symbol`` using ``price_fn(i)`` for the close."""
+    bars = []
+    for i, (y, m, d) in enumerate(dates):
+        ts = _ts_ms(y, m, d)
+        p = price_fn(i)
+        bars.append(Bar(ts=ts, open=p, high=p + 1, low=p - 1, close=p, volume=1.0))
+    return bars
+
+
+# Dates spanning Jan, Feb, Mar 2024 — ~10 trading days per month.
+_DATES = [
+    # Jan 2024
+    (2024, 1, 2), (2024, 1, 5), (2024, 1, 9), (2024, 1, 12), (2024, 1, 16),
+    (2024, 1, 19), (2024, 1, 23), (2024, 1, 26), (2024, 1, 30),
+    # Feb 2024
+    (2024, 2, 2), (2024, 2, 6), (2024, 2, 9), (2024, 2, 13), (2024, 2, 16),
+    (2024, 2, 20), (2024, 2, 23), (2024, 2, 27),
+    # Mar 2024
+    (2024, 3, 1), (2024, 3, 5), (2024, 3, 8), (2024, 3, 12), (2024, 3, 15),
+    (2024, 3, 19), (2024, 3, 22), (2024, 3, 26),
+]
+
+_N = len(_DATES)  # total bars
+
+
+class _MonthlyRotation(CrossSectionalStrategy):
+    """k=1 strategy that scores by last close; rebalances on monthly boundaries."""
+
+    k = 1
+    rebalance_on = "monthly"
+
+    def __init__(self):
+        super().__init__()
+        self.rebalance_calls: list[int] = []  # bar indices where rebalance() is called
+        self.score_call_count = 0
+
+    def score(self, symbol: str, history: list[float]):
+        self.score_call_count += 1
+        return history[-1]
+
+    def rebalance(self, weights: dict) -> None:  # type: ignore[override]
+        self.rebalance_calls.append(self.index)
+        super().rebalance(weights)
+
+
+def test_monthly_rebalance_fires_exactly_once_per_month():
+    """With 3 calendar months of daily bars, rebalance() should fire exactly 3 times."""
+    bars = {
+        "A": _daily_bars("A", _DATES, lambda i: 100 + i),   # steadily rising
+        "B": _daily_bars("B", _DATES, lambda i: 50 + i),    # rising but lower
+    }
+    strat = _MonthlyRotation()
+    PortfolioEngine(bars, strat, cash=10_000.0).run()
+
+    # Exactly 3 month boundaries crossed (Jan, Feb, Mar first bar each month)
+    assert len(strat.rebalance_calls) == 3
+
+
+def test_monthly_rebalance_triggers_at_month_start_bars():
+    """The rebalance should fire on the first bar of each new month."""
+    bars = {
+        "A": _daily_bars("A", _DATES, lambda i: 100 + i),
+        "B": _daily_bars("B", _DATES, lambda i: 50 + i),
+    }
+    strat = _MonthlyRotation()
+    PortfolioEngine(bars, strat, cash=10_000.0).run()
+
+    # Identify bar indices that are first occurrences of a new month
+    from vike_trader_app.analysis.periods import period_key
+    seen_months: set[str] = set()
+    expected_trigger_indices: list[int] = []
+    for idx, date in enumerate(_DATES):
+        ts = _ts_ms(*date)
+        key = period_key(ts, "monthly")
+        if key not in seen_months:
+            seen_months.add(key)
+            expected_trigger_indices.append(idx)
+
+    assert strat.rebalance_calls == expected_trigger_indices
+
+
+def test_monthly_rebalance_history_accumulated_on_all_bars():
+    """Price history must be accumulated every bar, not just on rebalance bars."""
+    bars = {
+        "A": _daily_bars("A", _DATES, lambda i: 100 + i),
+        "B": _daily_bars("B", _DATES, lambda i: 50 + i),
+    }
+    strat = _MonthlyRotation()
+    eng = PortfolioEngine(bars, strat, cash=10_000.0)
+    eng.run()
+
+    # History length for each symbol should equal total number of bars
+    assert len(strat._hist["A"]) == _N
+    assert len(strat._hist["B"]) == _N
+
+
+def test_rebalance_on_none_reproduces_bar_count_behavior():
+    """rebalance_on=None (default) must produce the same result as rebalance_every=1."""
+
+    class _BarCount(CrossSectionalStrategy):
+        k = 1
+        rebalance_every = 1
+        rebalance_on = None
+
+        def score(self, symbol, history):
+            return history[-1]
+
+    class _BarCountAlt(CrossSectionalStrategy):
+        """Same but using the default CrossSectionalStrategy defaults."""
+        k = 1
+
+        def score(self, symbol, history):
+            return history[-1]
+
+    bars_a = {
+        "A": _series([100, 105, 102, 108, 115]),
+        "B": _series([99, 104, 101, 107, 114]),
+    }
+    # Make identical bar dicts for the two runs
+    bars_b = {
+        "A": _series([100, 105, 102, 108, 115]),
+        "B": _series([99, 104, 101, 107, 114]),
+    }
+
+    strat_none = _BarCount()
+    result_none = PortfolioEngine(bars_a, strat_none, cash=10_000.0).run()
+
+    strat_default = _BarCountAlt()
+    result_default = PortfolioEngine(bars_b, strat_default, cash=10_000.0).run()
+
+    # Both strategies should produce the same final equity
+    assert result_none.final_equity == pytest.approx(result_default.final_equity)

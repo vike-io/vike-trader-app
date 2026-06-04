@@ -7,6 +7,7 @@ import pytest
 from vike_trader_app.analysis.periods import (
     drawdown_table,
     monthly_return_matrix,
+    period_key,
     periodic_returns,
 )
 
@@ -253,3 +254,65 @@ def test_dd_table_sorted_by_depth_descending():
 def test_dd_table_length_mismatch_raises():
     with pytest.raises(ValueError):
         drawdown_table([100.0, 90.0], [_ts(2024, 1, 1)], top_n=5)
+
+
+# ---------------------------------------------------------------------------
+# period_key()
+# ---------------------------------------------------------------------------
+
+def test_period_key_daily():
+    ts = _ts(2024, 3, 15)
+    assert period_key(ts, "daily") == "2024-03-15"
+
+
+def test_period_key_weekly():
+    # 2024-03-15 is ISO week 11 of 2024
+    ts = _ts(2024, 3, 15)
+    assert period_key(ts, "weekly") == "2024-W11"
+
+
+def test_period_key_monthly():
+    ts = _ts(2024, 3, 15)
+    assert period_key(ts, "monthly") == "2024-03"
+
+
+def test_period_key_quarterly_q1():
+    # January is Q1
+    ts = _ts(2024, 1, 15)
+    assert period_key(ts, "quarterly") == "2024-Q1"
+
+
+def test_period_key_quarterly_q2():
+    # April is Q2
+    ts = _ts(2024, 4, 1)
+    assert period_key(ts, "quarterly") == "2024-Q2"
+
+
+def test_period_key_quarterly_q3():
+    # July is Q3
+    ts = _ts(2024, 7, 1)
+    assert period_key(ts, "quarterly") == "2024-Q3"
+
+
+def test_period_key_quarterly_q4():
+    # October is Q4
+    ts = _ts(2024, 10, 1)
+    assert period_key(ts, "quarterly") == "2024-Q4"
+
+
+def test_period_key_yearly():
+    ts = _ts(2024, 3, 15)
+    assert period_key(ts, "yearly") == "2024"
+
+
+def test_period_key_jan_vs_apr_different_quarterly_keys():
+    """Jan and Apr must produce different quarterly keys."""
+    jan_ts = _ts(2024, 1, 15)
+    apr_ts = _ts(2024, 4, 15)
+    assert period_key(jan_ts, "quarterly") != period_key(apr_ts, "quarterly")
+
+
+def test_period_key_unknown_period_raises():
+    ts = _ts(2024, 1, 1)
+    with pytest.raises(ValueError, match="period"):
+        period_key(ts, "decadely")
