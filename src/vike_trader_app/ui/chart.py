@@ -2563,6 +2563,43 @@ class PriceChart(pg.PlotWidget):
         prev = bars[-2].close if len(bars) > 1 else b.open
         self._set_ohlc(b, prev)
 
+    def _set_crosshair_x(self, x):
+        """Fan a bar-index x out across the whole chart: snap the price-pane vertical line to
+        round(x), drive every oscillator pane's vertical line to the same bar, and home the time
+        tag on the lowest pane (or, with no panes, the price chart's own bottom-axis tag)."""
+        bar = int(round(x))
+        self._cx_v.setPos(bar)
+        self._cx_v.show()
+        panes = self._panes_in_visual_order()
+        for p in panes:
+            p.set_crosshair_x(bar)
+        dt = datetime.fromtimestamp(x_to_ts(self._bars, bar) / 1000, tz=timezone.utc)
+        text = dt.strftime("%m-%d %H:%M")
+        if panes:
+            # time axis lives under the lowest pane -> home the time tag there (its own scene x)
+            self._cx_time_tag.hide()
+            low = panes[-1]
+            scene_x = low.getViewBox().mapViewToScene(QtCore.QPointF(bar, 0.0)).x()
+            low.set_time_tag(text, scene_x)
+        else:
+            scene_x = self.getViewBox().mapViewToScene(QtCore.QPointF(bar, 0.0)).x()
+            self._cx_time_tag.setText(text)
+            self._cx_time_tag.adjustSize()
+            self._cx_time_tag.move(int(scene_x) - self._cx_time_tag.width() // 2,
+                                   self.height() - self._cx_time_tag.height() - 1)
+            self._cx_time_tag.show()
+
+    def _clear_crosshair(self):
+        """Hide the whole cross-pane crosshair: price line/h-line/tags + every pane's, and
+        restore the OHLC header to the latest candle."""
+        self._cx_v.hide()
+        self._cx_h.hide()
+        self._cx_price_tag.hide()
+        self._cx_time_tag.hide()
+        for p in self._panes_in_visual_order():
+            p.clear_crosshair()
+        self._show_last_ohlc()
+
     def _on_mouse_moved(self, scene_pos):
         if not self._bars:
             return

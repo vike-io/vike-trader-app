@@ -1506,3 +1506,49 @@ def test_pane_leave_event_emits_crosshair_left_and_keeps_toolbar(app):
     pane.leaveEvent(None)        # leaving the pane clears the crosshair AND hides the toolbar
     assert left == [1]
     assert pane._toolbar.isHidden()   # Phase-2 toolbar logic preserved
+
+
+def test_price_set_crosshair_fans_to_all_panes(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._set_crosshair_x(18.6)
+    # price-pane vertical line + every pane's vertical line snap to the SAME bar index
+    assert pc._cx_v.value() == 19
+    assert a.pane._cx_v.value() == 19 and a.pane._cx_v.isVisible() is True
+    assert b.pane._cx_v.value() == 19 and b.pane._cx_v.isVisible() is True
+    # the lowest pane (visual order) carries the time tag; non-lowest panes do not
+    panes = pc._panes_in_visual_order()
+    assert not panes[-1]._cx_time_tag.isHidden()
+    assert panes[0]._cx_time_tag.isHidden()
+
+
+def test_price_clear_crosshair_clears_everything(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._set_crosshair_x(15.0)
+    assert pc._cx_v.isVisible() is True and a.pane._cx_v.isVisible() is True
+    pc._clear_crosshair()
+    assert pc._cx_v.isVisible() is False
+    assert pc._cx_h.isVisible() is False
+    assert pc._cx_price_tag.isHidden() and pc._cx_time_tag.isHidden()
+    assert a.pane._cx_v.isVisible() is False and b.pane._cx_v.isVisible() is False
+    assert a.pane._cx_val_tag.isHidden() and a.pane._cx_time_tag.isHidden()
+
+
+def test_price_set_crosshair_no_panes_uses_own_time_tag(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    pc._set_crosshair_x(10.0)
+    # no panes -> price chart owns the bottom axis, so its OWN time tag is used
+    assert pc._cx_v.value() == 10
+    assert pc._cx_time_tag.isHidden() is False
