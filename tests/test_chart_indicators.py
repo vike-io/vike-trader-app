@@ -2075,3 +2075,22 @@ def test_band_edit_round_trip_updates_line(app):
     # bands left UNSET on an unrelated edit must NOT change the bands
     pc._apply_edit(ind2.uid, dict(ind2.params), list(ind2.colors))
     assert [v for _l, v in pc._indicators[ind2.uid].bands] == [80.0, 50.0, 30.0]
+
+
+def test_clone_carries_edited_bands(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # edit the original's bands first (70 -> 80, custom colour)
+    pc._apply_edit(
+        ind.uid, dict(ind.params), list(ind.colors),
+        bands=[("Upper", 80.0, "#abcdef"), ("Middle", 50.0, "#abcdef"), ("Lower", 30.0, "#abcdef")],
+    )
+    clone = pc.clone_indicator(ind.uid)
+    assert clone is not None and clone.uid != ind.uid
+    assert [v for _l, v in clone.bands] == [80.0, 50.0, 30.0]
+    assert clone.band_colors == ["#abcdef", "#abcdef", "#abcdef"]
+    # deep copy — editing the clone's bands must not mutate the original
+    clone.bands[0][1] = 99.0
+    assert pc._indicators[ind.uid].bands[0][1] == 80.0
+    # the clone's rendered band line reflects the carried value
+    assert [ln.value() for ln in clone.pane._band_lines[clone.uid]] == [80.0, 50.0, 30.0]

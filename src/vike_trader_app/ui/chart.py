@@ -2152,18 +2152,27 @@ class PriceChart(pg.PlotWidget):
         self._refresh_legends()
 
     def clone_indicator(self, uid: int):
-        """Duplicate an indicator (same params/colours/width/style/intervals) — TV's 'Clone'."""
+        """Duplicate an indicator (same params/colours/width/style/intervals/source/bands)
+        — TradingView's 'Clone'."""
         ind = self._indicators.get(uid)
         if ind is None:
             return None
         clone = self.add_indicator(ind.name, params=dict(ind.params), benchmark=ind.benchmark)
         if clone is not None:
+            src_bands = getattr(ind, "bands", [])
+            src_band_colors = getattr(ind, "band_colors", [])
+            bands_payload = [
+                (lbl, float(val),
+                 src_band_colors[i] if i < len(src_band_colors) else theme.TEXT3)
+                for i, (lbl, val) in enumerate(src_bands)
+            ]
             self._apply_edit(
                 clone.uid, dict(clone.params), list(ind.colors),
                 widths=list(getattr(ind, "widths", clone.widths)),
                 styles=list(getattr(ind, "styles", clone.styles)),
                 intervals=(set(ind.intervals) if ind.intervals is not None else None),
                 source=getattr(ind, "source", "close"),
+                bands=bands_payload,
             )
         return clone
 
