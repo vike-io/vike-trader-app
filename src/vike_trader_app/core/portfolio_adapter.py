@@ -59,13 +59,6 @@ class SymbolEngineShim:
     def submit(self, side_sign: int, size: float, weight: float = 0.0) -> None:
         if size <= 0:
             return
-        opening = self._engine.position_of(self._symbol).size == 0
-        # A cross-zero flip (close long + open short in one order) also goes through the
-        # `opening` branch when position is currently flat *after* the close portion, but
-        # for a symbol that was already open the slot count doesn't change — so skipping
-        # _can_open when `not opening` is correct: the symbol already occupies its one slot.
-        if opening and not self._can_open():
-            return  # MaxOpenPositions cap reached — skip the entry (WL semantics)
         self._engine.submit(self._symbol, side_sign, size, weight=weight)
 
     def submit_close(self) -> None:
@@ -106,19 +99,6 @@ class SymbolEngineShim:
 
     def forming_for(self, tf: str):
         return self._engine.forming_for(self._symbol, tf)
-
-    # --- helpers ---
-    def _can_open(self) -> bool:
-        cap = getattr(self._driver, "max_open_positions", 0) if self._driver is not None else 0
-        if not cap:
-            return True
-        # Orders fill at the NEXT bar's open, so a symbol counts toward the cap if it already holds
-        # a position OR has an order queued earlier in THIS bar (engine clears _pending each step).
-        open_now = sum(
-            1 for s in self._engine.symbols
-            if self._engine.position_of(s).size != 0 or self._engine._pending[s]
-        )
-        return open_now < cap
 
 
 class _MultiSymbolDriver(PortfolioStrategy):
@@ -189,7 +169,8 @@ class MultiSymbolStrategyRunner:
                                  taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
                                  leverage=self.config.leverage, maint_margin=self.config.maint_margin,
                                  cash_gate=self.config.cash_gate, active_mask=active_mask,
-                                 timeframes=self.config.timeframes)
+                                 timeframes=self.config.timeframes,
+                                 max_open_positions=self.max_open_positions)
         self._engine = engine
         return engine.run()
 

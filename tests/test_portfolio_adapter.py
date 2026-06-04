@@ -330,6 +330,30 @@ def test_forming_htf_bar_in_portfolio_mode():
     assert captured[6] is not None and captured[6].high >= 100
 
 
+def test_max_open_positions_caps_resting_entries():
+    # A resting limit entry on a NEW symbol must be blocked when already at the MaxOpenPositions cap.
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _o(ts, o, h, l, c):
+        return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class LimitBuy(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.limit_buy(1.0, 100.0)   # both A and B rest a limit @100, both dip to 100 next bar
+
+    a = [_o(0, 100, 101, 99, 100), _o(1, 100, 101, 95, 100), _o(2, 100, 101, 99, 100)]
+    b = [_o(0, 100, 101, 99, 100), _o(1, 100, 101, 95, 100), _o(2, 100, 101, 99, 100)]
+    runner = MultiSymbolStrategyRunner(LimitBuy, {"A": a, "B": b}, TesterConfig(cash=10_000.0),
+                                       max_open_positions=1)
+    runner.run()
+    open_syms = [s for s in ("A", "B") if runner._engine._pos[s].size != 0]
+    assert len(open_syms) == 1
+
+
 def test_empty_ranges_identical_to_no_mask():
     from vike_trader_app.core.model import Bar
     from vike_trader_app.core.strategy import Strategy

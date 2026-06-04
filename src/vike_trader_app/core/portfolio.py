@@ -132,7 +132,7 @@ class PortfolioEngine:
                  taker_fee: float | None = None, multiplier: float = 1.0,
                  leverage: float | None = None, maint_margin: float = 0.0,
                  cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
-                 timeframes: list[str] | None = None):
+                 timeframes: list[str] | None = None, max_open_positions: int = 0):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -153,6 +153,7 @@ class PortfolioEngine:
         # symbol a list[bool] aligned to the bar series — True == active member that bar. None
         # (default) == every symbol always active, i.e. today's behavior byte-for-byte.
         self.active_mask = active_mask
+        self.max_open_positions = max_open_positions
         self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
@@ -181,6 +182,11 @@ class PortfolioEngine:
     def is_active(self, symbol: str) -> bool:
         """Whether ``symbol`` is an active member on the current step's bar. No mask == always active."""
         return self.active_mask is None or self.active_mask[symbol][self._step]
+
+    def _at_open_cap(self) -> bool:
+        """Return True when the MaxOpenPositions cap is set and already reached (count is live)."""
+        cap = self.max_open_positions
+        return bool(cap) and sum(1 for s in self.symbols if self._pos[s].size != 0) >= cap
 
     # --- reads exposed to the strategy ---
     def position_of(self, symbol: str) -> Position:
@@ -338,6 +344,8 @@ class PortfolioEngine:
                 opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)  # open-from-flat or same-dir add
                 if opening and not self.is_active(symbol):
                     continue                  # inactive member: drop opening/adding fills (reduces still apply)
+                if pos.size == 0 and self._at_open_cap():
+                    continue                  # MaxOpenPositions cap reached: drop new-symbol opens
                 self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
 
@@ -368,6 +376,10 @@ class PortfolioEngine:
             self._apply_fill(s, o.side, o.size, fp, cur[s].ts, is_maker=o.kind == "limit")
         # opens/adds: highest weight first, ties by trigger order; drop the unfundable
         for s, o, fp, _ in sorted(opens, key=lambda t: (-t[1].weight, t[3])):
+            # MaxOpenPositions cap: re-checked live so count updates as positions open during this loop
+            if self._pos[s].size == 0 and self._at_open_cap():
+                self.dropped.append((s, o.kind, o.size, o.weight))
+                continue
             slipped = adverse_fill_price(fp, o.side, self.slippage)
             rate = self.maker_fee if o.kind == "limit" else self.taker_fee
             fee = _fee(o.size, slipped, rate, self.multiplier)
