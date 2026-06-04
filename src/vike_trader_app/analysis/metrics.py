@@ -206,3 +206,135 @@ def avg_loss(trades) -> float:
     """Mean PnL of losing trades (0.0 if none)."""
     losses = [t.pnl for t in trades if t.pnl < 0]
     return sum(losses) / len(losses) if losses else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Extended metrics
+# ---------------------------------------------------------------------------
+
+
+def cagr(equity_curve: list[float], periods_per_year: float) -> float:
+    """Compound Annual Growth Rate: (final/first)**(periods_per_year/n) - 1.
+
+    Returns 0.0 for a flat/short/non-positive curve or on overflow.
+    ``n`` is the number of steps (len - 1).
+    """
+    n = len(equity_curve) - 1
+    if n < 1 or equity_curve[0] <= 0:
+        return 0.0
+    growth = equity_curve[-1] / equity_curve[0]
+    if growth <= 0:
+        return 0.0
+    exponent = periods_per_year / n
+    if exponent > 1000:
+        return 0.0
+    try:
+        return growth ** exponent - 1.0
+    except OverflowError:
+        return 0.0
+
+
+def ulcer_index(equity_curve: list[float]) -> float:
+    """Ulcer Index: sqrt(mean(drawdown_pct_i**2)).
+
+    Drawdown at each bar is measured from the running peak up to that point.
+    Returns 0.0 for curves shorter than 2 bars or monotone-up curves.
+    """
+    if len(equity_curve) < 2:
+        return 0.0
+    peak = equity_curve[0]
+    sq_sum = 0.0
+    for v in equity_curve:
+        peak = max(peak, v)
+        if peak > 0:
+            dd_pct = (peak - v) / peak * 100.0
+        else:
+            dd_pct = 0.0
+        sq_sum += dd_pct ** 2
+    return math.sqrt(sq_sum / len(equity_curve))
+
+
+def mar_ratio(equity_curve: list[float], periods_per_year: float) -> float:
+    """MAR Ratio: CAGR / max_drawdown.
+
+    ``inf`` when there is positive CAGR and zero drawdown; 0.0 otherwise.
+    """
+    mdd = max_drawdown(equity_curve)
+    c = cagr(equity_curve, periods_per_year)
+    if mdd == 0:
+        return float("inf") if c > 0 else 0.0
+    return c / mdd
+
+
+def k_ratio(equity_curve: list[float]) -> float:
+    """K-Ratio (Lars Kestner): slope / stderr of OLS log-equity vs bar-index.
+
+    Measures consistency of growth relative to its variability.  Returns 0.0
+    when the curve is flat, too short, or the regression has no variance.
+    """
+    if len(equity_curve) < 2:
+        return 0.0
+    # Only keep positive equity values for the log
+    log_eq = []
+    xs = []
+    for i, v in enumerate(equity_curve):
+        if v > 0:
+            log_eq.append(math.log(v))
+            xs.append(float(i))
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    mean_x = sum(xs) / n
+    mean_y = sum(log_eq) / n
+    ss_xx = sum((x - mean_x) ** 2 for x in xs)
+    if ss_xx == 0:
+        return 0.0
+    ss_xy = sum((xs[i] - mean_x) * (log_eq[i] - mean_y) for i in range(n))
+    slope = ss_xy / ss_xx
+    # Residual standard error
+    y_hat = [mean_y + slope * (xs[i] - mean_x) for i in range(n)]
+    sse = sum((log_eq[i] - y_hat[i]) ** 2 for i in range(n))
+    if n < 3:
+        return 0.0
+    s2 = sse / (n - 2)
+    if s2 <= 0:
+        return 0.0
+    se_slope = math.sqrt(s2 / ss_xx)
+    if se_slope == 0:
+        return 0.0
+    return slope / se_slope
+
+
+def payoff_ratio(trades) -> float:
+    """Average win PnL / |average loss PnL|.
+
+    Returns 0.0 when there are no winning or no losing trades.
+    """
+    wins = [t.pnl for t in trades if t.pnl > 0]
+    losses = [t.pnl for t in trades if t.pnl < 0]
+    if not wins or not losses:
+        return 0.0
+    avg_w = sum(wins) / len(wins)
+    avg_l = sum(losses) / len(losses)  # negative
+    if avg_l == 0:
+        return 0.0
+    return avg_w / abs(avg_l)
+
+
+def exposure(equity_curve: list[float], position_sizes: list[float]) -> float:
+    """Fraction of bars with a non-zero position.
+
+    Parameters
+    ----------
+    equity_curve:
+        Equity at each bar (used only for length validation).
+    position_sizes:
+        Signed or unsigned position size at each bar, same length as equity_curve.
+
+    Returns 0.0 if the lists are empty or mismatched.
+    """
+    n = len(equity_curve)
+    if n == 0 or len(position_sizes) != n:
+        return 0.0
+    active = sum(1 for s in position_sizes if s != 0)
+    return active / n
