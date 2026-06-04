@@ -56,6 +56,9 @@ def _valid(series_dict):
     return sum(1 for v in next(iter(series_dict.values())) if v is not None)
 
 
+_SOURCE_OPTIONS_FOR_TEST = ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+
+
 # --- ADD: routing by kind --------------------------------------------------------------------
 def test_add_overlay_handle(app):
     pc, split = _chart(app)
@@ -240,8 +243,9 @@ def test_settings_emits_params_on_ok(app):
     dlg._param_widgets[p0.name].setValue(9)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(
-            params=params, colors=colors, widths=widths, styles=styles, intervals=intervals
+        lambda params, colors, widths, styles, intervals, source: got.update(
+            params=params, colors=colors, widths=widths, styles=styles, intervals=intervals,
+            source=source,
         )
     )
     dlg._accept()
@@ -1304,8 +1308,8 @@ def test_edit_indicator_dialog_round_trip_applies(app):
     ind = pc.add_indicator("rsi")
     dlg = _IndicatorSettings(ind, pc)
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals, u=ind.uid: pc._apply_edit(
-            u, params, colors, widths=widths, styles=styles, intervals=intervals
+        lambda params, colors, widths, styles, intervals, source, u=ind.uid: pc._apply_edit(
+            u, params, colors, widths=widths, styles=styles, intervals=intervals, source=source
         )
     )
     dlg._width_combos[0].setCurrentIndex(1)  # _LINE_WIDTHS[1] == 2
@@ -1870,3 +1874,36 @@ def test_settings_reset_defaults_resets_source_to_close(app):
     assert dlg._source_combo.currentData() == "ohlc4"
     dlg._reset_defaults()
     assert dlg._source_combo.currentData() == "close"
+
+
+def test_settings_emits_source_on_ok(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    dlg._source_combo.setCurrentIndex(_SOURCE_OPTIONS_FOR_TEST.index("hl2"))
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals, source: got.update(source=source)
+    )
+    dlg._accept()
+    assert got["source"] == "hl2"
+
+
+def test_apply_edit_assigns_source_and_recomputes(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("sma", params={"period": 3})
+    close_vals = list(ind.series["sma"])
+    # drive the full edit path with a non-default source:
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors), source="hl2")
+    assert ind.source == "hl2"
+    assert list(ind.series["sma"]) != close_vals       # recomputed against hl2
+    assert ind.label == "SMA 3 (hl2)"                  # legend reflects the source
+
+
+def test_apply_edit_default_source_unset_preserves(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.source = "ohlc4"
+    # omit `source` -> _UNSET -> ind.source must be preserved (not reset to close):
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors))
+    assert ind.source == "ohlc4"

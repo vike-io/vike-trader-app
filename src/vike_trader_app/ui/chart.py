@@ -515,7 +515,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
     line width + line style), and **Visibility** (per-interval) tabs. Emits
     ``applied(params, colors, widths, styles, intervals)`` on Ok."""
 
-    applied = QtCore.Signal(dict, list, list, list, object)
+    applied = QtCore.Signal(dict, list, list, list, object, str)
 
     def __init__(self, ind: "_Indicator", parent=None):
         super().__init__(parent, object_name="setCard", extra_qss=(
@@ -720,8 +720,8 @@ class _IndicatorSettings(dropdowns.PopupCard):
         widths = [int(c.currentData()) for c in self._width_combos]
         styles = [str(c.currentData()) for c in self._style_combos]
         intervals = self._chosen_intervals()
-        source = self._source_combo.currentData() if self._source_combo is not None else "close"  # noqa: F841 - emitted in Task 34
-        self.applied.emit(params, colors, widths, styles, intervals)
+        source = self._source_combo.currentData() if self._source_combo is not None else "close"
+        self.applied.emit(params, colors, widths, styles, intervals, source)
         self.accept()
 
 
@@ -2006,14 +2006,14 @@ class PriceChart(pg.PlotWidget):
         dlg = _IndicatorSettings(ind, self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         dlg.applied.connect(
-            lambda params, colors, widths, styles, intervals, u=uid: self._apply_edit(
-                u, params, colors, widths=widths, styles=styles, intervals=intervals
+            lambda params, colors, widths, styles, intervals, source, u=uid: self._apply_edit(
+                u, params, colors, widths=widths, styles=styles, intervals=intervals, source=source
             )
         )
         dlg.exec()
 
     def _apply_edit(self, uid: int, params: dict, colors: list,
-                    widths=_UNSET, styles=_UNSET, intervals=_UNSET):
+                    widths=_UNSET, styles=_UNSET, intervals=_UNSET, source=_UNSET):
         ind = self._indicators.get(uid)
         if ind is None:
             return
@@ -2025,6 +2025,8 @@ class PriceChart(pg.PlotWidget):
             ind.styles = styles
         if intervals is not _UNSET:
             ind.intervals = intervals
+        if source is not _UNSET:
+            ind.source = source            # assigned BEFORE _compute so the remap uses the new source
         if ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             self._compute(ind)
             ind.pane.update_ind(ind)
