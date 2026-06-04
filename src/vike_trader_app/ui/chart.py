@@ -1339,6 +1339,10 @@ class OscillatorPane(pg.PlotWidget):
                     all_ys += ys
                 if ys:
                     last = ys[-1]
+            # union the threshold guide values (extend-only) so the dashed lines stay on-screen;
+            # band lines live in _band_lines (ignoreBounds), so they never autoscale on their own.
+            if ind.shown:
+                all_ys += [float(val) for _lbl, val in getattr(ind, "bands", [])]
             if ind.uid in self._rows:
                 self._rows[ind.uid].set_value(f"{last:,.2f}" if last is not None else "")
         if all_ys:

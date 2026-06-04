@@ -2000,3 +2000,29 @@ def test_oscillator_macd_single_zero_band(app):
     ind = pc.add_indicator("macd")
     lines = ind.pane._band_lines[ind.uid]
     assert len(lines) == 1 and lines[0].value() == 0.0
+
+
+def test_reveal_unions_band_values_extend_only(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.reveal(75)
+    lo, hi = pane.getViewBox().viewRange()[1]
+    # every band value sits inside the (padded) y-range
+    for _lbl, val in ind.bands:
+        assert lo <= val <= hi, (val, lo, hi)
+    # the series is still inside the range too (union is extend-only, never overriding the data)
+    ser = ind.series["rsi"]
+    vals = [v for v in ser[:76] if v is not None]
+    assert lo <= min(vals) and max(vals) <= hi
+
+
+def test_reveal_band_below_series_extends_low(app):
+    # williams_r bands are negative (-20/-80) and its series is in [-100, 0]; the -80 guide must
+    # widen the low end so it stays on-screen.
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("williams_r")
+    pane = ind.pane
+    pane.reveal(75)
+    lo, _hi = pane.getViewBox().viewRange()[1]
+    assert lo <= -80.0
