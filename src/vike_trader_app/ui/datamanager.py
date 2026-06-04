@@ -16,7 +16,7 @@ from ..data.binance_source import interval_ms
 from ..data.cache import DEFAULT_ROOT, get_bars, repair_gaps
 from ..data.csv_import import aggregate, infer_interval_ms, ms_to_interval, parse_csv
 from ..data.instruments import ensure_presets, profile_for_symbol, spec_for_symbol
-from ..data.parquet_source import append_series, delete_series
+from ..data.parquet_source import append_series, delete_series, read_series
 from ..data.rollup import load_pins, refresh_rollup, save_pins
 from ..data.sources import CRYPTO_PROVIDERS, select_source
 from . import theme
@@ -107,6 +107,7 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_import = QtWidgets.QPushButton("⤒ Import CSV…")
         self.btn_inspect = QtWidgets.QPushButton("🔍 Inspect")
         self.btn_repair = QtWidgets.QPushButton("🩹 Repair gaps")
+        self.btn_clean = QtWidgets.QPushButton("🧼 Clean data")
         self.btn_pin = QtWidgets.QPushButton("📌 Pin / Unpin")
         self.btn_profiles = QtWidgets.QPushButton("⚙ Instruments…")
         self.btn_truncate = QtWidgets.QPushButton("✂ Truncate…")
@@ -117,6 +118,7 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_inspect.setToolTip("Check the selected series for gaps / OHLC anomalies")
         self.btn_profiles.setToolTip("Edit broker profiles & instrument specs (tick / pip / step / size)")
         self.btn_truncate.setToolTip("Delete cached bars before/after a date")
+        self.btn_clean.setToolTip("Repair zero/NaN/out-of-range OHLC + duplicate timestamps")
         self.btn_remove_inactive.setToolTip(
             "Delete cached series with no data (or last data before a date)")
         self.btn_refresh.clicked.connect(self.refresh)
@@ -125,13 +127,14 @@ class DataManagerTab(QtWidgets.QWidget):
         self.btn_import.clicked.connect(self._on_import_csv)
         self.btn_inspect.clicked.connect(self._on_inspect)
         self.btn_repair.clicked.connect(self._on_repair)
+        self.btn_clean.clicked.connect(self._on_clean)
         self.btn_pin.clicked.connect(self._on_pin)
         self.btn_profiles.clicked.connect(self._on_profiles)
         self.btn_truncate.clicked.connect(self._on_truncate)
         self.btn_remove_inactive.clicked.connect(self._on_remove_inactive)
         self.btn_delete.clicked.connect(self._on_delete)
         for b in (self.btn_refresh, self.btn_update_all, self.btn_download, self.btn_import,
-                  self.btn_inspect, self.btn_repair, self.btn_pin, self.btn_profiles,
+                  self.btn_inspect, self.btn_repair, self.btn_clean, self.btn_pin, self.btn_profiles,
                   self.btn_truncate, self.btn_remove_inactive, self.btn_delete):
             bar.addWidget(b)
         bar.addStretch(1)
@@ -290,6 +293,34 @@ class DataManagerTab(QtWidgets.QWidget):
         QtWidgets.QApplication.restoreOverrideCursor()
         self.refresh()
         self._log(f"Repaired {symbol} {interval}: +{n} bar(s)")
+
+    def clean_series(self, symbol: str, interval: str) -> list:
+        """Repair a cached series in place; returns the audit log (also logged). Rewrites only if changed."""
+        from ..data.quality import repair_bars
+        bars = read_series(self._root, symbol, interval)
+        repaired, audit = repair_bars(bars, interval_ms(interval))
+        if audit:
+            delete_series(self._root, symbol, interval)
+            append_series(repaired, self._root, symbol, interval)
+            self.refresh()
+        self._log(
+            f"Clean {symbol} {interval}: {len(audit)} fix(es)"
+            + ("" if not audit else "\n" + "\n".join("  • " + a for a in audit[:20]))
+        )
+        return audit
+
+    def _on_clean(self) -> None:
+        sel = self._selected()
+        if sel is None:
+            return
+        symbol, interval = sel
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        try:
+            self.clean_series(symbol, interval)
+        except Exception as exc:  # noqa: BLE001 - report, no crash
+            self._log(f"Clean {symbol} {interval} failed: {exc}")
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
 
     def _on_inspect(self) -> None:
         """Check the selected series for gaps / OHLC anomalies and report to the log."""

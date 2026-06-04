@@ -84,3 +84,93 @@ def test_validate_flags_interior_gap():
     bars = [_bar(0), _bar(STEP), _bar(5 * STEP)]  # gap between STEP and 5*STEP
     problems = quality.validate_bars(bars, STEP)
     assert any("gap" in p.lower() or "spacing" in p.lower() for p in problems)
+
+
+# --- repair_bars ---
+
+
+def test_repair_clean_series_unchanged_empty_log():
+    bars = [_bar(i * STEP) for i in range(5)]
+    repaired, audit = quality.repair_bars(bars, STEP)
+    assert repaired == bars
+    assert audit == []
+
+
+def test_repair_zero_close_replaced_with_prior_close():
+    prior = _bar(0, c=101.5)
+    bad = _bar(STEP, o=101.5, h=102.0, low=100.0, c=0.0)
+    repaired, audit = quality.repair_bars([prior, bad], STEP)
+    assert repaired[1].close == 101.5
+    assert any("zero close" in a and "101.5" in a for a in audit)
+
+
+def test_repair_nan_open_replaced_with_prior_close():
+    import math
+    prior = _bar(0, c=55.0)
+    bad = Bar(ts=STEP, open=float("nan"), high=60.0, low=54.0, close=56.0, volume=1.0)
+    repaired, audit = quality.repair_bars([prior, bad], STEP)
+    assert not math.isnan(repaired[1].open)
+    assert repaired[1].open == 55.0
+    assert any("NaN open" in a for a in audit)
+
+
+def test_repair_high_below_max_ohlc_is_clamped_up():
+    # open=105, close=104, high=103 (too low) — should be clamped to 105
+    bad = _bar(0, o=105.0, h=103.0, low=99.0, c=104.0)
+    repaired, audit = quality.repair_bars([bad], STEP)
+    assert repaired[0].high == 105.0
+    assert any("high" in a and "103" in a for a in audit)
+
+
+def test_repair_low_above_min_ohlc_is_clamped_down():
+    # open=100, close=101, low=100.5 (too high) — should be clamped to 100
+    bad = _bar(0, o=100.0, h=102.0, low=100.5, c=101.0)
+    repaired, audit = quality.repair_bars([bad], STEP)
+    assert repaired[0].low == 100.0
+    assert any("low" in a and "100.5" in a for a in audit)
+
+
+def test_repair_duplicate_ts_keeps_last():
+    first = _bar(0, c=10.0)
+    second = _bar(0, c=20.0)  # same ts, should win
+    repaired, audit = quality.repair_bars([first, second], STEP)
+    assert len(repaired) == 1
+    assert repaired[0].close == 20.0
+    assert any("duplicate" in a and "ts=0" in a for a in audit)
+
+
+def test_repair_out_of_order_ts_dropped():
+    b1 = _bar(2 * STEP)
+    b2 = _bar(STEP)  # earlier — out of order
+    repaired, audit = quality.repair_bars([b1, b2], STEP)
+    assert len(repaired) == 1
+    assert repaired[0].ts == 2 * STEP
+    assert any("out-of-order" in a for a in audit)
+
+
+def test_repair_negative_volume_clamped_to_zero():
+    bad = Bar(ts=0, open=100.0, high=101.0, low=99.0, close=100.0, volume=-5.0)
+    repaired, audit = quality.repair_bars([bad], STEP)
+    assert repaired[0].volume == 0.0
+    assert any("negative volume" in a for a in audit)
+
+
+def test_repair_first_bar_zero_price_uses_median_of_others():
+    # open=0 on the very first bar (no prev_close); h/l/c are valid
+    bad = Bar(ts=0, open=0.0, high=102.0, low=98.0, close=100.0, volume=1.0)
+    repaired, audit = quality.repair_bars([bad], STEP)
+    # median of [102, 98, 100] = 100
+    assert repaired[0].open == 100.0
+    assert any("zero open" in a for a in audit)
+
+
+def test_repair_returns_new_bar_objects_not_mutated():
+    """repair_bars must not return the original Bar objects for changed bars."""
+    import math
+    prior = _bar(0, c=50.0)
+    bad = Bar(ts=STEP, open=float("nan"), high=55.0, low=49.0, close=51.0, volume=1.0)
+    original_bars = [prior, bad]
+    repaired, audit = quality.repair_bars(original_bars, STEP)
+    # original bad bar is unchanged (frozen dataclass, but make sure we got a different value)
+    assert math.isnan(original_bars[1].open)   # original untouched
+    assert not math.isnan(repaired[1].open)    # repaired is a new object
