@@ -678,9 +678,11 @@ class _IndicatorSettings(dropdowns.PopupCard):
         # --- per-band threshold rows (oscillator/pairs only): value spin + colour button ---
         self._band_value_spins = []
         self._band_color_btns = []
+        self._band_labels = []          # captured at build time (Fix 2 — not re-read from ind)
         bands = getattr(ind, "bands", [])
         band_colors = getattr(ind, "band_colors", [])
         for i, (blbl, bval) in enumerate(bands):
+            self._band_labels.append(blbl)         # captured at build time
             spin = QtWidgets.QDoubleSpinBox()
             spin.setDecimals(2)
             spin.setRange(-1e9, 1e9)
@@ -796,7 +798,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
         intervals = self._chosen_intervals()
         source = self._source_combo.currentData() if self._source_combo is not None else "close"
         bands = [
-            (self._ind.bands[i][0], float(spin.value()), btn.property("color_hex"))
+            (self._band_labels[i], float(spin.value()), btn.property("color_hex"))
             for i, (spin, btn) in enumerate(zip(self._band_value_spins, self._band_color_btns))
         ]
         self.applied.emit(params, colors, widths, styles, intervals, source, bands)
@@ -1381,6 +1383,8 @@ class OscillatorPane(pg.PlotWidget):
             # band lines live in _band_lines (ignoreBounds), so they never autoscale on their own.
             if ind.shown:
                 all_ys += [float(val) for _lbl, val in getattr(ind, "bands", [])]
+            for ln in self._band_lines.get(ind.uid, []):
+                ln.setVisible(ind.shown)
             if ind.uid in self._rows:
                 self._rows[ind.uid].set_value(f"{last:,.2f}" if last is not None else "")
         if all_ys:

@@ -2094,3 +2094,29 @@ def test_clone_carries_edited_bands(app):
     assert pc._indicators[ind.uid].bands[0][1] == 80.0
     # the clone's rendered band line reflects the carried value
     assert [ln.value() for ln in clone.pane._band_lines[clone.uid]] == [80.0, 50.0, 30.0]
+
+
+def test_band_lines_follow_indicator_visibility(app):
+    """Band InfiniteLines must hide/show alongside the indicator's data curve."""
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")   # 3 band lines
+    pane = ind.pane
+
+    # initially all band lines are visible
+    lines = pane._band_lines[ind.uid]
+    assert len(lines) == 3
+    assert all(ln.isVisible() for ln in lines), "band lines should start visible"
+
+    # hide the indicator
+    pc._toggle_visible(ind.uid)
+    assert ind.shown is False, "ind.shown must be False after toggle"
+    assert all(not ln.isVisible() for ln in lines), (
+        "band lines must hide when indicator is hidden"
+    )
+
+    # show the indicator again
+    pc._toggle_visible(ind.uid)
+    assert ind.shown is True, "ind.shown must be True after second toggle"
+    assert all(ln.isVisible() for ln in lines), (
+        "band lines must reappear when indicator is shown again"
+    )
