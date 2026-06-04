@@ -184,7 +184,26 @@ class MultiSymbolStrategyRunner:
                                  sizer=getattr(self.config, "sizer", None),
                                  volume_limit=getattr(self.config, "volume_limit", None))
         self._engine = engine
-        return engine.run()
+        result = engine.run()
+        # --- equal-weight buy-&-hold benchmark curve ---
+        # For each bar index i, bench[i] = cash * mean(close_s[i] / close_s[0]) over usable symbols
+        # (those with a positive first close). Aligned bars and equity_curve share the same timeline.
+        cash = self.config.cash
+        usable = []
+        for sym, bars in aligned.items():
+            first_close = bars[0].close if bars else 0.0
+            if first_close > 0:
+                usable.append((sym, bars, first_close))
+        if usable and len(result.equity_curve) == len(next(iter(aligned.values()))):
+            n_bars = len(result.equity_curve)
+            bench: list[float] = []
+            for i in range(n_bars):
+                ratios = [bars[i].close / first_close for _, bars, first_close in usable]
+                mean_ratio = sum(ratios) / len(ratios)
+                bench.append(cash * mean_ratio)
+            result.benchmark_curve = bench
+            result.benchmark_label = "Equal-weight buy & hold"
+        return result
 
     def report(self):
         """Run and wrap into a ``TesterReport`` (PortfolioResult is duck-compatible with Result)."""

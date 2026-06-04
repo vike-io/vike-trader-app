@@ -107,6 +107,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._build_robustness_tab()
         self._build_montecarlo_tab()
         self._build_periods_tab()
+        self._build_benchmark_tab()
 
         self.last_report: object = None
         self._report_trades: list = []           # row -> Trade, for the chart-focus linkage
@@ -302,6 +303,18 @@ class ResultsPanel(QtWidgets.QWidget):
         layout.addWidget(self._dd_table, 1)
 
         self._tabs.addTab(container, "Periods")
+
+    def _build_benchmark_tab(self) -> None:
+        self._bench_table = QtWidgets.QTableWidget(0, 2)
+        self._bench_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self._bench_table.verticalHeader().setVisible(False)
+        self._bench_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._bench_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._bench_table.setAlternatingRowColors(True)
+        hdr = self._bench_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._tabs.addTab(self._bench_table, "Benchmark")
 
     def mount_chart_tab(self, chart: QtWidgets.QWidget) -> None:
         """Add the price chart as a 'Chart' tab after Distribution, so the reports and the chart
@@ -685,6 +698,45 @@ class ResultsPanel(QtWidgets.QWidget):
             self._dd_table.setItem(r, 2, trough_item)
             self._dd_table.setItem(r, 3, length_item)
 
+    def _fill_benchmark(self, report) -> None:
+        from ..analysis.benchmark import benchmark_stats
+
+        bench_curve = getattr(report, "benchmark_curve", None) or []
+        eq_curve = getattr(report, "equity_curve", None) or []
+        bench_label = getattr(report, "benchmark_label", "") or "Equal-weight buy & hold"
+
+        if not bench_curve or not eq_curve or len(bench_curve) != len(eq_curve):
+            self._bench_table.setRowCount(1)
+            self._table_row(self._bench_table, 0, "Benchmark",
+                            "Benchmark needs a portfolio run", None)
+            return
+
+        try:
+            stats = benchmark_stats(eq_curve, bench_curve, periods_per_year=252)
+        except Exception:  # noqa: BLE001
+            self._bench_table.setRowCount(1)
+            self._table_row(self._bench_table, 0, "Benchmark", "Failed to compute", None)
+            return
+
+        rows: list[tuple[str, str, str | None]] = [
+            ("Benchmark", bench_label, None),
+            ("Alpha (annualized)", self._pct(stats["alpha"]),
+             theme.UP if stats["alpha"] > 0 else theme.DOWN if stats["alpha"] < 0 else None),
+            ("Beta", f"{stats['beta']:.2f}", None),
+            ("Correlation", f"{stats['correlation']:.2f}", None),
+            ("R²", f"{stats['r_squared']:.2f}", None),
+            ("Tracking Error", self._pct(stats["tracking_error"]), None),
+            ("Information Ratio", f"{stats['information_ratio']:.2f}",
+             theme.UP if stats["information_ratio"] > 0 else theme.DOWN if stats["information_ratio"] < 0 else None),
+            ("Up Capture", self._pct(stats["up_capture"]),
+             theme.UP if stats["up_capture"] >= 1.0 else None),
+            ("Down Capture", self._pct(stats["down_capture"]),
+             theme.UP if stats["down_capture"] < 1.0 and stats["down_capture"] != 0 else None),
+        ]
+        self._bench_table.setRowCount(len(rows))
+        for r, (lbl, val, col) in enumerate(rows):
+            self._table_row(self._bench_table, r, lbl, val, col)
+
     def _on_trade_clicked(self, row: int, _col: int) -> None:
         """Trade-row click — selection only; price-chart focus lives in the Chart space now."""
         return
@@ -749,6 +801,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._fill_robustness(report)
         self._fill_montecarlo(report)
         self._fill_periods(report)
+        self._fill_benchmark(report)
         self._tabs.setCurrentIndex(0)  # land on the Equity tab — the headline view
 
     def add_run(self, report, bars=None, overlays=None) -> None:
@@ -816,6 +869,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._mc_table.setRowCount(0)
         self._periods_table.setRowCount(0)
         self._dd_table.setRowCount(0)
+        self._bench_table.setRowCount(0)
 
     def clear(self) -> None:
         """Reset to blank state (including run history)."""
@@ -838,6 +892,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._mc_table.setRowCount(0)
         self._periods_table.setRowCount(0)
         self._dd_table.setRowCount(0)
+        self._bench_table.setRowCount(0)
 
 
 # ---------------------------------------------------------------------------

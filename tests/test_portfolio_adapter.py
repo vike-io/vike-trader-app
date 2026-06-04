@@ -462,3 +462,59 @@ def test_order_target_percent_is_not_resized_by_sizer():
     runner = MultiSymbolStrategyRunner(Target, {"A": a}, cfg)
     runner.run()
     assert abs(runner._engine._pos["A"].size - 50.0) < 1e-6
+
+
+# --- benchmark curve ---
+
+def test_benchmark_curve_same_length_as_equity_curve():
+    """2-symbol run: benchmark_curve length == equity_curve length."""
+    a = [_bar(i, 10.0 + i * 0.1) for i in range(5)]
+    b = [_bar(i, 20.0 + i * 0.1) for i in range(5)]
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=10_000.0))
+    result = runner.run()
+    assert len(result.benchmark_curve) == len(result.equity_curve)
+    assert len(result.benchmark_curve) == 5
+
+
+def test_benchmark_curve_starts_at_cash():
+    """First benchmark value must equal the starting cash."""
+    a = [_bar(i, 50.0 + i) for i in range(4)]
+    b = [_bar(i, 100.0 + i) for i in range(4)]
+    cash = 5_000.0
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=cash))
+    result = runner.run()
+    assert abs(result.benchmark_curve[0] - cash) < 1e-6
+
+
+def test_benchmark_curve_rises_with_symbols_both_up_10pct():
+    """Both symbols rise ~10% -> benchmark ends ~10% above cash."""
+    n = 4
+    # A: 100 -> 110, B: 50 -> 55  (both +10%)
+    a = [_bar(i, 100.0 + i * (10.0 / (n - 1))) for i in range(n)]
+    b = [_bar(i, 50.0 + i * (5.0 / (n - 1))) for i in range(n)]
+    cash = 10_000.0
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=cash))
+    result = runner.run()
+    final_bench = result.benchmark_curve[-1]
+    # expect ~10% gain  (allow 0.5% tolerance)
+    assert abs(final_bench / cash - 1.10) < 0.005
+
+
+def test_benchmark_label_set():
+    """benchmark_label must be a non-empty string after a portfolio run."""
+    a = [_bar(i, 10.0) for i in range(3)]
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=1_000.0))
+    result = runner.run()
+    assert result.benchmark_label != ""
+
+
+def test_benchmark_curve_single_symbol():
+    """Single-symbol run still produces a valid benchmark_curve."""
+    a = [_bar(i, 10.0 + i) for i in range(5)]
+    cash = 1_000.0
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=cash))
+    result = runner.run()
+    assert len(result.benchmark_curve) == len(result.equity_curve)
+    # benchmark[0] = cash; benchmark[-1] = cash * (14 / 10) = 1400
+    assert abs(result.benchmark_curve[0] - cash) < 1e-6
+    assert abs(result.benchmark_curve[-1] - cash * (14.0 / 10.0)) < 1e-6
