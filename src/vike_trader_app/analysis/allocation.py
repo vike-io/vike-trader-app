@@ -94,7 +94,6 @@ def clamp_weights(weights: dict, max_weight: float, min_weight: float = 0.0) -> 
     if not weights:
         return {}
     w = dict(weights)
-    total = sum(w.values())
     max_iters = len(w) + 10  # finite bound; converges in at most n passes
 
     for _ in range(max_iters):
