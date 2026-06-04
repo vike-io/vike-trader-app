@@ -1713,6 +1713,14 @@ class PriceChart(pg.PlotWidget):
         self._sync_vb2()
         self._autorange_vb2()
 
+    def _align_panes(self):
+        """Re-align every pane in time after any layout/lifecycle change. Idempotent and safe
+        with zero panes. Order matters: reassign the bottom axis FIRST (it changes which axes
+        are visible and their natural widths), THEN equalize the right-axis width across the
+        now-correct set of axes."""
+        self._reassign_bottom_axis()
+        self._sync_axis_width()
+
     def _osc_panes(self):
         seen, panes = set(), []
         for i in self._indicators.values():

@@ -554,3 +554,35 @@ def test_reassign_bottom_axis_syncs_vb2(app):
     vb2 = pc._vb2.sceneBoundingRect()
     assert abs(vb.height() - vb2.height()) < 2.0  # _vb2 tracks the (grown) price viewbox
     assert abs(vb.top() - vb2.top()) < 2.0
+
+
+def test_align_panes_zero_panes_is_safe(app):
+    pc, _ = _chart(app)
+    pc._align_panes()  # must not raise with no panes
+    assert pc.getAxis("bottom").isVisible() is True
+
+
+def test_align_panes_reassigns_then_equalizes(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._align_panes()
+    # bottom axis is reassigned to the lowest pane...
+    assert b.pane.getAxis("bottom").isVisible() is True
+    assert pc.getAxis("bottom").isVisible() is False
+    # ...AND all right axes are equalized to one shared width
+    w = pc.getAxis("right").width()
+    assert a.pane.getAxis("right").width() == w
+    assert b.pane.getAxis("right").width() == w
+
+
+def test_align_panes_order_reassign_before_sync(app):
+    # _reassign_bottom_axis (which changes axis visibility/natural width) must run BEFORE
+    # _sync_axis_width, so the equalize sees the final visible axes.
+    pc, _ = _chart(app)
+    pc.add_indicator("rsi")
+    order = []
+    pc._reassign_bottom_axis = lambda: order.append("reassign")
+    pc._sync_axis_width = lambda: order.append("sync")
+    pc._align_panes()
+    assert order == ["reassign", "sync"]
