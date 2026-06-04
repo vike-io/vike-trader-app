@@ -522,7 +522,6 @@ class ResultsPanel(QtWidgets.QWidget):
         table.setItem(row, 1, value_item)
 
     def _fill_robustness(self, report) -> None:
-        from ..analysis import metrics as _m
         from ..analysis.overfit import probabilistic_sharpe_ratio
 
         rows: list[tuple[str, str, str | None]] = []  # (label, value, color)
@@ -536,7 +535,6 @@ class ResultsPanel(QtWidgets.QWidget):
                 # Annualise: ppy≈252 daily; compute per-obs Sharpe from the curve returns
                 rets = [eq[i] / eq[i - 1] - 1.0 for i in range(1, n) if eq[i - 1] != 0]
                 if len(rets) >= 2:
-                    import math
                     import statistics
                     mu = statistics.mean(rets)
                     sd = statistics.stdev(rets)
