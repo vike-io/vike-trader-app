@@ -32,6 +32,23 @@ def test_load_then_edit_and_save(app, tmp_path):
     assert back.symbols == ["AAA", "BBB"] and back.provider == "dukascopy"
 
 
+def test_benchmark_field_round_trips(app, tmp_path):
+    # Set a benchmark in the form -> it persists; loading a dataset with a benchmark shows it.
+    save_dataset(DataSet("SetB", ["BTCUSDT"], interval="1d"), str(tmp_path))
+    panel = DataSetPanel(str(tmp_path))
+    panel.load_dataset("SetB")
+    assert panel._benchmark.text() == ""          # none set yet
+    panel._benchmark.setText("SPY")
+    panel.save()
+    back = load_dataset("SetB", str(tmp_path))
+    assert back.benchmark == "SPY"
+    # a fresh panel loading it shows the benchmark in the field
+    panel2 = DataSetPanel(str(tmp_path))
+    panel2.load_dataset("SetB")
+    assert panel2._benchmark.text() == "SPY"
+    assert panel2.current_dataset().benchmark == "SPY"
+
+
 def test_test_buttons_emit_requests(app, tmp_path):
     save_dataset(DataSet("Set2", ["BTCUSDT", "ETHUSDT"], interval="1m"), str(tmp_path))
     panel = DataSetPanel(str(tmp_path))

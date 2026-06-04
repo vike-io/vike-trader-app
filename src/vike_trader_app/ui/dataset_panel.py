@@ -33,8 +33,15 @@ class DataSetPanel(QtWidgets.QWidget):
         self._provider.addItems(_PROVIDERS)
         self._interval = QtWidgets.QComboBox()
         self._interval.addItems(_INTERVALS)
+        self._benchmark = QtWidgets.QLineEdit()
+        self._benchmark.setPlaceholderText("optional, e.g. SPY / BTCUSDT (else equal-weight)")
+        self._benchmark.setToolTip(
+            "Benchmark symbol for the Studio Benchmark tab (alpha/beta/capture). "
+            "Its cached bars are used; leave blank for an equal-weight buy-&-hold of the universe."
+        )
         form.addRow("Provider", self._provider)
         form.addRow("Interval", self._interval)
+        form.addRow("Benchmark", self._benchmark)
         layout.addLayout(form)
 
         self._symbols_list = QtWidgets.QListWidget()  # selectable rows for 'Test symbol'
@@ -93,6 +100,7 @@ class DataSetPanel(QtWidgets.QWidget):
         self._symbols.setPlainText("\n".join(d.symbols))
         self._provider.setCurrentText(d.provider or "Auto")
         self._interval.setCurrentText(d.interval)
+        self._benchmark.setText(getattr(d, "benchmark", "") or "")
         # Populate membership from the loaded dataset's ranges
         self._ranges = dict(d.ranges)
         self._refresh_membership_view()
@@ -109,6 +117,7 @@ class DataSetPanel(QtWidgets.QWidget):
             provider=None if choice == "Auto" else choice,
             interval=self._interval.currentText(),
             ranges=dict(self._ranges),  # preserve current membership
+            benchmark=self._benchmark.text().strip(),
         )
 
     def save(self) -> DataSet:
