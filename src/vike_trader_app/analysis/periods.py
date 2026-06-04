@@ -32,6 +32,48 @@ def _period_label(dt: datetime, period: str) -> str:
     raise ValueError(f"period must be 'daily','weekly','monthly','yearly'; got {period!r}")
 
 
+def period_key(ts_ms: int, period: str) -> str:
+    """A comparable label for the calendar period containing ``ts_ms`` (UTC).
+
+    Parameters
+    ----------
+    ts_ms:
+        Epoch-millisecond timestamp.
+    period:
+        One of ``'daily'``, ``'weekly'``, ``'monthly'``, ``'quarterly'``, ``'yearly'``.
+
+    Returns
+    -------
+    A string label:
+        daily      -> ``'2024-03-15'``
+        weekly     -> ``'2024-W11'`` (ISO week)
+        monthly    -> ``'2024-03'``
+        quarterly  -> ``'2024-Q1'``
+        yearly     -> ``'2024'``
+
+    Raises
+    ------
+    ValueError
+        If ``period`` is not one of the supported values.
+    """
+    dt = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    if period == "daily":
+        return dt.strftime("%Y-%m-%d")
+    if period == "weekly":
+        iso = dt.isocalendar()
+        return f"{iso[0]}-W{iso[1]:02d}"
+    if period == "monthly":
+        return f"{dt.year}-{dt.month:02d}"
+    if period == "quarterly":
+        q = (dt.month - 1) // 3 + 1
+        return f"{dt.year}-Q{q}"
+    if period == "yearly":
+        return str(dt.year)
+    raise ValueError(
+        f"period must be 'daily','weekly','monthly','quarterly','yearly'; got {period!r}"
+    )
+
+
 def periodic_returns(
     equity_curve: list[float],
     timestamps: list[int],

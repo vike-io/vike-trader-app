@@ -98,10 +98,12 @@ class CrossSectionalStrategy(PortfolioStrategy):
 
     k = 1
     rebalance_every = 1
+    rebalance_on: str | None = None
 
     def __init__(self) -> None:
         super().__init__()
         self._hist: dict[str, list[float]] = {}
+        self._last_period: str | None = None
 
     def score(self, symbol: str, history: list[float]):
         """Return a comparable score for ``symbol`` (higher = better), or None to skip."""
@@ -113,10 +115,20 @@ class CrossSectionalStrategy(PortfolioStrategy):
         return {s: w for s in winners}
 
     def on_bar(self, ts: int, bars: dict) -> None:
+        # Accumulate price history every bar regardless of rebalance gate.
         for sym, bar in bars.items():
             self._hist.setdefault(sym, []).append(bar.close)
-        if self.index % self.rebalance_every != 0:
+
+        # Rebalance gate: calendar-period mode or bar-count mode.
+        if self.rebalance_on is not None:
+            from ..analysis.periods import period_key
+            key = period_key(ts, self.rebalance_on)
+            if key == self._last_period:
+                return  # same calendar period — accumulate history but skip scoring/rebalancing
+            self._last_period = key
+        elif self.index % self.rebalance_every != 0:
             return
+
         scores = {}
         for sym in bars:
             sc = self.score(sym, self._hist[sym])
