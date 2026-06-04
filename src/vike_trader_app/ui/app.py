@@ -814,9 +814,11 @@ class MainWindow(QtWidgets.QMainWindow):
     # --- docks ---
     def _dock(self, title, widget):
         d = QtWidgets.QDockWidget(title.upper(), self)
-        d.setFeatures(
-            QtWidgets.QDockWidget.DockWidgetMovable | QtWidgets.QDockWidget.DockWidgetFloatable
-        )
+        # Locked, stable IDE layout: no float / move / tear-off. The default Movable|Floatable
+        # let the user drag the panel out of the window or to another edge, which read as the
+        # panel "moving/resizing unexpectedly". Side-dock WIDTH is pinned in _build_docks so the
+        # right Market-watch panel can't be drag-resized left/right either.
+        d.setFeatures(QtWidgets.QDockWidget.NoDockWidgetFeatures)
         d.setWidget(widget)
         return d
 
@@ -830,6 +832,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.setCorner(QtCore.Qt.BottomRightCorner, QtCore.Qt.BottomDockWidgetArea)
 
         market = self._dock("Market watch", self.watchlist)
+        # Pin the right Market-watch width so its dock splitter can't be dragged left/right
+        # (min==max makes the auto-inserted resize handle inert). 300px matches resizeDocks below.
+        self.watchlist.setFixedWidth(300)
         trades = self._dock("Trades & Positions", self._build_trades_panel())
 
         # RIGHT: Market watch.  BOTTOM: Trades & Positions, spanning the full width.
@@ -1696,7 +1701,11 @@ def main():
             pass
     app.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))
     win = MainWindow()
-    win.show()
+    # Open MAXIMIZED so the window always fits the screen. The fixed 1440x900 + plain show()
+    # overflowed on 1366x768-class laptops (the 900px height exceeded the usable screen, so
+    # _center_on_screen shrank it). _center_on_screen still runs in __init__, so un-maximizing
+    # restores a screen-fitted, centered window.
+    win.showMaximized()
     sys.exit(app.exec())
 
 
