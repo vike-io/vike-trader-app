@@ -1410,3 +1410,28 @@ def test_tag_qss_is_module_const_and_reused(app):
     pc, _ = _chart(app)
     assert pc._cx_price_tag.styleSheet() == chart_mod._TAG_QSS
     assert pc._cx_time_tag.styleSheet() == chart_mod._TAG_QSS
+
+
+def test_oscillator_pane_has_crosshair_items_and_signals(app):
+    import pyqtgraph as pg
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    # crosshair line: a hidden, vertical, non-bound InfiniteLine
+    assert isinstance(pane._cx_v, pg.InfiniteLine)
+    assert pane._cx_v.angle == 90
+    assert pane._cx_v.isVisible() is False
+    # value + time tags: hidden QLabels sharing the module tag style
+    from vike_trader_app.ui import chart as chart_mod
+    assert isinstance(pane._cx_val_tag, QtWidgets.QLabel)
+    assert isinstance(pane._cx_time_tag, QtWidgets.QLabel)
+    assert pane._cx_val_tag.styleSheet() == chart_mod._TAG_QSS
+    assert pane._cx_time_tag.styleSheet() == chart_mod._TAG_QSS
+    assert pane._cx_val_tag.isHidden() and pane._cx_time_tag.isHidden()
+    # new fan-out signals exist
+    seen = {"moved": [], "left": 0}
+    pane.crosshairMoved.connect(lambda x: seen["moved"].append(x))
+    pane.crosshairLeft.connect(lambda: seen.__setitem__("left", seen["left"] + 1))
+    pane.crosshairMoved.emit(7.0)
+    pane.crosshairLeft.emit()
+    assert seen["moved"] == [7.0] and seen["left"] == 1

@@ -1065,6 +1065,10 @@ class OscillatorPane(pg.PlotWidget):
     paneMoveDown = QtCore.Signal(object)
     paneMaximizeToggled = QtCore.Signal(object)
     paneDeleteRequested = QtCore.Signal(object)
+    # cross-pane crosshair: a hover anywhere in this pane fans a bar-index x out to the price
+    # chart (which re-fans to every other pane); leaving the pane clears the whole crosshair.
+    crosshairMoved = QtCore.Signal(float)
+    crosshairLeft = QtCore.Signal()
 
     def __init__(self, link_to: "PriceChart"):
         _time_axis = TimeAxis(orientation="bottom")
@@ -1135,6 +1139,23 @@ class OscillatorPane(pg.PlotWidget):
         self._tb_timer.setInterval(120)
         self._tb_timer.setSingleShot(True)
         self._tb_timer.timeout.connect(self._maybe_hide_toolbar)
+
+        # cross-pane crosshair: a vertical line the price chart drives across every pane, plus a
+        # value tag (this pane's right scale) and a time tag (lowest pane only). ignoreBounds is
+        # MANDATORY — else the line forces this pane's x-range. _cx_bar caches the snapped bar x
+        # so repeated fan-outs at the same bar skip the FullViewportUpdate repaint.
+        cx_pen = pg.mkPen(theme.TEXT2, width=1, style=QtCore.Qt.DashLine)
+        self._cx_v = pg.InfiniteLine(angle=90, movable=False, pen=cx_pen)
+        self.addItem(self._cx_v, ignoreBounds=True)
+        self._cx_v.hide()
+        self._cx_bar = None  # last snapped round(x); guards redundant repaints
+        self._cx_val_tag = QtWidgets.QLabel(self)
+        self._cx_time_tag = QtWidgets.QLabel(self)
+        for _tag in (self._cx_val_tag, self._cx_time_tag):
+            _tag.setStyleSheet(_TAG_QSS)
+            _tag.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            _tag.hide()
+        self.scene().sigMouseMoved.connect(self._on_pane_mouse_moved)
 
     @property
     def uids(self):
@@ -1261,6 +1282,10 @@ class OscillatorPane(pg.PlotWidget):
             self._toolbar.hide()
         if e is not None:
             super().leaveEvent(e)
+
+    def _on_pane_mouse_moved(self, scene_pos):
+        """Crosshair fan-out for a hover inside this pane (wired in Task 5)."""
+        return
 
     def resizeEvent(self, e):  # noqa: N802 - Qt override
         super().resizeEvent(e)
