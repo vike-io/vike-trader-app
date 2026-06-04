@@ -94,18 +94,18 @@ def repair_bars(bars: list[Bar], interval_ms: int) -> tuple[list[Bar], list[str]
     prev_close: float | None = None
 
     for b in deduped:
-        o, h, l, c = b.open, b.high, b.low, b.close
+        o, h, lo, c = b.open, b.high, b.low, b.close
         v = b.volume
 
         # Step 2: replace bad price fields
         for field in ("open", "high", "low", "close"):
-            val = {"open": o, "high": h, "low": l, "close": c}[field]
+            val = {"open": o, "high": h, "low": lo, "close": c}[field]
             if _is_bad_price(val):
                 if prev_close is not None:
                     replacement = prev_close
                 else:
                     # first bar: use median of the bar's other valid prices
-                    others = [x for x in [o, h, l, c] if not _is_bad_price(x)]
+                    others = [x for x in [o, h, lo, c] if not _is_bad_price(x)]
                     if others:
                         others_sorted = sorted(others)
                         mid = len(others_sorted) // 2
@@ -120,26 +120,26 @@ def repair_bars(bars: list[Bar], interval_ms: int) -> tuple[list[Bar], list[str]
                 elif field == "high":
                     h = replacement
                 elif field == "low":
-                    l = replacement
+                    lo = replacement
                 else:
                     c = replacement
 
         # Step 3: clamp high/low so the OHLC box is valid
-        true_high = max(o, h, l, c)
-        true_low = min(o, h, l, c)
+        true_high = max(o, h, lo, c)
+        true_low = min(o, h, lo, c)
         if h != true_high:
             audit.append(f"ts={b.ts} high {h} below max(o,h,l,c) {true_high} -> {true_high}")
             h = true_high
-        if l != true_low:
-            audit.append(f"ts={b.ts} low {l} above min(o,h,l,c) {true_low} -> {true_low}")
-            l = true_low
+        if lo != true_low:
+            audit.append(f"ts={b.ts} low {lo} above min(o,h,l,c) {true_low} -> {true_low}")
+            lo = true_low
 
         # Step 4: clamp negative volume
         if v < 0:
             audit.append(f"ts={b.ts} negative volume {v} -> 0")
             v = 0.0
 
-        new_bar = Bar(ts=b.ts, open=o, high=h, low=l, close=c, volume=v, funding=b.funding)
+        new_bar = Bar(ts=b.ts, open=o, high=h, low=lo, close=c, volume=v, funding=b.funding)
         repaired.append(new_bar)
         prev_close = c
 
