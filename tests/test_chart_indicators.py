@@ -869,3 +869,23 @@ def test_after_pane_reorder_realigns(app):
     panes = pc._panes_in_visual_order()
     assert not panes[0]._toolbar._up.isEnabled()
     assert not panes[-1]._toolbar._down.isEnabled()
+
+
+def test_delete_pane_drops_single_indicator(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    assert split.count() == 2
+    pc._delete_pane(a.pane)
+    assert a.uid not in pc._indicators and split.count() == 1
+
+
+def test_delete_merged_pane_removes_all_indicators(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "merge_above")   # both now share one pane
+    assert split.count() == 2 and a.pane is b.pane
+    pane = a.pane
+    pc._delete_pane(pane)
+    assert a.uid not in pc._indicators and b.uid not in pc._indicators
+    assert split.count() == 1
