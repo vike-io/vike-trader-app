@@ -208,7 +208,7 @@ def test_distribution_tab_and_mfe_mae_columns(app):
     tab.set_config(TesterConfig(taker_fee=0.0))
     tab.set_text(_GOOD)
     tab.run_code()
-    assert tab.results._tabs.count() == 6            # Equity|Performance|Trades|By Symbol|Runs|Distribution
+    assert tab.results._tabs.count() == 9            # Equity|Performance|Trades|By Symbol|Runs|Distribution|Robustness|Monte Carlo|Periods
     assert tab.results._trades.columnCount() == 9    # ... + MFE + MAE columns
     assert tab.results._dist is not None
 

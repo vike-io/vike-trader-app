@@ -28,6 +28,7 @@ class PortfolioResult:
     final_equity: float
     per_symbol_pnl: dict = field(default_factory=dict)  # realized + unrealized PnL per symbol
     per_symbol_curves: dict = field(default_factory=dict)  # cumulative PnL curve per symbol (one entry per bar)
+    equity_ts: list = field(default_factory=list)  # epoch-ms timestamp for each equity_curve point
 
 
 class PortfolioStrategy:
@@ -393,6 +394,7 @@ class PortfolioEngine:
     # --- run loop ---
     def run(self) -> PortfolioResult:
         equity_curve: list[float] = []
+        equity_ts: list[int] = []
         per_symbol_curve: dict[str, list[float]] = {s: [] for s in self.symbols}
         for i in range(self.n):
             self._step = i  # current bar index — read by is_active() during the fill phase
@@ -416,6 +418,7 @@ class PortfolioEngine:
             eq = self.equity_now()
             self._equity_peak = max(self._equity_peak, eq)  # track running peak for drawdown
             equity_curve.append(eq)
+            equity_ts.append(ts)
             for s in self.symbols:
                 pos = self._pos[s]
                 per_symbol_curve[s].append(self._realized[s] + pos.size * (self._price[s] - pos.avg_price) * self.multiplier)
@@ -424,7 +427,7 @@ class PortfolioEngine:
             s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price) * self.multiplier
             for s in self.symbols
         }
-        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve)
+        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts)
 
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
         still = []
