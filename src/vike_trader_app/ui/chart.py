@@ -1071,9 +1071,13 @@ class OscillatorPane(pg.PlotWidget):
 
     def _build_curves(self, ind: "_Indicator"):
         cs = {}
+        widths = getattr(ind, "widths", [1])
+        styles = getattr(ind, "styles", ["solid"])
         for i, label in enumerate(ind.series):
             col = ind.colors[i % len(ind.colors)]
-            cs[label] = self.plot([], [], pen=pg.mkPen(col, width=1))
+            pen = pg.mkPen(col, width=widths[i % len(widths)],
+                           style=_pen_style(styles[i % len(styles)]))
+            cs[label] = self.plot([], [], pen=pen)
         self._curves[ind.uid] = cs
 
     def update_ind(self, ind: "_Indicator"):
@@ -1626,9 +1630,13 @@ class PriceChart(pg.PlotWidget):
     def _render(self, ind: "_Indicator"):
         if ind.kind == "overlay":
             ind.curves = {}
+            widths = getattr(ind, "widths", [1])
+            styles = getattr(ind, "styles", ["solid"])
             for i, lbl in enumerate(ind.series):
                 col = ind.colors[i % len(ind.colors)]
-                curve = pg.PlotDataItem([], [], pen=pg.mkPen(col, width=1))
+                pen = pg.mkPen(col, width=widths[i % len(widths)],
+                               style=_pen_style(styles[i % len(styles)]))
+                curve = pg.PlotDataItem([], [], pen=pen)
                 if ind.own_scale:                 # independent right scale (secondary viewbox)
                     self._ensure_vb2()
                     self._vb2.addItem(curve)

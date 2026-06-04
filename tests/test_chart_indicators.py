@@ -1079,3 +1079,28 @@ def test_pen_style_maps_names_to_qt(app):
     assert [v for _lbl, v in _LINE_STYLES] == ["solid", "dashed", "dotted"]
     assert list(_LINE_WIDTHS) == [1, 2, 3, 4]
     assert _UNSET is not None and _UNSET != [] and _UNSET != {}  # a distinct sentinel
+
+
+def test_render_pens_use_width_and_style_overlay(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")  # overlay, 1 output
+    ind.widths = [3]
+    ind.styles = ["dashed"]
+    pc._unrender(ind)
+    pc._render(ind)  # rebuilds the overlay PlotDataItem pen
+    curve = next(iter(ind.curves.values()))
+    pen = curve.opts["pen"]
+    assert pen.width() == 3
+    assert pen.style() == QtCore.Qt.DashLine
+
+
+def test_build_curves_pens_use_width_and_style_oscillator(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")  # oscillator, 1 output
+    ind.widths = [4]
+    ind.styles = ["dotted"]
+    ind.pane.update_ind(ind)  # rebuilds curves via _build_curves
+    curve = next(iter(ind.pane._curves[ind.uid].values()))
+    pen = curve.opts["pen"]
+    assert pen.width() == 4
+    assert pen.style() == QtCore.Qt.DotLine
