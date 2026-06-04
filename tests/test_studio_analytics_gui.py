@@ -69,7 +69,7 @@ def _portfolio_report(n_bars=90):
 # ---------------------------------------------------------------------------
 
 def test_tab_strip_includes_new_analytics_tabs(app):
-    """Tab strip must include Robustness, Monte Carlo, and Periods after the run."""
+    """Tab strip must include Robustness, Monte Carlo, Periods, and Benchmark after the run."""
     tab = StudioTab()
     report = _portfolio_report()
     tab.show_portfolio_report(report, "TestDS")
@@ -78,6 +78,7 @@ def test_tab_strip_includes_new_analytics_tabs(app):
     assert "Robustness" in titles
     assert "Monte Carlo" in titles
     assert "Periods" in titles
+    assert "Benchmark" in titles
 
 
 def test_monte_carlo_table_populated_for_report_with_trades(app):
@@ -151,7 +152,7 @@ def test_robustness_tab_has_rows_after_run(app):
 
 
 def test_clear_resets_analytics_tables(app):
-    """clear() must reset all three analytics tables to 0 rows."""
+    """clear() must reset all analytics tables to 0 rows (including Benchmark)."""
     tab = StudioTab()
     report = _portfolio_report()
     tab.show_portfolio_report(report, "TestDS")
@@ -161,3 +162,46 @@ def test_clear_resets_analytics_tables(app):
     assert tab.results._mc_table.rowCount() == 0
     assert tab.results._periods_table.rowCount() == 0
     assert tab.results._dd_table.rowCount() == 0
+    assert tab.results._bench_table.rowCount() == 0
+
+
+def test_benchmark_tab_populated_for_portfolio_report(app):
+    """Benchmark tab: portfolio report must populate the table with metrics including Beta."""
+    tab = StudioTab()
+    report = _portfolio_report()
+    tab.show_portfolio_report(report, "TestDS")
+
+    # The Benchmark table must have rows
+    assert tab.results._bench_table.rowCount() > 0
+
+    labels = [
+        tab.results._bench_table.item(r, 0).text()
+        for r in range(tab.results._bench_table.rowCount())
+    ]
+    assert any("Beta" in lbl for lbl in labels)
+
+
+def test_benchmark_tab_shows_hint_for_report_without_benchmark_curve(app):
+    """Report without a benchmark_curve must show the hint row and not crash."""
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    from vike_trader_app.tester import StrategyTester, TesterConfig as TC
+    from vike_trader_app.core.strategy_loader import load_strategy_from_string
+
+    bars = _daily_bars(90)
+    cls_code = TEMPLATES[0].code
+    cls = load_strategy_from_string(cls_code, validate=True)
+    report = StrategyTester(cls(), bars, TC(cash=10_000.0, taker_fee=0.0)).run()
+
+    # Single-symbol report has no benchmark_curve
+    assert not getattr(report, "benchmark_curve", None)
+
+    tab = StudioTab()
+    tab.results.show_report(report, bars)   # must not raise
+
+    # The hint row is shown
+    assert tab.results._bench_table.rowCount() >= 1
+    labels = [
+        tab.results._bench_table.item(r, 0).text()
+        for r in range(tab.results._bench_table.rowCount())
+    ]
+    assert any("Benchmark" in lbl for lbl in labels)

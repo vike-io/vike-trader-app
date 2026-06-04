@@ -29,6 +29,8 @@ class PortfolioResult:
     per_symbol_pnl: dict = field(default_factory=dict)  # realized + unrealized PnL per symbol
     per_symbol_curves: dict = field(default_factory=dict)  # cumulative PnL curve per symbol (one entry per bar)
     equity_ts: list = field(default_factory=list)  # epoch-ms timestamp for each equity_curve point
+    benchmark_curve: list = field(default_factory=list)  # equal-weight buy-&-hold benchmark equity curve
+    benchmark_label: str = ""  # human-readable benchmark description
 
 
 class PortfolioStrategy:

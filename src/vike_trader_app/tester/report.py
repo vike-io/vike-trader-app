@@ -47,6 +47,8 @@ class TesterReport:
     per_symbol_pnl: dict | None = None
     per_symbol_curves: dict | None = None
     equity_ts: list | None = None  # epoch-ms timestamps aligned to equity_curve (portfolio runs only)
+    benchmark_curve: list | None = None  # equal-weight buy-&-hold benchmark equity curve (portfolio runs)
+    benchmark_label: str = ""  # human-readable benchmark description
 
     @classmethod
     def from_result(cls, result, periods_per_year: float = 365 * 24 * 60) -> "TesterReport":
@@ -82,6 +84,8 @@ class TesterReport:
             per_symbol_pnl=getattr(result, "per_symbol_pnl", None),
             per_symbol_curves=getattr(result, "per_symbol_curves", None),
             equity_ts=getattr(result, "equity_ts", None) or None,
+            benchmark_curve=getattr(result, "benchmark_curve", None) or None,
+            benchmark_label=getattr(result, "benchmark_label", "") or "",
         )
 
     def as_dict(self) -> dict:
