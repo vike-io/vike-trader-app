@@ -724,3 +724,24 @@ def test_crosshair_time_tag_shown_with_no_panes(app):
     center = vb.sceneBoundingRect().center()
     pc._on_mouse_moved(center)
     assert pc._cx_time_tag.isVisible() is True  # price chart owns the bottom axis -> tag shows
+
+
+def test_studio_second_chart_aligns_independently(app):
+    # Two independent PriceChart instances (main + studio) on separate splitters: each must
+    # align its own panes with no shared/leaked state.
+    main_pc, main_split = _chart(app)
+    studio_pc, studio_split = _chart(app)
+    main_ind = main_pc.add_indicator("rsi")
+    studio_a = studio_pc.add_indicator("rsi")
+    studio_b = studio_pc.add_indicator("macd")
+    # main: single pane owns the bottom axis + equal widths
+    assert main_ind.pane.getAxis("bottom").isVisible() is True
+    assert main_pc.getAxis("right").width() == main_ind.pane.getAxis("right").width()
+    # studio: lowest of its TWO panes owns the bottom axis; its widths equalize on its own axes
+    assert studio_b.pane.getAxis("bottom").isVisible() is True
+    assert studio_a.pane.getAxis("bottom").isVisible() is False
+    sw = studio_pc.getAxis("right").width()
+    assert studio_a.pane.getAxis("right").width() == sw
+    assert studio_b.pane.getAxis("right").width() == sw
+    # no cross-talk: neither chart's guard leaked
+    assert main_pc._wsyncing is False and studio_pc._wsyncing is False
