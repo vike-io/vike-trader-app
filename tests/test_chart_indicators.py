@@ -239,10 +239,16 @@ def test_settings_emits_params_on_ok(app):
     p0 = ind.spec.params[0]
     dlg._param_widgets[p0.name].setValue(9)
     got = {}
-    dlg.applied.connect(lambda params, colors: got.update(params=params, colors=colors))
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(
+            params=params, colors=colors, widths=widths, styles=styles, intervals=intervals
+        )
+    )
     dlg._accept()
     assert got["params"][p0.name] == 9
     assert len(got["colors"]) == len(ind.spec.outputs)
+    assert len(got["widths"]) == len(ind.spec.outputs)
+    assert len(got["styles"]) == len(ind.spec.outputs)
 
 
 # --- LEGEND (UI) -----------------------------------------------------------------------------
@@ -1115,3 +1121,39 @@ def test_all_intervals_and_normalize_helpers(app):
     # a strict subset stays a set
     sub = set(expected[:-1])
     assert _normalize_intervals(sub) == sub
+
+
+def test_settings_style_tab_combos_round_trip(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("macd")  # 3 outputs, line kind
+    dlg = _IndicatorSettings(ind)
+    assert len(dlg._width_combos) == len(ind.spec.outputs)
+    assert len(dlg._style_combos) == len(ind.spec.outputs)
+    # combos carry typed userData, not display text
+    dlg._width_combos[0].setCurrentIndex(2)  # _LINE_WIDTHS[2] == 3
+    si = next(i for i in range(dlg._style_combos[0].count())
+              if dlg._style_combos[0].itemData(i) == "dashed")
+    dlg._style_combos[0].setCurrentIndex(si)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(
+            widths=widths, styles=styles
+        )
+    )
+    dlg._accept()
+    assert got["widths"][0] == 3 and isinstance(got["widths"][0], int)
+    assert got["styles"][0] == "dashed"
+
+
+def test_settings_pattern_hides_width_and_style(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("engulfing")  # kind == 'pattern' -> markers, no pens
+    dlg = _IndicatorSettings(ind)
+    assert all(c.isHidden() for c in dlg._width_combos)
+    assert all(c.isHidden() for c in dlg._style_combos)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(widths=widths)
+    )
+    dlg._accept()  # must not crash for a pattern indicator
+    assert "widths" in got

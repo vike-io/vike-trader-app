@@ -470,10 +470,11 @@ class _Indicator:
 
 
 class _IndicatorSettings(dropdowns.PopupCard):
-    """TradingView-style settings: an **Inputs** tab (parameters from the registry spec) and a
-    **Style** tab (per-output colour). Emits ``applied(params, colors)`` on Ok."""
+    """TradingView-style settings: **Inputs** (registry params), **Style** (per-output colour +
+    line width + line style), and **Visibility** (per-interval) tabs. Emits
+    ``applied(params, colors, widths, styles, intervals)`` on Ok."""
 
-    applied = QtCore.Signal(dict, list)
+    applied = QtCore.Signal(dict, list, list, list, object)
 
     def __init__(self, ind: "_Indicator", parent=None):
         super().__init__(parent, object_name="setCard", extra_qss=(
@@ -489,6 +490,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
             f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-size:14px;font-weight:700;}}"
         ))
         self._spec = ind.spec
+        self._ind = ind
         card = self.card
         v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(16, 14, 16, 12)
@@ -535,12 +537,17 @@ class _IndicatorSettings(dropdowns.PopupCard):
             form.addRow(QtWidgets.QLabel("This indicator has no inputs."))
         tabs.addTab(inputs, "Inputs")
 
-        # --- Style tab (one colour button per output) ---
+        # --- Style tab (per output: colour + line width + line style) ---
         style = QtWidgets.QWidget()
         sform = QtWidgets.QFormLayout(style)
         sform.setContentsMargins(4, 10, 4, 4)
         sform.setSpacing(9)
         self._color_btns = []
+        self._width_combos = []
+        self._style_combos = []
+        is_pattern = ind.kind == "pattern"
+        widths = getattr(ind, "widths", [1] * len(self._spec.outputs))
+        styles = getattr(ind, "styles", ["solid"] * len(self._spec.outputs))
         for i, out in enumerate(self._spec.outputs):
             btn = QtWidgets.QPushButton()
             btn.setFixedSize(46, 22)
@@ -548,7 +555,33 @@ class _IndicatorSettings(dropdowns.PopupCard):
             self._set_btn_color(btn, col)
             btn.clicked.connect(lambda _c=False, b=btn: self._pick_color(b))
             self._color_btns.append(btn)
-            sform.addRow(out.replace("_", " ").title(), btn)
+
+            wcb = QtWidgets.QComboBox()
+            for w in _LINE_WIDTHS:
+                wcb.addItem(f"{w}px", w)  # userData = int width
+            cur_w = widths[i] if i < len(widths) else 1
+            wcb.setCurrentIndex(max(0, _LINE_WIDTHS.index(cur_w) if cur_w in _LINE_WIDTHS else 0))
+            self._width_combos.append(wcb)
+
+            scb = QtWidgets.QComboBox()
+            for lbl, nm in _LINE_STYLES:
+                scb.addItem(lbl, nm)      # userData = str style name
+            cur_s = styles[i] if i < len(styles) else "solid"
+            names = [nm for _lbl, nm in _LINE_STYLES]
+            scb.setCurrentIndex(names.index(cur_s) if cur_s in names else 0)
+            self._style_combos.append(scb)
+
+            roww = QtWidgets.QWidget()
+            rowl = QtWidgets.QHBoxLayout(roww)
+            rowl.setContentsMargins(0, 0, 0, 0)
+            rowl.setSpacing(6)
+            rowl.addWidget(btn)
+            rowl.addWidget(wcb)
+            rowl.addWidget(scb)
+            if is_pattern:  # markers use brushes, not pens -> no width/style
+                wcb.hide()
+                scb.hide()
+            sform.addRow(out.replace("_", " ").title(), roww)
         tabs.addTab(style, "Style")
 
         foot = QtWidgets.QHBoxLayout()
@@ -561,7 +594,15 @@ class _IndicatorSettings(dropdowns.PopupCard):
         foot.addWidget(cancel)
         foot.addWidget(ok)
         v.addLayout(foot)
-        self.resize(340, 360)
+        self.resize(360, 440)
+
+    def _chosen_intervals(self):
+        """Intervals selected in the Visibility tab (Task 65 builds the tab); until then,
+        fall back to the indicator's current intervals so accept always has a value."""
+        boxes = getattr(self, "_iv_checks", None)
+        if not boxes:
+            return getattr(self._ind, "intervals", None)
+        return _normalize_intervals(iv for iv, cb in boxes.items() if cb.isChecked())
 
     @staticmethod
     def _set_btn_color(btn, color):
@@ -579,7 +620,10 @@ class _IndicatorSettings(dropdowns.PopupCard):
         for p in self._spec.params:
             params[p.name] = self._param_widgets[p.name].value()
         colors = [b.property("color_hex") for b in self._color_btns]
-        self.applied.emit(params, colors)
+        widths = [int(c.currentData()) for c in self._width_combos]
+        styles = [str(c.currentData()) for c in self._style_combos]
+        intervals = self._chosen_intervals()
+        self.applied.emit(params, colors, widths, styles, intervals)
         self.accept()
 
 
