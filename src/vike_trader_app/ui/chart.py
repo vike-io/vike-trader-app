@@ -2055,6 +2055,7 @@ class PriceChart(pg.PlotWidget):
                 widths=list(getattr(ind, "widths", clone.widths)),
                 styles=list(getattr(ind, "styles", clone.styles)),
                 intervals=(set(ind.intervals) if ind.intervals is not None else None),
+                source=getattr(ind, "source", "close"),
             )
         return clone
 

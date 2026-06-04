@@ -1907,3 +1907,17 @@ def test_apply_edit_default_source_unset_preserves(app):
     # omit `source` -> _UNSET -> ind.source must be preserved (not reset to close):
     pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors))
     assert ind.source == "ohlc4"
+
+
+def test_clone_carries_non_default_source(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("sma", params={"period": 4})
+    ind.source = "hlc3"
+    pc._compute(ind)  # ensure ind reflects the edited source before cloning
+    clone = pc.clone_indicator(ind.uid)
+    assert clone is not None
+    assert clone.uid != ind.uid
+    assert clone.source == "hlc3"
+    # the clone's series must match the source-fed original (same params, same source):
+    assert list(clone.series["sma"]) == list(ind.series["sma"])
+    assert clone.label == "SMA 4 (hlc3)"
