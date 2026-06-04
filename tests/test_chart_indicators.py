@@ -438,13 +438,25 @@ def test_panes_in_visual_order_differs_from_osc_after_drag(app):
     assert pc._panes_in_visual_order() != pc._osc_panes()
 
 
-def test_axis_natural_width_exceeds_pyqtgraph_stale_width(app):
-    # The price axis shows wide labels (e.g. "117.50"); its natural width must reflect that,
-    # NOT the stale/default AxisItem.width() (~35 before a paint pass).
+def test_axis_natural_width_matches_current_tick_strings(app):
+    # `_axis_natural_width` must reflect the axis's CURRENT (multi-char) tick strings via font
+    # metrics — NOT the stale/default AxisItem.width() (~35px before a paint pass). Assert it
+    # equals the width recomputed in-environment from the same inputs, so the test is
+    # font/DPI-independent (a hardcoded px like ">50" fails on CI's narrower headless fonts).
+    from PySide6 import QtGui
+
     pc, _ = _chart(app)
     ax = pc.getAxis("right")
     nat = pc._axis_natural_width(ax)
-    assert nat > 50  # padded up from the longest current tick string, not the stale default
+    mn, mx = ax.range
+    strings = []
+    for spacing, values in ax.tickValues(mn, mx, ax.height() or 300):
+        strings += [s for s in ax.tickStrings(values, ax.scale, spacing) if s]
+    fm = QtGui.QFontMetrics(ax.style.get("tickFont") or ax.font())
+    expected = (max(fm.horizontalAdvance(s) for s in strings)
+                + ax.style["tickTextOffset"][0] + max(0, ax.style["tickLength"]))
+    assert nat == pytest.approx(float(expected))
+    assert nat > float(ax.style["tickTextOffset"][0])  # a real measurement, not ~0/stale
 
 
 def test_axis_natural_width_price_wider_than_oscillator(app):
