@@ -1129,6 +1129,12 @@ class OscillatorPane(pg.PlotWidget):
         super().resizeEvent(e)
         self._position_toolbar()
 
+    def set_maximized(self, on: bool):
+        """Delegate the maximize/restore glyph swap to the pane's hover toolbar."""
+        tb = getattr(self, "_toolbar", None)
+        if tb is not None:
+            tb.set_maximized(on)
+
 
 class PriceChart(pg.PlotWidget):
     """Candles + TradeStation-style trade markers + indicator overlays + a replay cursor,

@@ -910,3 +910,47 @@ def test_unrender_pane_drop_clears_maximize_lock(app):
     pc._maximized_pane = a.pane
     pc.remove_indicator(a.uid)           # drops the pane via _unrender
     assert pc._maximized_pane is None and split.count() == 1
+
+
+def test_maximize_gives_dominant_share_with_price_floor(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    split.resize(400, 1000)
+    pc._toggle_maximize_pane(a.pane)
+    assert pc._maximized_pane is a.pane
+    assert a.pane._toolbar._max.toolTip() == "Restore pane"
+    sizes = split.sizes()
+    total = sum(sizes)
+    # price keeps a real floor (max(140, total*0.15)), the maximized pane gets the dominant share
+    price_floor = max(140, int(total * 0.15))
+    assert sizes[0] >= price_floor - 1          # OHLC stays visible (TV)
+    a_idx = split.indexOf(a.pane)
+    assert sizes[a_idx] == max(sizes[1:])       # maximized pane is the biggest pane
+    assert sizes[a_idx] > sizes[split.indexOf(b.pane)]
+
+
+def test_restore_preserves_user_dragged_sizes(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    split.resize(400, 1000)
+    user = [600, 250, 150]
+    split.setSizes(user)
+    snap = split.sizes()                         # what Qt actually stored
+    pc._toggle_maximize_pane(a.pane)             # saves snap
+    pc._toggle_maximize_pane(a.pane)             # restore: same count -> replay saved sizes
+    assert pc._maximized_pane is None
+    assert split.sizes() == snap
+    assert a.pane._toolbar._max.toolTip() == "Maximize pane"
+
+
+def test_delete_maximized_pane_clears_lock(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._toggle_maximize_pane(a.pane)
+    assert pc._maximized_pane is a.pane
+    pc._delete_pane(a.pane)
+    assert pc._maximized_pane is None            # no dangling deleted-QWidget ref
+    assert a.uid not in pc._indicators and split.count() == 2
