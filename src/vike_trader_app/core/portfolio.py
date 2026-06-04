@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
+from .sizing import PassThroughSizer, SizeContext
+
+
+def _default_sizer():
+    """The pass-through sizer (today's behavior): the strategy's literal size, unchanged."""
+    return PassThroughSizer()
 
 
 @dataclass
@@ -133,7 +139,8 @@ class PortfolioEngine:
                  taker_fee: float | None = None, multiplier: float = 1.0,
                  leverage: float | None = None, maint_margin: float = 0.0,
                  cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
-                 timeframes: list[str] | None = None, max_open_positions: int = 0):
+                 timeframes: list[str] | None = None, max_open_positions: int = 0,
+                 sizer=None):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -155,6 +162,9 @@ class PortfolioEngine:
         # (default) == every symbol always active, i.e. today's behavior byte-for-byte.
         self.active_mask = active_mask
         self.max_open_positions = max_open_positions
+        # Swappable position sizer (WL PosSizer model). None -> PassThrough (the strategy's literal
+        # size), so default behavior is byte-for-byte unchanged.
+        self.sizer = sizer or _default_sizer()
         self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
@@ -198,6 +208,24 @@ class PortfolioEngine:
 
     def equity_now(self) -> float:
         return self.cash + sum(self._pos[s].size * self._price[s] * self.multiplier for s in self.symbols)
+
+    # --- sizing (WL PosSizer) ---
+    def _is_opening(self, symbol: str, side_sign: int) -> bool:
+        """True when an order on ``symbol`` in direction ``side_sign`` opens-from-flat or adds in the
+        same direction (an entry). False when it reduces/closes/flips. Mirrors the fill-loop's
+        ``opening = pos.size == 0 or (pos.size > 0) == (side > 0)`` test."""
+        pos = self._pos[symbol]
+        return pos.size == 0 or (pos.size > 0) == (side_sign > 0)
+
+    def _size_entry(self, symbol: str, side_sign: int, size: float, raw: bool) -> float:
+        """Run the sizer on opening/increasing entries; pass ``size`` through untouched when ``raw``
+        (explicit order_target_* sizing) or when the order reduces/closes the position."""
+        if raw or not self._is_opening(symbol, side_sign):
+            return size
+        return self.sizer.size(SizeContext(
+            symbol, side_sign, size, self._price[symbol],
+            self.equity_now(), self.cash, self.multiplier,
+        ))
 
     # --- leverage / risk helpers ---
     def _cap_to_leverage(self, symbol: str, side_sign: int, size: float) -> float:
@@ -257,7 +285,9 @@ class PortfolioEngine:
                 self._apply_fill(s, side, abs(self._pos[s].size), cur[s].open, cur[s].ts)
 
     # --- order intake ---
-    def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0) -> None:
+    def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
+               raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
             self._pending[symbol].append(Order("market", side_sign, size, weight=weight))
@@ -268,13 +298,19 @@ class PortfolioEngine:
             side = -1 if pos.size > 0 else 1
             self._pending[symbol].append(Order("market", side, abs(pos.size)))
 
-    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
+                     raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
         self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight))
 
-    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
+                    raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
         self._pending[symbol].append(Order("stop", side_sign, size, price=price, weight=weight))
 
-    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
+    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0,
+                        raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
         self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
                                            extreme=self._price[symbol], weight=weight))
 

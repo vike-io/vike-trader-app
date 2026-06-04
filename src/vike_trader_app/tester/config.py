@@ -18,6 +18,7 @@ class TesterConfig:
     leverage: float | None = None
     maint_margin: float = 0.0
     cash_gate: bool = False  # opt-in: gate shared-cash fills by Transaction.Weight, drop the unfundable
+    sizer: object | None = None  # swappable PositionSizer; None -> engine uses PassThrough (literal size)
     timeframes: list[str] | None = None
     cashflows: list[float] | None = None
     periods_per_year: float = 365 * 24 * 60  # 1-minute bars; for annualized Sharpe/Sortino/Calmar
