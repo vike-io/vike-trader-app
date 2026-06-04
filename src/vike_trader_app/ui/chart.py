@@ -555,7 +555,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
     line width + line style), and **Visibility** (per-interval) tabs. Emits
     ``applied(params, colors, widths, styles, intervals, source)`` on Ok."""
 
-    applied = QtCore.Signal(dict, list, list, list, object, str)
+    applied = QtCore.Signal(dict, list, list, list, object, str, list)
 
     def __init__(self, ind: "_Indicator", parent=None):
         super().__init__(parent, object_name="setCard", extra_qss=(
@@ -795,7 +795,11 @@ class _IndicatorSettings(dropdowns.PopupCard):
         styles = [str(c.currentData()) for c in self._style_combos]
         intervals = self._chosen_intervals()
         source = self._source_combo.currentData() if self._source_combo is not None else "close"
-        self.applied.emit(params, colors, widths, styles, intervals, source)
+        bands = [
+            (self._ind.bands[i][0], float(spin.value()), btn.property("color_hex"))
+            for i, (spin, btn) in enumerate(zip(self._band_value_spins, self._band_color_btns))
+        ]
+        self.applied.emit(params, colors, widths, styles, intervals, source, bands)
         self.accept()
 
 
@@ -2106,14 +2110,15 @@ class PriceChart(pg.PlotWidget):
         dlg = _IndicatorSettings(ind, self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         dlg.applied.connect(
-            lambda params, colors, widths, styles, intervals, source, u=uid: self._apply_edit(
-                u, params, colors, widths=widths, styles=styles, intervals=intervals, source=source
+            lambda params, colors, widths, styles, intervals, source, bands, u=uid: self._apply_edit(
+                u, params, colors, widths=widths, styles=styles, intervals=intervals,
+                source=source, bands=bands
             )
         )
         dlg.exec()
 
     def _apply_edit(self, uid: int, params: dict, colors: list,
-                    widths=_UNSET, styles=_UNSET, intervals=_UNSET, source=_UNSET):
+                    widths=_UNSET, styles=_UNSET, intervals=_UNSET, source=_UNSET, bands=_UNSET):
         ind = self._indicators.get(uid)
         if ind is None:
             return
@@ -2127,6 +2132,9 @@ class PriceChart(pg.PlotWidget):
             ind.intervals = intervals
         if source is not _UNSET:
             ind.source = source            # assigned BEFORE _compute so the remap uses the new source
+        if bands is not _UNSET:  # payload is [(label, value, color), …] -> split into the two lists
+            ind.bands = [[lbl, float(val)] for lbl, val, _c in bands]
+            ind.band_colors = [c for _l, _v, c in bands]
         if ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             self._compute(ind)
             ind.pane.update_ind(ind)

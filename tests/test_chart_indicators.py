@@ -242,9 +242,9 @@ def test_settings_emits_params_on_ok(app):
     dlg._param_widgets[p0.name].setValue(9)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals, source: got.update(
-            params=params, colors=colors, widths=widths, styles=styles, intervals=intervals,
-            source=source,
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(
+            params=params, colors=colors, widths=widths, styles=styles,
+            intervals=intervals, source=source, bands=bands
         )
     )
     dlg._accept()
@@ -252,6 +252,9 @@ def test_settings_emits_params_on_ok(app):
     assert len(got["colors"]) == len(ind.spec.outputs)
     assert len(got["widths"]) == len(ind.spec.outputs)
     assert len(got["styles"]) == len(ind.spec.outputs)
+    # bands payload: [(label, value, color), …] for the 3 rsi guides
+    assert [(lbl, val) for lbl, val, _c in got["bands"]] == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert all(isinstance(c, str) for _l, _v, c in got["bands"])
 
 
 # --- LEGEND (UI) -----------------------------------------------------------------------------
@@ -1307,8 +1310,9 @@ def test_edit_indicator_dialog_round_trip_applies(app):
     ind = pc.add_indicator("rsi")
     dlg = _IndicatorSettings(ind, pc)
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals, source, u=ind.uid: pc._apply_edit(
-            u, params, colors, widths=widths, styles=styles, intervals=intervals, source=source
+        lambda params, colors, widths, styles, intervals, source, bands, u=ind.uid: pc._apply_edit(
+            u, params, colors, widths=widths, styles=styles, intervals=intervals,
+            source=source, bands=bands
         )
     )
     dlg._width_combos[0].setCurrentIndex(1)  # _LINE_WIDTHS[1] == 2
@@ -1883,7 +1887,7 @@ def test_settings_emits_source_on_ok(app):
     dlg._source_combo.setCurrentIndex(_SOURCE_OPTIONS.index("hl2"))
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals, source: got.update(source=source)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(source=source)
     )
     dlg._accept()
     assert got["source"] == "hl2"
@@ -2054,3 +2058,20 @@ def test_settings_reset_defaults_repopulates_bands(app):
     dlg._band_value_spins[0].setValue(88.0)   # edit Upper
     dlg._reset_defaults()
     assert [s.value() for s in dlg._band_value_spins] == [70.0, 50.0, 30.0]
+
+
+def test_band_edit_round_trip_updates_line(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # edit Upper 70 -> 80 via _apply_edit (same path the settings dialog drives)
+    new_bands = [("Upper", 80.0, "#777777"), ("Middle", 50.0, "#777777"), ("Lower", 30.0, "#777777")]
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors), bands=new_bands)
+    ind2 = pc._indicators[ind.uid]
+    assert [v for _l, v in ind2.bands] == [80.0, 50.0, 30.0]
+    assert ind2.band_colors == ["#777777", "#777777", "#777777"]
+    # the rendered InfiniteLine moved to 80 (update_ind rebuilt the band lines)
+    lines = ind2.pane._band_lines[ind2.uid]
+    assert [ln.value() for ln in lines] == [80.0, 50.0, 30.0]
+    # bands left UNSET on an unrelated edit must NOT change the bands
+    pc._apply_edit(ind2.uid, dict(ind2.params), list(ind2.colors))
+    assert [v for _l, v in pc._indicators[ind2.uid].bands] == [80.0, 50.0, 30.0]
