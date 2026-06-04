@@ -1142,8 +1142,8 @@ class OscillatorPane(pg.PlotWidget):
 
         # cross-pane crosshair: a vertical line the price chart drives across every pane, plus a
         # value tag (this pane's right scale) and a time tag (lowest pane only). ignoreBounds is
-        # MANDATORY — else the line forces this pane's x-range. _cx_bar caches the snapped bar x
-        # so repeated fan-outs at the same bar skip the FullViewportUpdate repaint.
+        # MANDATORY — else the line forces this pane's x-range. _cx_bar caches the last snapped
+        # bar x so repeated fan-outs at the same bar skip the FullViewportUpdate repaint.
         cx_pen = pg.mkPen(theme.TEXT2, width=1, style=QtCore.Qt.DashLine)
         self._cx_v = pg.InfiniteLine(angle=90, movable=False, pen=cx_pen)
         self.addItem(self._cx_v, ignoreBounds=True)
@@ -1314,9 +1314,10 @@ class OscillatorPane(pg.PlotWidget):
         val = vals[0]
         self._cx_val_tag.setText(f"{val:,.2f}")
         self._cx_val_tag.adjustSize()
-        axis_w = int(self.getAxis("right").width()) if self.getAxis("right").isVisible() else 0
         scene_pt = self.getViewBox().mapViewToScene(QtCore.QPointF(bar, val))
-        x_px = self.width() - axis_w - self._cx_val_tag.width() - 1
+        # Anchor the value tag at the right edge of the pane (over the axis), consistent with the
+        # price-pane's price tag placement — TradingView shows the value label ON the right scale.
+        x_px = self.width() - self._cx_val_tag.width() - 1
         self._cx_val_tag.move(max(0, x_px), int(scene_pt.y()) - self._cx_val_tag.height() // 2)
         self._cx_val_tag.show()
 
@@ -1443,6 +1444,7 @@ class PriceChart(pg.PlotWidget):
         self.addItem(self._cx_h, ignoreBounds=True)
         self._cx_v.hide()
         self._cx_h.hide()
+        self._cx_bar = None  # last snapped bar x; throttles sub-pixel fan-outs at the same bar
 
         # ---- chart top toolbar: one aligned row (TradingView-style) ----
         # LEFT: timeframe selector | Indicators | OHLC legend.  RIGHT (far): range selector.
@@ -2570,8 +2572,14 @@ class PriceChart(pg.PlotWidget):
     def _set_crosshair_x(self, x):
         """Fan a bar-index x out across the whole chart: snap the price-pane vertical line to
         round(x), drive every oscillator pane's vertical line to the same bar, and home the time
-        tag on the lowest pane (or, with no panes, the price chart's own bottom-axis tag)."""
+        tag on the lowest pane (or, with no panes, the price chart's own bottom-axis tag).
+
+        Sub-pixel moves that stay within the same bar are throttled: the datetime format string,
+        setPos calls, and FullViewportUpdate repaints (per pane) are skipped entirely."""
         bar = int(round(x))
+        if bar == self._cx_bar and self._cx_v.isVisible():
+            return
+        self._cx_bar = bar
         self._cx_v.setPos(bar)
         self._cx_v.show()
         panes = self._panes_in_visual_order()
@@ -2595,11 +2603,13 @@ class PriceChart(pg.PlotWidget):
 
     def _clear_crosshair(self):
         """Hide the whole cross-pane crosshair: price line/h-line/tags + every pane's, and
-        restore the OHLC header to the latest candle."""
+        restore the OHLC header to the latest candle. Resets _cx_bar so the next hover into
+        the same bar is not throttled away (re-show after leave must always run)."""
         self._cx_v.hide()
         self._cx_h.hide()
         self._cx_price_tag.hide()
         self._cx_time_tag.hide()
+        self._cx_bar = None
         for p in self._panes_in_visual_order():
             p.clear_crosshair()
         self._show_last_ohlc()

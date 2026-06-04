@@ -1457,9 +1457,11 @@ def test_pane_set_and_clear_crosshair(app):
     assert pane._cx_v.value() == 20          # snapped to round(x)
     assert pane._cx_bar == 20
     assert not pane._cx_val_tag.isHidden()   # value tag shown (offscreen -> use not isHidden())
-    # value tag sits left of the right price axis (its right edge clears the axis labels)
-    axis_w = int(pane.getAxis("right").width())
-    assert pane._cx_val_tag.x() + pane._cx_val_tag.width() <= pane.width() - axis_w + 1
+    # value tag sits at the right edge of the pane (over the axis, TV-style): right edge is
+    # within a few pixels of the pane width (not inboard by axis_w).
+    tag_right = pane._cx_val_tag.x() + pane._cx_val_tag.width()
+    assert tag_right <= pane.width()         # never overflows the pane
+    assert tag_right >= pane.width() - pane._cx_val_tag.width() - 2  # anchored near the right edge
     # repeated set at the SAME bar is throttled: bar cache unchanged, line stays put
     pane.set_crosshair_x(20.0)
     assert pane._cx_bar == 20 and pane._cx_v.value() == 20
@@ -1599,3 +1601,107 @@ def test_pane_hover_fans_to_price_and_other_panes(app):
     a.pane._on_pane_mouse_moved(outside)
     assert pc._cx_v.isVisible() is False
     assert a.pane._cx_v.isVisible() is False and b.pane._cx_v.isVisible() is False
+
+
+# --- Phase A review fixes -------------------------------------------------------------------
+
+def test_price_set_crosshair_throttled_same_bar(app):
+    """_set_crosshair_x must skip fan-out work (setPos, time-tag, pane fan) when the bar index
+    is unchanged from the last call.  A sub-pixel move within bar 25 must be a no-op; a move
+    to bar 26 must redo the work."""
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    pc.add_indicator("rsi")   # so at least one pane exists (exercises the fan-out path)
+
+    # Instrument _cx_v.setPos to count calls
+    call_count = []
+    real_setPos = pc._cx_v.setPos
+    pc._cx_v.setPos = lambda v: (call_count.append(v), real_setPos(v))
+
+    # First call: bar 25 — must do full work
+    pc._set_crosshair_x(25.0)
+    assert pc._cx_v.isVisible() is True
+    assert pc._cx_bar == 25
+    count_after_first = len(call_count)
+    assert count_after_first == 1, f"Expected 1 setPos call after first move, got {count_after_first}"
+
+    # Second call: 25.2 — still bar 25 (round(25.2) == 25) — must be throttled
+    pc._set_crosshair_x(25.2)
+    assert pc._cx_bar == 25                      # bar unchanged
+    count_after_second = len(call_count)
+    assert count_after_second == count_after_first, (
+        f"setPos was called again for same bar (sub-pixel move): "
+        f"count went from {count_after_first} to {count_after_second}"
+    )
+
+    # Third call: bar 26 — new bar, must redo the work
+    pc._set_crosshair_x(26.0)
+    assert pc._cx_bar == 26                      # bar advanced
+    count_after_third = len(call_count)
+    assert count_after_third > count_after_second, (
+        f"setPos was NOT called for a new bar: count stayed at {count_after_second}"
+    )
+
+    # After a clear, the same bar must NOT be throttled (re-show after leave)
+    pc._clear_crosshair()
+    assert pc._cx_bar is None                    # cache reset
+    count_before_reshown = len(call_count)
+    pc._set_crosshair_x(26.0)                   # same bar 26, but after clear
+    assert len(call_count) > count_before_reshown, (
+        "After _clear_crosshair the same bar must NOT be throttled (re-show after leave)"
+    )
+
+
+def test_pane_crosshair_ignores_bounds(app):
+    """OscillatorPane._cx_v must be added with ignoreBounds=True so positioning the crosshair
+    at an out-of-range bar (e.g. 100000) cannot expand the pane's x view-range."""
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+
+    vb = pane.getViewBox()
+    # record the x-range before any crosshair move
+    x_range_before = vb.viewRange()[0]
+
+    # drive the crosshair to a far-out-of-range bar index
+    pane.set_crosshair_x(100000)
+    x_range_after = vb.viewRange()[0]
+
+    assert x_range_after == pytest.approx(x_range_before, abs=1e-3), (
+        f"Crosshair at bar 100000 expanded the pane x-range from {x_range_before} to "
+        f"{x_range_after}; ignoreBounds=True is broken or missing"
+    )
+
+
+def test_pane_value_tag_anchored_at_right_edge(app):
+    """OscillatorPane._cx_val_tag must be anchored at the right edge of the pane (over the
+    right axis, like the price-pane's price tag) — NOT inboard by axis_w.  This locks the
+    TV-consistent anchoring introduced by the Fix-3 change."""
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 140)
+
+    # Use bar 20 (past RSI warm-up) so _series_value_at returns a real value
+    pane.set_crosshair_x(20.0)
+
+    assert not pane._cx_val_tag.isHidden(), "value tag must be shown after set_crosshair_x"
+
+    tag = pane._cx_val_tag
+    tag_right = tag.x() + tag.width()
+    pane_width = pane.width()
+
+    # Right edge must be within 1px of pane_width - 1 (the formula is width - tag.width() - 1)
+    expected_right = pane_width - 1
+    assert abs(tag_right - expected_right) <= 1, (
+        f"Value tag right edge ({tag_right}) is not at pane right edge ({expected_right}); "
+        "Fix-3 TV-consistent anchoring may have regressed"
+    )
