@@ -608,6 +608,9 @@ class _IndicatorSettings(dropdowns.PopupCard):
         tabs.addTab(vis, "Visibility")
 
         foot = QtWidgets.QHBoxLayout()
+        defaults = QtWidgets.QPushButton("Defaults")
+        defaults.clicked.connect(self._reset_defaults)
+        foot.addWidget(defaults)
         foot.addStretch(1)
         cancel = QtWidgets.QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -624,6 +627,24 @@ class _IndicatorSettings(dropdowns.PopupCard):
         return _normalize_intervals(
             iv for iv, cb in self._iv_checks.items() if cb.isChecked()
         )
+
+    def _reset_defaults(self):
+        """Repopulate all three tabs from the registry defaults — form-only, no emit/close
+        (matches TradingView's Defaults ▾ → Reset settings)."""
+        params, colors, widths, styles = _Indicator.spec_defaults(self._spec)
+        for p in self._spec.params:
+            self._param_widgets[p.name].setValue(params[p.name])
+        for i, btn in enumerate(self._color_btns):
+            self._set_btn_color(btn, colors[i % len(colors)])
+        for i, cb in enumerate(self._width_combos):
+            w = widths[i % len(widths)]
+            cb.setCurrentIndex(_LINE_WIDTHS.index(w) if w in _LINE_WIDTHS else 0)
+        names = [nm for _lbl, nm in _LINE_STYLES]
+        for i, cb in enumerate(self._style_combos):
+            nm = styles[i % len(styles)]
+            cb.setCurrentIndex(names.index(nm) if nm in names else 0)
+        for cb in self._iv_checks.values():  # default visibility = every interval
+            cb.setChecked(True)
 
     @staticmethod
     def _set_btn_color(btn, color):

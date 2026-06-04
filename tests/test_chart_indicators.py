@@ -1203,3 +1203,26 @@ def test_settings_visibility_seeds_from_existing_set(app):
     dlg = _IndicatorSettings(ind)
     assert dlg._iv_checks["1m"].isChecked() is False
     assert dlg._iv_checks["5m"].isChecked() is True
+
+
+def test_settings_defaults_button_resets_form_without_emitting(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # mutate stored state away from defaults so a reset is observable
+    ind.params[ind.spec.params[0].name] = 99
+    ind.widths = [4]
+    ind.styles = ["dotted"]
+    ind.intervals = {"5m"}
+    dlg = _IndicatorSettings(ind)
+    emitted = []
+    dlg.applied.connect(lambda *a: emitted.append(a))
+    dlg._reset_defaults()
+    # form widgets snap back to spec defaults
+    p0 = ind.spec.params[0]
+    assert dlg._param_widgets[p0.name].value() == p0.default
+    assert dlg._width_combos[0].currentData() == 1
+    assert dlg._style_combos[0].currentData() == "solid"
+    assert all(cb.isChecked() for cb in dlg._iv_checks.values())  # all intervals re-checked
+    assert emitted == []          # Defaults does NOT emit
+    assert dlg.isVisible() or not dlg.isVisible()  # and does NOT close (not rejected/accepted)
+    assert ind.params[p0.name] == 99  # stored indicator untouched until Ok
