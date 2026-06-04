@@ -674,6 +674,34 @@ class _IndicatorSettings(dropdowns.PopupCard):
                 wcb.hide()
                 scb.hide()
             sform.addRow(out.replace("_", " ").title(), roww)
+
+        # --- per-band threshold rows (oscillator/pairs only): value spin + colour button ---
+        self._band_value_spins = []
+        self._band_color_btns = []
+        bands = getattr(ind, "bands", [])
+        band_colors = getattr(ind, "band_colors", [])
+        for i, (blbl, bval) in enumerate(bands):
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setDecimals(2)
+            spin.setRange(-1e9, 1e9)
+            spin.setSingleStep(1.0)
+            spin.setValue(float(bval))
+            self._band_value_spins.append(spin)
+
+            cbtn = QtWidgets.QPushButton()
+            cbtn.setFixedSize(46, 22)
+            ccol = band_colors[i] if i < len(band_colors) else theme.TEXT3
+            self._set_btn_color(cbtn, ccol)
+            cbtn.clicked.connect(lambda _c=False, b=cbtn: self._pick_color(b))
+            self._band_color_btns.append(cbtn)
+
+            brow = QtWidgets.QWidget()
+            browl = QtWidgets.QHBoxLayout(brow)
+            browl.setContentsMargins(0, 0, 0, 0)
+            browl.setSpacing(6)
+            browl.addWidget(spin)
+            browl.addWidget(cbtn)
+            sform.addRow(f"{_indicator_code(ind.name)} {blbl} Band", brow)
         tabs.addTab(style, "Style")
 
         # --- Visibility tab (per-interval checkboxes, grouped by section) ---
@@ -735,6 +763,12 @@ class _IndicatorSettings(dropdowns.PopupCard):
         for i, cb in enumerate(self._style_combos):
             nm = styles[i % len(styles)]
             cb.setCurrentIndex(names.index(nm) if nm in names else 0)
+        band_seed = _Indicator.band_defaults(self._ind.name)  # canonical (label, value) pairs
+        for i, spin in enumerate(self._band_value_spins):
+            if i < len(band_seed):
+                spin.setValue(float(band_seed[i][1]))
+        for btn in self._band_color_btns:                     # default dim guide colour
+            self._set_btn_color(btn, theme.TEXT3)
         for cb in self._iv_checks.values():  # default visibility = every interval
             cb.setChecked(True)
         if self._source_combo is not None:

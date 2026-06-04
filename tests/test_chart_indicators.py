@@ -2026,3 +2026,31 @@ def test_reveal_band_below_series_extends_low(app):
     pane.reveal(75)
     lo, _hi = pane.getViewBox().viewRange()[1]
     assert lo <= -80.0
+
+
+def test_settings_builds_band_rows(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")           # 3 bands
+    dlg = _IndicatorSettings(ind)
+    assert len(dlg._band_value_spins) == 3
+    assert len(dlg._band_color_btns) == 3
+    assert [s.value() for s in dlg._band_value_spins] == [70.0, 50.0, 30.0]
+    # colour buttons carry the seeded per-band colour
+    from vike_trader_app.ui import theme
+    assert all(b.property("color_hex") == theme.TEXT3 for b in dlg._band_color_btns)
+
+
+def test_settings_no_band_rows_for_overlay(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")           # overlay -> no bands
+    dlg = _IndicatorSettings(ind)
+    assert dlg._band_value_spins == [] and dlg._band_color_btns == []
+
+
+def test_settings_reset_defaults_repopulates_bands(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    dlg._band_value_spins[0].setValue(88.0)   # edit Upper
+    dlg._reset_defaults()
+    assert [s.value() for s in dlg._band_value_spins] == [70.0, 50.0, 30.0]
