@@ -980,3 +980,19 @@ def test_toolbar_clears_right_axis_after_layout(app):
     # the toolbar's right edge must sit left of the price-axis labels (cleared, like TV)
     assert tb.x() + tb.width() <= pane.width() - axis_w + 1
     assert tb.x() >= 0
+
+
+def test_studio_instance_pane_toolbar_parity(app):
+    # two independent PriceChart instances must not share maximize/toolbar state
+    pc_a, split_a = _chart(app)
+    pc_b, split_b = _chart(app)
+    a = pc_a.add_indicator("rsi")
+    b = pc_b.add_indicator("macd")
+    pc_a._toggle_maximize_pane(a.pane)
+    assert pc_a._maximized_pane is a.pane
+    assert pc_b._maximized_pane is None          # state is per-instance, not class-shared
+    # each pane has its own toolbar wired to its own chart
+    assert isinstance(a.pane._toolbar, type(b.pane._toolbar))
+    b.pane.paneDeleteRequested.emit(b.pane)      # routed to pc_b._delete_pane
+    assert b.uid not in pc_b._indicators and split_b.count() == 1
+    assert a.uid in pc_a._indicators             # unaffected
