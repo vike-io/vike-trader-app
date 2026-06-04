@@ -557,6 +557,17 @@ class _IndicatorSettings(dropdowns.PopupCard):
         form = QtWidgets.QFormLayout(inputs)
         form.setContentsMargins(4, 10, 4, 4)
         form.setSpacing(9)
+        # Source dropdown (D1/D2): the FIRST Inputs row for single-series indicators (TV places it
+        # above the numeric params); None when the indicator isn't source-selectable.
+        self._source_combo = None
+        if is_source_selectable(self._spec):
+            self._source_combo = QtWidgets.QComboBox()
+            for key in _SOURCE_OPTIONS:
+                self._source_combo.addItem(key, key)  # userData = source key
+            cur_src = getattr(ind, "source", "close")
+            idx = _SOURCE_OPTIONS.index(cur_src) if cur_src in _SOURCE_OPTIONS else _SOURCE_OPTIONS.index("close")
+            self._source_combo.setCurrentIndex(idx)
+            form.addRow("Source", self._source_combo)
         self._param_widgets = {}
         for p in self._spec.params:
             if p.type == "int":
@@ -672,7 +683,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
     def _reset_defaults(self):
         """Repopulate all three tabs from the registry defaults — form-only, no emit/close
         (matches TradingView's Defaults ▾ → Reset settings)."""
-        params, colors, widths, styles, _source = _Indicator.spec_defaults(self._spec)
+        params, colors, widths, styles, source = _Indicator.spec_defaults(self._spec)
         for p in self._spec.params:
             self._param_widgets[p.name].setValue(params[p.name])
         for i, btn in enumerate(self._color_btns):
@@ -686,6 +697,9 @@ class _IndicatorSettings(dropdowns.PopupCard):
             cb.setCurrentIndex(names.index(nm) if nm in names else 0)
         for cb in self._iv_checks.values():  # default visibility = every interval
             cb.setChecked(True)
+        if self._source_combo is not None:
+            si = _SOURCE_OPTIONS.index(source) if source in _SOURCE_OPTIONS else _SOURCE_OPTIONS.index("close")
+            self._source_combo.setCurrentIndex(si)
 
     @staticmethod
     def _set_btn_color(btn, color):
@@ -706,6 +720,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
         widths = [int(c.currentData()) for c in self._width_combos]
         styles = [str(c.currentData()) for c in self._style_combos]
         intervals = self._chosen_intervals()
+        source = self._source_combo.currentData() if self._source_combo is not None else "close"  # noqa: F841 - emitted in Task 34
         self.applied.emit(params, colors, widths, styles, intervals)
         self.accept()
 

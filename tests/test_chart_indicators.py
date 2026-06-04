@@ -1830,3 +1830,43 @@ def test_compute_remaps_multi_output_bollinger_on_ohlc4(app):
     assert set(ind.series) == {"upper", "mid", "lower"}
     for lbl in ("upper", "mid", "lower"):
         assert _valid({lbl: ind.series[lbl]}) > 0
+
+
+def test_settings_shows_source_combo_for_selectable(app):
+    pc, _ = _chart(app)
+    for nm in ("rsi", "sma"):
+        ind = pc.add_indicator(nm)
+        dlg = _IndicatorSettings(ind)
+        assert dlg._source_combo is not None
+        # the eight TV sources, current = close (default):
+        keys = [dlg._source_combo.itemData(i) for i in range(dlg._source_combo.count())]
+        assert keys == ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+        assert dlg._source_combo.currentData() == "close"
+
+
+def test_settings_hides_source_combo_when_not_selectable(app):
+    pc, _ = _chart(app)
+    for nm in ("stochastic", "obv", "volume_osc", "engulfing"):
+        ind = pc.add_indicator(nm)
+        if ind is None:
+            continue
+        dlg = _IndicatorSettings(ind)
+        assert dlg._source_combo is None
+
+
+def test_settings_source_combo_reflects_current_source(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.source = "hl2"
+    dlg = _IndicatorSettings(ind)
+    assert dlg._source_combo.currentData() == "hl2"
+
+
+def test_settings_reset_defaults_resets_source_to_close(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.source = "ohlc4"
+    dlg = _IndicatorSettings(ind)
+    assert dlg._source_combo.currentData() == "ohlc4"
+    dlg._reset_defaults()
+    assert dlg._source_combo.currentData() == "close"
