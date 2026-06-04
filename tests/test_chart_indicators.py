@@ -1226,3 +1226,53 @@ def test_settings_defaults_button_resets_form_without_emitting(app):
     assert emitted == []          # Defaults does NOT emit
     assert dlg.isVisible() or not dlg.isVisible()  # and does NOT close (not rejected/accepted)
     assert ind.params[p0.name] == 99  # stored indicator untouched until Ok
+
+
+def test_apply_edit_sets_width_style_intervals_overlay(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("ema")  # overlay branch
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors),
+                   widths=[3], styles=["dashed"], intervals={"5m"})
+    ind = pc._indicators[ind.uid]
+    assert ind.widths == [3] and ind.styles == ["dashed"]
+    assert ind.intervals == {"5m"}
+    assert ind.shown is False  # 1m chart, restricted to 5m -> _sync_shown ran
+    pen = next(iter(ind.curves.values())).opts["pen"]
+    assert pen.width() == 3 and pen.style() == QtCore.Qt.DashLine
+
+
+def test_apply_edit_intervals_apply_in_oscillator_branch(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("rsi")  # oscillator branch (the one that never re-synced shown)
+    assert ind.shown is True
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors), intervals={"5m"})
+    ind = pc._indicators[ind.uid]
+    assert ind.intervals == {"5m"}
+    assert ind.shown is False  # interval edit takes effect immediately, no timeframe change
+    curve = next(iter(ind.pane._curves[ind.uid].values()))
+    assert curve.isVisible() is False
+
+
+def test_apply_edit_width_style_oscillator_pen(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors),
+                   widths=[4], styles=["dotted"])
+    ind = pc._indicators[ind.uid]
+    pen = next(iter(ind.pane._curves[ind.uid].values())).opts["pen"]
+    assert pen.width() == 4 and pen.style() == QtCore.Qt.DotLine
+
+
+def test_apply_edit_positional_callers_still_work(app):
+    # the existing 3-positional-arg call path (used by tests + clone) stays valid
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    before = _valid(ind.series)
+    new = dict(ind.params)
+    new[ind.spec.params[0].name] = 4
+    pc._apply_edit(ind.uid, new, ind.colors)  # no widths/styles/intervals -> _UNSET guards
+    ind = pc._indicators[ind.uid]
+    assert _valid(ind.series) != before
+    assert ind.widths == [1] and ind.styles == ["solid"]  # untouched

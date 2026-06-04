@@ -1856,15 +1856,26 @@ class PriceChart(pg.PlotWidget):
             return
         dlg = _IndicatorSettings(ind, self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        dlg.applied.connect(lambda params, colors, u=uid: self._apply_edit(u, params, colors))
+        dlg.applied.connect(
+            lambda params, colors, widths, styles, intervals, u=uid: self._apply_edit(
+                u, params, colors, widths=widths, styles=styles, intervals=intervals
+            )
+        )
         dlg.exec()
 
-    def _apply_edit(self, uid: int, params: dict, colors: list):
+    def _apply_edit(self, uid: int, params: dict, colors: list,
+                    widths=_UNSET, styles=_UNSET, intervals=_UNSET):
         ind = self._indicators.get(uid)
         if ind is None:
             return
         ind.params = params
         ind.colors = colors or ind.colors
+        if widths is not _UNSET:
+            ind.widths = widths
+        if styles is not _UNSET:
+            ind.styles = styles
+        if intervals is not _UNSET:
+            ind.intervals = intervals
         if ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             self._compute(ind)
             ind.pane.update_ind(ind)
@@ -1873,6 +1884,12 @@ class PriceChart(pg.PlotWidget):
             self._unrender(ind)
             self._compute(ind)
             self._render(ind)
+        # interval/visibility ALWAYS recomputed in BOTH branches (the oscillator branch above
+        # never recomputes ind.shown, so an interval edit would otherwise wait for a timeframe
+        # change). Order: _sync_shown -> _apply_visibility -> _reveal_indicator.
+        self._sync_shown(ind)
+        self._apply_visibility(ind)
+        self._reveal_indicator(ind, self._reveal_index())
         self._refresh_legends()
 
     def clone_indicator(self, uid: int):
