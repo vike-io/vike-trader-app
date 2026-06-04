@@ -781,3 +781,40 @@ def test_pane_toolbar_signals_and_state(app):
     tb.set_maximized(True)  # swaps glyph/tooltip, must not crash
     tb.set_maximized(False)
     assert len(tb.findChildren(QtWidgets.QToolButton)) == 4
+
+
+def test_oscillator_pane_has_toolbar_and_signals(app):
+    from vike_trader_app.ui.chart import _PaneToolbar
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    assert isinstance(pane._toolbar, _PaneToolbar)
+    # the 4 pane-level Signal(object) carry the pane itself
+    seen = []
+    pane.paneMoveUp.connect(seen.append)
+    pane.paneMoveDown.connect(seen.append)
+    pane.paneMaximizeToggled.connect(seen.append)
+    pane.paneDeleteRequested.connect(seen.append)
+    pane.paneMoveUp.emit(pane)
+    pane.paneMaximizeToggled.emit(pane)
+    assert seen == [pane, pane]
+    # toolbar tucks left of the right axis: x = width - axis_w - toolbar_w - 4
+    pane.resize(400, 120)
+    pane._position_toolbar()
+    axis_w = int(pane.getAxis("right").width())
+    expected = max(0, pane.width() - axis_w - pane._toolbar.width() - 4)
+    assert pane._toolbar.x() == expected and pane._toolbar.y() == 3
+
+
+def test_oscillator_pane_hover_shows_hides_toolbar(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 120)
+    pane._toolbar.hide()
+    pane.enterEvent(None)
+    # In offscreen mode the pane has no visible parent, so isVisible() is always False;
+    # use not isHidden() which tracks the explicit show()/hide() state regardless of hierarchy.
+    assert not pane._toolbar.isHidden()
+    pane.leaveEvent(None)
+    assert pane._toolbar.isHidden()

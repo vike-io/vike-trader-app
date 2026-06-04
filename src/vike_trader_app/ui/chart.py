@@ -931,6 +931,11 @@ class OscillatorPane(pg.PlotWidget):
     actionRequested = QtCore.Signal(int, str)
     dragMoved = QtCore.Signal(object, int)  # (pane, cursor global y) — drag-to-reorder
     dragEnded = QtCore.Signal()
+    # pane-level (carry the pane, so a multi-indicator merged pane moves/deletes atomically)
+    paneMoveUp = QtCore.Signal(object)
+    paneMoveDown = QtCore.Signal(object)
+    paneMaximizeToggled = QtCore.Signal(object)
+    paneDeleteRequested = QtCore.Signal(object)
 
     def __init__(self, link_to: "PriceChart"):
         _time_axis = TimeAxis(orientation="bottom")
@@ -988,6 +993,19 @@ class OscillatorPane(pg.PlotWidget):
         self._hbox.setSpacing(0)
         _hh.addWidget(_rowscol)
         self._header.move(6, 3)
+
+        # TradingView-style per-pane hover toolbar (move up/down / maximize / delete), top-right.
+        self._toolbar = _PaneToolbar(self)
+        self._toolbar.moveUp.connect(lambda: self.paneMoveUp.emit(self))
+        self._toolbar.moveDown.connect(lambda: self.paneMoveDown.emit(self))
+        self._toolbar.maximizeToggled.connect(lambda: self.paneMaximizeToggled.emit(self))
+        self._toolbar.deletePane.connect(lambda: self.paneDeleteRequested.emit(self))
+        self._toolbar.hide()
+        # belt-and-braces: re-check cursor-in-rect before hiding so the bar survives a menu/popup.
+        self._tb_timer = QtCore.QTimer(self)
+        self._tb_timer.setInterval(120)
+        self._tb_timer.setSingleShot(True)
+        self._tb_timer.timeout.connect(self._maybe_hide_toolbar)
 
     @property
     def uids(self):
@@ -1072,6 +1090,44 @@ class OscillatorPane(pg.PlotWidget):
     def set_bottom_axis_visible(self, on: bool):
         """Show/hide this pane's bottom time axis (shown only on the lowest pane)."""
         self.showAxis("bottom") if on else self.hideAxis("bottom")
+
+    def _position_toolbar(self):
+        """Tuck the hover toolbar at the top-right, just left of the (shared-width) price axis."""
+        tb = getattr(self, "_toolbar", None)
+        if tb is None:
+            return
+        tb.adjustSize()
+        axis_w = int(self.getAxis("right").width()) if self.getAxis("right").isVisible() else 0
+        x = self.width() - axis_w - tb.width() - 4
+        tb.move(max(0, x), 3)
+        tb.raise_()
+
+    def _cursor_in_rect(self) -> bool:
+        return self.rect().contains(self.mapFromGlobal(QtGui.QCursor.pos()))
+
+    def _maybe_hide_toolbar(self):
+        if not self._cursor_in_rect():
+            self._toolbar.hide()
+
+    def enterEvent(self, e):  # noqa: N802 - Qt override
+        self._position_toolbar()
+        self._toolbar.show()
+        self._toolbar.raise_()
+        if e is not None:
+            super().enterEvent(e)
+
+    def leaveEvent(self, e):  # noqa: N802 - Qt override
+        # hide immediately when cursor is out; arm timer if cursor moved onto a child/popup
+        if self._cursor_in_rect():
+            self._tb_timer.start()   # cursor moved onto a child/popup: re-check shortly
+        else:
+            self._toolbar.hide()
+        if e is not None:
+            super().leaveEvent(e)
+
+    def resizeEvent(self, e):  # noqa: N802 - Qt override
+        super().resizeEvent(e)
+        self._position_toolbar()
 
 
 class PriceChart(pg.PlotWidget):
