@@ -889,3 +889,24 @@ def test_delete_merged_pane_removes_all_indicators(app):
     pc._delete_pane(pane)
     assert a.uid not in pc._indicators and b.uid not in pc._indicators
     assert split.count() == 1
+
+
+def test_resize_panes_noop_while_maximized(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    split.resize(400, 600)
+    pc._maximized_pane = a.pane          # simulate a maximized pane
+    sentinel = [10, 700, 50]             # deliberately uneven, not what _resize_panes would set
+    split.setSizes(sentinel)
+    before = split.sizes()
+    pc._resize_panes()                   # must early-return (no stomping)
+    assert split.sizes() == before
+
+
+def test_unrender_pane_drop_clears_maximize_lock(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc._maximized_pane = a.pane
+    pc.remove_indicator(a.uid)           # drops the pane via _unrender
+    assert pc._maximized_pane is None and split.count() == 1

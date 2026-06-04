@@ -1599,6 +1599,8 @@ class PriceChart(pg.PlotWidget):
         if ind.pane is not None:
             remaining = ind.pane.remove_ind(ind.uid)
             if remaining == 0:           # last indicator left the pane -> drop the pane
+                if ind.pane is self._maximized_pane:
+                    self._maximized_pane = None  # avoid a dangling deleted-QWidget ref
                 ind.pane.setParent(None)
                 ind.pane.deleteLater()
                 self._resize_panes()
@@ -2051,9 +2053,12 @@ class PriceChart(pg.PlotWidget):
     def _resize_panes(self):
         """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked).
         The LOWEST pane gets an extra axis-strip (~20px) so its PLOT area matches its siblings'
-        (the bottom time axis lives there); cosmetic only — x-alignment is independent."""
+        (the bottom time axis lives there); cosmetic only — x-alignment is independent.
+        No-op while a pane is maximized so add/remove/reorder don't stomp the maximized layout."""
         host = self._pane_host
         if host is None or host.count() <= 1:
+            return
+        if self._maximized_pane is not None:
             return
         n_panes = host.count() - 1
         total = host.height() or 600
