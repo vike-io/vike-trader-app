@@ -1949,3 +1949,27 @@ def test_indicator_bands_table_canonical_values(app):
     assert "mfi" not in _INDICATOR_BANDS
     # overlays / unlisted indicators have no bands
     assert "ema" not in _INDICATOR_BANDS and "sma" not in _INDICATOR_BANDS
+
+
+def test_indicator_bands_seed_and_colors(app):
+    from vike_trader_app.ui import theme
+    from vike_trader_app.ui.chart import _Indicator
+    import vike_trader_app.core.indicators  # noqa: F401 - populate REGISTRY
+    from vike_trader_app.core.indicators import base
+    # rsi -> 3 bands, mutable per-instance copy (not the shared table list)
+    rsi = _Indicator("rsi", base.get("rsi"), {"period": 14}, "oscillator")
+    assert [(lbl, val) for lbl, val in rsi.bands] == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert rsi.band_colors == [theme.TEXT3, theme.TEXT3, theme.TEXT3]
+    rsi.bands[0][1] = 80.0                       # editing the instance copy ...
+    rsi2 = _Indicator("rsi", base.get("rsi"), {"period": 14}, "oscillator")
+    assert rsi2.bands[0][1] == 70.0              # ... must NOT mutate the canonical seed
+    # macd -> a single 0 band
+    macd = _Indicator("macd", base.get("macd"), {}, "oscillator")
+    assert [(lbl, val) for lbl, val in macd.bands] == [("Zero", 0.0)]
+    assert macd.band_colors == [theme.TEXT3]
+    # overlay (ema) -> no bands
+    ema = _Indicator("ema", base.get("ema"), {"period": 20}, "overlay")
+    assert ema.bands == [] and ema.band_colors == []
+    # band_defaults helper returns the canonical seed (label, value) pairs
+    assert _Indicator.band_defaults("rsi") == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert _Indicator.band_defaults("ema") == []

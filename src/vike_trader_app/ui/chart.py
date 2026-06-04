@@ -507,6 +507,12 @@ class _Indicator:
         self.widths = [1] * max(1, len(spec.outputs))    # per-output line width (px)
         self.styles = ["solid"] * max(1, len(spec.outputs))  # per-output line style name
         self.source = "close"            # price source feeding a single-series indicator (D1/D2)
+        # Threshold guide lines (oscillator/pairs only): mutable per-instance [label, value] pairs
+        # seeded from _INDICATOR_BANDS, + a per-band colour (default dim theme.TEXT3). Kept OUT of
+        # _curves so they never pollute reveal's autoscale or the crosshair value-at-x scan.
+        seed = _INDICATOR_BANDS.get(name, []) if kind in ("oscillator", "pairs") else []
+        self.bands = [[lbl, float(val)] for lbl, val in seed]     # editable copies
+        self.band_colors = [theme.TEXT3 for _ in seed]            # per-band colour
         self.series = {}                 # computed: output label -> full series
         # render handles (set when rendered):
         self.curves = {}                 # overlay/oscillator: output label -> PlotDataItem
@@ -524,6 +530,12 @@ class _Indicator:
         styles = ["solid"] * n
         source = "close"
         return params, colors, widths, styles, source
+
+    @staticmethod
+    def band_defaults(name):
+        """Canonical (label, value) threshold seed for the Defaults button — a fresh copy of
+        the _INDICATOR_BANDS row (empty for overlays / unlisted indicators)."""
+        return [(lbl, float(val)) for lbl, val in _INDICATOR_BANDS.get(name, [])]
 
     @property
     def label(self) -> str:
