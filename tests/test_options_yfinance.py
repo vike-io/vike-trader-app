@@ -20,16 +20,16 @@ class _StubTicker:
 def test_list_expiries_drops_expired_and_dedupes(monkeypatch):
     # Yahoo can return a just-passed expiry + a duplicate; both would clamp to one extra "0DTE".
     today = datetime.now(timezone.utc).date()
-    yday = today.replace(day=max(today.day - 1, 1))
-    if yday == today:  # 1st of month: step back a day via timestamp arithmetic
-        yday = datetime.fromtimestamp(time.time() - 86_400, timezone.utc).date()
+    # An unambiguously-expired date: 5 days back, so it's past settle-day+1 regardless of the run
+    # time-of-day (an expiry is kept until ~a day past its market-close settle, ~20:00 UTC).
+    past = datetime.fromtimestamp(time.time() - 5 * 86_400, timezone.utc).date()
     future = "2099-12-18"
-    opts = [yday.isoformat(), today.isoformat(), today.isoformat(), future]
+    opts = [past.isoformat(), today.isoformat(), today.isoformat(), future]
     prov = YFinanceOptionsProvider()
     monkeypatch.setattr(prov, "_ticker", lambda _u: _StubTicker(opts))
     exps = prov.list_expiries("SPY")
     dates = [e.date for e in exps]
-    assert yday.isoformat() not in dates          # expired date dropped
+    assert past.isoformat() not in dates          # expired date dropped
     assert dates.count(today.isoformat()) == 1    # today's 0DTE appears once (de-duped)
     assert [e.label for e in exps].count("0DTE") <= 1
     assert future in dates
