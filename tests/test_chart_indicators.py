@@ -1276,3 +1276,37 @@ def test_apply_edit_positional_callers_still_work(app):
     ind = pc._indicators[ind.uid]
     assert _valid(ind.series) != before
     assert ind.widths == [1] and ind.styles == ["solid"]  # untouched
+
+
+def test_clone_copies_width_style_intervals(app):
+    pc, _ = _chart(app)
+    a = pc.add_indicator("rsi")
+    a.widths = [3]
+    a.styles = ["dashed"]
+    a.intervals = {"5m"}
+    clone = pc.clone_indicator(a.uid)
+    assert clone is not None and clone.uid != a.uid
+    clone = pc._indicators[clone.uid]
+    assert clone.widths == [3]
+    assert clone.styles == ["dashed"]
+    assert clone.intervals == {"5m"}
+
+
+def test_edit_indicator_dialog_round_trip_applies(app):
+    # exercise the full edit_indicator -> dialog.applied -> _apply_edit path without exec()
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind, pc)
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals, u=ind.uid: pc._apply_edit(
+            u, params, colors, widths=widths, styles=styles, intervals=intervals
+        )
+    )
+    dlg._width_combos[0].setCurrentIndex(1)  # _LINE_WIDTHS[1] == 2
+    dlg._iv_checks["1m"].setChecked(False)
+    dlg._accept()
+    ind = pc._indicators[ind.uid]
+    assert ind.widths[0] == 2
+    assert ind.intervals is not None and "1m" not in ind.intervals
+    pen = next(iter(ind.pane._curves[ind.uid].values())).opts["pen"]
+    assert pen.width() == 2

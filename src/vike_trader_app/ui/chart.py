@@ -1893,13 +1893,18 @@ class PriceChart(pg.PlotWidget):
         self._refresh_legends()
 
     def clone_indicator(self, uid: int):
-        """Duplicate an indicator (same params/colours) — TradingView's 'Clone'."""
+        """Duplicate an indicator (same params/colours/width/style/intervals) — TV's 'Clone'."""
         ind = self._indicators.get(uid)
         if ind is None:
             return None
         clone = self.add_indicator(ind.name, params=dict(ind.params), benchmark=ind.benchmark)
-        if clone is not None and ind.colors:
-            self._apply_edit(clone.uid, dict(clone.params), list(ind.colors))
+        if clone is not None:
+            self._apply_edit(
+                clone.uid, dict(clone.params), list(ind.colors),
+                widths=list(getattr(ind, "widths", clone.widths)),
+                styles=list(getattr(ind, "styles", clone.styles)),
+                intervals=(set(ind.intervals) if ind.intervals is not None else None),
+            )
         return clone
 
     def open_object_tree(self):
