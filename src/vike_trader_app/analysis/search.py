@@ -93,10 +93,20 @@ def optuna_search(
     seed: int = 0,
     sampler: str = "tpe",
 ):
-    """Optuna-backed search (TPE/random samplers) — optional ``vike_trader_app[opt]`` extra.
+    """Optuna-backed search — optional ``vike_trader_app[opt]`` extra.
 
-    Smarter than the hand-rolled GA on rugged landscapes (the sampler freqtrade/jesse
-    use). Falls back to ``genetic_search``/``random_search`` when optuna isn't installed.
+    ``sampler`` selects the search algorithm:
+
+    - ``"tpe"``    — Tree-structured Parzen Estimator (default; fast, handles categoricals).
+    - ``"random"`` — Pure random search (reproducible baseline).
+    - ``"gp"``     — Gaussian-Process Bayesian optimisation (``GPSampler``; handles
+                     categoricals natively via the GP kernel on one-hot encodings).
+    - ``"cmaes"``  — CMA-ES evolutionary strategy (``CmaEsSampler``; designed for
+                     continuous spaces; when the grid is purely categorical Optuna falls
+                     back to independent sampling for those parameters with a warning —
+                     this is acceptable).
+
+    Falls back to raising ``RuntimeError`` when optuna isn't installed.
     Returns every evaluated combo as ranked ``OptimizeResult``s.
     """
     try:
@@ -107,7 +117,14 @@ def optuna_search(
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     score_fn = _scorer(score_fn)
     keys = list(param_grid)
-    samplers = {"tpe": optuna.samplers.TPESampler, "random": optuna.samplers.RandomSampler}
+    samplers = {
+        "tpe": optuna.samplers.TPESampler,
+        "random": optuna.samplers.RandomSampler,
+        "gp": optuna.samplers.GPSampler,
+        "cmaes": optuna.samplers.CmaEsSampler,
+    }
+    if sampler not in samplers:
+        raise ValueError(f"unknown sampler {sampler!r}; expected one of {sorted(samplers)}")
     study = optuna.create_study(direction="maximize", sampler=samplers[sampler](seed=seed))
     cache: dict[tuple, tuple[float, object]] = {}
 
