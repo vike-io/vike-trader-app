@@ -1608,6 +1608,17 @@ class PriceChart(pg.PlotWidget):
         ind.pane = target_pane             # _render adds it into the existing pane
         self._render(ind)
 
+    def _panes_in_visual_order(self):
+        """Oscillator panes in top-to-bottom splitter order (NOT dict-insertion order).
+        Use this everywhere pane *order* matters — the bottom time axis and shared
+        axis width key off the lowest pane, which `_osc_panes()` (dict order) can't track
+        after a drag/reorder."""
+        host = self._pane_host
+        if host is None:
+            return []
+        return [host.widget(i) for i in range(1, host.count())
+                if isinstance(host.widget(i), OscillatorPane)]
+
     def _osc_panes(self):
         seen, panes = set(), []
         for i in self._indicators.values():

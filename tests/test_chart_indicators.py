@@ -403,3 +403,23 @@ def test_picker_choose_emits_name(app):
     item = next(it for it, _h, _c in dlg._rows if it.data(QtCore.Qt.UserRole) == "macd")
     dlg._activate(item)
     assert chosen == ["macd"]
+
+
+# --- PHASE 1: time alignment ----------------------------------------------------------------
+def test_panes_in_visual_order_matches_splitter(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane at splitter index 1
+    b = pc.add_indicator("macd")  # pane at splitter index 2
+    assert pc._panes_in_visual_order() == [a.pane, b.pane]
+
+
+def test_panes_in_visual_order_differs_from_osc_after_drag(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    pc._drag_pane(b.pane, -100000)  # cursor far above -> b moves to index 1
+    assert split.indexOf(b.pane) == 1 and split.indexOf(a.pane) == 2
+    # _osc_panes() is dict-insertion order (a, b); visual order now follows the splitter (b, a)
+    assert pc._osc_panes() == [a.pane, b.pane]
+    assert pc._panes_in_visual_order() == [b.pane, a.pane]
+    assert pc._panes_in_visual_order() != pc._osc_panes()
