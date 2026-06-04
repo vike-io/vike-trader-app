@@ -1169,6 +1169,7 @@ class OscillatorPane(pg.PlotWidget):
         self._time_axis = _time_axis
         self._inds = []           # list[_Indicator] hosted in this pane
         self._curves = {}         # uid -> {output label: PlotDataItem}
+        self._band_lines = {}     # uid -> [InfiniteLine] threshold guides (kept OUT of _curves)
         self._rows = {}           # uid -> _LegendRow
         # transparent (like the price chart) so the rounded card bg shows through; full repaint
         # avoids translucent-viewport trails.
@@ -1276,6 +1277,8 @@ class OscillatorPane(pg.PlotWidget):
         """Remove one indicator; returns the number of indicators left in the pane."""
         for c in self._curves.pop(uid, {}).values():
             self.removeItem(c)
+        for ln in self._band_lines.pop(uid, []):
+            self.removeItem(ln)
         row = self._rows.pop(uid, None)
         if row is not None:
             row.setParent(None)
@@ -1294,11 +1297,30 @@ class OscillatorPane(pg.PlotWidget):
                            style=_pen_style(styles[i % len(styles)]))
             cs[label] = self.plot([], [], pen=pen)
         self._curves[ind.uid] = cs
+        self._build_bands(ind)
+
+    def _build_bands(self, ind: "_Indicator"):
+        """Dashed horizontal threshold guides (RSI 70/30, MACD 0, …). Stored in `_band_lines`,
+        NEVER in `_curves`, so they don't pollute reveal's autoscale, `set_value`, or the crosshair
+        value-at-x scan. `ignoreBounds=True` keeps them from forcing the pane's y-range (reveal
+        unions them explicitly). Removed + rebuilt alongside curves in remove_ind / update_ind."""
+        lines = []
+        bands = getattr(ind, "bands", [])
+        colors = getattr(ind, "band_colors", [])
+        for i, (_lbl, val) in enumerate(bands):
+            col = colors[i] if i < len(colors) else theme.TEXT3
+            pen = pg.mkPen(col, width=1, style=QtCore.Qt.DashLine)
+            ln = pg.InfiniteLine(angle=0, pos=float(val), movable=False, pen=pen)
+            self.addItem(ln, ignoreBounds=True)
+            lines.append(ln)
+        self._band_lines[ind.uid] = lines
 
     def update_ind(self, ind: "_Indicator"):
-        """After an edit: rebuild that indicator's curves + refresh its legend row."""
+        """After an edit: rebuild that indicator's curves + band lines + refresh its legend row."""
         for c in self._curves.get(ind.uid, {}).values():
             self.removeItem(c)
+        for ln in self._band_lines.get(ind.uid, []):  # drop old guides before _build_bands re-adds
+            self.removeItem(ln)
         self._build_curves(ind)
         if ind.uid in self._rows:
             self._rows[ind.uid].refresh(ind)

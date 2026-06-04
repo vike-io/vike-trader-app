@@ -1973,3 +1973,30 @@ def test_indicator_bands_seed_and_colors(app):
     # band_defaults helper returns the canonical seed (label, value) pairs
     assert _Indicator.band_defaults("rsi") == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
     assert _Indicator.band_defaults("ema") == []
+
+
+def test_oscillator_builds_band_lines_out_of_curves(app):
+    import pyqtgraph as pg
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")          # 3 bands
+    pane = ind.pane
+    lines = pane._band_lines[ind.uid]
+    assert len(lines) == 3
+    assert all(isinstance(ln, pg.InfiniteLine) and ln.angle == 0 for ln in lines)
+    assert [ln.value() for ln in lines] == [70.0, 50.0, 30.0]
+    # band lines are dashed and NOT in _curves (so reveal/crosshair never see them)
+    assert all(ln.pen.style() == QtCore.Qt.DashLine for ln in lines)
+    curve_items = [c for cs in pane._curves.get(ind.uid, {}).values() for c in [cs]]
+    assert all(ln not in curve_items for ln in lines)
+    # the band InfiniteLines are actually added to the pane's scene
+    assert all(ln.scene() is pane.scene() for ln in lines)
+    # an overlay merged in has no band lines; remove drops the lines
+    pane.remove_ind(ind.uid)
+    assert ind.uid not in pane._band_lines
+
+
+def test_oscillator_macd_single_zero_band(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("macd")
+    lines = ind.pane._band_lines[ind.uid]
+    assert len(lines) == 1 and lines[0].value() == 0.0
