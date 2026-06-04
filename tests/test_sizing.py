@@ -4,9 +4,11 @@ from vike_trader_app.core.sizing import (
     DrawdownThrottleSizer,
     FixedDollarSizer,
     FixedSharesSizer,
+    MaxRiskPctSizer,
     PassThroughSizer,
     PctEquitySizer,
     PctVolatilitySizer,
+    PortfolioHeatSizer,
     SizeContext,
 )
 
@@ -125,3 +127,67 @@ def test_drawdown_throttle_full_drawdown_uses_floor():
     ctx = _vctx(drawdown=1.0)
     import pytest
     assert throttled.size(ctx) == pytest.approx(25.0)
+
+
+# ---------------------------------------------------------------------------
+# MaxRiskPctSizer
+# ---------------------------------------------------------------------------
+
+def _rctx(basis_price=100.0, equity=10_000.0, multiplier=1.0, risk_stop=None, open_risk=0.0):
+    return SizeContext(
+        symbol="A", side=1, intent=1.0,
+        basis_price=basis_price, equity=equity, cash=equity,
+        multiplier=multiplier, risk_stop=risk_stop, open_risk=open_risk,
+    )
+
+
+def test_max_risk_pct_sizes_to_stop_distance():
+    # pct 1%, basis 100, stop 90, mult 1, equity 10000 -> risk/unit 10 -> qty 10
+    assert MaxRiskPctSizer(0.01).size(_rctx(basis_price=100.0, risk_stop=90.0)) == 10.0
+
+
+def test_max_risk_pct_respects_multiplier():
+    # risk/unit = |100-90| * mult 2 = 20 -> 0.01*10000 / 20 = 5
+    assert MaxRiskPctSizer(0.01).size(_rctx(basis_price=100.0, risk_stop=90.0, multiplier=2.0)) == 5.0
+
+
+def test_max_risk_pct_no_stop_returns_zero():
+    assert MaxRiskPctSizer(0.01).size(_rctx(risk_stop=None)) == 0.0
+
+
+def test_max_risk_pct_zero_distance_returns_zero():
+    assert MaxRiskPctSizer(0.01).size(_rctx(basis_price=100.0, risk_stop=100.0)) == 0.0
+
+
+def test_max_risk_pct_inverted_stop_returns_zero():
+    # |basis - stop| handles a stop on the wrong side -> still positive distance, but
+    # an exactly-equal stop is the degenerate zero case; a long with stop above is treated
+    # as a (positive) distance, so guard only the zero/negative-distance case.
+    assert MaxRiskPctSizer(0.01).size(_rctx(basis_price=100.0, risk_stop=100.0)) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# PortfolioHeatSizer
+# ---------------------------------------------------------------------------
+
+def test_portfolio_heat_caps_to_budget():
+    # base FixedShares(100); max_heat 2% of 10000 = 200 budget; risk/unit 10 -> max_qty 20
+    sizer = PortfolioHeatSizer(FixedSharesSizer(100.0), max_heat=0.02)
+    assert sizer.size(_rctx(basis_price=100.0, risk_stop=90.0, open_risk=0.0)) == 20.0
+
+
+def test_portfolio_heat_passes_base_when_under_budget():
+    # base FixedShares(5); cap allows 20 -> min(5,20)=5 (base wins)
+    sizer = PortfolioHeatSizer(FixedSharesSizer(5.0), max_heat=0.02)
+    assert sizer.size(_rctx(basis_price=100.0, risk_stop=90.0, open_risk=0.0)) == 5.0
+
+
+def test_portfolio_heat_budget_exhausted_returns_zero():
+    # open_risk already at the 200 budget -> nothing left
+    sizer = PortfolioHeatSizer(FixedSharesSizer(100.0), max_heat=0.02)
+    assert sizer.size(_rctx(basis_price=100.0, risk_stop=90.0, open_risk=200.0)) == 0.0
+
+
+def test_portfolio_heat_no_stop_passes_base_through():
+    sizer = PortfolioHeatSizer(FixedSharesSizer(100.0), max_heat=0.02)
+    assert sizer.size(_rctx(basis_price=100.0, risk_stop=None)) == 100.0

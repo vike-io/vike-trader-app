@@ -194,6 +194,8 @@ class PortfolioEngine:
         self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
         self._pos: dict[str, Position] = {s: Position() for s in self.symbols}
         self._pending: dict[str, list[Order]] = {s: [] for s in self.symbols}
+        # Active protective stop price per symbol (armed when a risk-sized entry fills; None == none).
+        self._stop: dict[str, float | None] = {s: None for s in self.symbols}
         self._entry_fee: dict[str, float] = {s: 0.0 for s in self.symbols}
         self._entry_ts: dict[str, int] = {s: 0 for s in self.symbols}
         self._price: dict[str, float] = {
@@ -283,9 +285,21 @@ class PortfolioEngine:
         pos = self._pos[symbol]
         return pos.size == 0 or (pos.size > 0) == (side_sign > 0)
 
-    def _size_entry(self, symbol: str, side_sign: int, size: float, raw: bool) -> float:
+    def _open_risk(self) -> float:
+        """Total $ risk currently open across the book: for every symbol with an armed protective
+        stop and a non-flat position, ``|price - stop| * |size| * multiplier``. Used by PortfolioHeat."""
+        return sum(
+            abs(self._price[s] - self._stop[s]) * abs(self._pos[s].size) * self.multiplier
+            for s in self.symbols
+            if self._stop[s] is not None and self._pos[s].size != 0
+        )
+
+    def _size_entry(self, symbol: str, side_sign: int, size: float, raw: bool, stop=None) -> float:
         """Run the sizer on opening/increasing entries; pass ``size`` through untouched when ``raw``
-        (explicit order_target_* sizing) or when the order reduces/closes the position."""
+        (explicit order_target_* sizing) or when the order reduces/closes the position.
+
+        ``stop`` is the protective stop price declared for this entry; it is fed to the SizeContext
+        as ``risk_stop`` so risk-based sizers (MaxRiskPct / PortfolioHeat) can size off it."""
         if raw or not self._is_opening(symbol, side_sign):
             return size
         equity = self.equity_now()
@@ -296,6 +310,8 @@ class PortfolioEngine:
             equity, self.cash, self.multiplier,
             atr=self._atr(symbol),
             drawdown=drawdown,
+            risk_stop=stop,
+            open_risk=self._open_risk(),
         ))
 
     # --- leverage / risk helpers ---
@@ -345,6 +361,28 @@ class PortfolioEngine:
                 side = -1 if pos.size > 0 else 1
                 self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
 
+    def _check_protective_stops(self, cur):
+        """Force-close any position whose armed protective stop is breached by THIS bar.
+
+        Runs at the top of the step's fill phase (before this step's resting/market fills and before
+        on_bar), so it only ever sees stops armed on a PRIOR step — an entry can never be stopped on
+        its own entry bar (the stop is armed during that bar's fill phase, checked from the next one).
+        Long: breach when ``low <= stop`` (close at the stop). Short: breach when ``high >= stop``.
+        """
+        for s in self.symbols:
+            stop = self._stop[s]
+            pos = self._pos[s]
+            if stop is None or pos.size == 0:
+                continue
+            if pos.size > 0:  # long protective sell-stop
+                if cur[s].low <= stop:
+                    self._apply_fill(s, -1, abs(pos.size), stop, cur[s].ts)
+                    self._stop[s] = None  # _apply_fill already clears on flat; explicit for clarity
+            else:             # short protective buy-stop
+                if cur[s].high >= stop:
+                    self._apply_fill(s, +1, abs(pos.size), stop, cur[s].ts)
+                    self._stop[s] = None
+
     def _close_inactive(self, cur):
         """Force-close any held position whose symbol is inactive this bar (WL removal-day exit),
         at the bar's OPEN (next-open from the last active bar — no look-ahead)."""
@@ -357,11 +395,11 @@ class PortfolioEngine:
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
-               raw: bool = False) -> None:
-        size = self._size_entry(symbol, side_sign, size, raw)  # sizer first, then leverage cap
+               raw: bool = False, stop=None) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw, stop=stop)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._pending[symbol].append(Order("market", side_sign, size, weight=weight))
+            self._pending[symbol].append(Order("market", side_sign, size, weight=weight, stop=stop))
 
     def submit_close(self, symbol: str) -> None:
         pos = self._pos[symbol]
@@ -370,9 +408,9 @@ class PortfolioEngine:
             self._pending[symbol].append(Order("market", side, abs(pos.size)))
 
     def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                     raw: bool = False) -> None:
-        size = self._size_entry(symbol, side_sign, size, raw)
-        self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight))
+                     raw: bool = False, stop=None) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw, stop=stop)
+        self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight, stop=stop))
 
     def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                     raw: bool = False) -> None:
@@ -432,6 +470,9 @@ class PortfolioEngine:
             self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
             self._now = cur[self.symbols[0]].ts if self.symbols else 0  # shared aligned timestamp
+            # Protective-stop breach check BEFORE this step's fills/on_bar. Only sees stops armed on a
+            # prior step (armed in the fill phase below), so an entry can't be stopped on its own bar.
+            self._check_protective_stops(cur)
             if self.cash_gate:
                 self._fill_step_gated(cur)  # cross-symbol shared-cash priority + drop gate
             else:
@@ -493,6 +534,11 @@ class PortfolioEngine:
                         fill_size = allowed
                 if fill_size > 0:
                     self._apply_fill(symbol, o.side, fill_size, fp, bar.ts, is_maker=o.kind == "limit")
+                    # Arm this entry's protective stop once the position is actually open. Armed
+                    # in the fill phase (top of the step) — the stop-breach check runs in the NEXT
+                    # step's fill phase, so an entry can't be stopped on its own entry bar.
+                    if o.stop is not None and self._pos[symbol].size != 0:
+                        self._stop[symbol] = o.stop
         self._pending[symbol] = still
 
     def _fill_step_gated(self, cur):
@@ -559,6 +605,9 @@ class PortfolioEngine:
                 self.dropped.append((s, o.kind, fill_size, o.weight))
                 continue
             self._apply_fill(s, o.side, fill_size, fp, cur[s].ts, is_maker=o.kind == "limit")
+            # Arm this entry's protective stop (see _fill_pending: armed at fill, checked next step).
+            if o.stop is not None and self._pos[s].size != 0:
+                self._stop[s] = o.stop
 
     def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int,
                     is_maker: bool = False) -> None:
@@ -637,8 +686,14 @@ class PortfolioEngine:
             # Reset excursion extremes for the new opposite-side position.
             self._hi_since[symbol] = price
             self._lo_since[symbol] = price
+            # The old protective stop belonged to the position we just closed; the flip's own
+            # stop (if any) is armed by the fill loop after this fill returns.
+            self._stop[symbol] = None
         else:  # flat
             pos.size = 0.0
             pos.avg_price = 0.0
             self._entry_fee[symbol] = 0.0
             self._entry_ts[symbol] = 0
+            # Position closed by any means — clear any dangling protective stop so it can't
+            # re-trigger / re-open later.
+            self._stop[symbol] = None

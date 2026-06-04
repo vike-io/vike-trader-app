@@ -53,11 +53,15 @@ class Strategy:
         return self._engine.forming_for(tf)
 
     # --- actions (resolved by the engine) ---
-    def buy(self, size: float, weight: float = 0.0) -> None:
-        self._engine.submit(+1, size, weight=weight)
+    def buy(self, size: float, weight: float = 0.0, stop: float | None = None) -> None:
+        """Open/add a long. ``stop`` declares a protective stop price: it feeds the risk sizer and
+        auto-arms a protective sell-stop that closes the position when breached (portfolio mode only;
+        the single-symbol engine accepts and ignores ``stop`` to keep kernel parity)."""
+        self._engine.submit(+1, size, weight=weight, stop=stop)
 
-    def sell(self, size: float, weight: float = 0.0) -> None:
-        self._engine.submit(-1, size, weight=weight)
+    def sell(self, size: float, weight: float = 0.0, stop: float | None = None) -> None:
+        """Open/add a short. ``stop`` is the protective stop price (above entry) — see ``buy``."""
+        self._engine.submit(-1, size, weight=weight, stop=stop)
 
     def close(self) -> None:
         self._engine.submit_close()

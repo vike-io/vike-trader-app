@@ -149,6 +149,117 @@ def test_cap_does_not_block_adding_to_an_open_symbol():
     assert "A" in result.per_symbol_pnl
 
 
+# ---------------------------------------------------------------------------
+# Risk-based sizing: buy/sell(stop=) -> MaxRiskPct sizer + auto protective stop + PortfolioHeat
+# ---------------------------------------------------------------------------
+
+def _ohlc(ts, o, h, l, c):
+    return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+
+class BuyWithStop(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0 and self.position.size == 0:
+            self.buy(1.0, stop=90.0)
+
+
+def test_max_risk_pct_sizes_off_stop_distance():
+    from vike_trader_app.core.sizing import MaxRiskPctSizer
+    # submit on bar 0 (close 100), stop 90 -> risk/unit 10 -> qty = 0.01*10000/10 = 10.
+    # Entry fills at bar 1 open (100). Bars 1+ stay above 90 -> never stopped here.
+    a = [_ohlc(0, 100, 100, 100, 100), _ohlc(1, 100, 101, 99, 100), _ohlc(2, 100, 101, 99, 100)]
+    runner = MultiSymbolStrategyRunner(BuyWithStop, {"A": a},
+                                       TesterConfig(cash=10_000.0, sizer=MaxRiskPctSizer(0.01)))
+    runner.run()
+    assert runner._engine.position_of("A").size == pytest.approx(10.0)
+
+
+def test_protective_stop_closes_position_at_stop_price():
+    from vike_trader_app.core.sizing import MaxRiskPctSizer
+    # entry fills bar 1; bar 2 dips low 89 <= 90 -> protective stop closes at 90.
+    a = [_ohlc(0, 100, 100, 100, 100), _ohlc(1, 100, 101, 99, 100), _ohlc(2, 100, 101, 89, 95)]
+    runner = MultiSymbolStrategyRunner(BuyWithStop, {"A": a},
+                                       TesterConfig(cash=10_000.0, sizer=MaxRiskPctSizer(0.01)))
+    runner.run()
+    eng = runner._engine
+    assert eng.position_of("A").size == 0.0          # closed by the protective stop
+    assert eng._stop["A"] is None                    # stop cleared after the close
+    # loss = (90 - 100) * 10 units = -100
+    assert runner.run().per_symbol_pnl  # sanity: run produces attribution
+    # exit was AT the stop price (90), not the bar low (89)
+    trade = [t for t in eng.trades if t.symbol == "A"][-1]
+    assert trade.exit_price == pytest.approx(90.0)
+
+
+def test_protective_stop_not_triggered_on_entry_bar():
+    from vike_trader_app.core.sizing import MaxRiskPctSizer
+    # entry fills bar 1 whose low (85) is already below the stop (90). It must NOT stop out on the
+    # entry bar itself (look-ahead). Bars after stay above 90 -> position survives the run.
+    a = [_ohlc(0, 100, 100, 100, 100), _ohlc(1, 100, 101, 85, 100), _ohlc(2, 100, 101, 99, 100)]
+    runner = MultiSymbolStrategyRunner(BuyWithStop, {"A": a},
+                                       TesterConfig(cash=10_000.0, sizer=MaxRiskPctSizer(0.01)))
+    runner.run()
+    eng = runner._engine
+    assert eng.position_of("A").size == pytest.approx(10.0)  # NOT stopped on its own entry bar
+    assert eng._stop["A"] == 90.0                            # still armed for future bars
+
+
+def test_protective_stop_cleared_when_position_closed_by_other_means():
+    from vike_trader_app.core.sizing import MaxRiskPctSizer
+    # Buy with a stop on bar 0, then explicitly close on bar 1. The dangling stop must be cleared,
+    # and a later dip below 90 must NOT re-open or re-trigger anything.
+    class BuyThenClose(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(1.0, stop=90.0)
+            elif self.index == 1:
+                self.close()
+    # close on bar 1 fills at bar 2 open (flat, stop cleared); the dip to 80 on bar 3 must do nothing.
+    a = [_ohlc(0, 100, 100, 100, 100), _ohlc(1, 100, 101, 99, 100),
+         _ohlc(2, 100, 101, 99, 100), _ohlc(3, 100, 101, 80, 85)]
+    runner = MultiSymbolStrategyRunner(BuyThenClose, {"A": a},
+                                       TesterConfig(cash=10_000.0, sizer=MaxRiskPctSizer(0.01)))
+    runner.run()
+    eng = runner._engine
+    assert eng.position_of("A").size == 0.0
+    assert eng._stop["A"] is None  # no dangling stop -> the bar-3 dip neither re-triggers nor re-opens
+
+
+class StaggeredBuyWithStop(Strategy):
+    """Symbol A enters on bar 0, symbol B on bar 1 — so B is sized with A's risk already open
+    (PortfolioHeat must scale B down). Distinguished by the symbol bound to the shim."""
+
+    def on_bar(self, bar):
+        if self.position.size != 0:
+            return
+        sym = self._engine._symbol
+        if sym == "A" and self.index == 0:
+            self.buy(1.0, stop=90.0)
+        elif sym == "B" and self.index == 1:
+            self.buy(1.0, stop=90.0)
+
+
+def test_portfolio_heat_caps_total_open_risk_across_symbols():
+    from vike_trader_app.core.sizing import MaxRiskPctSizer, PortfolioHeatSizer
+    # A buys bar 0 (fills bar 1), B buys bar 1 (fills bar 2). Each close 100, stop 90 -> risk/unit 10.
+    # MaxRiskPct(0.01) alone -> 10 units each (risk 100 each, total 200 = 2% of 10k equity).
+    # PortfolioHeat(max_heat=0.015) caps TOTAL risk to 150: A takes 100 (no open risk yet), then B is
+    # sized with A's 100 already open -> budget 50 -> 5 units. Prices flat at 100 so equity stays 10k.
+    a = [_ohlc(0, 100, 100, 100, 100), _ohlc(1, 100, 101, 99, 100),
+         _ohlc(2, 100, 101, 99, 100), _ohlc(3, 100, 101, 99, 100)]
+    b = [_ohlc(0, 100, 100, 100, 100), _ohlc(1, 100, 100, 100, 100),
+         _ohlc(2, 100, 101, 99, 100), _ohlc(3, 100, 101, 99, 100)]
+    sizer = PortfolioHeatSizer(MaxRiskPctSizer(0.01), max_heat=0.015)
+    runner = MultiSymbolStrategyRunner(StaggeredBuyWithStop, {"A": a, "B": b},
+                                       TesterConfig(cash=10_000.0, sizer=sizer))
+    runner.run()
+    eng = runner._engine
+    assert eng.position_of("A").size == pytest.approx(10.0)  # first in: full 1% risk
+    assert eng.position_of("B").size == pytest.approx(5.0)   # scaled to fit remaining heat budget
+    # total open risk <= 1.5% of equity (~150)
+    assert eng._open_risk() <= 0.015 * eng.equity_now() + 1e-6
+
+
 def test_limit_order_fills_in_portfolio_mode():
     from vike_trader_app.core.model import Bar as _Bar
 

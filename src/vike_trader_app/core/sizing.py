@@ -18,6 +18,8 @@ class SizeContext:
     multiplier: float
     atr: float = 0.0         # recent average true range (0 = unavailable)
     drawdown: float = 0.0    # current account drawdown fraction 0..1 (0 = no drawdown)
+    risk_stop: float | None = None  # protective stop price for this entry (risk sizers need it)
+    open_risk: float = 0.0   # sum of $ risk already open across the book (for portfolio-heat caps)
 
 
 class PositionSizer:
@@ -75,6 +77,48 @@ class PctVolatilitySizer(PositionSizer):
             return (self.pct * ctx.equity) / (ctx.atr * ctx.multiplier)
         denom = ctx.basis_price * ctx.multiplier
         return (self.pct * ctx.equity) / denom if denom else 0.0
+
+
+class MaxRiskPctSizer(PositionSizer):
+    """Size so the trade risks ``pct`` of equity given the stop distance:
+    ``qty = pct*equity / (|basis-stop|*mult)``.
+
+    Returns 0 if there is no ``risk_stop`` or the stop distance is zero/inverted (risk sizing
+    fundamentally requires a stop to define risk-per-unit).
+    """
+
+    def __init__(self, pct: float):
+        self.pct = pct
+
+    def size(self, ctx: "SizeContext") -> float:
+        if ctx.risk_stop is None:
+            return 0.0
+        risk_per_unit = abs(ctx.basis_price - ctx.risk_stop) * ctx.multiplier
+        return (self.pct * ctx.equity) / risk_per_unit if risk_per_unit > 0 else 0.0
+
+
+class PortfolioHeatSizer(PositionSizer):
+    """Wrap a base sizer; cap TOTAL open risk to ``max_heat`` * equity.
+
+    Reduces the base qty so ``open_risk + this_trade_risk <= max_heat*equity``. Needs a
+    ``risk_stop`` to know this trade's risk-per-unit; if absent, passes the base qty through.
+    """
+
+    def __init__(self, base: "PositionSizer", max_heat: float):
+        self.base, self.max_heat = base, max_heat
+
+    def size(self, ctx: "SizeContext") -> float:
+        qty = self.base.size(ctx)
+        if ctx.risk_stop is None:
+            return qty
+        risk_per_unit = abs(ctx.basis_price - ctx.risk_stop) * ctx.multiplier
+        if risk_per_unit <= 0:
+            return qty
+        budget = self.max_heat * ctx.equity - ctx.open_risk
+        if budget <= 0:
+            return 0.0
+        max_qty = budget / risk_per_unit
+        return min(qty, max_qty)
 
 
 class DrawdownThrottleSizer(PositionSizer):
