@@ -1310,3 +1310,90 @@ def test_edit_indicator_dialog_round_trip_applies(app):
     assert ind.intervals is not None and "1m" not in ind.intervals
     pen = next(iter(ind.pane._curves[ind.uid].values())).opts["pen"]
     assert pen.width() == 2
+
+
+# --- maximize-lock lifetime: data-swap + move-to-new ----------------------------------------
+def test_set_data_while_maximized_keeps_lock_and_layout(app):
+    """A symbol/data swap (set_data) while a pane is maximized must NOT stomp the maximized
+    layout or leave a dangling/stuck lock.  _recompute_indicators recomputes in-place without
+    tearing down the pane objects, so the lock should reference the SAME live pane after the
+    swap; calling toggle again must restore cleanly."""
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc.add_indicator("macd")
+    pane_a = a.pane
+
+    # maximize pane A
+    pc._toggle_maximize_pane(pane_a)
+    assert pc._maximized_pane is pane_a
+
+    # simulate a symbol/interval change: new bars, existing indicators persist via
+    # _recompute_indicators (pane objects are kept, not rebuilt)
+    pc.set_data(_bars(120), [])
+
+    # the pane object must still be alive in the splitter (not deleted)
+    assert pane_a in pc._panes_in_visual_order(), (
+        "BUG: set_data destroyed the maximized pane object; _maximized_pane would dangle"
+    )
+    # the lock must still reference that live pane (no silent clear, no dangle)
+    assert pc._maximized_pane is pane_a, (
+        "BUG: set_data unexpectedly cleared _maximized_pane while the pane is still live"
+    )
+
+    # splitter count unchanged: price + 2 oscillator panes
+    assert split.count() == 3
+
+    # restore: toggle again -> lock clears, sizes replay, toolbar resets
+    pc._toggle_maximize_pane(pane_a)
+    assert pc._maximized_pane is None
+    assert split.count() == 3                              # no panes vanished on restore
+    assert pane_a._toolbar._max.toolTip() == "Maximize pane"
+
+
+def test_move_to_new_pane_while_maximized(app):
+    """Moving an indicator to a new pane while ANOTHER pane is maximized must not corrupt the
+    lock or crash.  Only the unrendered pane B is dropped; pane A (the maximized one) stays
+    live and the lock must reference it (or be None — never a dangling ref)."""
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane A — we will maximize this
+    b = pc.add_indicator("macd")  # pane B — we will move this to a new pane
+
+    pane_a = a.pane
+    assert pane_a is not b.pane   # sanity: two separate panes
+
+    # maximize pane A
+    pc._toggle_maximize_pane(pane_a)
+    assert pc._maximized_pane is pane_a
+
+    # move the indicator in pane B to a brand-new pane; this unrenders pane B
+    # (single-indicator pane -> pane B is deleted), creates pane C for b
+    pc.move_indicator(b.uid, "new")
+
+    # _maximized_pane must reference a LIVE pane, never a deleted QWidget
+    # (pane A was not touched; pane B was deleted but was not the maximized pane)
+    mp = pc._maximized_pane
+    live_panes = pc._panes_in_visual_order()
+    if mp is not None:
+        assert mp in live_panes, (
+            "BUG: _maximized_pane references a deleted QWidget after move_indicator('new')"
+        )
+    # pane A must still be alive (we only unrendered pane B)
+    assert pane_a in live_panes, (
+        "BUG: pane A was unexpectedly dropped during move_indicator('new') on pane B"
+    )
+    # lock should still point to pane A (it was not touched)
+    assert pc._maximized_pane is pane_a, (
+        "BUG: _maximized_pane was unexpectedly cleared when an unrelated pane was moved"
+    )
+
+    # structural check: price pane + pane A + new pane C = 3 widgets in splitter
+    assert split.count() == 3
+
+    # alignment: exactly one pane owns the bottom time axis — the lowest one
+    bottom_owners = [p for p in live_panes if p.getAxis("bottom").isVisible()]
+    assert len(bottom_owners) == 1, (
+        f"Expected exactly 1 bottom-axis owner, got {len(bottom_owners)}"
+    )
+    assert bottom_owners[0] is live_panes[-1], (
+        "Bottom time axis must be on the lowest pane"
+    )
