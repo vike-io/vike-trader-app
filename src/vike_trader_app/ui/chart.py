@@ -41,6 +41,40 @@ _LINE_WIDTHS = [1, 2, 3, 4]  # line-width picker (px)
 # Distinct sentinel for _apply_edit optional args (NOT falsy — an empty list/dict is a real value).
 _UNSET = object()
 
+# TradingView price sources for single-series indicators (D1/D2). Default `close`.
+_SOURCE_OPTIONS = ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+
+
+def is_source_selectable(spec) -> bool:
+    """True when an indicator takes exactly one OHLC price column (so swapping the source is
+    meaningful). All 53 such indicators ship with `close`; pairs (`close`/`benchmark`), volume
+    (`obv`, `volume_osc`) and multi-price (stochastic/pattern) inputs are excluded automatically."""
+    return len(spec.inputs) == 1 and spec.inputs[0] in {"close", "open", "high", "low"}
+
+
+def _source_series(data, source):
+    """The price series for ``source`` from a `_data_cols`-style column dict: a raw o/h/l/c
+    column, or a derived blend — hl2=(h+l)/2, hlc3=(h+l+c)/3, ohlc4=(o+h+l+c)/4, hlcc4=(h+l+2c)/4.
+    Pure and list-based to match `_data_cols`. Unknown source falls back to `close`."""
+    o, h, l, c = data["open"], data["high"], data["low"], data["close"]
+    if source in ("open", "high", "low", "close"):
+        return list(data[source])
+    if source == "hl2":
+        return [(hi + lo) / 2 for hi, lo in zip(h, l)]
+    if source == "hlc3":
+        return [(hi + lo + cl) / 3 for hi, lo, cl in zip(h, l, c)]
+    if source == "ohlc4":
+        return [(op + hi + lo + cl) / 4 for op, hi, lo, cl in zip(o, h, l, c)]
+    if source == "hlcc4":
+        return [(hi + lo + 2 * cl) / 4 for hi, lo, cl in zip(h, l, c)]
+    return list(c)
+
+
+# Crosshair axis-tag style (hovered price/time read-outs) — shared by the price pane AND every
+# oscillator pane so the cross-pane crosshair tags match the price-pane tags pixel-for-pixel.
+_TAG_QSS = (f"color:{theme.TEXT};background:{theme.BORDER};border-radius:2px;padding:0 4px;"
+            f"font-family:{theme.FONT_MONO};font-size:10px;")
+
 
 def _pen_style(name):
     """Map a style name (solid/dashed/dotted) to a Qt.PenStyle; unknown -> SolidLine."""
@@ -208,6 +242,34 @@ _OVERLAY_NAMES = frozenset({
     # volume / statistics that ride the price scale
     "vwap", "linearreg", "linearreg_intercept", "tsf", "std_error_bands",
 })
+
+# Canonical threshold guide lines per oscillator (label, value). Each value is verified against
+# the indicator fn's NATIVE output range (e.g. williams_r is [-100, 0] -> -20/-80, NOT 20/80).
+# `mfi` is intentionally absent (not registered). Bands seed `_Indicator.bands`; they are editable
+# in the Style tab and render as dashed horizontal InfiniteLines in the oscillator pane.
+_BAND_ZERO = [("Zero", 0.0)]  # the 0-centerline family (macd/ppo/mom/roc/... all cross zero)
+_INDICATOR_BANDS = {
+    "rsi": [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)],
+    "stochastic": [("Upper", 80.0), ("Lower", 20.0)],
+    "stochf": [("Upper", 80.0), ("Lower", 20.0)],
+    "stochrsi": [("Upper", 80.0), ("Lower", 20.0)],
+    "williams_r": [("Upper", -20.0), ("Lower", -80.0)],   # native [-100, 0]
+    "cci": [("Upper", 100.0), ("Middle", 0.0), ("Lower", -100.0)],
+    "ultosc": [("Upper", 70.0), ("Lower", 30.0)],
+    "aroon": [("Upper", 70.0), ("Lower", 30.0)],
+    "adx": [("Threshold", 25.0)],
+    "adxr": [("Threshold", 25.0)],
+    "connors_rsi": [("Upper", 90.0), ("Lower", 10.0)],
+    "zscore": [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)],
+    "spread_zscore": [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)],
+    # 0-centerline family — a single guide line at zero
+    "macd": list(_BAND_ZERO), "ppo": list(_BAND_ZERO), "apo": list(_BAND_ZERO),
+    "mom": list(_BAND_ZERO), "roc": list(_BAND_ZERO), "rocp": list(_BAND_ZERO),
+    "ao": list(_BAND_ZERO), "ac": list(_BAND_ZERO), "dpo": list(_BAND_ZERO),
+    "trix": list(_BAND_ZERO), "tsi": list(_BAND_ZERO), "smi_ergodic": list(_BAND_ZERO),
+    "cmo": list(_BAND_ZERO), "elder_ray": list(_BAND_ZERO), "kvo": list(_BAND_ZERO),
+    "adosc": list(_BAND_ZERO), "net_volume": list(_BAND_ZERO), "bop": list(_BAND_ZERO),
+}
 
 # Full descriptive names for the picker's right column (TradingView-style). Candlestick
 # patterns aren't listed — they title-case cleanly from their snake_case name.
@@ -444,6 +506,13 @@ class _Indicator:
         self.colors = list(_OVERLAY_COLORS[: max(1, len(spec.outputs))])  # per-output colour
         self.widths = [1] * max(1, len(spec.outputs))    # per-output line width (px)
         self.styles = ["solid"] * max(1, len(spec.outputs))  # per-output line style name
+        self.source = "close"            # price source feeding a single-series indicator (D1/D2)
+        # Threshold guide lines (oscillator/pairs only): mutable per-instance [label, value] pairs
+        # seeded from _INDICATOR_BANDS, + a per-band colour (default dim theme.TEXT3). Kept OUT of
+        # _curves so they never pollute reveal's autoscale or the crosshair value-at-x scan.
+        seed = _INDICATOR_BANDS.get(name, []) if kind in ("oscillator", "pairs") else []
+        self.bands = [[lbl, float(val)] for lbl, val in seed]     # editable copies
+        self.band_colors = [theme.TEXT3 for _ in seed]            # per-band colour
         self.series = {}                 # computed: output label -> full series
         # render handles (set when rendered):
         self.curves = {}                 # overlay/oscillator: output label -> PlotDataItem
@@ -453,28 +522,40 @@ class _Indicator:
     @staticmethod
     def spec_defaults(spec):
         """Single source of truth for the Defaults button and add_indicator seeding:
-        (params, colors, widths, styles) at the registry's defaults."""
+        (params, colors, widths, styles, source) at the registry's defaults."""
         n = max(1, len(spec.outputs))
         params = {p.name: p.default for p in spec.params}
         colors = list(_OVERLAY_COLORS[:n])
         widths = [1] * n
         styles = ["solid"] * n
-        return params, colors, widths, styles
+        source = "close"
+        return params, colors, widths, styles, source
+
+    @staticmethod
+    def band_defaults(name):
+        """Canonical (label, value) threshold seed for the Defaults button — a fresh copy of
+        the _INDICATOR_BANDS row (empty for overlays / unlisted indicators)."""
+        return [(lbl, float(val)) for lbl, val in _INDICATOR_BANDS.get(name, [])]
 
     @property
     def label(self) -> str:
-        """Legend label, TradingView-style: 'RSI 14' (name + non-default param values)."""
+        """Legend label, TradingView-style: 'RSI 14' (name + non-default param values), with a
+        '(source)' suffix when the price source is non-default, e.g. 'RSI 14 (hl2)'."""
         base = _indicator_code(self.name)
         vals = [str(self.params[p.name]) for p in self.spec.params]
-        return f"{base} {' '.join(vals)}".strip() if vals else base
+        text = f"{base} {' '.join(vals)}".strip() if vals else base
+        source = getattr(self, "source", "close")
+        if source != "close":
+            text = f"{text} ({source})"
+        return text
 
 
 class _IndicatorSettings(dropdowns.PopupCard):
     """TradingView-style settings: **Inputs** (registry params), **Style** (per-output colour +
     line width + line style), and **Visibility** (per-interval) tabs. Emits
-    ``applied(params, colors, widths, styles, intervals)`` on Ok."""
+    ``applied(params, colors, widths, styles, intervals, source)`` on Ok."""
 
-    applied = QtCore.Signal(dict, list, list, list, object)
+    applied = QtCore.Signal(dict, list, list, list, object, str, list)
 
     def __init__(self, ind: "_Indicator", parent=None):
         super().__init__(parent, object_name="setCard", extra_qss=(
@@ -516,6 +597,17 @@ class _IndicatorSettings(dropdowns.PopupCard):
         form = QtWidgets.QFormLayout(inputs)
         form.setContentsMargins(4, 10, 4, 4)
         form.setSpacing(9)
+        # Source dropdown (D1/D2): the FIRST Inputs row for single-series indicators (TV places it
+        # above the numeric params); None when the indicator isn't source-selectable.
+        self._source_combo = None
+        if is_source_selectable(self._spec):
+            self._source_combo = QtWidgets.QComboBox()
+            for key in _SOURCE_OPTIONS:
+                self._source_combo.addItem(key, key)  # userData = source key
+            cur_src = getattr(ind, "source", "close")
+            idx = _SOURCE_OPTIONS.index(cur_src) if cur_src in _SOURCE_OPTIONS else _SOURCE_OPTIONS.index("close")
+            self._source_combo.setCurrentIndex(idx)
+            form.addRow("Source", self._source_combo)
         self._param_widgets = {}
         for p in self._spec.params:
             if p.type == "int":
@@ -582,6 +674,36 @@ class _IndicatorSettings(dropdowns.PopupCard):
                 wcb.hide()
                 scb.hide()
             sform.addRow(out.replace("_", " ").title(), roww)
+
+        # --- per-band threshold rows (oscillator/pairs only): value spin + colour button ---
+        self._band_value_spins = []
+        self._band_color_btns = []
+        self._band_labels = []          # captured at build time (Fix 2 — not re-read from ind)
+        bands = getattr(ind, "bands", [])
+        band_colors = getattr(ind, "band_colors", [])
+        for i, (blbl, bval) in enumerate(bands):
+            self._band_labels.append(blbl)         # captured at build time
+            spin = QtWidgets.QDoubleSpinBox()
+            spin.setDecimals(2)
+            spin.setRange(-1e9, 1e9)
+            spin.setSingleStep(1.0)
+            spin.setValue(float(bval))
+            self._band_value_spins.append(spin)
+
+            cbtn = QtWidgets.QPushButton()
+            cbtn.setFixedSize(46, 22)
+            ccol = band_colors[i] if i < len(band_colors) else theme.TEXT3
+            self._set_btn_color(cbtn, ccol)
+            cbtn.clicked.connect(lambda _c=False, b=cbtn: self._pick_color(b))
+            self._band_color_btns.append(cbtn)
+
+            brow = QtWidgets.QWidget()
+            browl = QtWidgets.QHBoxLayout(brow)
+            browl.setContentsMargins(0, 0, 0, 0)
+            browl.setSpacing(6)
+            browl.addWidget(spin)
+            browl.addWidget(cbtn)
+            sform.addRow(f"{_indicator_code(ind.name)} {blbl} Band", brow)
         tabs.addTab(style, "Style")
 
         # --- Visibility tab (per-interval checkboxes, grouped by section) ---
@@ -631,7 +753,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
     def _reset_defaults(self):
         """Repopulate all three tabs from the registry defaults — form-only, no emit/close
         (matches TradingView's Defaults ▾ → Reset settings)."""
-        params, colors, widths, styles = _Indicator.spec_defaults(self._spec)
+        params, colors, widths, styles, source = _Indicator.spec_defaults(self._spec)
         for p in self._spec.params:
             self._param_widgets[p.name].setValue(params[p.name])
         for i, btn in enumerate(self._color_btns):
@@ -643,8 +765,17 @@ class _IndicatorSettings(dropdowns.PopupCard):
         for i, cb in enumerate(self._style_combos):
             nm = styles[i % len(styles)]
             cb.setCurrentIndex(names.index(nm) if nm in names else 0)
+        band_seed = _Indicator.band_defaults(self._ind.name)  # canonical (label, value) pairs
+        for i, spin in enumerate(self._band_value_spins):
+            if i < len(band_seed):
+                spin.setValue(float(band_seed[i][1]))
+        for btn in self._band_color_btns:                     # default dim guide colour
+            self._set_btn_color(btn, theme.TEXT3)
         for cb in self._iv_checks.values():  # default visibility = every interval
             cb.setChecked(True)
+        if self._source_combo is not None:
+            si = _SOURCE_OPTIONS.index(source) if source in _SOURCE_OPTIONS else _SOURCE_OPTIONS.index("close")
+            self._source_combo.setCurrentIndex(si)
 
     @staticmethod
     def _set_btn_color(btn, color):
@@ -665,7 +796,12 @@ class _IndicatorSettings(dropdowns.PopupCard):
         widths = [int(c.currentData()) for c in self._width_combos]
         styles = [str(c.currentData()) for c in self._style_combos]
         intervals = self._chosen_intervals()
-        self.applied.emit(params, colors, widths, styles, intervals)
+        source = self._source_combo.currentData() if self._source_combo is not None else "close"
+        bands = [
+            (self._band_labels[i], float(spin.value()), btn.property("color_hex"))
+            for i, (spin, btn) in enumerate(zip(self._band_value_spins, self._band_color_btns))
+        ]
+        self.applied.emit(params, colors, widths, styles, intervals, source, bands)
         self.accept()
 
 
@@ -1061,6 +1197,10 @@ class OscillatorPane(pg.PlotWidget):
     paneMoveDown = QtCore.Signal(object)
     paneMaximizeToggled = QtCore.Signal(object)
     paneDeleteRequested = QtCore.Signal(object)
+    # cross-pane crosshair: a hover anywhere in this pane fans a bar-index x out to the price
+    # chart (which re-fans to every other pane); leaving the pane clears the whole crosshair.
+    crosshairMoved = QtCore.Signal(float)
+    crosshairLeft = QtCore.Signal()
 
     def __init__(self, link_to: "PriceChart"):
         _time_axis = TimeAxis(orientation="bottom")
@@ -1069,6 +1209,7 @@ class OscillatorPane(pg.PlotWidget):
         self._time_axis = _time_axis
         self._inds = []           # list[_Indicator] hosted in this pane
         self._curves = {}         # uid -> {output label: PlotDataItem}
+        self._band_lines = {}     # uid -> [InfiniteLine] threshold guides (kept OUT of _curves)
         self._rows = {}           # uid -> _LegendRow
         # transparent (like the price chart) so the rounded card bg shows through; full repaint
         # avoids translucent-viewport trails.
@@ -1132,6 +1273,23 @@ class OscillatorPane(pg.PlotWidget):
         self._tb_timer.setSingleShot(True)
         self._tb_timer.timeout.connect(self._maybe_hide_toolbar)
 
+        # cross-pane crosshair: a vertical line the price chart drives across every pane, plus a
+        # value tag (this pane's right scale) and a time tag (lowest pane only). ignoreBounds is
+        # MANDATORY — else the line forces this pane's x-range. _cx_bar caches the last snapped
+        # bar x so repeated fan-outs at the same bar skip the FullViewportUpdate repaint.
+        cx_pen = pg.mkPen(theme.TEXT2, width=1, style=QtCore.Qt.DashLine)
+        self._cx_v = pg.InfiniteLine(angle=90, movable=False, pen=cx_pen)
+        self.addItem(self._cx_v, ignoreBounds=True)
+        self._cx_v.hide()
+        self._cx_bar = None  # last snapped round(x); guards redundant repaints
+        self._cx_val_tag = QtWidgets.QLabel(self)
+        self._cx_time_tag = QtWidgets.QLabel(self)
+        for _tag in (self._cx_val_tag, self._cx_time_tag):
+            _tag.setStyleSheet(_TAG_QSS)
+            _tag.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            _tag.hide()
+        self.scene().sigMouseMoved.connect(self._on_pane_mouse_moved)
+
     @property
     def uids(self):
         return [i.uid for i in self._inds]
@@ -1159,6 +1317,8 @@ class OscillatorPane(pg.PlotWidget):
         """Remove one indicator; returns the number of indicators left in the pane."""
         for c in self._curves.pop(uid, {}).values():
             self.removeItem(c)
+        for ln in self._band_lines.pop(uid, []):
+            self.removeItem(ln)
         row = self._rows.pop(uid, None)
         if row is not None:
             row.setParent(None)
@@ -1177,11 +1337,30 @@ class OscillatorPane(pg.PlotWidget):
                            style=_pen_style(styles[i % len(styles)]))
             cs[label] = self.plot([], [], pen=pen)
         self._curves[ind.uid] = cs
+        self._build_bands(ind)
+
+    def _build_bands(self, ind: "_Indicator"):
+        """Dashed horizontal threshold guides (RSI 70/30, MACD 0, …). Stored in `_band_lines`,
+        NEVER in `_curves`, so they don't pollute reveal's autoscale, `set_value`, or the crosshair
+        value-at-x scan. `ignoreBounds=True` keeps them from forcing the pane's y-range (reveal
+        unions them explicitly). Removed + rebuilt alongside curves in remove_ind / update_ind."""
+        lines = []
+        bands = getattr(ind, "bands", [])
+        colors = getattr(ind, "band_colors", [])
+        for i, (_lbl, val) in enumerate(bands):
+            col = colors[i] if i < len(colors) else theme.TEXT3
+            pen = pg.mkPen(col, width=1, style=QtCore.Qt.DashLine)
+            ln = pg.InfiniteLine(angle=0, pos=float(val), movable=False, pen=pen)
+            self.addItem(ln, ignoreBounds=True)
+            lines.append(ln)
+        self._band_lines[ind.uid] = lines
 
     def update_ind(self, ind: "_Indicator"):
-        """After an edit: rebuild that indicator's curves + refresh its legend row."""
+        """After an edit: rebuild that indicator's curves + band lines + refresh its legend row."""
         for c in self._curves.get(ind.uid, {}).values():
             self.removeItem(c)
+        for ln in self._band_lines.get(ind.uid, []):  # drop old guides before _build_bands re-adds
+            self.removeItem(ln)
         self._build_curves(ind)
         if ind.uid in self._rows:
             self._rows[ind.uid].refresh(ind)
@@ -1200,6 +1379,12 @@ class OscillatorPane(pg.PlotWidget):
                     all_ys += ys
                 if ys:
                     last = ys[-1]
+            # union the threshold guide values (extend-only) so the dashed lines stay on-screen;
+            # band lines live in _band_lines (ignoreBounds), so they never autoscale on their own.
+            if ind.shown:
+                all_ys += [float(val) for _lbl, val in getattr(ind, "bands", [])]
+            for ln in self._band_lines.get(ind.uid, []):
+                ln.setVisible(ind.shown)
             if ind.uid in self._rows:
                 self._rows[ind.uid].set_value(f"{last:,.2f}" if last is not None else "")
         if all_ys:
@@ -1255,8 +1440,72 @@ class OscillatorPane(pg.PlotWidget):
             self._tb_timer.start()   # cursor moved onto a child/popup: re-check shortly
         else:
             self._toolbar.hide()
+        self.crosshairLeft.emit()    # leaving the pane clears the whole cross-pane crosshair
         if e is not None:
             super().leaveEvent(e)
+
+    def _series_value_at(self, index: int):
+        """The hosted indicators' values at bar ``index`` (one per visible curve), for the
+        value-tag read-out. Reads ind.series ONLY — never band lines — and skips None/warm-up."""
+        vals = []
+        for ind in self._inds:
+            if not ind.shown:
+                continue
+            for label in self._curves.get(ind.uid, {}):
+                series = ind.series.get(label, [])
+                if 0 <= index < len(series) and series[index] is not None:
+                    vals.append(series[index])
+        return vals
+
+    def set_crosshair_x(self, x):
+        """Snap the pane's vertical crosshair to round(x) and place a value tag at the right
+        scale. Skips the repaint when the snapped bar is unchanged (FullViewportUpdate repaints
+        the whole pane on every move)."""
+        bar = int(round(x))
+        if bar == self._cx_bar and self._cx_v.isVisible():
+            return
+        self._cx_bar = bar
+        self._cx_v.setPos(bar)
+        self._cx_v.show()
+        vals = self._series_value_at(bar)
+        if not vals:
+            self._cx_val_tag.hide()
+            return
+        val = vals[0]
+        self._cx_val_tag.setText(f"{val:,.2f}")
+        self._cx_val_tag.adjustSize()
+        scene_pt = self.getViewBox().mapViewToScene(QtCore.QPointF(bar, val))
+        # Anchor the value tag at the right edge of the pane (over the axis), consistent with the
+        # price-pane's price tag placement — TradingView shows the value label ON the right scale.
+        x_px = self.width() - self._cx_val_tag.width() - 1
+        self._cx_val_tag.move(max(0, x_px), int(scene_pt.y()) - self._cx_val_tag.height() // 2)
+        self._cx_val_tag.show()
+
+    def clear_crosshair(self):
+        """Hide this pane's vertical crosshair line + value/time tags (cross-pane clear)."""
+        self._cx_v.hide()
+        self._cx_val_tag.hide()
+        self._cx_time_tag.hide()
+        self._cx_bar = None
+
+    def set_time_tag(self, text, scene_x):
+        """Bottom-edge time label (lowest pane only). x is in THIS pane's scene coords."""
+        self._cx_time_tag.setText(text)
+        self._cx_time_tag.adjustSize()
+        h = self._cx_time_tag.height()
+        self._cx_time_tag.move(int(scene_x) - self._cx_time_tag.width() // 2,
+                               self.height() - h - 1)
+        self._cx_time_tag.show()
+
+    def _on_pane_mouse_moved(self, scene_pos):
+        """Per-widget scenes: a hover anywhere in THIS pane maps to a bar-index x and fans out
+        via the price chart. Outside the viewbox -> clear the whole crosshair. NB the value tag
+        for this (hovered) pane is drawn by set_crosshair_x off the fan-out, not here."""
+        vb = self.getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self.crosshairLeft.emit()
+            return
+        self.crosshairMoved.emit(vb.mapSceneToView(scene_pos).x())
 
     def resizeEvent(self, e):  # noqa: N802 - Qt override
         super().resizeEvent(e)
@@ -1355,6 +1604,7 @@ class PriceChart(pg.PlotWidget):
         self.addItem(self._cx_h, ignoreBounds=True)
         self._cx_v.hide()
         self._cx_h.hide()
+        self._cx_bar = None  # last snapped bar x; throttles sub-pixel fan-outs at the same bar
 
         # ---- chart top toolbar: one aligned row (TradingView-style) ----
         # LEFT: timeframe selector | Indicators | OHLC legend.  RIGHT (far): range selector.
@@ -1459,12 +1709,10 @@ class PriceChart(pg.PlotWidget):
         self._top_bar.move(0, 4)
 
         # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
-        _tag_qss = (f"color:{theme.TEXT};background:{theme.BORDER};border-radius:2px;padding:0 4px;"
-                    f"font-family:{theme.FONT_MONO};font-size:10px;")
         self._cx_price_tag = QtWidgets.QLabel(self)
         self._cx_time_tag = QtWidgets.QLabel(self)
         for _tag in (self._cx_price_tag, self._cx_time_tag):
-            _tag.setStyleSheet(_tag_qss)
+            _tag.setStyleSheet(_TAG_QSS)
             _tag.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             _tag.hide()
 
@@ -1647,6 +1895,11 @@ class PriceChart(pg.PlotWidget):
         data = self._data_cols()
         if ind.kind == "pairs":
             data["benchmark"] = ind.benchmark or []
+        # Source remap (D1/D2): swap the single input column for the chosen price source. Only
+        # for source-selectable indicators and only when non-default — the close path is untouched
+        # (zero overhead, byte-identical to pre-source behaviour).
+        if is_source_selectable(ind.spec) and getattr(ind, "source", "close") != "close":
+            data[ind.spec.inputs[0]] = _source_series(data, ind.source)
         try:
             result = _base.compute(ind.name, data, **ind.params)
         except Exception:  # noqa: BLE001 - bad inputs -> empty
@@ -1677,6 +1930,10 @@ class PriceChart(pg.PlotWidget):
         pane.paneMoveDown.connect(self._pane_move_down)
         pane.paneMaximizeToggled.connect(self._toggle_maximize_pane)
         pane.paneDeleteRequested.connect(self._delete_pane)
+        # a hover inside this pane fans the bar-x out to the price chart, which re-fans to every
+        # other pane (and homes the time tag); leaving the pane clears the whole crosshair.
+        pane.crosshairMoved.connect(self._set_crosshair_x)
+        pane.crosshairLeft.connect(self._clear_crosshair)
         self._pane_host.addWidget(pane)
         pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
         self._resize_panes()
@@ -1857,14 +2114,15 @@ class PriceChart(pg.PlotWidget):
         dlg = _IndicatorSettings(ind, self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         dlg.applied.connect(
-            lambda params, colors, widths, styles, intervals, u=uid: self._apply_edit(
-                u, params, colors, widths=widths, styles=styles, intervals=intervals
+            lambda params, colors, widths, styles, intervals, source, bands, u=uid: self._apply_edit(
+                u, params, colors, widths=widths, styles=styles, intervals=intervals,
+                source=source, bands=bands
             )
         )
         dlg.exec()
 
     def _apply_edit(self, uid: int, params: dict, colors: list,
-                    widths=_UNSET, styles=_UNSET, intervals=_UNSET):
+                    widths=_UNSET, styles=_UNSET, intervals=_UNSET, source=_UNSET, bands=_UNSET):
         ind = self._indicators.get(uid)
         if ind is None:
             return
@@ -1876,6 +2134,11 @@ class PriceChart(pg.PlotWidget):
             ind.styles = styles
         if intervals is not _UNSET:
             ind.intervals = intervals
+        if source is not _UNSET:
+            ind.source = source            # assigned BEFORE _compute so the remap uses the new source
+        if bands is not _UNSET:  # payload is [(label, value, color), …] -> split into the two lists
+            ind.bands = [[lbl, float(val)] for lbl, val, _c in bands]
+            ind.band_colors = [c for _l, _v, c in bands]
         if ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             self._compute(ind)
             ind.pane.update_ind(ind)
@@ -1893,17 +2156,27 @@ class PriceChart(pg.PlotWidget):
         self._refresh_legends()
 
     def clone_indicator(self, uid: int):
-        """Duplicate an indicator (same params/colours/width/style/intervals) — TV's 'Clone'."""
+        """Duplicate an indicator (same params/colours/width/style/intervals/source/bands)
+        — TradingView's 'Clone'."""
         ind = self._indicators.get(uid)
         if ind is None:
             return None
         clone = self.add_indicator(ind.name, params=dict(ind.params), benchmark=ind.benchmark)
         if clone is not None:
+            src_bands = getattr(ind, "bands", [])
+            src_band_colors = getattr(ind, "band_colors", [])
+            bands_payload = [
+                (lbl, float(val),
+                 src_band_colors[i] if i < len(src_band_colors) else theme.TEXT3)
+                for i, (lbl, val) in enumerate(src_bands)
+            ]
             self._apply_edit(
                 clone.uid, dict(clone.params), list(ind.colors),
                 widths=list(getattr(ind, "widths", clone.widths)),
                 styles=list(getattr(ind, "styles", clone.styles)),
                 intervals=(set(ind.intervals) if ind.intervals is not None else None),
+                source=getattr(ind, "source", "close"),
+                bands=bands_payload,
             )
         return clone
 
@@ -2477,40 +2750,72 @@ class PriceChart(pg.PlotWidget):
         prev = bars[-2].close if len(bars) > 1 else b.open
         self._set_ohlc(b, prev)
 
+    def _set_crosshair_x(self, x):
+        """Fan a bar-index x out across the whole chart: snap the price-pane vertical line to
+        round(x), drive every oscillator pane's vertical line to the same bar, and home the time
+        tag on the lowest pane (or, with no panes, the price chart's own bottom-axis tag).
+
+        Sub-pixel moves that stay within the same bar are throttled: the datetime format string,
+        setPos calls, and FullViewportUpdate repaints (per pane) are skipped entirely."""
+        bar = int(round(x))
+        if bar == self._cx_bar and self._cx_v.isVisible():
+            return
+        self._cx_bar = bar
+        self._cx_v.setPos(bar)
+        self._cx_v.show()
+        panes = self._panes_in_visual_order()
+        for p in panes:
+            p.set_crosshair_x(bar)
+        dt = datetime.fromtimestamp(x_to_ts(self._bars, bar) / 1000, tz=timezone.utc)
+        text = dt.strftime("%m-%d %H:%M")
+        if panes:
+            # time axis lives under the lowest pane -> home the time tag there (its own scene x)
+            self._cx_time_tag.hide()
+            low = panes[-1]
+            scene_x = low.getViewBox().mapViewToScene(QtCore.QPointF(bar, 0.0)).x()
+            low.set_time_tag(text, scene_x)
+        else:
+            scene_x = self.getViewBox().mapViewToScene(QtCore.QPointF(bar, 0.0)).x()
+            self._cx_time_tag.setText(text)
+            self._cx_time_tag.adjustSize()
+            self._cx_time_tag.move(int(scene_x) - self._cx_time_tag.width() // 2,
+                                   self.height() - self._cx_time_tag.height() - 1)
+            self._cx_time_tag.show()
+
+    def _clear_crosshair(self):
+        """Hide the whole cross-pane crosshair: price line/h-line/tags + every pane's, and
+        restore the OHLC header to the latest candle. Resets _cx_bar so the next hover into
+        the same bar is not throttled away (re-show after leave must always run)."""
+        self._cx_v.hide()
+        self._cx_h.hide()
+        self._cx_price_tag.hide()
+        self._cx_time_tag.hide()
+        self._cx_bar = None
+        for p in self._panes_in_visual_order():
+            p.clear_crosshair()
+        self._show_last_ohlc()
+
     def _on_mouse_moved(self, scene_pos):
         if not self._bars:
             return
         vb = self.getViewBox()
         if not vb.sceneBoundingRect().contains(scene_pos):
-            self._cx_v.hide()
-            self._cx_h.hide()
-            self._cx_price_tag.hide()
-            self._cx_time_tag.hide()
-            self._show_last_ohlc()
+            self._clear_crosshair()
             return
         pt = vb.mapSceneToView(scene_pos)
-        self._cx_v.setPos(pt.x())
+        # local price-pane read-outs: the horizontal segment + the right-scale price tag stay
+        # at the real hovered y (the vertical line + time tag are fanned out below).
         self._cx_h.setPos(pt.y())
-        self._cx_v.show()
         self._cx_h.show()
-        # axis tag boxes (scene coords ≈ widget pixels): price on the right, time on the bottom
         py = int(scene_pos.y())
         self._cx_price_tag.setText(f"{pt.y():,.2f}")
         self._cx_price_tag.adjustSize()
         self._cx_price_tag.move(self.width() - self._cx_price_tag.width() - 1,
                                 py - self._cx_price_tag.height() // 2)
         self._cx_price_tag.show()
-        if self._panes_in_visual_order():
-            # the time axis moved to the lowest pane -> this tag would float over the price plot
-            # with no axis beneath it. Hide it (Phase 4 adds the bottom-pane time tag).
-            self._cx_time_tag.hide()
-        else:
-            dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
-            self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
-            self._cx_time_tag.adjustSize()
-            self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
-                                   self.height() - self._cx_time_tag.height() - 1)
-            self._cx_time_tag.show()
+        # fan the snapped bar-x out to the price vertical line, every pane, and the time tag
+        # (re-homed onto the lowest pane when panes exist — replaces the Phase-1 hide block).
+        self._set_crosshair_x(pt.x())
         # NB: the OHLC header is intentionally NOT updated to the hovered bar — it stays
         # pinned to the latest candle (the crosshair still reads price/time off the axes).
 
@@ -2530,6 +2835,13 @@ class PriceChart(pg.PlotWidget):
                 self.height() - self._auto_btn.height() - 6,
             )
         self._position_price_legend()
+
+    def leaveEvent(self, e):  # noqa: N802 - Qt override
+        # cover the splitter-gutter case: leaving the price widget clears the whole crosshair
+        # (the out-of-rect branch in _on_mouse_moved alone can miss a fast exit into the gutter).
+        self._clear_crosshair()
+        if e is not None:
+            super().leaveEvent(e)
 
     def set_timeframe(self, interval: str):
         """Update the timeframe selector label + current interval, and refresh per-interval

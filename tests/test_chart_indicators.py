@@ -56,6 +56,8 @@ def _valid(series_dict):
     return sum(1 for v in next(iter(series_dict.values())) if v is not None)
 
 
+
+
 # --- ADD: routing by kind --------------------------------------------------------------------
 def test_add_overlay_handle(app):
     pc, split = _chart(app)
@@ -240,8 +242,9 @@ def test_settings_emits_params_on_ok(app):
     dlg._param_widgets[p0.name].setValue(9)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(
-            params=params, colors=colors, widths=widths, styles=styles, intervals=intervals
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(
+            params=params, colors=colors, widths=widths, styles=styles,
+            intervals=intervals, source=source, bands=bands
         )
     )
     dlg._accept()
@@ -249,6 +252,9 @@ def test_settings_emits_params_on_ok(app):
     assert len(got["colors"]) == len(ind.spec.outputs)
     assert len(got["widths"]) == len(ind.spec.outputs)
     assert len(got["styles"]) == len(ind.spec.outputs)
+    # bands payload: [(label, value, color), …] for the 3 rsi guides
+    assert [(lbl, val) for lbl, val, _c in got["bands"]] == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert all(isinstance(c, str) for _l, _v, c in got["bands"])
 
 
 # --- LEGEND (UI) -----------------------------------------------------------------------------
@@ -719,18 +725,23 @@ def test_resize_panes_gives_lowest_pane_axis_strip(app):
     assert sizes[-1] - sizes[1] <= 40  # ~one axis strip taller, not wildly different
 
 
-def test_crosshair_time_tag_hidden_when_panes_exist(app):
+def test_crosshair_time_tag_rehomed_to_lowest_pane(app):
     pc, split = _chart(app)
     split.resize(900, 700)
     split.show()
     app.processEvents()
-    pc.add_indicator("rsi")  # a pane now owns the time axis -> price-chart time tag is orphaned
+    ind = pc.add_indicator("rsi")  # a pane now owns the time axis -> tag re-homes onto it
     # simulate a hover inside the price viewbox
     vb = pc.getViewBox()
     center = vb.sceneBoundingRect().center()
     pc._on_mouse_moved(center)
-    assert pc._cx_time_tag.isVisible() is False   # orphaned tag stays hidden
-    assert pc._cx_v.isVisible() is True           # the vertical crosshair still works
+    assert pc._cx_time_tag.isHidden() is True       # price-chart time tag stays hidden (re-homed)
+    assert pc._cx_v.isVisible() is True             # the vertical crosshair still works
+    # the lowest pane now shows the time tag, and its vertical line fanned out
+    low = pc._panes_in_visual_order()[-1]
+    assert low is ind.pane
+    assert not low._cx_time_tag.isHidden()
+    assert low._cx_v.isVisible() is True
 
 
 def test_crosshair_time_tag_shown_with_no_panes(app):
@@ -1081,11 +1092,12 @@ def test_indicator_spec_defaults_single_source(app):
     from vike_trader_app.ui.chart import _Indicator
     from vike_trader_app.core.indicators import base as _base
     spec = _base.get("macd")
-    params, colors, widths, styles = _Indicator.spec_defaults(spec)
+    params, colors, widths, styles, source = _Indicator.spec_defaults(spec)
     assert params == {p.name: p.default for p in spec.params}
     assert len(colors) == len(spec.outputs)
     assert widths == [1] * len(spec.outputs)
     assert styles == ["solid"] * len(spec.outputs)
+    assert source == "close"
 
 
 def test_pen_style_maps_names_to_qt(app):
@@ -1148,7 +1160,7 @@ def test_settings_style_tab_combos_round_trip(app):
     dlg._style_combos[0].setCurrentIndex(si)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(
             widths=widths, styles=styles
         )
     )
@@ -1165,7 +1177,7 @@ def test_settings_pattern_hides_width_and_style(app):
     assert all(c.isHidden() for c in dlg._style_combos)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(widths=widths)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(widths=widths)
     )
     dlg._accept()  # must not crash for a pattern indicator
     assert "widths" in got
@@ -1187,7 +1199,7 @@ def test_settings_visibility_uncheck_emits_subset(app):
     dlg._iv_checks["1m"].setChecked(False)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(intervals=intervals)
     )
     dlg._accept()
     assert got["intervals"] is not None and "1m" not in got["intervals"]
@@ -1201,7 +1213,7 @@ def test_settings_visibility_all_checked_emits_none(app):
         cb.setChecked(True)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(intervals=intervals)
     )
     dlg._accept()
     assert got["intervals"] is None  # all checked -> shows everywhere
@@ -1310,8 +1322,9 @@ def test_edit_indicator_dialog_round_trip_applies(app):
     ind = pc.add_indicator("rsi")
     dlg = _IndicatorSettings(ind, pc)
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals, u=ind.uid: pc._apply_edit(
-            u, params, colors, widths=widths, styles=styles, intervals=intervals
+        lambda params, colors, widths, styles, intervals, source, bands, u=ind.uid: pc._apply_edit(
+            u, params, colors, widths=widths, styles=styles, intervals=intervals,
+            source=source, bands=bands
         )
     )
     dlg._width_combos[0].setCurrentIndex(1)  # _LINE_WIDTHS[1] == 2
@@ -1408,4 +1421,740 @@ def test_move_to_new_pane_while_maximized(app):
     )
     assert bottom_owners[0] is live_panes[-1], (
         "Bottom time axis must be on the lowest pane"
+    )
+
+
+# --- PHASE A: cross-pane crosshair --------------------------------------------------------------
+def test_tag_qss_is_module_const_and_reused(app):
+    from vike_trader_app.ui import chart as chart_mod
+    # the inline tag style is now a module constant…
+    assert isinstance(chart_mod._TAG_QSS, str)
+    assert "border-radius:2px" in chart_mod._TAG_QSS
+    assert "font-size:10px" in chart_mod._TAG_QSS
+    # …and the price-pane tags are styled from it (no behaviour change)
+    pc, _ = _chart(app)
+    assert pc._cx_price_tag.styleSheet() == chart_mod._TAG_QSS
+    assert pc._cx_time_tag.styleSheet() == chart_mod._TAG_QSS
+
+
+def test_oscillator_pane_has_crosshair_items_and_signals(app):
+    import pyqtgraph as pg
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    # crosshair line: a hidden, vertical, non-bound InfiniteLine
+    assert isinstance(pane._cx_v, pg.InfiniteLine)
+    assert pane._cx_v.angle == 90
+    assert pane._cx_v.isVisible() is False
+    # value + time tags: hidden QLabels sharing the module tag style
+    from vike_trader_app.ui import chart as chart_mod
+    assert isinstance(pane._cx_val_tag, QtWidgets.QLabel)
+    assert isinstance(pane._cx_time_tag, QtWidgets.QLabel)
+    assert pane._cx_val_tag.styleSheet() == chart_mod._TAG_QSS
+    assert pane._cx_time_tag.styleSheet() == chart_mod._TAG_QSS
+    assert pane._cx_val_tag.isHidden() and pane._cx_time_tag.isHidden()
+    # new fan-out signals exist
+    seen = {"moved": [], "left": 0}
+    pane.crosshairMoved.connect(lambda x: seen["moved"].append(x))
+    pane.crosshairLeft.connect(lambda: seen.__setitem__("left", seen["left"] + 1))
+    pane.crosshairMoved.emit(7.0)
+    pane.crosshairLeft.emit()
+    assert seen["moved"] == [7.0] and seen["left"] == 1
+
+
+def test_pane_set_and_clear_crosshair(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 140)
+    # set: line snaps to the rounded bar index, shows, value tag un-hidden on the right edge
+    # Use bar 20 (well past RSI's 14-bar warm-up so the series has a real value there)
+    pane.set_crosshair_x(20.4)
+    assert pane._cx_v.isVisible() is True
+    assert pane._cx_v.value() == 20          # snapped to round(x)
+    assert pane._cx_bar == 20
+    assert not pane._cx_val_tag.isHidden()   # value tag shown (offscreen -> use not isHidden())
+    # value tag sits at the right edge of the pane (over the axis, TV-style): right edge is
+    # within a few pixels of the pane width (not inboard by axis_w).
+    tag_right = pane._cx_val_tag.x() + pane._cx_val_tag.width()
+    assert tag_right <= pane.width()         # never overflows the pane
+    assert tag_right >= pane.width() - pane._cx_val_tag.width() - 2  # anchored near the right edge
+    # repeated set at the SAME bar is throttled: bar cache unchanged, line stays put
+    pane.set_crosshair_x(20.0)
+    assert pane._cx_bar == 20 and pane._cx_v.value() == 20
+    # a new bar moves the line
+    pane.set_crosshair_x(30.0)
+    assert pane._cx_v.value() == 30 and pane._cx_bar == 30
+    # clear: line + both tags hidden, bar cache reset
+    pane.set_time_tag("06-04 12:00", scene_x=50.0)
+    assert not pane._cx_time_tag.isHidden()
+    pane.clear_crosshair()
+    assert pane._cx_v.isVisible() is False
+    assert pane._cx_val_tag.isHidden() and pane._cx_time_tag.isHidden()
+    assert pane._cx_bar is None
+
+
+def test_pane_mouse_move_emits_moved_and_left(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    moved, left = [], []
+    pane.crosshairMoved.connect(moved.append)
+    pane.crosshairLeft.connect(lambda: left.append(1))
+    vb = pane.getViewBox()
+    # hover INSIDE the pane viewbox -> crosshairMoved(bar-index x)
+    inside = vb.sceneBoundingRect().center()
+    pane._on_pane_mouse_moved(inside)
+    assert len(moved) == 1
+    want_x = vb.mapSceneToView(inside).x()
+    assert moved[0] == pytest.approx(want_x)
+    # hover OUTSIDE the pane viewbox -> crosshairLeft
+    outside = QtCore.QPointF(vb.sceneBoundingRect().right() + 9999,
+                             vb.sceneBoundingRect().center().y())
+    pane._on_pane_mouse_moved(outside)
+    assert left == [1]
+
+
+def test_pane_leave_event_emits_crosshair_left_and_keeps_toolbar(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 120)
+    pane.enterEvent(None)        # toolbar shown
+    assert not pane._toolbar.isHidden()
+    left = []
+    pane.crosshairLeft.connect(lambda: left.append(1))
+    pane.leaveEvent(None)        # leaving the pane clears the crosshair AND hides the toolbar
+    assert left == [1]
+    assert pane._toolbar.isHidden()   # Phase-2 toolbar logic preserved
+
+
+def test_price_set_crosshair_fans_to_all_panes(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._set_crosshair_x(18.6)
+    # price-pane vertical line + every pane's vertical line snap to the SAME bar index
+    assert pc._cx_v.value() == 19
+    assert a.pane._cx_v.value() == 19 and a.pane._cx_v.isVisible() is True
+    assert b.pane._cx_v.value() == 19 and b.pane._cx_v.isVisible() is True
+    # the lowest pane (visual order) carries the time tag; non-lowest panes do not
+    panes = pc._panes_in_visual_order()
+    assert not panes[-1]._cx_time_tag.isHidden()
+    assert panes[0]._cx_time_tag.isHidden()
+
+
+def test_price_clear_crosshair_clears_everything(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._set_crosshair_x(15.0)
+    assert pc._cx_v.isVisible() is True and a.pane._cx_v.isVisible() is True
+    pc._clear_crosshair()
+    assert pc._cx_v.isVisible() is False
+    assert pc._cx_h.isVisible() is False
+    assert pc._cx_price_tag.isHidden() and pc._cx_time_tag.isHidden()
+    assert a.pane._cx_v.isVisible() is False and b.pane._cx_v.isVisible() is False
+    assert a.pane._cx_val_tag.isHidden() and a.pane._cx_time_tag.isHidden()
+
+
+def test_price_set_crosshair_no_panes_uses_own_time_tag(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    pc._set_crosshair_x(10.0)
+    # no panes -> price chart owns the bottom axis, so its OWN time tag is used
+    assert pc._cx_v.value() == 10
+    assert pc._cx_time_tag.isHidden() is False
+
+
+def test_price_leave_event_clears_crosshair(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    # show the crosshair (e.g. a hover settled mid-chart) then leave the widget
+    pc._set_crosshair_x(22.0)
+    assert pc._cx_v.isVisible() is True and a.pane._cx_v.isVisible() is True
+    pc.leaveEvent(None)
+    # leaving the price chart clears the whole cross-pane crosshair (covers the splitter gutter)
+    assert pc._cx_v.isVisible() is False
+    assert pc._cx_price_tag.isHidden() and pc._cx_time_tag.isHidden()
+    assert a.pane._cx_v.isVisible() is False
+    assert a.pane._cx_val_tag.isHidden() and a.pane._cx_time_tag.isHidden()
+
+
+def test_pane_hover_fans_to_price_and_other_panes(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    # a hover inside pane a is re-emitted by _new_pane's wiring -> _set_crosshair_x fans out
+    vb = a.pane.getViewBox()
+    inside = vb.sceneBoundingRect().center()
+    bar = int(round(vb.mapSceneToView(inside).x()))
+    a.pane._on_pane_mouse_moved(inside)
+    # price vertical line + the OTHER pane's line snap to the hovered bar
+    assert pc._cx_v.value() == bar and pc._cx_v.isVisible() is True
+    assert b.pane._cx_v.value() == bar and b.pane._cx_v.isVisible() is True
+    # the price-pane horizontal read-out line is NOT shown for a pane-originated hover
+    assert pc._cx_h.isVisible() is False
+    # leaving the pane fans a clear back to the price chart -> everything hidden
+    outside = QtCore.QPointF(vb.sceneBoundingRect().right() + 9999,
+                             vb.sceneBoundingRect().center().y())
+    a.pane._on_pane_mouse_moved(outside)
+    assert pc._cx_v.isVisible() is False
+    assert a.pane._cx_v.isVisible() is False and b.pane._cx_v.isVisible() is False
+
+
+# --- Phase A review fixes -------------------------------------------------------------------
+
+def test_price_set_crosshair_throttled_same_bar(app):
+    """_set_crosshair_x must skip fan-out work (setPos, time-tag, pane fan) when the bar index
+    is unchanged from the last call.  A sub-pixel move within bar 25 must be a no-op; a move
+    to bar 26 must redo the work."""
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    pc.add_indicator("rsi")   # so at least one pane exists (exercises the fan-out path)
+
+    # Instrument _cx_v.setPos to count calls
+    call_count = []
+    real_setPos = pc._cx_v.setPos
+    pc._cx_v.setPos = lambda v: (call_count.append(v), real_setPos(v))
+
+    # First call: bar 25 — must do full work
+    pc._set_crosshair_x(25.0)
+    assert pc._cx_v.isVisible() is True
+    assert pc._cx_bar == 25
+    count_after_first = len(call_count)
+    assert count_after_first == 1, f"Expected 1 setPos call after first move, got {count_after_first}"
+
+    # Second call: 25.2 — still bar 25 (round(25.2) == 25) — must be throttled
+    pc._set_crosshair_x(25.2)
+    assert pc._cx_bar == 25                      # bar unchanged
+    count_after_second = len(call_count)
+    assert count_after_second == count_after_first, (
+        f"setPos was called again for same bar (sub-pixel move): "
+        f"count went from {count_after_first} to {count_after_second}"
+    )
+
+    # Third call: bar 26 — new bar, must redo the work
+    pc._set_crosshair_x(26.0)
+    assert pc._cx_bar == 26                      # bar advanced
+    count_after_third = len(call_count)
+    assert count_after_third > count_after_second, (
+        f"setPos was NOT called for a new bar: count stayed at {count_after_second}"
+    )
+
+    # After a clear, the same bar must NOT be throttled (re-show after leave)
+    pc._clear_crosshair()
+    assert pc._cx_bar is None                    # cache reset
+    count_before_reshown = len(call_count)
+    pc._set_crosshair_x(26.0)                   # same bar 26, but after clear
+    assert len(call_count) > count_before_reshown, (
+        "After _clear_crosshair the same bar must NOT be throttled (re-show after leave)"
+    )
+
+
+def test_pane_crosshair_ignores_bounds(app):
+    """OscillatorPane._cx_v must be added with ignoreBounds=True so positioning the crosshair
+    at an out-of-range bar (e.g. 100000) cannot expand the pane's x view-range."""
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+
+    vb = pane.getViewBox()
+    # record the x-range before any crosshair move
+    x_range_before = vb.viewRange()[0]
+
+    # drive the crosshair to a far-out-of-range bar index
+    pane.set_crosshair_x(100000)
+    x_range_after = vb.viewRange()[0]
+
+    assert x_range_after == pytest.approx(x_range_before, abs=1e-3), (
+        f"Crosshair at bar 100000 expanded the pane x-range from {x_range_before} to "
+        f"{x_range_after}; ignoreBounds=True is broken or missing"
+    )
+
+
+def test_pane_value_tag_anchored_at_right_edge(app):
+    """OscillatorPane._cx_val_tag must be anchored at the right edge of the pane (over the
+    right axis, like the price-pane's price tag) — NOT inboard by axis_w.  This locks the
+    TV-consistent anchoring introduced by the Fix-3 change."""
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 140)
+
+    # Use bar 20 (past RSI warm-up) so _series_value_at returns a real value
+    pane.set_crosshair_x(20.0)
+
+    assert not pane._cx_val_tag.isHidden(), "value tag must be shown after set_crosshair_x"
+
+    tag = pane._cx_val_tag
+    tag_right = tag.x() + tag.width()
+    pane_width = pane.width()
+
+    # Right edge must be within 1px of pane_width - 1 (the formula is width - tag.width() - 1)
+    expected_right = pane_width - 1
+    assert abs(tag_right - expected_right) <= 1, (
+        f"Value tag right edge ({tag_right}) is not at pane right edge ({expected_right}); "
+        "Fix-3 TV-consistent anchoring may have regressed"
+    )
+
+
+# --- PHASE B: source helpers -----------------------------------------------------------------
+def test_is_source_selectable_count_is_53(app):
+    import vike_trader_app.core.indicators  # noqa: F401 - populate REGISTRY
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import is_source_selectable
+    sel = [s for s in _base.list_indicators() if is_source_selectable(s)]
+    assert len(sel) == 53
+    assert all(s.inputs[0] == "close" for s in sel)
+
+
+def test_is_source_selectable_gates_correctly(app):
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import is_source_selectable
+    assert is_source_selectable(_base.get("rsi")) is True
+    assert is_source_selectable(_base.get("sma")) is True
+    assert is_source_selectable(_base.get("bollinger")) is True   # single close, multi-output
+    assert is_source_selectable(_base.get("stochastic")) is False  # high/low/close
+    assert is_source_selectable(_base.get("obv")) is False         # close/volume
+    assert is_source_selectable(_base.get("volume_osc")) is False  # volume
+    assert is_source_selectable(_base.get("engulfing")) is False   # open/high/low/close
+    assert is_source_selectable(_base.get("ratio")) is False       # close/benchmark
+
+
+def test_source_options_are_the_eight_tv_sources(app):
+    from vike_trader_app.ui.chart import _SOURCE_OPTIONS
+    assert _SOURCE_OPTIONS == ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+
+
+def test_source_series_raw_and_derived_math(app):
+    from vike_trader_app.ui.chart import _source_series
+    data = {
+        "open": [10.0, 20.0], "high": [12.0, 24.0],
+        "low": [8.0, 16.0], "close": [11.0, 22.0], "volume": [0, 0],
+    }
+    assert _source_series(data, "open") == [10.0, 20.0]
+    assert _source_series(data, "high") == [12.0, 24.0]
+    assert _source_series(data, "low") == [8.0, 16.0]
+    assert _source_series(data, "close") == [11.0, 22.0]
+    # hl2 = (h+l)/2
+    assert _source_series(data, "hl2") == [(12.0 + 8.0) / 2, (24.0 + 16.0) / 2]
+    # hlc3 = (h+l+c)/3
+    assert _source_series(data, "hlc3") == [(12.0 + 8.0 + 11.0) / 3, (24.0 + 16.0 + 22.0) / 3]
+    # ohlc4 = (o+h+l+c)/4
+    assert _source_series(data, "ohlc4") == [(10.0 + 12.0 + 8.0 + 11.0) / 4,
+                                             (20.0 + 24.0 + 16.0 + 22.0) / 4]
+    # hlcc4 = (h+l+2c)/4
+    assert _source_series(data, "hlcc4") == [(12.0 + 8.0 + 2 * 11.0) / 4,
+                                             (24.0 + 16.0 + 2 * 22.0) / 4]
+    # unknown source -> close
+    assert _source_series(data, "bogus") == [11.0, 22.0]
+
+
+def test_indicator_source_defaults_to_close(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.source == "close"
+
+
+def test_spec_defaults_includes_close_source(app):
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import _Indicator
+    params, colors, widths, styles, source = _Indicator.spec_defaults(_base.get("rsi"))
+    assert source == "close"
+
+
+def test_label_appends_non_default_source(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.label == "RSI 14"          # default close -> no suffix
+    ind.source = "hl2"
+    assert ind.label == "RSI 14 (hl2)"    # non-default -> suffix
+    ind.source = "close"
+    assert ind.label == "RSI 14"          # back to default -> no suffix
+
+
+def test_compute_remaps_source_hl2_sma(app):
+    pc, _ = _chart(app)
+    bars = pc._bars
+    ind = pc.add_indicator("sma", params={"period": 3})
+    # baseline (close-fed) values:
+    close_vals = list(ind.series["sma"])
+    # switch source to hl2 and recompute:
+    ind.source = "hl2"
+    pc._compute(ind)
+    hl2_vals = list(ind.series["sma"])
+    # the two series must DIFFER (hl2 != close for these bars):
+    assert hl2_vals != close_vals
+    # and match a hand-computed 3-period SMA of hl2 = (high+low)/2:
+    hl2 = [(b.high + b.low) / 2 for b in bars]
+    p = 3
+    expected = [None] * (p - 1) + [
+        sum(hl2[i - p + 1:i + 1]) / p for i in range(p - 1, len(hl2))
+    ]
+    got = ind.series["sma"]
+    assert len(got) == len(expected)
+    for g, e in zip(got, expected):
+        if e is None:
+            assert g is None
+        else:
+            assert g == pytest.approx(e)
+
+
+def test_compute_default_source_is_byte_identical(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("sma", params={"period": 5})
+    before = list(ind.series["sma"])
+    # recompute with the (default) close source -> exact same series, no remap overhead path:
+    assert ind.source == "close"
+    pc._compute(ind)
+    after = list(ind.series["sma"])
+    assert after == before
+
+
+def test_compute_remaps_multi_output_bollinger_on_ohlc4(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("bollinger")
+    ind.source = "ohlc4"
+    pc._compute(ind)
+    # all three bands still populated after the single-column swap:
+    assert set(ind.series) == {"upper", "mid", "lower"}
+    for lbl in ("upper", "mid", "lower"):
+        assert _valid({lbl: ind.series[lbl]}) > 0
+
+
+def test_settings_shows_source_combo_for_selectable(app):
+    pc, _ = _chart(app)
+    for nm in ("rsi", "sma"):
+        ind = pc.add_indicator(nm)
+        dlg = _IndicatorSettings(ind)
+        assert dlg._source_combo is not None
+        # the eight TV sources, current = close (default):
+        keys = [dlg._source_combo.itemData(i) for i in range(dlg._source_combo.count())]
+        assert keys == ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+        assert dlg._source_combo.currentData() == "close"
+
+
+def test_settings_hides_source_combo_when_not_selectable(app):
+    pc, _ = _chart(app)
+    for nm in ("stochastic", "obv", "volume_osc", "engulfing"):
+        ind = pc.add_indicator(nm)
+        if ind is None:
+            continue
+        dlg = _IndicatorSettings(ind)
+        assert dlg._source_combo is None
+
+
+def test_settings_source_combo_reflects_current_source(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.source = "hl2"
+    dlg = _IndicatorSettings(ind)
+    assert dlg._source_combo.currentData() == "hl2"
+
+
+def test_settings_reset_defaults_resets_source_to_close(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.source = "ohlc4"
+    dlg = _IndicatorSettings(ind)
+    assert dlg._source_combo.currentData() == "ohlc4"
+    dlg._reset_defaults()
+    assert dlg._source_combo.currentData() == "close"
+
+
+def test_settings_emits_source_on_ok(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    from vike_trader_app.ui.chart import _SOURCE_OPTIONS
+    dlg._source_combo.setCurrentIndex(_SOURCE_OPTIONS.index("hl2"))
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(source=source)
+    )
+    dlg._accept()
+    assert got["source"] == "hl2"
+
+
+def test_apply_edit_assigns_source_and_recomputes(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("sma", params={"period": 3})
+    close_vals = list(ind.series["sma"])
+    # drive the full edit path with a non-default source:
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors), source="hl2")
+    assert ind.source == "hl2"
+    assert list(ind.series["sma"]) != close_vals       # recomputed against hl2
+    assert ind.label == "SMA 3 (hl2)"                  # legend reflects the source
+
+
+def test_apply_edit_default_source_unset_preserves(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.source = "ohlc4"
+    # omit `source` -> _UNSET -> ind.source must be preserved (not reset to close):
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors))
+    assert ind.source == "ohlc4"
+
+
+def test_clone_carries_non_default_source(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("sma", params={"period": 4})
+    ind.source = "hlc3"
+    pc._compute(ind)  # ensure ind reflects the edited source before cloning
+    clone = pc.clone_indicator(ind.uid)
+    assert clone is not None
+    assert clone.uid != ind.uid
+    assert clone.source == "hlc3"
+    # the clone's series must match the source-fed original (same params, same source):
+    assert list(clone.series["sma"]) == list(ind.series["sma"])
+    assert clone.label == "SMA 4 (hlc3)"
+
+
+# --- PHASE C: Threshold bands -----------------------------------------------------------------
+def test_indicator_bands_table_canonical_values(app):
+    from vike_trader_app.ui.chart import _INDICATOR_BANDS
+    # oscillators with explicit upper/middle/lower or two-line bands
+    assert _INDICATOR_BANDS["rsi"] == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert _INDICATOR_BANDS["stochastic"] == [("Upper", 80.0), ("Lower", 20.0)]
+    assert _INDICATOR_BANDS["stochf"] == [("Upper", 80.0), ("Lower", 20.0)]
+    assert _INDICATOR_BANDS["stochrsi"] == [("Upper", 80.0), ("Lower", 20.0)]
+    # williams_r native range is [-100, 0] -> -20 / -80 (NOT 20/80)
+    assert _INDICATOR_BANDS["williams_r"] == [("Upper", -20.0), ("Lower", -80.0)]
+    assert _INDICATOR_BANDS["cci"] == [("Upper", 100.0), ("Middle", 0.0), ("Lower", -100.0)]
+    assert _INDICATOR_BANDS["ultosc"] == [("Upper", 70.0), ("Lower", 30.0)]
+    assert _INDICATOR_BANDS["aroon"] == [("Upper", 70.0), ("Lower", 30.0)]
+    assert _INDICATOR_BANDS["adx"] == [("Threshold", 25.0)]
+    assert _INDICATOR_BANDS["adxr"] == [("Threshold", 25.0)]
+    assert _INDICATOR_BANDS["connors_rsi"] == [("Upper", 90.0), ("Lower", 10.0)]
+    assert _INDICATOR_BANDS["zscore"] == [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)]
+    assert _INDICATOR_BANDS["spread_zscore"] == [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)]
+    # 0-centerline family -> a single Zero line
+    for name in ("macd", "ppo", "apo", "mom", "roc", "rocp", "ao", "ac", "dpo", "trix",
+                 "tsi", "smi_ergodic", "cmo", "elder_ray", "kvo", "adosc", "net_volume", "bop"):
+        assert _INDICATOR_BANDS[name] == [("Zero", 0.0)], name
+    # mfi is NOT registered, so it must NOT be in the table
+    assert "mfi" not in _INDICATOR_BANDS
+    # overlays / unlisted indicators have no bands
+    assert "ema" not in _INDICATOR_BANDS and "sma" not in _INDICATOR_BANDS
+
+
+def test_indicator_bands_seed_and_colors(app):
+    from vike_trader_app.ui import theme
+    from vike_trader_app.ui.chart import _Indicator
+    import vike_trader_app.core.indicators  # noqa: F401 - populate REGISTRY
+    from vike_trader_app.core.indicators import base
+    # rsi -> 3 bands, mutable per-instance copy (not the shared table list)
+    rsi = _Indicator("rsi", base.get("rsi"), {"period": 14}, "oscillator")
+    assert [(lbl, val) for lbl, val in rsi.bands] == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert rsi.band_colors == [theme.TEXT3, theme.TEXT3, theme.TEXT3]
+    rsi.bands[0][1] = 80.0                       # editing the instance copy ...
+    rsi2 = _Indicator("rsi", base.get("rsi"), {"period": 14}, "oscillator")
+    assert rsi2.bands[0][1] == 70.0              # ... must NOT mutate the canonical seed
+    # macd -> a single 0 band
+    macd = _Indicator("macd", base.get("macd"), {}, "oscillator")
+    assert [(lbl, val) for lbl, val in macd.bands] == [("Zero", 0.0)]
+    assert macd.band_colors == [theme.TEXT3]
+    # overlay (ema) -> no bands
+    ema = _Indicator("ema", base.get("ema"), {"period": 20}, "overlay")
+    assert ema.bands == [] and ema.band_colors == []
+    # band_defaults helper returns the canonical seed (label, value) pairs
+    assert _Indicator.band_defaults("rsi") == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert _Indicator.band_defaults("ema") == []
+
+
+def test_oscillator_builds_band_lines_out_of_curves(app):
+    import pyqtgraph as pg
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")          # 3 bands
+    pane = ind.pane
+    lines = pane._band_lines[ind.uid]
+    assert len(lines) == 3
+    assert all(isinstance(ln, pg.InfiniteLine) and ln.angle == 0 for ln in lines)
+    assert [ln.value() for ln in lines] == [70.0, 50.0, 30.0]
+    # band lines are dashed and NOT in _curves (so reveal/crosshair never see them)
+    assert all(ln.pen.style() == QtCore.Qt.DashLine for ln in lines)
+    curve_items = [c for cs in pane._curves.get(ind.uid, {}).values() for c in [cs]]
+    assert all(ln not in curve_items for ln in lines)
+    # the band InfiniteLines are actually added to the pane's scene
+    assert all(ln.scene() is pane.scene() for ln in lines)
+    # an overlay merged in has no band lines; remove drops the lines
+    pane.remove_ind(ind.uid)
+    assert ind.uid not in pane._band_lines
+
+
+def test_oscillator_macd_single_zero_band(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("macd")
+    lines = ind.pane._band_lines[ind.uid]
+    assert len(lines) == 1 and lines[0].value() == 0.0
+
+
+def test_reveal_unions_band_values_extend_only(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.reveal(75)
+    lo, hi = pane.getViewBox().viewRange()[1]
+    # every band value sits inside the (padded) y-range
+    for _lbl, val in ind.bands:
+        assert lo <= val <= hi, (val, lo, hi)
+    # the series is still inside the range too (union is extend-only, never overriding the data)
+    ser = ind.series["rsi"]
+    vals = [v for v in ser[:76] if v is not None]
+    assert lo <= min(vals) and max(vals) <= hi
+
+
+def test_reveal_band_below_series_extends_low(app):
+    # williams_r bands are negative (-20/-80) and its series is in [-100, 0]; the -80 guide must
+    # widen the low end so it stays on-screen.
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("williams_r")
+    pane = ind.pane
+    pane.reveal(75)
+    lo, _hi = pane.getViewBox().viewRange()[1]
+    assert lo <= -80.0
+
+
+def test_settings_builds_band_rows(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")           # 3 bands
+    dlg = _IndicatorSettings(ind)
+    assert len(dlg._band_value_spins) == 3
+    assert len(dlg._band_color_btns) == 3
+    assert [s.value() for s in dlg._band_value_spins] == [70.0, 50.0, 30.0]
+    # colour buttons carry the seeded per-band colour
+    from vike_trader_app.ui import theme
+    assert all(b.property("color_hex") == theme.TEXT3 for b in dlg._band_color_btns)
+
+
+def test_settings_no_band_rows_for_overlay(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")           # overlay -> no bands
+    dlg = _IndicatorSettings(ind)
+    assert dlg._band_value_spins == [] and dlg._band_color_btns == []
+
+
+def test_settings_reset_defaults_repopulates_bands(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    dlg._band_value_spins[0].setValue(88.0)   # edit Upper
+    dlg._reset_defaults()
+    assert [s.value() for s in dlg._band_value_spins] == [70.0, 50.0, 30.0]
+
+
+def test_band_edit_round_trip_updates_line(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # edit Upper 70 -> 80 via _apply_edit (same path the settings dialog drives)
+    new_bands = [("Upper", 80.0, "#777777"), ("Middle", 50.0, "#777777"), ("Lower", 30.0, "#777777")]
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors), bands=new_bands)
+    ind2 = pc._indicators[ind.uid]
+    assert [v for _l, v in ind2.bands] == [80.0, 50.0, 30.0]
+    assert ind2.band_colors == ["#777777", "#777777", "#777777"]
+    # the rendered InfiniteLine moved to 80 (update_ind rebuilt the band lines)
+    lines = ind2.pane._band_lines[ind2.uid]
+    assert [ln.value() for ln in lines] == [80.0, 50.0, 30.0]
+    # bands left UNSET on an unrelated edit must NOT change the bands
+    pc._apply_edit(ind2.uid, dict(ind2.params), list(ind2.colors))
+    assert [v for _l, v in pc._indicators[ind2.uid].bands] == [80.0, 50.0, 30.0]
+
+
+def test_clone_carries_edited_bands(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # edit the original's bands first (70 -> 80, custom colour)
+    pc._apply_edit(
+        ind.uid, dict(ind.params), list(ind.colors),
+        bands=[("Upper", 80.0, "#abcdef"), ("Middle", 50.0, "#abcdef"), ("Lower", 30.0, "#abcdef")],
+    )
+    clone = pc.clone_indicator(ind.uid)
+    assert clone is not None and clone.uid != ind.uid
+    assert [v for _l, v in clone.bands] == [80.0, 50.0, 30.0]
+    assert clone.band_colors == ["#abcdef", "#abcdef", "#abcdef"]
+    # deep copy — editing the clone's bands must not mutate the original
+    clone.bands[0][1] = 99.0
+    assert pc._indicators[ind.uid].bands[0][1] == 80.0
+    # the clone's rendered band line reflects the carried value
+    assert [ln.value() for ln in clone.pane._band_lines[clone.uid]] == [80.0, 50.0, 30.0]
+
+
+def test_clone_carries_both_source_and_bands(app):
+    from vike_trader_app.ui import theme
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # Apply a non-default source AND edited band values together
+    pc._apply_edit(
+        ind.uid, dict(ind.params), list(ind.colors),
+        source="hl2",
+        bands=[
+            ("Upper", 80.0, theme.TEXT3),
+            ("Middle", 50.0, theme.TEXT3),
+            ("Lower", 30.0, theme.TEXT3),
+        ],
+    )
+    ind = pc._indicators[ind.uid]
+    clone = pc.clone_indicator(ind.uid)
+    assert clone is not None and clone.uid != ind.uid
+    # clone carries the non-default source
+    assert clone.source == "hl2"
+    # clone carries the edited band value
+    assert clone.bands[0][1] == 80.0
+    # deep-copy independence: mutating the clone must not affect the original
+    clone.bands[0][1] = 99.0
+    assert pc._indicators[ind.uid].bands[0][1] == 80.0
+
+
+def test_band_lines_follow_indicator_visibility(app):
+    """Band InfiniteLines must hide/show alongside the indicator's data curve."""
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")   # 3 band lines
+    pane = ind.pane
+
+    # initially all band lines are visible
+    lines = pane._band_lines[ind.uid]
+    assert len(lines) == 3
+    assert all(ln.isVisible() for ln in lines), "band lines should start visible"
+
+    # hide the indicator
+    pc._toggle_visible(ind.uid)
+    assert ind.shown is False, "ind.shown must be False after toggle"
+    assert all(not ln.isVisible() for ln in lines), (
+        "band lines must hide when indicator is hidden"
+    )
+
+    # show the indicator again
+    pc._toggle_visible(ind.uid)
+    assert ind.shown is True, "ind.shown must be True after second toggle"
+    assert all(ln.isVisible() for ln in lines), (
+        "band lines must reappear when indicator is shown again"
     )
