@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.ui.chart import (  # noqa: E402
@@ -25,6 +25,7 @@ from vike_trader_app.ui.chart import (  # noqa: E402
     _PaneLegend,
     OscillatorPane,
     PriceChart,
+    TimeAxis,
 )
 
 
@@ -238,10 +239,16 @@ def test_settings_emits_params_on_ok(app):
     p0 = ind.spec.params[0]
     dlg._param_widgets[p0.name].setValue(9)
     got = {}
-    dlg.applied.connect(lambda params, colors: got.update(params=params, colors=colors))
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(
+            params=params, colors=colors, widths=widths, styles=styles, intervals=intervals
+        )
+    )
     dlg._accept()
     assert got["params"][p0.name] == 9
     assert len(got["colors"]) == len(ind.spec.outputs)
+    assert len(got["widths"]) == len(ind.spec.outputs)
+    assert len(got["styles"]) == len(ind.spec.outputs)
 
 
 # --- LEGEND (UI) -----------------------------------------------------------------------------
@@ -403,3 +410,1002 @@ def test_picker_choose_emits_name(app):
     item = next(it for it, _h, _c in dlg._rows if it.data(QtCore.Qt.UserRole) == "macd")
     dlg._activate(item)
     assert chosen == ["macd"]
+
+
+# --- PHASE 1: time alignment ----------------------------------------------------------------
+def test_panes_in_visual_order_matches_splitter(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane at splitter index 1
+    b = pc.add_indicator("macd")  # pane at splitter index 2
+    assert pc._panes_in_visual_order() == [a.pane, b.pane]
+
+
+def test_panes_in_visual_order_differs_from_osc_after_drag(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    pc._drag_pane(b.pane, -100000)  # cursor far above -> b moves to index 1
+    assert split.indexOf(b.pane) == 1 and split.indexOf(a.pane) == 2
+    # _osc_panes() is dict-insertion order (a, b); visual order now follows the splitter (b, a)
+    assert pc._osc_panes() == [a.pane, b.pane]
+    assert pc._panes_in_visual_order() == [b.pane, a.pane]
+    assert pc._panes_in_visual_order() != pc._osc_panes()
+
+
+def test_axis_natural_width_matches_current_tick_strings(app):
+    # `_axis_natural_width` must reflect the axis's CURRENT (multi-char) tick strings via font
+    # metrics — NOT the stale/default AxisItem.width() (~35px before a paint pass). Assert it
+    # equals the width recomputed in-environment from the same inputs, so the test is
+    # font/DPI-independent (a hardcoded px like ">50" fails on CI's narrower headless fonts).
+    from PySide6 import QtGui
+
+    pc, _ = _chart(app)
+    ax = pc.getAxis("right")
+    nat = pc._axis_natural_width(ax)
+    mn, mx = ax.range
+    strings = []
+    for spacing, values in ax.tickValues(mn, mx, ax.height() or 300):
+        strings += [s for s in ax.tickStrings(values, ax.scale, spacing) if s]
+    fm = QtGui.QFontMetrics(ax.style.get("tickFont") or ax.font())
+    expected = (max(fm.horizontalAdvance(s) for s in strings)
+                + ax.style["tickTextOffset"][0] + max(0, ax.style["tickLength"]))
+    assert nat == pytest.approx(float(expected))
+    assert nat > float(ax.style["tickTextOffset"][0])  # a real measurement, not ~0/stale
+
+
+def test_axis_natural_width_price_wider_than_oscillator(app):
+    # Price labels ("117.50") are wider than a 0-100 RSI pane's ("70.00"): proves the
+    # measurement keys off each axis's OWN current tick strings.
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    price_nat = pc._axis_natural_width(pc.getAxis("right"))
+    osc_nat = pc._axis_natural_width(ind.pane.getAxis("right"))
+    assert price_nat > osc_nat
+
+
+def test_sync_axis_width_equalizes_above_narrow_pane(app):
+    # After equalize, every right axis shares ONE width == the widest natural width,
+    # which is strictly GREATER than the narrow oscillator's own natural width
+    # (proves padding-up happened, not "two zeros are equal").
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    osc_ax = ind.pane.getAxis("right")
+    osc_nat = pc._axis_natural_width(osc_ax)
+    pc._sync_axis_width()
+    price_w = pc.getAxis("right").width()
+    osc_w = osc_ax.width()
+    assert price_w == osc_w            # equalized
+    assert osc_w > osc_nat             # the narrow pane was padded up to the price width
+
+
+def test_sync_axis_width_no_recursion(app):
+    # The _wsyncing guard must break the setWidth -> resize -> sigResized -> re-sync loop:
+    # a re-entrant call while syncing is a no-op.
+    pc, _ = _chart(app)
+    pc.add_indicator("rsi")
+    calls = []
+    real_natural = pc._axis_natural_width
+    pc._axis_natural_width = lambda ax: (calls.append(1), real_natural(ax))[1]
+    pc._wsyncing = True          # simulate "already inside a sync"
+    pc._sync_axis_width()        # must early-return, measuring nothing
+    assert calls == []
+    pc._wsyncing = False
+    pc._sync_axis_width()        # now it runs and measures
+    assert calls
+
+
+def test_oscillator_pane_bottom_axis_pane_owned(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    assert isinstance(pane._time_axis, TimeAxis)
+    assert pane.getAxis("bottom") is pane._time_axis
+    # After Task 7 wiring: _new_pane calls _align_panes, so the single pane becomes the
+    # lowest pane and its bottom axis is shown immediately (price chart hides its own).
+    assert pane.getAxis("bottom").isVisible() is True
+
+
+def test_oscillator_pane_set_bars_feeds_time_axis(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    bs = _bars(30)
+    pane.set_bars(bs)
+    assert pane._time_axis._bars is bs
+
+
+def test_oscillator_pane_set_bottom_axis_visible_toggles(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.set_bottom_axis_visible(True)
+    assert pane.getAxis("bottom").isVisible() is True
+    pane.set_bottom_axis_visible(False)
+    assert pane.getAxis("bottom").isVisible() is False
+
+
+def test_reassign_bottom_axis_zero_panes_keeps_price_axis(app):
+    pc, _ = _chart(app)
+    pc._reassign_bottom_axis()
+    assert pc.getAxis("bottom").isVisible() is True
+    assert pc._time_axis._bars is pc._bars
+
+
+def test_reassign_bottom_axis_moves_to_lowest_pane(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # index 1
+    b = pc.add_indicator("macd")  # index 2 (lowest)
+    pc._reassign_bottom_axis()
+    # exactly one visible bottom axis: the lowest pane's
+    assert pc.getAxis("bottom").isVisible() is False
+    assert a.pane.getAxis("bottom").isVisible() is False
+    assert b.pane.getAxis("bottom").isVisible() is True
+    # every pane axis was fed the same bars as the price chart
+    assert a.pane._time_axis._bars is pc._bars
+    assert b.pane._time_axis._bars is pc._bars
+
+
+def test_reassign_bottom_axis_follows_reorder(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._reassign_bottom_axis()
+    assert b.pane.getAxis("bottom").isVisible() is True
+    pc._drag_pane(b.pane, -100000)  # b -> index 1, a -> index 2 (now lowest)
+    pc._reassign_bottom_axis()
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert b.pane.getAxis("bottom").isVisible() is False
+
+
+def test_reassign_bottom_axis_syncs_vb2(app):
+    # Hiding the price bottom axis grows the price ViewBox; _vb2 must re-sync so own-scale
+    # overlays don't misalign. _reassign_bottom_axis calls _sync_vb2() explicitly.
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ema = pc.add_indicator("ema")
+    pc._indicator_action(ema.uid, "pin_own")  # creates _vb2
+    pc.add_indicator("rsi")                    # adds a pane -> price bottom axis will hide
+    pc._reassign_bottom_axis()
+    pc.getPlotItem().layout.activate()
+    app.processEvents()
+    vb = pc.getViewBox().sceneBoundingRect()
+    vb2 = pc._vb2.sceneBoundingRect()
+    assert abs(vb.height() - vb2.height()) < 2.0  # _vb2 tracks the (grown) price viewbox
+    assert abs(vb.top() - vb2.top()) < 2.0
+
+
+def test_align_panes_zero_panes_is_safe(app):
+    pc, _ = _chart(app)
+    pc._align_panes()  # must not raise with no panes
+    assert pc.getAxis("bottom").isVisible() is True
+
+
+def test_align_panes_reassigns_then_equalizes(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._align_panes()
+    # bottom axis is reassigned to the lowest pane...
+    assert b.pane.getAxis("bottom").isVisible() is True
+    assert pc.getAxis("bottom").isVisible() is False
+    # ...AND all right axes are equalized to one shared width
+    w = pc.getAxis("right").width()
+    assert a.pane.getAxis("right").width() == w
+    assert b.pane.getAxis("right").width() == w
+
+
+def test_align_panes_order_reassign_before_sync(app):
+    # _reassign_bottom_axis (which changes axis visibility/natural width) must run BEFORE
+    # _sync_axis_width, so the equalize sees the final visible axes.
+    pc, _ = _chart(app)
+    pc.add_indicator("rsi")
+    order = []
+    pc._reassign_bottom_axis = lambda: order.append("reassign")
+    pc._sync_axis_width = lambda: order.append("sync")
+    pc._align_panes()
+    assert order == ["reassign", "sync"]
+
+
+def test_set_data_aligns_panes(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.set_data(_bars(50), [])  # re-feeds pane axes + re-equalizes
+    # pane axes were re-fed the new bars
+    assert len(a.pane._time_axis._bars) == 50
+    assert len(b.pane._time_axis._bars) == 50
+    # bottom axis still on the lowest pane, widths still equal
+    assert b.pane.getAxis("bottom").isVisible() is True
+    w = pc.getAxis("right").width()
+    assert a.pane.getAxis("right").width() == w and b.pane.getAxis("right").width() == w
+
+
+def test_apply_live_feeds_pane_axes(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pc.apply_live(_bars(90))
+    assert len(ind.pane._time_axis._bars) == 90
+
+
+def test_new_pane_seeds_bars_and_equalizes_on_add(app):
+    # A fresh pane's time axis isn't blank, and widths equalize on the very first add
+    # (the stale-width bug: equalize must work without a paint pass).
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.pane._time_axis._bars  # seeded, not blank
+    assert pc.getAxis("right").width() == ind.pane.getAxis("right").width()
+
+
+def test_remove_last_pane_restores_price_axis(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert pc.getAxis("bottom").isVisible() is False
+    pc.remove_indicator(ind.uid)  # _unrender drops the pane + _align_panes
+    assert split.count() == 1
+    assert pc.getAxis("bottom").isVisible() is True
+    # right axis restored to auto (fixedWidth cleared) so a lone chart isn't pinned
+    assert pc.getAxis("right").fixedWidth is None
+
+
+def test_reorder_keeps_bottom_axis_on_lowest(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "up")  # b -> index 1, a -> index 2 (lowest)
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert b.pane.getAxis("bottom").isVisible() is False
+    w = pc.getAxis("right").width()
+    assert a.pane.getAxis("right").width() == w and b.pane.getAxis("right").width() == w
+
+
+def test_drag_reorder_keeps_bottom_axis_on_lowest(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._drag_pane(b.pane, -100000)  # b -> index 1, a -> index 2 (lowest)
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert b.pane.getAxis("bottom").isVisible() is False
+
+
+def test_merge_keeps_bottom_axis_and_widths(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "merge_above")  # macd merges into rsi's pane; one pane drops
+    assert split.count() == 2
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert pc.getAxis("right").width() == a.pane.getAxis("right").width()
+
+
+def test_move_to_new_then_price_realigns(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc.move_indicator(ind.uid, "new")    # overlay -> own pane
+    assert ind.pane.getAxis("bottom").isVisible() is True
+    pc.move_indicator(ind.uid, "price")  # back to price overlay -> no panes
+    assert split.count() == 1
+    assert pc.getAxis("bottom").isVisible() is True
+
+
+def test_set_timeframe_realigns(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("rsi")
+    pc.set_timeframe("5m")  # must keep the bottom axis on the lowest pane + widths equal
+    assert ind.pane.getAxis("bottom").isVisible() is True
+    assert pc.getAxis("right").width() == ind.pane.getAxis("right").width()
+
+
+def test_oscillator_pane_has_min_height(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.pane.minimumHeight() >= 64
+
+
+def test_resize_panes_gives_lowest_pane_axis_strip(app):
+    # The lowest pane carries the bottom time-axis strip; _resize_panes adds that strip to its
+    # allotment so its PLOT area matches the panes above it.
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    a = pc.add_indicator("rsi")   # index 1
+    b = pc.add_indicator("macd")  # index 2 (lowest)
+    pc._align_panes()
+    pc._resize_panes()
+    sizes = split.sizes()
+    # lowest pane (last entry) is the tallest among the oscillator panes (it owns the axis strip)
+    assert sizes[-1] >= sizes[1]
+    assert sizes[-1] - sizes[1] <= 40  # ~one axis strip taller, not wildly different
+
+
+def test_crosshair_time_tag_hidden_when_panes_exist(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    pc.add_indicator("rsi")  # a pane now owns the time axis -> price-chart time tag is orphaned
+    # simulate a hover inside the price viewbox
+    vb = pc.getViewBox()
+    center = vb.sceneBoundingRect().center()
+    pc._on_mouse_moved(center)
+    assert pc._cx_time_tag.isVisible() is False   # orphaned tag stays hidden
+    assert pc._cx_v.isVisible() is True           # the vertical crosshair still works
+
+
+def test_crosshair_time_tag_shown_with_no_panes(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    vb = pc.getViewBox()
+    center = vb.sceneBoundingRect().center()
+    pc._on_mouse_moved(center)
+    assert pc._cx_time_tag.isVisible() is True  # price chart owns the bottom axis -> tag shows
+
+
+def test_studio_second_chart_aligns_independently(app):
+    # Two independent PriceChart instances (main + studio) on separate splitters: each must
+    # align its own panes with no shared/leaked state.
+    main_pc, main_split = _chart(app)
+    studio_pc, studio_split = _chart(app)
+    main_ind = main_pc.add_indicator("rsi")
+    studio_a = studio_pc.add_indicator("rsi")
+    studio_b = studio_pc.add_indicator("macd")
+    # main: single pane owns the bottom axis + equal widths
+    assert main_ind.pane.getAxis("bottom").isVisible() is True
+    assert main_pc.getAxis("right").width() == main_ind.pane.getAxis("right").width()
+    # studio: lowest of its TWO panes owns the bottom axis; its widths equalize on its own axes
+    assert studio_b.pane.getAxis("bottom").isVisible() is True
+    assert studio_a.pane.getAxis("bottom").isVisible() is False
+    sw = studio_pc.getAxis("right").width()
+    assert studio_a.pane.getAxis("right").width() == sw
+    assert studio_b.pane.getAxis("right").width() == sw
+    # no cross-talk: neither chart's guard leaked
+    assert main_pc._wsyncing is False and studio_pc._wsyncing is False
+
+
+# --- PHASE 2: pane hover toolbar ----------------------------------------------------------------
+def test_pane_icon_renders_all_kinds(app):
+    from vike_trader_app.ui.chart import _pane_icon
+    for kind in ("up", "down", "max", "restore", "del"):
+        ic = _pane_icon(kind)
+        assert isinstance(ic, QtGui.QIcon)
+        assert not ic.isNull()
+        pm = ic.pixmap(18, 18)
+        assert not pm.isNull() and pm.width() > 0
+
+
+def test_pane_toolbar_signals_and_state(app):
+    from vike_trader_app.ui.chart import _PaneToolbar
+    tb = _PaneToolbar()
+    fired = []
+    tb.moveUp.connect(lambda: fired.append("up"))
+    tb.moveDown.connect(lambda: fired.append("down"))
+    tb.maximizeToggled.connect(lambda: fired.append("max"))
+    tb.deletePane.connect(lambda: fired.append("del"))
+    tb._up.click()
+    tb._down.click()
+    tb._max.click()
+    tb._del.click()
+    assert fired == ["up", "down", "max", "del"]
+    tb.set_can_up(False)
+    assert not tb._up.isEnabled()
+    tb.set_can_down(False)
+    assert not tb._down.isEnabled()
+    tb.set_can_up(True)
+    tb.set_can_down(True)
+    assert tb._up.isEnabled() and tb._down.isEnabled()
+    tb.set_maximized(True)  # swaps glyph/tooltip, must not crash
+    tb.set_maximized(False)
+    assert len(tb.findChildren(QtWidgets.QToolButton)) == 4
+
+
+def test_oscillator_pane_has_toolbar_and_signals(app):
+    from vike_trader_app.ui.chart import _PaneToolbar
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    assert isinstance(pane._toolbar, _PaneToolbar)
+    # the 4 pane-level Signal(object) carry the pane itself
+    seen = []
+    pane.paneMoveUp.connect(seen.append)
+    pane.paneMoveDown.connect(seen.append)
+    pane.paneMaximizeToggled.connect(seen.append)
+    pane.paneDeleteRequested.connect(seen.append)
+    pane.paneMoveUp.emit(pane)
+    pane.paneMaximizeToggled.emit(pane)
+    assert seen == [pane, pane]
+    # toolbar tucks left of the right axis: x = width - axis_w - toolbar_w - 4
+    pane.resize(400, 120)
+    pane._position_toolbar()
+    axis_w = int(pane.getAxis("right").width())
+    expected = max(0, pane.width() - axis_w - pane._toolbar.width() - 4)
+    assert pane._toolbar.x() == expected and pane._toolbar.y() == 3
+
+
+def test_oscillator_pane_hover_shows_hides_toolbar(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 120)
+    pane._toolbar.hide()
+    pane.enterEvent(None)
+    # In offscreen mode the pane has no visible parent, so isVisible() is always False;
+    # use not isHidden() which tracks the explicit show()/hide() state regardless of hierarchy.
+    assert not pane._toolbar.isHidden()
+    pane.leaveEvent(None)
+    assert pane._toolbar.isHidden()
+
+
+def test_new_pane_wires_toolbar_and_refreshes(app):
+    pc, _ = _chart(app)
+    assert pc._maximized_pane is None and pc._saved_sizes is None
+    a = pc.add_indicator("rsi")   # pane index 1 (top & bottom: only pane)
+    # single pane: can move neither up nor down
+    assert not a.pane._toolbar._up.isEnabled()
+    assert not a.pane._toolbar._down.isEnabled()
+    b = pc.add_indicator("macd")  # pane index 2
+    panes = pc._panes_in_visual_order()
+    top, bottom = panes[0], panes[-1]
+    # top pane: up disabled, down enabled; bottom pane: up enabled, down disabled
+    assert not top._toolbar._up.isEnabled() and top._toolbar._down.isEnabled()
+    assert bottom._toolbar._up.isEnabled() and not bottom._toolbar._down.isEnabled()
+
+
+def test_pane_move_up_down_reorders_splitter(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    assert split.indexOf(b.pane) == 2
+    pc._pane_move_up(b.pane)
+    assert split.indexOf(b.pane) == 1 and split.indexOf(a.pane) == 2
+    pc._pane_move_down(b.pane)
+    assert split.indexOf(b.pane) == 2 and split.indexOf(a.pane) == 1
+
+
+def test_pane_move_clamps_at_edges(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # index 1
+    b = pc.add_indicator("macd")  # index 2
+    pc._pane_move_up(a.pane)      # already topmost (index 1) -> no-op (never above price@0)
+    assert split.indexOf(a.pane) == 1
+    pc._pane_move_down(b.pane)    # already bottom -> no-op
+    assert split.indexOf(b.pane) == 2
+
+
+def test_after_pane_reorder_realigns(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._pane_move_up(b.pane)
+    # bottom axis follows to the new lowest pane (Phase 1 _align_panes)
+    bottom = pc._panes_in_visual_order()[-1]
+    assert bottom.getAxis("bottom").isVisible()
+    assert not pc._panes_in_visual_order()[0].getAxis("bottom").isVisible()
+    # toolbars updated: new top can't go up, new bottom can't go down
+    panes = pc._panes_in_visual_order()
+    assert not panes[0]._toolbar._up.isEnabled()
+    assert not panes[-1]._toolbar._down.isEnabled()
+
+
+def test_delete_pane_drops_single_indicator(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    assert split.count() == 2
+    pc._delete_pane(a.pane)
+    assert a.uid not in pc._indicators and split.count() == 1
+
+
+def test_delete_merged_pane_removes_all_indicators(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "merge_above")   # both now share one pane
+    assert split.count() == 2 and a.pane is b.pane
+    pane = a.pane
+    pc._delete_pane(pane)
+    assert a.uid not in pc._indicators and b.uid not in pc._indicators
+    assert split.count() == 1
+
+
+def test_resize_panes_noop_while_maximized(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc.add_indicator("macd")
+    split.resize(400, 600)
+    pc._maximized_pane = a.pane          # simulate a maximized pane
+    sentinel = [10, 700, 50]             # deliberately uneven, not what _resize_panes would set
+    split.setSizes(sentinel)
+    before = split.sizes()
+    pc._resize_panes()                   # must early-return (no stomping)
+    assert split.sizes() == before
+
+
+def test_unrender_pane_drop_clears_maximize_lock(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc._maximized_pane = a.pane
+    pc.remove_indicator(a.uid)           # drops the pane via _unrender
+    assert pc._maximized_pane is None and split.count() == 1
+
+
+def test_maximize_gives_dominant_share_with_price_floor(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    split.resize(400, 1000)
+    pc._toggle_maximize_pane(a.pane)
+    assert pc._maximized_pane is a.pane
+    assert a.pane._toolbar._max.toolTip() == "Restore pane"
+    sizes = split.sizes()
+    total = sum(sizes)
+    # price keeps a real floor (max(140, total*0.15)), the maximized pane gets the dominant share
+    price_floor = max(140, int(total * 0.15))
+    assert sizes[0] >= price_floor - 1          # OHLC stays visible (TV)
+    a_idx = split.indexOf(a.pane)
+    assert sizes[a_idx] == max(sizes[1:])       # maximized pane is the biggest pane
+    assert sizes[a_idx] > sizes[split.indexOf(b.pane)]
+
+
+def test_restore_preserves_user_dragged_sizes(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc.add_indicator("macd")
+    split.resize(400, 1000)
+    user = [600, 250, 150]
+    split.setSizes(user)
+    snap = split.sizes()                         # what Qt actually stored
+    pc._toggle_maximize_pane(a.pane)             # saves snap
+    pc._toggle_maximize_pane(a.pane)             # restore: same count -> replay saved sizes
+    assert pc._maximized_pane is None
+    assert split.sizes() == snap
+    assert a.pane._toolbar._max.toolTip() == "Maximize pane"
+
+
+def test_delete_maximized_pane_clears_lock(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc.add_indicator("macd")
+    pc._toggle_maximize_pane(a.pane)
+    assert pc._maximized_pane is a.pane
+    pc._delete_pane(a.pane)
+    assert pc._maximized_pane is None            # no dangling deleted-QWidget ref
+    assert a.uid not in pc._indicators and split.count() == 2
+
+
+def test_splitter_drag_clears_maximize_lock(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc.add_indicator("macd")
+    pc._toggle_maximize_pane(a.pane)
+    assert pc._maximized_pane is a.pane
+    split.splitterMoved.emit(0, 1)              # a manual drag of a handle
+    assert pc._maximized_pane is None            # exits maximize, like TV
+    assert a.pane._toolbar._max.toolTip() == "Maximize pane"
+
+
+def test_toolbar_clears_right_axis_after_layout(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    split.resize(500, 600)
+    pane.resize(500, 140)
+    pc.show_upto(len(pc._bars) - 1)   # data settles -> axis width known
+    pc._refresh_pane_toolbars()
+    tb = pane._toolbar
+    axis_w = int(pane.getAxis("right").width())
+    # the toolbar's right edge must sit left of the price-axis labels (cleared, like TV)
+    assert tb.x() + tb.width() <= pane.width() - axis_w + 1
+    assert tb.x() >= 0
+
+
+def test_studio_instance_pane_toolbar_parity(app):
+    # two independent PriceChart instances must not share maximize/toolbar state
+    pc_a, split_a = _chart(app)
+    pc_b, split_b = _chart(app)
+    a = pc_a.add_indicator("rsi")
+    b = pc_b.add_indicator("macd")
+    pc_a._toggle_maximize_pane(a.pane)
+    assert pc_a._maximized_pane is a.pane
+    assert pc_b._maximized_pane is None          # state is per-instance, not class-shared
+    # each pane has its own toolbar wired to its own chart
+    assert isinstance(a.pane._toolbar, type(b.pane._toolbar))
+    b.pane.paneDeleteRequested.emit(b.pane)      # routed to pc_b._delete_pane
+    assert b.uid not in pc_b._indicators and split_b.count() == 1
+    assert a.uid in pc_a._indicators             # unaffected
+
+
+# --- Fix A: grip drag-reorder must refresh toolbar enabled-states ----------------------------
+def test_drag_reorder_refreshes_toolbar_state(app):
+    """_drag_pane must call _refresh_pane_toolbars so enabled-states reflect the new order."""
+    pc, split = _chart(app)
+    pc.add_indicator("rsi")       # pane index 1 (visual 0)
+    b = pc.add_indicator("macd")  # pane index 2 (visual 1)
+    # drag bottom pane (b) far above -> b becomes visual index 0, a becomes visual index 1
+    pc._drag_pane(b.pane, -100000)
+    panes = pc._panes_in_visual_order()
+    top_pane = panes[0]   # b.pane is now at the top
+    bottom_pane = panes[-1]  # a.pane is now at the bottom
+    # top pane: move-up must be disabled (nothing above it)
+    assert not top_pane._toolbar._up.isEnabled(), "top pane move-up should be disabled after drag"
+    # bottom pane: move-down must be disabled (nothing below it)
+    assert not bottom_pane._toolbar._down.isEnabled(), "bottom pane move-down should be disabled after drag"
+
+
+# --- Fix B: grip drag-reorder while maximized must exit maximize ----------------------------
+def test_drag_reorder_clears_maximize_lock(app):
+    """_drag_pane must clear the maximize lock (like _on_splitter_moved) when it reorders."""
+    pc, split = _chart(app)
+    pc.add_indicator("rsi")       # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    # maximize one pane
+    pc._toggle_maximize_pane(b.pane)
+    assert pc._maximized_pane is b.pane
+    # perform a grip drag-reorder (b moves up, swapping with a)
+    pc._drag_pane(b.pane, -100000)
+    # maximize lock must have been cleared
+    assert pc._maximized_pane is None, "_drag_pane must clear _maximized_pane (exit maximize)"
+    assert not b.pane._toolbar._max.toolTip() == "Restore pane", \
+        "dragged pane toolbar should no longer show Restore glyph"
+
+
+# --- Minor #5: 120 ms re-check branch keeps toolbar visible when cursor is still inside ------
+def test_toolbar_maybe_hide_rechecks_cursor(app):
+    """_maybe_hide_toolbar hides only when cursor is outside; stays visible when inside."""
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 120)
+    pane._toolbar.show()
+    # monkeypatch: cursor is inside -> _maybe_hide_toolbar must NOT hide
+    pane._cursor_in_rect = lambda: True
+    pane._maybe_hide_toolbar()
+    assert not pane._toolbar.isHidden(), "toolbar must stay visible when cursor is inside"
+    # now cursor leaves -> _maybe_hide_toolbar must hide
+    pane._cursor_in_rect = lambda: False
+    pane._maybe_hide_toolbar()
+    assert pane._toolbar.isHidden(), "toolbar must hide when cursor is outside"
+
+
+# --- PHASE 3: settings dialog parity --------------------------------------------------------
+def test_fresh_add_has_default_widths_and_styles(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("macd")  # 3 outputs
+    n = len(ind.spec.outputs)
+    assert ind.widths == [1] * n
+    assert ind.styles == ["solid"] * n
+
+
+def test_indicator_spec_defaults_single_source(app):
+    from vike_trader_app.ui.chart import _Indicator
+    from vike_trader_app.core.indicators import base as _base
+    spec = _base.get("macd")
+    params, colors, widths, styles = _Indicator.spec_defaults(spec)
+    assert params == {p.name: p.default for p in spec.params}
+    assert len(colors) == len(spec.outputs)
+    assert widths == [1] * len(spec.outputs)
+    assert styles == ["solid"] * len(spec.outputs)
+
+
+def test_pen_style_maps_names_to_qt(app):
+    from vike_trader_app.ui.chart import _pen_style, _LINE_STYLES, _LINE_WIDTHS, _UNSET
+    assert _pen_style("solid") == QtCore.Qt.SolidLine
+    assert _pen_style("dashed") == QtCore.Qt.DashLine
+    assert _pen_style("dotted") == QtCore.Qt.DotLine
+    assert _pen_style("bogus") == QtCore.Qt.SolidLine  # unknown -> solid
+    assert [v for _lbl, v in _LINE_STYLES] == ["solid", "dashed", "dotted"]
+    assert list(_LINE_WIDTHS) == [1, 2, 3, 4]
+    assert _UNSET is not None and _UNSET != [] and _UNSET != {}  # a distinct sentinel
+
+
+def test_render_pens_use_width_and_style_overlay(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("ema")  # overlay, 1 output
+    ind.widths = [3]
+    ind.styles = ["dashed"]
+    pc._unrender(ind)
+    pc._render(ind)  # rebuilds the overlay PlotDataItem pen
+    curve = next(iter(ind.curves.values()))
+    pen = curve.opts["pen"]
+    assert pen.width() == 3
+    assert pen.style() == QtCore.Qt.DashLine
+
+
+def test_build_curves_pens_use_width_and_style_oscillator(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")  # oscillator, 1 output
+    ind.widths = [4]
+    ind.styles = ["dotted"]
+    ind.pane.update_ind(ind)  # rebuilds curves via _build_curves
+    curve = next(iter(ind.pane._curves[ind.uid].values()))
+    pen = curve.opts["pen"]
+    assert pen.width() == 4
+    assert pen.style() == QtCore.Qt.DotLine
+
+
+def test_all_intervals_and_normalize_helpers(app):
+    from vike_trader_app.ui.chart import _all_intervals, _normalize_intervals, _TIMEFRAMES
+    expected = [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+    assert _all_intervals() == expected
+    # every interval checked -> None (shows on all)
+    assert _normalize_intervals(set(expected)) is None
+    # a strict subset stays a set
+    sub = set(expected[:-1])
+    assert _normalize_intervals(sub) == sub
+
+
+def test_settings_style_tab_combos_round_trip(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("macd")  # 3 outputs, line kind
+    dlg = _IndicatorSettings(ind)
+    assert len(dlg._width_combos) == len(ind.spec.outputs)
+    assert len(dlg._style_combos) == len(ind.spec.outputs)
+    # combos carry typed userData, not display text
+    dlg._width_combos[0].setCurrentIndex(2)  # _LINE_WIDTHS[2] == 3
+    si = next(i for i in range(dlg._style_combos[0].count())
+              if dlg._style_combos[0].itemData(i) == "dashed")
+    dlg._style_combos[0].setCurrentIndex(si)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(
+            widths=widths, styles=styles
+        )
+    )
+    dlg._accept()
+    assert got["widths"][0] == 3 and isinstance(got["widths"][0], int)
+    assert got["styles"][0] == "dashed"
+
+
+def test_settings_pattern_hides_width_and_style(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("engulfing")  # kind == 'pattern' -> markers, no pens
+    dlg = _IndicatorSettings(ind)
+    assert all(c.isHidden() for c in dlg._width_combos)
+    assert all(c.isHidden() for c in dlg._style_combos)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(widths=widths)
+    )
+    dlg._accept()  # must not crash for a pattern indicator
+    assert "widths" in got
+
+
+def test_settings_visibility_tab_covers_all_intervals(app):
+    from vike_trader_app.ui.chart import _all_intervals
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    assert set(dlg._iv_checks) == set(_all_intervals())
+    assert all(cb.isChecked() for cb in dlg._iv_checks.values())  # intervals None -> all checked
+
+
+def test_settings_visibility_uncheck_emits_subset(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    dlg._iv_checks["1m"].setChecked(False)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+    )
+    dlg._accept()
+    assert got["intervals"] is not None and "1m" not in got["intervals"]
+
+
+def test_settings_visibility_all_checked_emits_none(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    for cb in dlg._iv_checks.values():
+        cb.setChecked(True)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+    )
+    dlg._accept()
+    assert got["intervals"] is None  # all checked -> shows everywhere
+
+
+def test_settings_visibility_seeds_from_existing_set(app):
+    from vike_trader_app.ui.chart import _all_intervals
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.intervals = {iv for iv in _all_intervals() if iv != "1m"}  # restricted set
+    dlg = _IndicatorSettings(ind)
+    assert dlg._iv_checks["1m"].isChecked() is False
+    assert dlg._iv_checks["5m"].isChecked() is True
+
+
+def test_settings_defaults_button_resets_form_without_emitting(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # mutate stored state away from defaults so a reset is observable
+    ind.params[ind.spec.params[0].name] = 99
+    ind.widths = [4]
+    ind.styles = ["dotted"]
+    ind.intervals = {"5m"}
+    dlg = _IndicatorSettings(ind)
+    emitted = []
+    dlg.applied.connect(lambda *a: emitted.append(a))
+    dlg._reset_defaults()
+    # form widgets snap back to spec defaults
+    p0 = ind.spec.params[0]
+    assert dlg._param_widgets[p0.name].value() == p0.default
+    assert dlg._width_combos[0].currentData() == 1
+    assert dlg._style_combos[0].currentData() == "solid"
+    assert all(cb.isChecked() for cb in dlg._iv_checks.values())  # all intervals re-checked
+    assert emitted == []          # Defaults does NOT emit
+    assert dlg.isVisible() or not dlg.isVisible()  # and does NOT close (not rejected/accepted)
+    assert ind.params[p0.name] == 99  # stored indicator untouched until Ok
+
+
+def test_apply_edit_sets_width_style_intervals_overlay(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("ema")  # overlay branch
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors),
+                   widths=[3], styles=["dashed"], intervals={"5m"})
+    ind = pc._indicators[ind.uid]
+    assert ind.widths == [3] and ind.styles == ["dashed"]
+    assert ind.intervals == {"5m"}
+    assert ind.shown is False  # 1m chart, restricted to 5m -> _sync_shown ran
+    pen = next(iter(ind.curves.values())).opts["pen"]
+    assert pen.width() == 3 and pen.style() == QtCore.Qt.DashLine
+
+
+def test_apply_edit_intervals_apply_in_oscillator_branch(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("rsi")  # oscillator branch (the one that never re-synced shown)
+    assert ind.shown is True
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors), intervals={"5m"})
+    ind = pc._indicators[ind.uid]
+    assert ind.intervals == {"5m"}
+    assert ind.shown is False  # interval edit takes effect immediately, no timeframe change
+    curve = next(iter(ind.pane._curves[ind.uid].values()))
+    assert curve.isVisible() is False
+
+
+def test_apply_edit_width_style_oscillator_pen(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pc._apply_edit(ind.uid, dict(ind.params), list(ind.colors),
+                   widths=[4], styles=["dotted"])
+    ind = pc._indicators[ind.uid]
+    pen = next(iter(ind.pane._curves[ind.uid].values())).opts["pen"]
+    assert pen.width() == 4 and pen.style() == QtCore.Qt.DotLine
+
+
+def test_apply_edit_positional_callers_still_work(app):
+    # the existing 3-positional-arg call path (used by tests + clone) stays valid
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    before = _valid(ind.series)
+    new = dict(ind.params)
+    new[ind.spec.params[0].name] = 4
+    pc._apply_edit(ind.uid, new, ind.colors)  # no widths/styles/intervals -> _UNSET guards
+    ind = pc._indicators[ind.uid]
+    assert _valid(ind.series) != before
+    assert ind.widths == [1] and ind.styles == ["solid"]  # untouched
+
+
+def test_clone_copies_width_style_intervals(app):
+    pc, _ = _chart(app)
+    a = pc.add_indicator("rsi")
+    a.widths = [3]
+    a.styles = ["dashed"]
+    a.intervals = {"5m"}
+    clone = pc.clone_indicator(a.uid)
+    assert clone is not None and clone.uid != a.uid
+    clone = pc._indicators[clone.uid]
+    assert clone.widths == [3]
+    assert clone.styles == ["dashed"]
+    assert clone.intervals == {"5m"}
+
+
+def test_edit_indicator_dialog_round_trip_applies(app):
+    # exercise the full edit_indicator -> dialog.applied -> _apply_edit path without exec()
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind, pc)
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals, u=ind.uid: pc._apply_edit(
+            u, params, colors, widths=widths, styles=styles, intervals=intervals
+        )
+    )
+    dlg._width_combos[0].setCurrentIndex(1)  # _LINE_WIDTHS[1] == 2
+    dlg._iv_checks["1m"].setChecked(False)
+    dlg._accept()
+    ind = pc._indicators[ind.uid]
+    assert ind.widths[0] == 2
+    assert ind.intervals is not None and "1m" not in ind.intervals
+    pen = next(iter(ind.pane._curves[ind.uid].values())).opts["pen"]
+    assert pen.width() == 2
+
+
+# --- maximize-lock lifetime: data-swap + move-to-new ----------------------------------------
+def test_set_data_while_maximized_keeps_lock_and_layout(app):
+    """A symbol/data swap (set_data) while a pane is maximized must NOT stomp the maximized
+    layout or leave a dangling/stuck lock.  _recompute_indicators recomputes in-place without
+    tearing down the pane objects, so the lock should reference the SAME live pane after the
+    swap; calling toggle again must restore cleanly."""
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    pc.add_indicator("macd")
+    pane_a = a.pane
+
+    # maximize pane A
+    pc._toggle_maximize_pane(pane_a)
+    assert pc._maximized_pane is pane_a
+
+    # simulate a symbol/interval change: new bars, existing indicators persist via
+    # _recompute_indicators (pane objects are kept, not rebuilt)
+    pc.set_data(_bars(120), [])
+
+    # the pane object must still be alive in the splitter (not deleted)
+    assert pane_a in pc._panes_in_visual_order(), (
+        "BUG: set_data destroyed the maximized pane object; _maximized_pane would dangle"
+    )
+    # the lock must still reference that live pane (no silent clear, no dangle)
+    assert pc._maximized_pane is pane_a, (
+        "BUG: set_data unexpectedly cleared _maximized_pane while the pane is still live"
+    )
+
+    # splitter count unchanged: price + 2 oscillator panes
+    assert split.count() == 3
+
+    # restore: toggle again -> lock clears, sizes replay, toolbar resets
+    pc._toggle_maximize_pane(pane_a)
+    assert pc._maximized_pane is None
+    assert split.count() == 3                              # no panes vanished on restore
+    assert pane_a._toolbar._max.toolTip() == "Maximize pane"
+
+
+def test_move_to_new_pane_while_maximized(app):
+    """Moving an indicator to a new pane while ANOTHER pane is maximized must not corrupt the
+    lock or crash.  Only the unrendered pane B is dropped; pane A (the maximized one) stays
+    live and the lock must reference it (or be None — never a dangling ref)."""
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane A — we will maximize this
+    b = pc.add_indicator("macd")  # pane B — we will move this to a new pane
+
+    pane_a = a.pane
+    assert pane_a is not b.pane   # sanity: two separate panes
+
+    # maximize pane A
+    pc._toggle_maximize_pane(pane_a)
+    assert pc._maximized_pane is pane_a
+
+    # move the indicator in pane B to a brand-new pane; this unrenders pane B
+    # (single-indicator pane -> pane B is deleted), creates pane C for b
+    pc.move_indicator(b.uid, "new")
+
+    # _maximized_pane must reference a LIVE pane, never a deleted QWidget
+    # (pane A was not touched; pane B was deleted but was not the maximized pane)
+    mp = pc._maximized_pane
+    live_panes = pc._panes_in_visual_order()
+    if mp is not None:
+        assert mp in live_panes, (
+            "BUG: _maximized_pane references a deleted QWidget after move_indicator('new')"
+        )
+    # pane A must still be alive (we only unrendered pane B)
+    assert pane_a in live_panes, (
+        "BUG: pane A was unexpectedly dropped during move_indicator('new') on pane B"
+    )
+    # lock should still point to pane A (it was not touched)
+    assert pc._maximized_pane is pane_a, (
+        "BUG: _maximized_pane was unexpectedly cleared when an unrelated pane was moved"
+    )
+
+    # structural check: price pane + pane A + new pane C = 3 widgets in splitter
+    assert split.count() == 3
+
+    # alignment: exactly one pane owns the bottom time axis — the lowest one
+    bottom_owners = [p for p in live_panes if p.getAxis("bottom").isVisible()]
+    assert len(bottom_owners) == 1, (
+        f"Expected exactly 1 bottom-axis owner, got {len(bottom_owners)}"
+    )
+    assert bottom_owners[0] is live_panes[-1], (
+        "Bottom time axis must be on the lowest pane"
+    )

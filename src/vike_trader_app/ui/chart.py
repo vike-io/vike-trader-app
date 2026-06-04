@@ -35,6 +35,32 @@ _TIMEFRAMES = [
     ("Hours", [("1h", "1h"), ("2h", "2h"), ("4h", "4h")]),
     ("Days", [("1D", "1d"), ("1W", "1w")]),
 ]
+# Line-style picker (Style tab): (label, name) — name persists on _Indicator.styles.
+_LINE_STYLES = [("Solid", "solid"), ("Dashed", "dashed"), ("Dotted", "dotted")]
+_LINE_WIDTHS = [1, 2, 3, 4]  # line-width picker (px)
+# Distinct sentinel for _apply_edit optional args (NOT falsy — an empty list/dict is a real value).
+_UNSET = object()
+
+
+def _pen_style(name):
+    """Map a style name (solid/dashed/dotted) to a Qt.PenStyle; unknown -> SolidLine."""
+    return {
+        "solid": QtCore.Qt.SolidLine,
+        "dashed": QtCore.Qt.DashLine,
+        "dotted": QtCore.Qt.DotLine,
+    }.get(name, QtCore.Qt.SolidLine)
+
+
+def _all_intervals():
+    """The flat, ordered list of every supported interval (single source for both the
+    per-interval legend menu / Visibility tab and the 'all ⇒ None' normalization)."""
+    return [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+
+
+def _normalize_intervals(chosen):
+    """'all checked ⇒ None' rule: None when every interval is selected, else the set."""
+    chosen = set(chosen)
+    return None if chosen >= set(_all_intervals()) else chosen
 
 
 class CandlestickItem(pg.GraphicsObject):
@@ -416,11 +442,24 @@ class _Indicator:
         self.own_scale = False           # overlay pinned to its own (independent) right scale
         self.benchmark = None            # aligned 2nd-symbol closes (pairs only)
         self.colors = list(_OVERLAY_COLORS[: max(1, len(spec.outputs))])  # per-output colour
+        self.widths = [1] * max(1, len(spec.outputs))    # per-output line width (px)
+        self.styles = ["solid"] * max(1, len(spec.outputs))  # per-output line style name
         self.series = {}                 # computed: output label -> full series
         # render handles (set when rendered):
         self.curves = {}                 # overlay/oscillator: output label -> PlotDataItem
         self.pane = None                 # OscillatorPane (oscillator/pairs)
         self.scatter = None              # pattern marker ScatterPlotItem
+
+    @staticmethod
+    def spec_defaults(spec):
+        """Single source of truth for the Defaults button and add_indicator seeding:
+        (params, colors, widths, styles) at the registry's defaults."""
+        n = max(1, len(spec.outputs))
+        params = {p.name: p.default for p in spec.params}
+        colors = list(_OVERLAY_COLORS[:n])
+        widths = [1] * n
+        styles = ["solid"] * n
+        return params, colors, widths, styles
 
     @property
     def label(self) -> str:
@@ -431,10 +470,11 @@ class _Indicator:
 
 
 class _IndicatorSettings(dropdowns.PopupCard):
-    """TradingView-style settings: an **Inputs** tab (parameters from the registry spec) and a
-    **Style** tab (per-output colour). Emits ``applied(params, colors)`` on Ok."""
+    """TradingView-style settings: **Inputs** (registry params), **Style** (per-output colour +
+    line width + line style), and **Visibility** (per-interval) tabs. Emits
+    ``applied(params, colors, widths, styles, intervals)`` on Ok."""
 
-    applied = QtCore.Signal(dict, list)
+    applied = QtCore.Signal(dict, list, list, list, object)
 
     def __init__(self, ind: "_Indicator", parent=None):
         super().__init__(parent, object_name="setCard", extra_qss=(
@@ -450,6 +490,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
             f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-size:14px;font-weight:700;}}"
         ))
         self._spec = ind.spec
+        self._ind = ind
         card = self.card
         v = QtWidgets.QVBoxLayout(card)
         v.setContentsMargins(16, 14, 16, 12)
@@ -496,12 +537,17 @@ class _IndicatorSettings(dropdowns.PopupCard):
             form.addRow(QtWidgets.QLabel("This indicator has no inputs."))
         tabs.addTab(inputs, "Inputs")
 
-        # --- Style tab (one colour button per output) ---
+        # --- Style tab (per output: colour + line width + line style) ---
         style = QtWidgets.QWidget()
         sform = QtWidgets.QFormLayout(style)
         sform.setContentsMargins(4, 10, 4, 4)
         sform.setSpacing(9)
         self._color_btns = []
+        self._width_combos = []
+        self._style_combos = []
+        is_pattern = ind.kind == "pattern"
+        widths = getattr(ind, "widths", [1] * len(self._spec.outputs))
+        styles = getattr(ind, "styles", ["solid"] * len(self._spec.outputs))
         for i, out in enumerate(self._spec.outputs):
             btn = QtWidgets.QPushButton()
             btn.setFixedSize(46, 22)
@@ -509,10 +555,62 @@ class _IndicatorSettings(dropdowns.PopupCard):
             self._set_btn_color(btn, col)
             btn.clicked.connect(lambda _c=False, b=btn: self._pick_color(b))
             self._color_btns.append(btn)
-            sform.addRow(out.replace("_", " ").title(), btn)
+
+            wcb = QtWidgets.QComboBox()
+            for w in _LINE_WIDTHS:
+                wcb.addItem(f"{w}px", w)  # userData = int width
+            cur_w = widths[i] if i < len(widths) else 1
+            wcb.setCurrentIndex(max(0, _LINE_WIDTHS.index(cur_w) if cur_w in _LINE_WIDTHS else 0))
+            self._width_combos.append(wcb)
+
+            scb = QtWidgets.QComboBox()
+            for lbl, nm in _LINE_STYLES:
+                scb.addItem(lbl, nm)      # userData = str style name
+            cur_s = styles[i] if i < len(styles) else "solid"
+            names = [nm for _lbl, nm in _LINE_STYLES]
+            scb.setCurrentIndex(names.index(cur_s) if cur_s in names else 0)
+            self._style_combos.append(scb)
+
+            roww = QtWidgets.QWidget()
+            rowl = QtWidgets.QHBoxLayout(roww)
+            rowl.setContentsMargins(0, 0, 0, 0)
+            rowl.setSpacing(6)
+            rowl.addWidget(btn)
+            rowl.addWidget(wcb)
+            rowl.addWidget(scb)
+            if is_pattern:  # markers use brushes, not pens -> no width/style
+                wcb.hide()
+                scb.hide()
+            sform.addRow(out.replace("_", " ").title(), roww)
         tabs.addTab(style, "Style")
 
+        # --- Visibility tab (per-interval checkboxes, grouped by section) ---
+        vis = QtWidgets.QWidget()
+        vform = QtWidgets.QVBoxLayout(vis)
+        vform.setContentsMargins(4, 10, 4, 4)
+        vform.setSpacing(4)
+        self._iv_checks = {}
+        cur_intervals = getattr(ind, "intervals", None)
+        for sec, items in _TIMEFRAMES:
+            seclbl = QtWidgets.QLabel(sec.upper())
+            seclbl.setStyleSheet(
+                f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+                f"background:transparent;margin-top:6px;"
+            )
+            vform.addWidget(seclbl)
+            for lbl, iv in items:
+                cb = QtWidgets.QCheckBox(lbl)
+                cb.setStyleSheet(f"color:{theme.TEXT2};background:transparent;")
+                cb.setChecked(cur_intervals is None or iv in cur_intervals)
+                self._iv_checks[iv] = cb
+                vform.addWidget(cb)
+        vform.addStretch(1)
+        tabs.addTab(vis, "Visibility")
+
         foot = QtWidgets.QHBoxLayout()
+        defaults = QtWidgets.QPushButton("Defaults")
+        defaults.clicked.connect(self._reset_defaults)
+        foot.addWidget(defaults)
         foot.addStretch(1)
         cancel = QtWidgets.QPushButton("Cancel")
         cancel.clicked.connect(self.reject)
@@ -522,7 +620,31 @@ class _IndicatorSettings(dropdowns.PopupCard):
         foot.addWidget(cancel)
         foot.addWidget(ok)
         v.addLayout(foot)
-        self.resize(340, 360)
+        self.resize(360, 440)
+
+    def _chosen_intervals(self):
+        """Intervals selected in the Visibility tab, normalized (all ⇒ None)."""
+        return _normalize_intervals(
+            iv for iv, cb in self._iv_checks.items() if cb.isChecked()
+        )
+
+    def _reset_defaults(self):
+        """Repopulate all three tabs from the registry defaults — form-only, no emit/close
+        (matches TradingView's Defaults ▾ → Reset settings)."""
+        params, colors, widths, styles = _Indicator.spec_defaults(self._spec)
+        for p in self._spec.params:
+            self._param_widgets[p.name].setValue(params[p.name])
+        for i, btn in enumerate(self._color_btns):
+            self._set_btn_color(btn, colors[i % len(colors)])
+        for i, cb in enumerate(self._width_combos):
+            w = widths[i % len(widths)]
+            cb.setCurrentIndex(_LINE_WIDTHS.index(w) if w in _LINE_WIDTHS else 0)
+        names = [nm for _lbl, nm in _LINE_STYLES]
+        for i, cb in enumerate(self._style_combos):
+            nm = styles[i % len(styles)]
+            cb.setCurrentIndex(names.index(nm) if nm in names else 0)
+        for cb in self._iv_checks.values():  # default visibility = every interval
+            cb.setChecked(True)
 
     @staticmethod
     def _set_btn_color(btn, color):
@@ -540,8 +662,18 @@ class _IndicatorSettings(dropdowns.PopupCard):
         for p in self._spec.params:
             params[p.name] = self._param_widgets[p.name].value()
         colors = [b.property("color_hex") for b in self._color_btns]
-        self.applied.emit(params, colors)
+        widths = [int(c.currentData()) for c in self._width_combos]
+        styles = [str(c.currentData()) for c in self._style_combos]
+        intervals = self._chosen_intervals()
+        self.applied.emit(params, colors, widths, styles, intervals)
         self.accept()
+
+
+def _mono_tick_font() -> QtGui.QFont:
+    """The 12px monospace font used for chart axis tick labels."""
+    f = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
+    f.setPixelSize(12)
+    return f
 
 
 def _eye_icon(open_: bool) -> QtGui.QIcon:
@@ -566,6 +698,104 @@ def _eye_icon(open_: bool) -> QtGui.QIcon:
         p.drawLine(QtCore.QPointF(4, 14), QtCore.QPointF(14, 4))
     p.end()
     return QtGui.QIcon(pm)
+
+
+def _pane_icon(kind: str) -> QtGui.QIcon:
+    """Painter-drawn glyph for the pane hover toolbar — `up`/`down`/`max`/`restore`/`del`
+    (theme.TEXT3, no image assets), mirroring `_eye_icon`'s pixmap recipe."""
+    s, dpr = 18, 2
+    pm = QtGui.QPixmap(s * dpr, s * dpr)
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(QtGui.QColor(theme.TEXT3))
+    pen.setWidthF(1.5)
+    pen.setCapStyle(QtCore.Qt.RoundCap)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    p.setPen(pen)
+    if kind in ("up", "down"):
+        # chevron arrow
+        if kind == "up":
+            p.drawLine(QtCore.QPointF(4, 11), QtCore.QPointF(9, 6))
+            p.drawLine(QtCore.QPointF(9, 6), QtCore.QPointF(14, 11))
+        else:
+            p.drawLine(QtCore.QPointF(4, 7), QtCore.QPointF(9, 12))
+            p.drawLine(QtCore.QPointF(9, 12), QtCore.QPointF(14, 7))
+    elif kind == "max":
+        p.drawRect(QtCore.QRectF(4, 4, 10, 10))          # outer frame = maximize
+    elif kind == "restore":
+        p.drawRect(QtCore.QRectF(4, 6, 8, 8))            # two offset frames = restore
+        p.drawLine(QtCore.QPointF(6, 6), QtCore.QPointF(6, 4))
+        p.drawLine(QtCore.QPointF(6, 4), QtCore.QPointF(14, 4))
+        p.drawLine(QtCore.QPointF(14, 4), QtCore.QPointF(14, 12))
+        p.drawLine(QtCore.QPointF(14, 12), QtCore.QPointF(12, 12))
+    elif kind == "del":
+        p.drawLine(QtCore.QPointF(4, 5), QtCore.QPointF(14, 5))   # trash lid
+        p.drawLine(QtCore.QPointF(7, 5), QtCore.QPointF(7, 3))
+        p.drawLine(QtCore.QPointF(7, 3), QtCore.QPointF(11, 3))
+        p.drawLine(QtCore.QPointF(11, 3), QtCore.QPointF(11, 5))
+        path = QtGui.QPainterPath()                              # trash body
+        path.moveTo(5, 6)
+        path.lineTo(6, 15)
+        path.lineTo(12, 15)
+        path.lineTo(13, 6)
+        p.drawPath(path)
+    p.end()
+    return QtGui.QIcon(pm)
+
+
+class _PaneToolbar(QtWidgets.QWidget):
+    """A small floating horizontal strip of 4 buttons (move up / move down / maximize-restore /
+    delete pane), shown on pane hover at the top-right — TradingView's per-pane toolbar. Styled
+    like `_LegendRow._btn` (transparent, autoRaise, TEXT3 -> TEXT on hover). Parented to the pane
+    as a child overlay (like `_header`); hidden by default."""
+
+    moveUp = QtCore.Signal()
+    moveDown = QtCore.Signal()
+    maximizeToggled = QtCore.Signal()
+    deletePane = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(2)
+        self._up = self._btn(_pane_icon("up"), "Move pane up")
+        self._down = self._btn(_pane_icon("down"), "Move pane down")
+        self._max = self._btn(_pane_icon("max"), "Maximize pane")
+        self._del = self._btn(_pane_icon("del"), "Delete pane")
+        self._up.clicked.connect(self.moveUp)
+        self._down.clicked.connect(self.moveDown)
+        self._max.clicked.connect(self.maximizeToggled)
+        self._del.clicked.connect(self.deletePane)
+        for b in (self._up, self._down, self._max, self._del):
+            h.addWidget(b)
+        self.adjustSize()
+
+    def _btn(self, icon: QtGui.QIcon, tip: str) -> QtWidgets.QToolButton:
+        b = QtWidgets.QToolButton(self)
+        b.setCursor(QtCore.Qt.PointingHandCursor)
+        b.setAutoRaise(True)
+        b.setIcon(icon)
+        b.setIconSize(QtCore.QSize(15, 15))
+        b.setToolTip(tip)
+        b.setStyleSheet(
+            f"QToolButton{{background:transparent;border:none;color:{theme.TEXT3};padding:0 2px;}}"
+            f"QToolButton:hover{{color:{theme.TEXT};}}"
+        )
+        return b
+
+    def set_can_up(self, on: bool):
+        self._up.setEnabled(on)
+
+    def set_can_down(self, on: bool):
+        self._down.setEnabled(on)
+
+    def set_maximized(self, on: bool):
+        self._max.setIcon(_pane_icon("restore" if on else "max"))
+        self._max.setToolTip("Restore pane" if on else "Maximize pane")
 
 
 class _DragGrip(QtWidgets.QLabel):
@@ -826,9 +1056,17 @@ class OscillatorPane(pg.PlotWidget):
     actionRequested = QtCore.Signal(int, str)
     dragMoved = QtCore.Signal(object, int)  # (pane, cursor global y) — drag-to-reorder
     dragEnded = QtCore.Signal()
+    # pane-level (carry the pane, so a multi-indicator merged pane moves/deletes atomically)
+    paneMoveUp = QtCore.Signal(object)
+    paneMoveDown = QtCore.Signal(object)
+    paneMaximizeToggled = QtCore.Signal(object)
+    paneDeleteRequested = QtCore.Signal(object)
 
     def __init__(self, link_to: "PriceChart"):
-        super().__init__(axisItems={"right": PriceAxis(orientation="right")})
+        _time_axis = TimeAxis(orientation="bottom")
+        super().__init__(axisItems={"right": PriceAxis(orientation="right"),
+                                    "bottom": _time_axis})
+        self._time_axis = _time_axis
         self._inds = []           # list[_Indicator] hosted in this pane
         self._curves = {}         # uid -> {output label: PlotDataItem}
         self._rows = {}           # uid -> _LegendRow
@@ -841,12 +1079,24 @@ class OscillatorPane(pg.PlotWidget):
         self.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
         self.showAxis("right")
         self.hideAxis("left")
-        self.hideAxis("bottom")  # time axis lives on the price chart; panes align via x-link
+        # The bottom time axis is only SHOWN on the lowest pane (PriceChart._reassign_bottom_axis);
+        # kept hidden here so non-lowest panes align via x-link without a duplicated axis strip.
+        self.hideAxis("bottom")
         self.getAxis("right").setTextPen(theme.TEXT3)
         _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
         self.getAxis("right").setPen(_transparent)
         self.getAxis("right").setTickPen(pg.mkPen(theme.BORDER))
         self.getAxis("right").setStyle(tickLength=0)
+        # Bottom time axis styled exactly like the price chart's (transparent spine, BORDER
+        # gridline pen, mono tick font) so the lowest pane's axis matches the rest of the chrome.
+        _bottom = self.getAxis("bottom")
+        _bottom.setTextPen(theme.TEXT3)
+        _bottom.setPen(_transparent)
+        _bottom.setTickPen(pg.mkPen(theme.BORDER))
+        _bottom.setStyle(tickLength=0, tickFont=_mono_tick_font())
+        # Splitter floor so a pane never collapses below a readable height, independent of
+        # _resize_panes (Phase 2 disables that while a pane is maximized).
+        self.setMinimumHeight(64)
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()
         self.getViewBox().setMouseEnabled(x=False, y=False)  # driven by the price chart
@@ -868,6 +1118,19 @@ class OscillatorPane(pg.PlotWidget):
         self._hbox.setSpacing(0)
         _hh.addWidget(_rowscol)
         self._header.move(6, 3)
+
+        # TradingView-style per-pane hover toolbar (move up/down / maximize / delete), top-right.
+        self._toolbar = _PaneToolbar(self)
+        self._toolbar.moveUp.connect(lambda: self.paneMoveUp.emit(self))
+        self._toolbar.moveDown.connect(lambda: self.paneMoveDown.emit(self))
+        self._toolbar.maximizeToggled.connect(lambda: self.paneMaximizeToggled.emit(self))
+        self._toolbar.deletePane.connect(lambda: self.paneDeleteRequested.emit(self))
+        self._toolbar.hide()
+        # belt-and-braces: re-check cursor-in-rect before hiding so the bar survives a menu/popup.
+        self._tb_timer = QtCore.QTimer(self)
+        self._tb_timer.setInterval(120)
+        self._tb_timer.setSingleShot(True)
+        self._tb_timer.timeout.connect(self._maybe_hide_toolbar)
 
     @property
     def uids(self):
@@ -906,9 +1169,13 @@ class OscillatorPane(pg.PlotWidget):
 
     def _build_curves(self, ind: "_Indicator"):
         cs = {}
+        widths = getattr(ind, "widths", [1])
+        styles = getattr(ind, "styles", ["solid"])
         for i, label in enumerate(ind.series):
             col = ind.colors[i % len(ind.colors)]
-            cs[label] = self.plot([], [], pen=pg.mkPen(col, width=1))
+            pen = pg.mkPen(col, width=widths[i % len(widths)],
+                           style=_pen_style(styles[i % len(styles)]))
+            cs[label] = self.plot([], [], pen=pen)
         self._curves[ind.uid] = cs
 
     def update_ind(self, ind: "_Indicator"):
@@ -945,6 +1212,62 @@ class OscillatorPane(pg.PlotWidget):
             if ind.uid in self._rows:
                 self._rows[ind.uid].refresh(ind)
 
+    def set_bars(self, bars):
+        """Feed the pane's bottom time axis so its tick strings match the price chart's."""
+        self._time_axis.set_bars(bars)
+
+    def set_bottom_axis_visible(self, on: bool):
+        """Show/hide this pane's bottom time axis (shown only on the lowest pane)."""
+        self.showAxis("bottom") if on else self.hideAxis("bottom")
+
+    def _position_toolbar(self):
+        """Tuck the hover toolbar at the top-right, just left of the (shared-width) price axis."""
+        tb = getattr(self, "_toolbar", None)
+        if tb is None:
+            return
+        tb.adjustSize()
+        # getAxis("right").width() here is the shared axis width equalised across all panes by
+        # _sync_axis_width(); it is only valid after a prior layout pass (_align_panes /
+        # show_upto / resizeEvent), which is why toolbar positioning is re-tucked from those
+        # call sites rather than being a one-shot operation.
+        axis_w = int(self.getAxis("right").width()) if self.getAxis("right").isVisible() else 0
+        x = self.width() - axis_w - tb.width() - 4
+        tb.move(max(0, x), 3)
+        tb.raise_()
+
+    def _cursor_in_rect(self) -> bool:
+        return self.rect().contains(self.mapFromGlobal(QtGui.QCursor.pos()))
+
+    def _maybe_hide_toolbar(self):
+        if not self._cursor_in_rect():
+            self._toolbar.hide()
+
+    def enterEvent(self, e):  # noqa: N802 - Qt override
+        self._position_toolbar()
+        self._toolbar.show()
+        self._toolbar.raise_()
+        if e is not None:
+            super().enterEvent(e)
+
+    def leaveEvent(self, e):  # noqa: N802 - Qt override
+        # hide immediately when cursor is out; arm timer if cursor moved onto a child/popup
+        if self._cursor_in_rect():
+            self._tb_timer.start()   # cursor moved onto a child/popup: re-check shortly
+        else:
+            self._toolbar.hide()
+        if e is not None:
+            super().leaveEvent(e)
+
+    def resizeEvent(self, e):  # noqa: N802 - Qt override
+        super().resizeEvent(e)
+        self._position_toolbar()
+
+    def set_maximized(self, on: bool):
+        """Delegate the maximize/restore glyph swap to the pane's hover toolbar."""
+        tb = getattr(self, "_toolbar", None)
+        if tb is not None:
+            tb.set_maximized(on)
+
 
 class PriceChart(pg.PlotWidget):
     """Candles + TradeStation-style trade markers + indicator overlays + a replay cursor,
@@ -967,12 +1290,10 @@ class PriceChart(pg.PlotWidget):
         # TradingView look: NO hard spine line by the labels — the axis pen is transparent,
         # and the grid is drawn via the (visible) tick pen, so only labels + gridlines show.
         _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
-        _tick_font = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
-        _tick_font.setPixelSize(12)                          # readable axis labels (~TV's 11px)
         for _ax in ("right", "bottom"):
             self.getAxis(_ax).setPen(_transparent)          # no spine
             self.getAxis(_ax).setTickPen(pg.mkPen(theme.BORDER))  # gridline colour
-            self.getAxis(_ax).setStyle(tickLength=0, tickFont=_tick_font)
+            self.getAxis(_ax).setStyle(tickLength=0, tickFont=_mono_tick_font())
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()  # hide pyqtgraph's built-in auto-range "A" button (we have our own "Auto")
         self.addLegend(offset=(10, 30), labelTextColor=theme.TEXT2)
@@ -996,6 +1317,9 @@ class PriceChart(pg.PlotWidget):
         self._z_top = 1.0  # running z for overlay visual-order (kept above the candles at z=0)
         self._chart_interval = None  # current timeframe (for per-interval indicator visibility)
         self._vb2 = None  # secondary ViewBox for overlays pinned to their own scale
+        self._wsyncing = False  # re-entrancy guard for _sync_axis_width (mirrors _fitting)
+        self._maximized_pane = None  # the pane currently maximized (locks _resize_panes)
+        self._saved_sizes = None     # host.sizes() snapshot to restore on un-maximize
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
@@ -1207,6 +1531,7 @@ class PriceChart(pg.PlotWidget):
                                      color=_EXIT_C, text="Buy")
                 self._conn.append((ei, t.entry_price, xi, t.exit_price))
         self.show_upto(len(bars) - 1)
+        self._align_panes()
 
     def set_overlays(self, overlays: dict):
         """Set indicator overlay lines: ``{label: series aligned to bars}``."""
@@ -1246,6 +1571,7 @@ class PriceChart(pg.PlotWidget):
             self._overlays = {**self._overlays, **overlays}
         if repaint:
             self.show_upto(len(bars) - 1)
+        self._align_panes()
 
     # --- indicators (TradingView-style: pick from the catalog, overlay on the chart) ---
     def _open_indicator_picker(self):
@@ -1260,9 +1586,20 @@ class PriceChart(pg.PlotWidget):
         dlg.activateWindow()
         dlg.raise_()
 
+    def _on_splitter_moved(self, *_):
+        """A manual splitter drag exits maximize (like TV) and re-tags the pane toolbars."""
+        if self._maximized_pane is not None:
+            pane = self._maximized_pane
+            self._maximized_pane = None
+            self._saved_sizes = None
+            if pane is not None:
+                pane.set_maximized(False)
+        self._refresh_pane_toolbars()
+
     def set_pane_host(self, splitter):
         """Give the chart the vertical QSplitter it shares with its oscillator sub-panes."""
         self._pane_host = splitter
+        splitter.splitterMoved.connect(self._on_splitter_moved)
 
     def add_indicator(self, name: str, params=None, benchmark=None):
         """Add a user indicator, routed by kind: price-overlay on the candles, oscillator in a
@@ -1336,8 +1673,14 @@ class PriceChart(pg.PlotWidget):
         pane.moveRequested.connect(self.move_indicator)
         pane.actionRequested.connect(self._indicator_action)
         pane.dragMoved.connect(self._drag_pane)
+        pane.paneMoveUp.connect(self._pane_move_up)
+        pane.paneMoveDown.connect(self._pane_move_down)
+        pane.paneMaximizeToggled.connect(self._toggle_maximize_pane)
+        pane.paneDeleteRequested.connect(self._delete_pane)
         self._pane_host.addWidget(pane)
+        pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
         self._resize_panes()
+        self._refresh_pane_toolbars()
         return pane
 
     def _drag_pane(self, pane, global_y: int):
@@ -1352,15 +1695,31 @@ class PriceChart(pg.PlotWidget):
             up = host.widget(cur - 1)
             ctr = up.mapToGlobal(QtCore.QPoint(0, up.height() // 2)).y()
             if global_y < ctr:
+                # exit maximize before reordering so _resize_panes can re-lay-out freely
+                if self._maximized_pane is not None:
+                    prev_max = self._maximized_pane
+                    self._maximized_pane = None
+                    self._saved_sizes = None
+                    prev_max.set_maximized(False)
                 host.insertWidget(cur - 1, pane)
                 self._resize_panes()
+                self._align_panes()
+                self._refresh_pane_toolbars()
                 return
         if cur < host.count() - 1:  # try to move below the lower neighbour
             down = host.widget(cur + 1)
             ctr = down.mapToGlobal(QtCore.QPoint(0, down.height() // 2)).y()
             if global_y > ctr:
+                # exit maximize before reordering so _resize_panes can re-lay-out freely
+                if self._maximized_pane is not None:
+                    prev_max = self._maximized_pane
+                    self._maximized_pane = None
+                    self._saved_sizes = None
+                    prev_max.set_maximized(False)
                 host.insertWidget(cur + 1, pane)
                 self._resize_panes()
+                self._align_panes()
+                self._refresh_pane_toolbars()
 
     def _next_z(self) -> float:
         self._z_top += 1.0
@@ -1369,9 +1728,13 @@ class PriceChart(pg.PlotWidget):
     def _render(self, ind: "_Indicator"):
         if ind.kind == "overlay":
             ind.curves = {}
+            widths = getattr(ind, "widths", [1])
+            styles = getattr(ind, "styles", ["solid"])
             for i, lbl in enumerate(ind.series):
                 col = ind.colors[i % len(ind.colors)]
-                curve = pg.PlotDataItem([], [], pen=pg.mkPen(col, width=1))
+                pen = pg.mkPen(col, width=widths[i % len(widths)],
+                               style=_pen_style(styles[i % len(styles)]))
+                curve = pg.PlotDataItem([], [], pen=pen)
                 if ind.own_scale:                 # independent right scale (secondary viewbox)
                     self._ensure_vb2()
                     self._vb2.addItem(curve)
@@ -1385,6 +1748,7 @@ class PriceChart(pg.PlotWidget):
             if ind.pane is None:           # fresh add -> its own pane (merge sets ind.pane first)
                 ind.pane = self._new_pane()
             ind.pane.add_ind(ind)
+            self._align_panes()            # merge path: pane pre-set, so realign here too
         elif ind.kind == "pattern":
             ind.scatter = pg.ScatterPlotItem(hoverable=True, pen=None,
                                              tip=lambda x, y, data: str(data))
@@ -1403,9 +1767,12 @@ class PriceChart(pg.PlotWidget):
         if ind.pane is not None:
             remaining = ind.pane.remove_ind(ind.uid)
             if remaining == 0:           # last indicator left the pane -> drop the pane
+                if ind.pane is self._maximized_pane:
+                    self._maximized_pane = None  # avoid a dangling deleted-QWidget ref
                 ind.pane.setParent(None)
                 ind.pane.deleteLater()
                 self._resize_panes()
+                self._align_panes()      # after setParent(None): host no longer counts the pane
             ind.pane = None
         if ind.scatter is not None:
             self.removeItem(ind.scatter)
@@ -1489,15 +1856,26 @@ class PriceChart(pg.PlotWidget):
             return
         dlg = _IndicatorSettings(ind, self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        dlg.applied.connect(lambda params, colors, u=uid: self._apply_edit(u, params, colors))
+        dlg.applied.connect(
+            lambda params, colors, widths, styles, intervals, u=uid: self._apply_edit(
+                u, params, colors, widths=widths, styles=styles, intervals=intervals
+            )
+        )
         dlg.exec()
 
-    def _apply_edit(self, uid: int, params: dict, colors: list):
+    def _apply_edit(self, uid: int, params: dict, colors: list,
+                    widths=_UNSET, styles=_UNSET, intervals=_UNSET):
         ind = self._indicators.get(uid)
         if ind is None:
             return
         ind.params = params
         ind.colors = colors or ind.colors
+        if widths is not _UNSET:
+            ind.widths = widths
+        if styles is not _UNSET:
+            ind.styles = styles
+        if intervals is not _UNSET:
+            ind.intervals = intervals
         if ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             self._compute(ind)
             ind.pane.update_ind(ind)
@@ -1506,16 +1884,27 @@ class PriceChart(pg.PlotWidget):
             self._unrender(ind)
             self._compute(ind)
             self._render(ind)
+        # interval/visibility ALWAYS recomputed in BOTH branches (the oscillator branch above
+        # never recomputes ind.shown, so an interval edit would otherwise wait for a timeframe
+        # change). Order: _sync_shown -> _apply_visibility -> _reveal_indicator.
+        self._sync_shown(ind)
+        self._apply_visibility(ind)
+        self._reveal_indicator(ind, self._reveal_index())
         self._refresh_legends()
 
     def clone_indicator(self, uid: int):
-        """Duplicate an indicator (same params/colours) — TradingView's 'Clone'."""
+        """Duplicate an indicator (same params/colours/width/style/intervals) — TV's 'Clone'."""
         ind = self._indicators.get(uid)
         if ind is None:
             return None
         clone = self.add_indicator(ind.name, params=dict(ind.params), benchmark=ind.benchmark)
-        if clone is not None and ind.colors:
-            self._apply_edit(clone.uid, dict(clone.params), list(ind.colors))
+        if clone is not None:
+            self._apply_edit(
+                clone.uid, dict(clone.params), list(ind.colors),
+                widths=list(getattr(ind, "widths", clone.widths)),
+                styles=list(getattr(ind, "styles", clone.styles)),
+                intervals=(set(ind.intervals) if ind.intervals is not None else None),
+            )
         return clone
 
     def open_object_tree(self):
@@ -1580,6 +1969,7 @@ class PriceChart(pg.PlotWidget):
             return
         elif target in ("merge_above", "merge_below"):
             self._merge_into_adjacent(ind, target)
+        self._align_panes()  # finalize alignment after the unrender/render churn settles
         self._refresh_legends()
 
     def _reorder_pane(self, ind: "_Indicator", direction: str):
@@ -1591,6 +1981,7 @@ class PriceChart(pg.PlotWidget):
         if 1 <= new <= host.count() - 1:   # keep below the price chart (index 0)
             host.insertWidget(new, ind.pane)
             self._resize_panes()
+            self._align_panes()
 
     def _merge_into_adjacent(self, ind: "_Indicator", direction: str):
         host = self._pane_host
@@ -1607,6 +1998,167 @@ class PriceChart(pg.PlotWidget):
         ind.kind = "oscillator"
         ind.pane = target_pane             # _render adds it into the existing pane
         self._render(ind)
+
+    def _pane_move_up(self, pane):
+        """Move a whole pane up one slot via its hover toolbar (keyed off the pane object, so a
+        merged multi-indicator pane moves atomically). Clamped to index >= 1 (never above price)."""
+        host = self._pane_host
+        if host is None:
+            return
+        idx = host.indexOf(pane)
+        if idx <= 1:
+            return  # already topmost oscillator pane (price is fixed at index 0)
+        host.insertWidget(idx - 1, pane)
+        self._after_pane_reorder()
+
+    def _pane_move_down(self, pane):
+        host = self._pane_host
+        if host is None:
+            return
+        idx = host.indexOf(pane)
+        if idx < 1 or idx >= host.count() - 1:
+            return  # already the bottom pane
+        host.insertWidget(idx + 1, pane)
+        self._after_pane_reorder()
+
+    def _after_pane_reorder(self):
+        """Common tail for a toolbar-driven reorder: resize, re-tag toolbars, and realign the
+        shared axis + bottom-time axis to the new lowest pane (Phase 1)."""
+        self._resize_panes()
+        self._align_panes()
+        self._refresh_pane_toolbars()
+
+    def _delete_pane(self, pane):
+        """Delete a whole pane via its toolbar: remove every indicator it hosts (the last
+        removal triggers `_unrender`'s empty-pane teardown), then re-tag the survivors. Null any
+        dangling maximized-pane lock so we don't reference a deleted QWidget."""
+        if pane is self._maximized_pane:
+            self._maximized_pane = None
+        for uid in list(pane.uids):
+            self.remove_indicator(uid)
+        self._refresh_pane_toolbars()
+
+    def _toggle_maximize_pane(self, pane):
+        """Toggle a pane between maximized and the normal stacked layout (TradingView's pane
+        maximize). Maximizing keeps a real price floor so OHLC stays visible; restoring replays
+        the user's pre-maximize splitter proportions when the pane count is unchanged."""
+        host = self._pane_host
+        if host is None:
+            return
+        if pane is self._maximized_pane:        # --- restore ---
+            self._maximized_pane = None
+            if self._saved_sizes is not None and len(self._saved_sizes) == host.count():
+                host.setSizes(self._saved_sizes)  # preserve user-dragged proportions (TV)
+            else:
+                self._resize_panes()
+            self._saved_sizes = None
+            pane.set_maximized(False)
+        else:                                    # --- maximize ---
+            self._saved_sizes = host.sizes()
+            self._maximized_pane = pane
+            total = sum(self._saved_sizes) or (host.height() or 600)
+            n = host.count()
+            idx = host.indexOf(pane)
+            price_floor = max(140, int(total * 0.15))
+            others = max(1, n - 2)               # panes that aren't price and aren't maximized
+            slim = 1                             # minimal share for the non-maximized panes
+            big = max(price_floor, total - price_floor - slim * others)
+            sizes = [slim] * n
+            sizes[0] = price_floor
+            sizes[idx] = big
+            host.setSizes(sizes)
+            pane.set_maximized(True)
+        self._refresh_pane_toolbars()
+
+    def _panes_in_visual_order(self):
+        """Oscillator panes in top-to-bottom splitter order (NOT dict-insertion order).
+        Use this everywhere pane *order* matters — the bottom time axis and shared
+        axis width key off the lowest pane, which `_osc_panes()` (dict order) can't track
+        after a drag/reorder."""
+        host = self._pane_host
+        if host is None:
+            return []
+        return [host.widget(i) for i in range(1, host.count())
+                if isinstance(host.widget(i), OscillatorPane)]
+
+    def _axis_natural_width(self, axis) -> float:
+        """The width a right AxisItem *would* take for its CURRENT tick strings, computed
+        synchronously via QFontMetrics — paint-independent so headless tests can assert it
+        immediately. Mirrors pyqtgraph's AxisItem._updateWidth:
+            textWidth + style['tickTextOffset'][0] + max(0, style['tickLength']).
+        Reading axis.width() instead is unsafe: in pyqtgraph 0.14.0 it returns geometry from
+        the *last* layout pass, so it is stale (or 0) right after setWidth()."""
+        if not axis.isVisible():
+            return 0.0
+        mn, mx = axis.range
+        size = axis.height() or 300
+        try:
+            levels = axis.tickValues(mn, mx, size)
+        except Exception:  # noqa: BLE001 - degenerate range -> no strings to measure
+            levels = []
+        strings = []
+        for spacing, values in levels:
+            try:
+                strings += [s for s in axis.tickStrings(values, axis.scale, spacing) if s]
+            except Exception:  # noqa: BLE001
+                pass
+        font = axis.style.get("tickFont") or axis.font()
+        fm = QtGui.QFontMetrics(font)
+        text_w = max((fm.horizontalAdvance(s) for s in strings), default=axis.textWidth)
+        return float(text_w + axis.style["tickTextOffset"][0] + max(0, axis.style["tickLength"]))
+
+    def _sync_axis_width(self):
+        """Pin every pane's right price axis (and the price chart's) to one shared width so
+        plot columns are pixel-aligned in time. Width is the max natural width across axes,
+        computed synchronously (no dependence on a pending paint). When there are no panes,
+        the price axis is restored to auto so a lone chart isn't stuck at a stale pinned width."""
+        if self._wsyncing:
+            return
+        self._wsyncing = True
+        try:
+            panes = self._panes_in_visual_order()
+            price_ax = self.getAxis("right")
+            if not panes:
+                price_ax.setWidth(None)  # lone chart -> auto width
+                self.getPlotItem().layout.activate()
+                return
+            axes = [price_ax] + [p.getAxis("right") for p in panes]
+            w = int(round(max(self._axis_natural_width(a) for a in axes)))
+            for a in axes:
+                a.setWidth(w)
+            self.getPlotItem().layout.activate()
+            for p in panes:
+                p.getPlotItem().layout.activate()
+        finally:
+            self._wsyncing = False
+
+    def _reassign_bottom_axis(self):
+        """Keep exactly one visible bottom time axis, on the LOWEST pane (TradingView puts the
+        time scale under the lowest pane, not under the candles). With no panes the price chart
+        keeps its own bottom axis."""
+        panes = self._panes_in_visual_order()
+        if not panes:
+            self.showAxis("bottom")
+            self._time_axis.set_bars(self._bars)
+        else:
+            self.hideAxis("bottom")
+            for p in panes:
+                p.set_bottom_axis_visible(False)
+                p.set_bars(self._bars)
+            panes[-1].set_bottom_axis_visible(True)  # lowest splitter index = bottom
+        # hideAxis/showAxis only INVALIDATE the layout (lazy); force it + re-sync the own-scale
+        # viewbox now so own-scale overlays don't lag behind the grown/shrunk price ViewBox.
+        self.getPlotItem().layout.activate()
+        self._sync_vb2()
+        self._autorange_vb2()
+
+    def _align_panes(self):
+        """Re-align every pane in time after any layout/lifecycle change. Idempotent and safe
+        with zero panes. Order matters: reassign the bottom axis FIRST (it changes which axes
+        are visible and their natural widths), THEN equalize the right-axis width across the
+        now-correct set of axes."""
+        self._reassign_bottom_axis()
+        self._sync_axis_width()
 
     def _osc_panes(self):
         seen, panes = set(), []
@@ -1680,24 +2232,47 @@ class PriceChart(pg.PlotWidget):
     def _toggle_interval_visibility(self, ind: "_Indicator", interval: str):
         """Toggle whether ``ind`` shows on ``interval``. ``ind.intervals`` is None when it shows
         on all timeframes; otherwise it's the explicit set of allowed timeframes."""
-        all_iv = [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+        all_iv = _all_intervals()
         cur = set(ind.intervals) if ind.intervals is not None else set(all_iv)
         cur.discard(interval) if interval in cur else cur.add(interval)
-        ind.intervals = None if cur >= set(all_iv) else cur
+        ind.intervals = _normalize_intervals(cur)
         self._apply_visibility(ind)
         self._reveal_indicator(ind, self._reveal_index())
         self._refresh_legends()
 
     def _resize_panes(self):
-        """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked)."""
+        """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked).
+        The LOWEST pane gets an extra axis-strip (~20px) so its PLOT area matches its siblings'
+        (the bottom time axis lives there); cosmetic only — x-alignment is independent.
+        No-op while a pane is maximized so add/remove/reorder don't stomp the maximized layout."""
         host = self._pane_host
         if host is None or host.count() <= 1:
             return
+        if self._maximized_pane is not None:
+            return
         n_panes = host.count() - 1
         total = host.height() or 600
+        axis_strip = 20  # bottom time-axis height on the lowest pane
         pane_h = max(96, int(total * 0.22))
-        price_h = max(140, total - pane_h * n_panes)
-        host.setSizes([price_h] + [pane_h] * n_panes)
+        price_h = max(140, total - pane_h * n_panes - axis_strip)
+        sizes = [price_h] + [pane_h] * n_panes
+        sizes[-1] += axis_strip  # lowest pane carries the axis strip
+        host.setSizes(sizes)
+
+    def _refresh_pane_toolbars(self):
+        """Sync every pane's hover-toolbar state to its current visual position: up enabled when
+        a pane is above, down enabled when a pane is below, max glyph reflecting the maximized
+        pane. Also re-tucks each toolbar left of the (now-settled) shared right axis."""
+        panes = self._panes_in_visual_order()
+        n = len(panes)
+        for p, pane in enumerate(panes):
+            tb = getattr(pane, "_toolbar", None)
+            if tb is None:
+                continue
+            tb.set_can_up(p > 0)
+            tb.set_can_down(p < n - 1)
+            tb.set_maximized(pane is self._maximized_pane)
+            pane._position_toolbar()
 
     def _refresh_legends(self):
         """Rebuild the price-pane legend (overlay + pattern indicators) + refresh pane headers."""
@@ -1754,6 +2329,10 @@ class PriceChart(pg.PlotWidget):
         for ind in self._indicators.values():  # reveal user indicators (overlay/osc/pattern)
             self._reveal_indicator(ind, index)
         self._autorange_vb2()  # fit own-scale overlays on their independent right axis
+        # axis label width only settles once data is revealed; re-tuck the pane toolbars so they
+        # clear the (now-known) shared right axis.
+        if self._pane_host is not None and self._panes_in_visual_order():
+            self._refresh_pane_toolbars()
 
     def _add_marker(self, x, price, *, below, symbol, color, text):
         """Register a trade marker + its bold 'Buy'/'Sell' label (TradeStation style)."""
@@ -1921,17 +2500,24 @@ class PriceChart(pg.PlotWidget):
         self._cx_price_tag.move(self.width() - self._cx_price_tag.width() - 1,
                                 py - self._cx_price_tag.height() // 2)
         self._cx_price_tag.show()
-        dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
-        self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
-        self._cx_time_tag.adjustSize()
-        self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
-                               self.height() - self._cx_time_tag.height() - 1)
-        self._cx_time_tag.show()
+        if self._panes_in_visual_order():
+            # the time axis moved to the lowest pane -> this tag would float over the price plot
+            # with no axis beneath it. Hide it (Phase 4 adds the bottom-pane time tag).
+            self._cx_time_tag.hide()
+        else:
+            dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
+            self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
+            self._cx_time_tag.adjustSize()
+            self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
+                                   self.height() - self._cx_time_tag.height() - 1)
+            self._cx_time_tag.show()
         # NB: the OHLC header is intentionally NOT updated to the hovered bar — it stays
         # pinned to the latest candle (the crosshair still reads price/time off the axes).
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        if getattr(self, "_pane_host", None) is not None and self._panes_in_visual_order():
+            self._align_panes()  # width settles after a resize -> re-equalize before reading it
         if hasattr(self, "_top_bar"):
             # span the chart width but stop short of the right price-axis labels, so the
             # far-right range selector clears them.
@@ -1955,6 +2541,7 @@ class PriceChart(pg.PlotWidget):
             for ind in self._indicators.values():
                 self._sync_shown(ind)
                 self._reveal_indicator(ind, self._reveal_index())
+        self._align_panes()
 
 
 class EquityChart(pg.PlotWidget):
