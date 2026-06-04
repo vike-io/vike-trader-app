@@ -25,6 +25,7 @@ from vike_trader_app.ui.chart import (  # noqa: E402
     _PaneLegend,
     OscillatorPane,
     PriceChart,
+    TimeAxis,
 )
 
 
@@ -473,3 +474,31 @@ def test_sync_axis_width_no_recursion(app):
     pc._wsyncing = False
     pc._sync_axis_width()        # now it runs and measures
     assert calls
+
+
+def test_oscillator_pane_has_hidden_bottom_time_axis(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    assert isinstance(pane._time_axis, TimeAxis)
+    assert pane.getAxis("bottom") is pane._time_axis
+    assert pane.getAxis("bottom").isVisible() is False  # hidden at init (price chart owns it)
+
+
+def test_oscillator_pane_set_bars_feeds_time_axis(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    bs = _bars(30)
+    pane.set_bars(bs)
+    assert pane._time_axis._bars is bs
+
+
+def test_oscillator_pane_set_bottom_axis_visible_toggles(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.set_bottom_axis_visible(True)
+    assert pane.getAxis("bottom").isVisible() is True
+    pane.set_bottom_axis_visible(False)
+    assert pane.getAxis("bottom").isVisible() is False

@@ -828,7 +828,10 @@ class OscillatorPane(pg.PlotWidget):
     dragEnded = QtCore.Signal()
 
     def __init__(self, link_to: "PriceChart"):
-        super().__init__(axisItems={"right": PriceAxis(orientation="right")})
+        _time_axis = TimeAxis(orientation="bottom")
+        super().__init__(axisItems={"right": PriceAxis(orientation="right"),
+                                    "bottom": _time_axis})
+        self._time_axis = _time_axis
         self._inds = []           # list[_Indicator] hosted in this pane
         self._curves = {}         # uid -> {output label: PlotDataItem}
         self._rows = {}           # uid -> _LegendRow
@@ -841,12 +844,23 @@ class OscillatorPane(pg.PlotWidget):
         self.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
         self.showAxis("right")
         self.hideAxis("left")
-        self.hideAxis("bottom")  # time axis lives on the price chart; panes align via x-link
+        # The bottom time axis is only SHOWN on the lowest pane (PriceChart._reassign_bottom_axis);
+        # kept hidden here so non-lowest panes align via x-link without a duplicated axis strip.
+        self.hideAxis("bottom")
         self.getAxis("right").setTextPen(theme.TEXT3)
         _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
         self.getAxis("right").setPen(_transparent)
         self.getAxis("right").setTickPen(pg.mkPen(theme.BORDER))
         self.getAxis("right").setStyle(tickLength=0)
+        # Bottom time axis styled exactly like the price chart's (transparent spine, BORDER
+        # gridline pen, mono tick font) so the lowest pane's axis matches the rest of the chrome.
+        _bottom = self.getAxis("bottom")
+        _bottom.setTextPen(theme.TEXT3)
+        _bottom.setPen(_transparent)
+        _bottom.setTickPen(pg.mkPen(theme.BORDER))
+        _tick_font = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
+        _tick_font.setPixelSize(12)
+        _bottom.setStyle(tickLength=0, tickFont=_tick_font)
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()
         self.getViewBox().setMouseEnabled(x=False, y=False)  # driven by the price chart
@@ -944,6 +958,14 @@ class OscillatorPane(pg.PlotWidget):
         for ind in self._inds:
             if ind.uid in self._rows:
                 self._rows[ind.uid].refresh(ind)
+
+    def set_bars(self, bars):
+        """Feed the pane's bottom time axis so its tick strings match the price chart's."""
+        self._time_axis.set_bars(bars)
+
+    def set_bottom_axis_visible(self, on: bool):
+        """Show/hide this pane's bottom time axis (shown only on the lowest pane)."""
+        self.showAxis("bottom") if on else self.hideAxis("bottom")
 
 
 class PriceChart(pg.PlotWidget):
