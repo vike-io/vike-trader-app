@@ -101,3 +101,49 @@ def test_load_old_format_without_ranges_is_back_compat(tmp_path):
     (p / "old.json").write_text(json.dumps({"name": "old", "symbols": ["X"], "provider": None, "interval": "1m"}))
     back = ds.load_dataset("old", str(tmp_path))
     assert back is not None and back.symbols == ["X"] and back.ranges == {} and back.is_dynamic() is False
+
+
+# --- benchmark field ---
+
+def test_benchmark_field_defaults_to_empty_string():
+    d = DataSet("T", ["BTCUSDT"])
+    assert d.benchmark == ""
+
+
+def test_benchmark_roundtrips_through_to_dict_from_dict():
+    from vike_trader_app.data.datasets import _dataset_to_dict, _dataset_from_dict
+    d = DataSet("T", ["BTCUSDT", "ETHUSDT"], provider="binance", interval="1h", benchmark="BTCUSDT")
+    back = _dataset_from_dict(_dataset_to_dict(d))
+    assert back.benchmark == "BTCUSDT"
+    assert back == d
+
+
+def test_benchmark_roundtrips_through_save_load(tmp_path):
+    d = DataSet("BenchDS", ["AAPL", "MSFT"], provider=None, interval="1d", benchmark="SPY")
+    ds.save_dataset(d, str(tmp_path))
+    back = ds.load_dataset("BenchDS", str(tmp_path))
+    assert back is not None
+    assert back.benchmark == "SPY"
+    assert back == d
+
+
+def test_benchmark_absent_key_loads_as_empty_string(tmp_path):
+    """Old JSON files without a 'benchmark' key must load with benchmark='' (back-compat)."""
+    import json
+    from pathlib import Path
+    p = Path(str(tmp_path)) / "datasets"
+    p.mkdir(parents=True, exist_ok=True)
+    # Write a file that has no "benchmark" key
+    (p / "old-no-bench.json").write_text(
+        json.dumps({"name": "old-no-bench", "symbols": ["X"], "provider": None, "interval": "1m"})
+    )
+    back = ds.load_dataset("old-no-bench", str(tmp_path))
+    assert back is not None and back.benchmark == ""
+
+
+def test_benchmark_empty_string_roundtrips(tmp_path):
+    """An explicitly empty benchmark saves and loads as ''."""
+    d = DataSet("NoBench", ["X"], benchmark="")
+    ds.save_dataset(d, str(tmp_path))
+    back = ds.load_dataset("NoBench", str(tmp_path))
+    assert back is not None and back.benchmark == ""

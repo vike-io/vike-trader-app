@@ -629,3 +629,133 @@ def test_benchmark_curve_single_symbol():
     # benchmark[0] = cash; benchmark[-1] = cash * (14 / 10) = 1400
     assert abs(result.benchmark_curve[0] - cash) < 1e-6
     assert abs(result.benchmark_curve[-1] - cash * (14.0 / 10.0)) < 1e-6
+
+
+# --- configurable benchmark symbol ---
+
+from vike_trader_app.core.portfolio_adapter import _buyhold_asof  # noqa: E402
+
+
+def test_buyhold_asof_pure_helper_rises_with_symbol():
+    """Symbol rising 20%: curve starts at cash, ends at cash * 1.20."""
+    n = 5
+    # closes: 100, 105, 110, 115, 120  (+20% total)
+    bench_bars = [_bar(i, 100.0 + i * 5.0) for i in range(n)]
+    equity_ts = [i for i in range(n)]
+    cash = 1_000.0
+    curve = _buyhold_asof(bench_bars, equity_ts, cash)
+    assert len(curve) == n
+    assert abs(curve[0] - cash) < 1e-9          # starts at cash (ratio=1.0)
+    assert abs(curve[-1] - cash * 1.20) < 1e-9  # ends at +20%
+
+
+def test_buyhold_asof_forward_fills_sparser_benchmark():
+    """Benchmark has 3 bars at ts=0,2,4 but equity has 5 points at ts=0..4.
+    The gap at ts=1 must use the bar from ts=0 (forward-fill); ts=3 uses ts=2."""
+    bench_bars = [_bar(0, 100.0), _bar(2, 120.0), _bar(4, 140.0)]
+    equity_ts = [0, 1, 2, 3, 4]
+    cash = 1_000.0
+    curve = _buyhold_asof(bench_bars, equity_ts, cash)
+    # ts=0 → close 100 → ratio 1.0 → 1000
+    assert abs(curve[0] - 1000.0) < 1e-9
+    # ts=1 → forward-fill from ts=0 close 100 → still 1000
+    assert abs(curve[1] - 1000.0) < 1e-9
+    # ts=2 → close 120 → ratio 1.2 → 1200
+    assert abs(curve[2] - 1200.0) < 1e-9
+    # ts=3 → forward-fill from ts=2 close 120 → still 1200
+    assert abs(curve[3] - 1200.0) < 1e-9
+    # ts=4 → close 140 → ratio 1.4 → 1400
+    assert abs(curve[4] - 1400.0) < 1e-9
+
+
+def test_buyhold_asof_equity_ts_before_first_benchmark_bar():
+    """Equity timestamps before the first benchmark bar must produce cash (ratio 1.0)."""
+    bench_bars = [_bar(10, 200.0), _bar(20, 240.0)]  # start at ts=10
+    equity_ts = [5, 10, 15, 20]                        # ts=5 is before bench
+    cash = 2_000.0
+    curve = _buyhold_asof(bench_bars, equity_ts, cash)
+    # ts=5 is before first benchmark bar → ratio 1.0 → cash
+    assert abs(curve[0] - cash) < 1e-9
+    # ts=10 → close 200 → ratio 1.0 (same as first_close)
+    assert abs(curve[1] - cash) < 1e-9
+    # ts=15 → forward-fill from ts=10 close 200 → 2000
+    assert abs(curve[2] - cash) < 1e-9
+    # ts=20 → close 240 → ratio 1.2 → 2400
+    assert abs(curve[3] - cash * 1.20) < 1e-9
+
+
+def test_runner_with_benchmark_bars_overrides_equal_weight():
+    """Passing benchmark_bars to the runner overrides the equal-weight default."""
+    a = [_bar(i, 10.0) for i in range(5)]   # flat symbol A
+    # benchmark rises 20%: 100 → 120
+    bench = [_bar(i, 100.0 + i * 5.0) for i in range(5)]
+    cash = 1_000.0
+    runner = MultiSymbolStrategyRunner(
+        BuyHold, {"A": a}, TesterConfig(cash=cash),
+        benchmark_bars=bench, benchmark_label="SPY",
+    )
+    result = runner.run()
+    assert result.benchmark_label == "SPY"
+    assert len(result.benchmark_curve) == len(result.equity_curve)
+    # benchmark starts at cash
+    assert abs(result.benchmark_curve[0] - cash) < 1e-9
+    # benchmark ends at +20%
+    assert abs(result.benchmark_curve[-1] - cash * 1.20) < 1e-9
+
+
+def test_runner_without_benchmark_bars_uses_equal_weight_default():
+    """No benchmark_bars → falls back to equal-weight (existing behaviour unchanged)."""
+    a = [_bar(i, 10.0 + i) for i in range(4)]
+    runner = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=1_000.0))
+    result = runner.run()
+    assert result.benchmark_label == "Equal-weight buy & hold"
+
+
+def test_runner_benchmark_label_defaults_to_benchmark_when_no_label_given():
+    """benchmark_bars set but no label → label becomes 'Benchmark'."""
+    bench = [_bar(i, 50.0 + i) for i in range(4)]
+    runner = MultiSymbolStrategyRunner(
+        BuyHold, {"A": [_bar(i, 10.0) for i in range(4)]},
+        TesterConfig(cash=500.0),
+        benchmark_bars=bench,
+        # no benchmark_label
+    )
+    result = runner.run()
+    assert result.benchmark_label == "Benchmark"
+
+
+def test_runner_benchmark_bars_length_matches_equity_curve():
+    """benchmark_curve must have the same length as equity_curve even when timelines differ."""
+    # equity has 6 points; benchmark only has 3 bars
+    a = [_bar(i * 2, 100.0) for i in range(6)]      # ts = 0,2,4,6,8,10
+    bench = [_bar(0, 100.0), _bar(4, 110.0), _bar(8, 120.0)]
+    runner = MultiSymbolStrategyRunner(
+        BuyHold, {"A": a}, TesterConfig(cash=1_000.0),
+        benchmark_bars=bench, benchmark_label="IDX",
+    )
+    result = runner.run()
+    assert len(result.benchmark_curve) == len(result.equity_curve) == 6
+
+
+def test_runner_guard_empty_benchmark_bars_falls_back_to_equal_weight():
+    """Empty benchmark_bars list → guard triggers, falls back to equal-weight."""
+    a = [_bar(i, 10.0 + i) for i in range(4)]
+    runner = MultiSymbolStrategyRunner(
+        BuyHold, {"A": a}, TesterConfig(cash=1_000.0),
+        benchmark_bars=[],  # empty → guard
+        benchmark_label="SPY",
+    )
+    result = runner.run()
+    assert result.benchmark_label == "Equal-weight buy & hold"
+
+
+def test_runner_guard_non_positive_first_close_falls_back():
+    """Benchmark whose first bar has close <= 0 must fall back to equal-weight (div-by-zero guard)."""
+    bench = [_bar(i, 0.0) for i in range(4)]   # first_close = 0.0 → guard
+    a = [_bar(i, 10.0) for i in range(4)]
+    runner = MultiSymbolStrategyRunner(
+        BuyHold, {"A": a}, TesterConfig(cash=1_000.0),
+        benchmark_bars=bench, benchmark_label="BAD",
+    )
+    result = runner.run()
+    assert result.benchmark_label == "Equal-weight buy & hold"

@@ -54,3 +54,36 @@ def test_test_dynamic_dataset_runs_with_membership_ranges(app):
     win.datamanager.test_dataset_requested.emit(ds, {"A": a, "B": b})
     assert win.tabs.currentWidget() is win.studio
     assert win.studio.results.last_report is not None
+
+
+def test_test_dataset_with_benchmark_symbol_uses_bars_from_bars_by_symbol(app):
+    """DataSet.benchmark set to a symbol present in bars_by_symbol → report.benchmark_label == that symbol."""
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    win = MainWindow()
+    win.studio.editor.setText(TEMPLATES[0].code)
+    a = _bars(60)
+    spy = _bars(60)
+    # DataSet with benchmark="SPY"; SPY bars are in the bars_by_symbol dict
+    ds = DataSet("DS", ["A"], interval="1m", benchmark="SPY")
+    win.datamanager.test_dataset_requested.emit(ds, {"A": a, "SPY": spy})
+    assert win.tabs.currentWidget() is win.studio
+    assert win.studio.results.last_report is not None
+    assert win.studio.results.last_report.benchmark_label == "SPY"
+
+
+def test_test_dataset_benchmark_missing_from_cache_falls_back_gracefully(app, monkeypatch):
+    """DataSet.benchmark set but symbol NOT in bars_by_symbol and cache load fails → run succeeds
+    with equal-weight fallback (no crash)."""
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+    win = MainWindow()
+    win.studio.editor.setText(TEMPLATES[0].code)
+    a = _bars(60)
+    # Monkeypatch read_series to always return [] so the cache load fails cleanly
+    import vike_trader_app.data.parquet_source as ps
+    monkeypatch.setattr(ps, "read_series", lambda *args, **kwargs: [])
+    ds = DataSet("DS2", ["A"], interval="1m", benchmark="MISSING")
+    win.datamanager.test_dataset_requested.emit(ds, {"A": a})
+    # must not crash and must still produce a report
+    assert win.studio.results.last_report is not None
+    # fallback to equal-weight
+    assert win.studio.results.last_report.benchmark_label == "Equal-weight buy & hold"
