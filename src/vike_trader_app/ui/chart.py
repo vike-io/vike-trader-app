@@ -620,6 +620,59 @@ def _pane_icon(kind: str) -> QtGui.QIcon:
     return QtGui.QIcon(pm)
 
 
+class _PaneToolbar(QtWidgets.QWidget):
+    """A small floating horizontal strip of 4 buttons (move up / move down / maximize-restore /
+    delete pane), shown on pane hover at the top-right — TradingView's per-pane toolbar. Styled
+    like `_LegendRow._btn` (transparent, autoRaise, TEXT3 -> TEXT on hover). Parented to the pane
+    as a child overlay (like `_header`); hidden by default."""
+
+    moveUp = QtCore.Signal()
+    moveDown = QtCore.Signal()
+    maximizeToggled = QtCore.Signal()
+    deletePane = QtCore.Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet("background:transparent;")
+        h = QtWidgets.QHBoxLayout(self)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(2)
+        self._up = self._btn(_pane_icon("up"), "Move pane up")
+        self._down = self._btn(_pane_icon("down"), "Move pane down")
+        self._max = self._btn(_pane_icon("max"), "Maximize pane")
+        self._del = self._btn(_pane_icon("del"), "Delete pane")
+        self._up.clicked.connect(self.moveUp)
+        self._down.clicked.connect(self.moveDown)
+        self._max.clicked.connect(self.maximizeToggled)
+        self._del.clicked.connect(self.deletePane)
+        for b in (self._up, self._down, self._max, self._del):
+            h.addWidget(b)
+        self.adjustSize()
+
+    def _btn(self, icon: QtGui.QIcon, tip: str) -> QtWidgets.QToolButton:
+        b = QtWidgets.QToolButton(self)
+        b.setCursor(QtCore.Qt.PointingHandCursor)
+        b.setAutoRaise(True)
+        b.setIcon(icon)
+        b.setIconSize(QtCore.QSize(15, 15))
+        b.setToolTip(tip)
+        b.setStyleSheet(
+            f"QToolButton{{background:transparent;border:none;color:{theme.TEXT3};padding:0 2px;}}"
+            f"QToolButton:hover{{color:{theme.TEXT};}}"
+        )
+        return b
+
+    def set_can_up(self, on: bool):
+        self._up.setEnabled(on)
+
+    def set_can_down(self, on: bool):
+        self._down.setEnabled(on)
+
+    def set_maximized(self, on: bool):
+        self._max.setIcon(_pane_icon("restore" if on else "max"))
+        self._max.setToolTip("Restore pane" if on else "Maximize pane")
+
+
 class _DragGrip(QtWidgets.QLabel):
     """A small ⠿ handle for drag-to-reorder of an oscillator pane. Emits the cursor's global y
     while dragging so the chart can live-reorder the panes, and a signal on release."""

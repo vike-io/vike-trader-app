@@ -756,3 +756,28 @@ def test_pane_icon_renders_all_kinds(app):
         assert not ic.isNull()
         pm = ic.pixmap(18, 18)
         assert not pm.isNull() and pm.width() > 0
+
+
+def test_pane_toolbar_signals_and_state(app):
+    from vike_trader_app.ui.chart import _PaneToolbar
+    tb = _PaneToolbar()
+    fired = []
+    tb.moveUp.connect(lambda: fired.append("up"))
+    tb.moveDown.connect(lambda: fired.append("down"))
+    tb.maximizeToggled.connect(lambda: fired.append("max"))
+    tb.deletePane.connect(lambda: fired.append("del"))
+    tb._up.click()
+    tb._down.click()
+    tb._max.click()
+    tb._del.click()
+    assert fired == ["up", "down", "max", "del"]
+    tb.set_can_up(False)
+    assert not tb._up.isEnabled()
+    tb.set_can_down(False)
+    assert not tb._down.isEnabled()
+    tb.set_can_up(True)
+    tb.set_can_down(True)
+    assert tb._up.isEnabled() and tb._down.isEnabled()
+    tb.set_maximized(True)  # swaps glyph/tooltip, must not crash
+    tb.set_maximized(False)
+    assert len(tb.findChildren(QtWidgets.QToolButton)) == 4
