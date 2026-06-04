@@ -1283,6 +1283,58 @@ class OscillatorPane(pg.PlotWidget):
         if e is not None:
             super().leaveEvent(e)
 
+    def _series_value_at(self, index: int):
+        """The hosted indicators' values at bar ``index`` (one per visible curve), for the
+        value-tag read-out. Reads ind.series ONLY — never band lines — and skips None/warm-up."""
+        vals = []
+        for ind in self._inds:
+            if not ind.shown:
+                continue
+            for label in self._curves.get(ind.uid, {}):
+                series = ind.series.get(label, [])
+                if 0 <= index < len(series) and series[index] is not None:
+                    vals.append(series[index])
+        return vals
+
+    def set_crosshair_x(self, x):
+        """Snap the pane's vertical crosshair to round(x) and place a value tag at the right
+        scale. Skips the repaint when the snapped bar is unchanged (FullViewportUpdate repaints
+        the whole pane on every move)."""
+        bar = int(round(x))
+        if bar == self._cx_bar and self._cx_v.isVisible():
+            return
+        self._cx_bar = bar
+        self._cx_v.setPos(bar)
+        self._cx_v.show()
+        vals = self._series_value_at(bar)
+        if not vals:
+            self._cx_val_tag.hide()
+            return
+        val = vals[0]
+        self._cx_val_tag.setText(f"{val:,.2f}")
+        self._cx_val_tag.adjustSize()
+        axis_w = int(self.getAxis("right").width()) if self.getAxis("right").isVisible() else 0
+        scene_pt = self.getViewBox().mapViewToScene(QtCore.QPointF(bar, val))
+        x_px = self.width() - axis_w - self._cx_val_tag.width() - 1
+        self._cx_val_tag.move(max(0, x_px), int(scene_pt.y()) - self._cx_val_tag.height() // 2)
+        self._cx_val_tag.show()
+
+    def clear_crosshair(self):
+        """Hide this pane's vertical crosshair line + value/time tags (cross-pane clear)."""
+        self._cx_v.hide()
+        self._cx_val_tag.hide()
+        self._cx_time_tag.hide()
+        self._cx_bar = None
+
+    def set_time_tag(self, text, scene_x):
+        """Bottom-edge time label (lowest pane only). x is in THIS pane's scene coords."""
+        self._cx_time_tag.setText(text)
+        self._cx_time_tag.adjustSize()
+        h = self._cx_time_tag.height()
+        self._cx_time_tag.move(int(scene_x) - self._cx_time_tag.width() // 2,
+                               self.height() - h - 1)
+        self._cx_time_tag.show()
+
     def _on_pane_mouse_moved(self, scene_pos):
         """Crosshair fan-out for a hover inside this pane (wired in Task 5)."""
         return

@@ -1435,3 +1435,36 @@ def test_oscillator_pane_has_crosshair_items_and_signals(app):
     pane.crosshairMoved.emit(7.0)
     pane.crosshairLeft.emit()
     assert seen["moved"] == [7.0] and seen["left"] == 1
+
+
+def test_pane_set_and_clear_crosshair(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 140)
+    # set: line snaps to the rounded bar index, shows, value tag un-hidden on the right edge
+    # Use bar 20 (well past RSI's 14-bar warm-up so the series has a real value there)
+    pane.set_crosshair_x(20.4)
+    assert pane._cx_v.isVisible() is True
+    assert pane._cx_v.value() == 20          # snapped to round(x)
+    assert pane._cx_bar == 20
+    assert not pane._cx_val_tag.isHidden()   # value tag shown (offscreen -> use not isHidden())
+    # value tag sits left of the right price axis (its right edge clears the axis labels)
+    axis_w = int(pane.getAxis("right").width())
+    assert pane._cx_val_tag.x() + pane._cx_val_tag.width() <= pane.width() - axis_w + 1
+    # repeated set at the SAME bar is throttled: bar cache unchanged, line stays put
+    pane.set_crosshair_x(20.0)
+    assert pane._cx_bar == 20 and pane._cx_v.value() == 20
+    # a new bar moves the line
+    pane.set_crosshair_x(30.0)
+    assert pane._cx_v.value() == 30 and pane._cx_bar == 30
+    # clear: line + both tags hidden, bar cache reset
+    pane.set_time_tag("06-04 12:00", scene_x=50.0)
+    assert not pane._cx_time_tag.isHidden()
+    pane.clear_crosshair()
+    assert pane._cx_v.isVisible() is False
+    assert pane._cx_val_tag.isHidden() and pane._cx_time_tag.isHidden()
+    assert pane._cx_bar is None
