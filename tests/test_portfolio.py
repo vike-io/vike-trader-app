@@ -398,3 +398,129 @@ def test_per_symbol_curves_length_and_last_value():
         assert abs(curve[-1] - result.per_symbol_pnl[sym]) < 1e-9, (
             f"{sym}: curve[-1]={curve[-1]} != per_symbol_pnl={result.per_symbol_pnl[sym]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Part 1 — MAE/MFE capture (portfolio mode)
+# ---------------------------------------------------------------------------
+
+def _ohlc(ts, o, h, l, c, volume=100.0):
+    """Bar with explicit OHLC + volume."""
+    return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=volume)
+
+
+class _LongThenClose(PortfolioStrategy):
+    """Buy 1 unit of 'S' on bar 0, hold through bars 1–2, close on bar 3 (fills bar 4 open)."""
+
+    def on_bar(self, ts, bars):
+        if self.index == 0:
+            self.buy("S", 1.0)
+        elif self.index == 3:
+            self.close("S")
+
+
+def test_mae_mfe_long_trade():
+    """Long opened at entry=100; high reaches 120, low reaches 90 -> mfe≈0.20, mae≈-0.10."""
+    bars = {
+        # bar 0: entry signal (fills at bar 1's open=100)
+        # bar 1 open=100 (fill), high=102, low=98
+        # bar 2: high=120, low=90  <- extremes
+        # bar 3: close signal (fills at bar 4's open=95)
+        # bar 4: exit bar
+        "S": [
+            _ohlc(0,  100, 101, 99,  100),   # bar 0: signal bar
+            _ohlc(1,  100, 102, 98,  101),   # bar 1: entry fills @100 open, then H=102 L=98 tracked
+            _ohlc(2,  101, 120, 90,  105),   # bar 2: extremes H=120 L=90
+            _ohlc(3,  105, 110, 95,  106),   # bar 3: exit signal
+            _ohlc(4,  95,  98,  94,  95),    # bar 4: exit fills @95 open
+        ],
+    }
+    eng = PortfolioEngine(bars, _LongThenClose(), cash=10_000.0)
+    result = eng.run()
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.entry_price == pytest.approx(100.0)
+    # mfe = (120 - 100) / 100 = 0.20
+    assert t.mfe == pytest.approx(0.20, abs=1e-9)
+    # mae = (90 - 100) / 100 = -0.10
+    assert t.mae == pytest.approx(-0.10, abs=1e-9)
+
+
+class _ShortThenClose(PortfolioStrategy):
+    """Sell (short) 1 unit of 'S' on bar 0, close on bar 3."""
+
+    def on_bar(self, ts, bars):
+        if self.index == 0:
+            self.sell("S", 1.0)
+        elif self.index == 3:
+            self.close("S")
+
+
+def test_mae_mfe_short_trade():
+    """Short opened at entry=100; low reaches 80 (favorable), high reaches 115 (adverse).
+    mfe = (100 - 80) / 100 = 0.20, mae = (100 - 115) / 100 = -0.15."""
+    bars = {
+        "S": [
+            _ohlc(0,  100, 101, 99,  100),   # bar 0: signal
+            _ohlc(1,  100, 115, 80,  95),    # bar 1: entry @100 open; H=115 (adverse), L=80 (favorable)
+            _ohlc(2,  95,  110, 85,  90),    # bar 2: continued extremes (within bar 1's range)
+            _ohlc(3,  90,  95,  88,  90),    # bar 3: exit signal
+            _ohlc(4,  90,  92,  89,  91),    # bar 4: exit fills @90 open
+        ],
+    }
+    eng = PortfolioEngine(bars, _ShortThenClose(), cash=10_000.0)
+    result = eng.run()
+    assert len(result.trades) == 1
+    t = result.trades[0]
+    assert t.entry_price == pytest.approx(100.0)
+    # mfe = (100 - 80) / 100 = 0.20
+    assert t.mfe == pytest.approx(0.20, abs=1e-9)
+    # mae = (100 - 115) / 100 = -0.15
+    assert t.mae == pytest.approx(-0.15, abs=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Part 2 — %-of-volume liquidity cap
+# ---------------------------------------------------------------------------
+
+class _BuyFifty(PortfolioStrategy):
+    """Buy 50 units of 'S' on bar 0."""
+
+    def on_bar(self, ts, bars):
+        if self.index == 0:
+            self.buy("S", 50.0)
+
+
+def test_volume_cap_clamps_fill_and_records_dropped():
+    """volume_limit=0.1, bar volume=100 → allowed=10; order for 50 → fill 10, drop 40."""
+    bars = {
+        "S": [
+            _ohlc(0, 100, 101, 99, 100, volume=100.0),
+            _ohlc(1, 100, 101, 99, 100, volume=100.0),
+            _ohlc(2, 100, 101, 99, 100, volume=100.0),
+        ],
+    }
+    eng = PortfolioEngine(bars, _BuyFifty(), cash=100_000.0, volume_limit=0.1)
+    eng.run()
+    # Only 10 units should have filled (10% of volume=100)
+    assert eng._pos["S"].size == pytest.approx(10.0)
+    # 40 units (50 - 10) should appear in dropped as "volume_cap"
+    vol_drops = [(s, k, sz, w) for s, k, sz, w in eng.dropped if k == "volume_cap"]
+    assert len(vol_drops) == 1
+    assert vol_drops[0][0] == "S"
+    assert vol_drops[0][2] == pytest.approx(40.0)
+
+
+def test_volume_cap_none_leaves_fills_uncapped():
+    """volume_limit=None (default) → no cap; order for 50 fills in full."""
+    bars = {
+        "S": [
+            _ohlc(0, 100, 101, 99, 100, volume=100.0),
+            _ohlc(1, 100, 101, 99, 100, volume=100.0),
+            _ohlc(2, 100, 101, 99, 100, volume=100.0),
+        ],
+    }
+    eng = PortfolioEngine(bars, _BuyFifty(), cash=100_000.0)  # volume_limit=None (default)
+    eng.run()
+    assert eng._pos["S"].size == pytest.approx(50.0)
+    assert not any(k == "volume_cap" for _, k, _, _ in eng.dropped)

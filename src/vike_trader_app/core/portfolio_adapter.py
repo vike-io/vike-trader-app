@@ -181,7 +181,8 @@ class MultiSymbolStrategyRunner:
                                  max_open_positions=self.max_open_positions,
                                  max_open_long=getattr(self.config, "max_open_long", 0),
                                  max_open_short=getattr(self.config, "max_open_short", 0),
-                                 sizer=getattr(self.config, "sizer", None))
+                                 sizer=getattr(self.config, "sizer", None),
+                                 volume_limit=getattr(self.config, "volume_limit", None))
         self._engine = engine
         return engine.run()
 

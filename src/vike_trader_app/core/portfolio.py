@@ -154,7 +154,7 @@ class PortfolioEngine:
                  cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
                  timeframes: list[str] | None = None, max_open_positions: int = 0,
                  max_open_long: int = 0, max_open_short: int = 0,
-                 sizer=None):
+                 sizer=None, volume_limit: float | None = None):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -182,6 +182,8 @@ class PortfolioEngine:
         # Swappable position sizer (WL PosSizer model). None -> PassThrough (the strategy's literal
         # size), so default behavior is byte-for-byte unchanged.
         self.sizer = sizer or _default_sizer()
+        # %-of-volume liquidity cap: fill size clamped to volume_limit * bar.volume. None/0 = no cap.
+        self.volume_limit = volume_limit if volume_limit else None
         # Equity peak for drawdown tracking (initialised to starting cash; updated each bar in run()).
         self._equity_peak: float = cash
         self._step = 0  # index of the bar currently being processed in run()
@@ -195,6 +197,10 @@ class PortfolioEngine:
         self._price: dict[str, float] = {
             s: bars_by_symbol[s][0].open if self.n else 0.0 for s in self.symbols
         }
+        # Per-symbol running price extremes since the current position opened (for MAE/MFE).
+        # Reset to the fill price when a position opens from flat; updated each bar.
+        self._hi_since: dict[str, float] = {s: 0.0 for s in self.symbols}
+        self._lo_since: dict[str, float] = {s: float("inf") for s in self.symbols}
         # Per-symbol higher-TF aggregates: symbol -> tf -> (target_ms, [coarse bars]).
         # Empty when no timeframes configured (opt-in — no change to existing behaviour).
         from .timeframe import parse_timeframe, resample
@@ -435,6 +441,10 @@ class PortfolioEngine:
                 self._price[s] = bar.close
                 if bar.funding is not None and self._pos[s].size != 0:
                     self.cash -= funding_charge(self._pos[s].size, bar.close, bar.funding, self.multiplier)
+                # Update MAE/MFE extremes for any open position using this bar's high/low (no look-ahead).
+                if self._pos[s].size != 0:
+                    self._hi_since[s] = max(self._hi_since[s], bar.high)
+                    self._lo_since[s] = min(self._lo_since[s], bar.low)
             self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
@@ -471,7 +481,16 @@ class PortfolioEngine:
                     continue                  # max_open_long cap reached
                 if pos.size == 0 and o.side < 0 and self._at_short_cap():
                     continue                  # max_open_short cap reached
-                self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
+                # %-of-volume liquidity cap: clamp fill size to volume_limit * bar.volume.
+                fill_size = o.size
+                if self.volume_limit:
+                    allowed = self.volume_limit * bar.volume
+                    if fill_size > allowed:
+                        dropped_size = fill_size - allowed
+                        self.dropped.append((symbol, "volume_cap", dropped_size, 0.0))
+                        fill_size = allowed
+                if fill_size > 0:
+                    self._apply_fill(symbol, o.side, fill_size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
 
     def _fill_step_gated(self, cur):
@@ -498,7 +517,15 @@ class PortfolioEngine:
             self._pending[s] = still
         # reductions/closes first — they free cash and never get gated
         for s, o, fp, _ in frees:
-            self._apply_fill(s, o.side, o.size, fp, cur[s].ts, is_maker=o.kind == "limit")
+            fill_size = o.size
+            if self.volume_limit:
+                allowed = self.volume_limit * cur[s].volume
+                if fill_size > allowed:
+                    dropped_size = fill_size - allowed
+                    self.dropped.append((s, "volume_cap", dropped_size, 0.0))
+                    fill_size = allowed
+            if fill_size > 0:
+                self._apply_fill(s, o.side, fill_size, fp, cur[s].ts, is_maker=o.kind == "limit")
         # opens/adds: highest weight first, ties by trigger order; drop the unfundable
         for s, o, fp, _ in sorted(opens, key=lambda t: (-t[1].weight, t[3])):
             # MaxOpenPositions cap: re-checked live so count updates as positions open during this loop
@@ -512,14 +539,24 @@ class PortfolioEngine:
             if self._pos[s].size == 0 and o.side < 0 and self._at_short_cap():
                 self.dropped.append((s, o.kind, o.size, o.weight))
                 continue
+            # %-of-volume liquidity cap: clamp fill size to volume_limit * bar.volume.
+            fill_size = o.size
+            if self.volume_limit:
+                allowed = self.volume_limit * cur[s].volume
+                if fill_size > allowed:
+                    dropped_size = fill_size - allowed
+                    self.dropped.append((s, "volume_cap", dropped_size, 0.0))
+                    fill_size = allowed
+            if fill_size <= 0:
+                continue
             slipped = adverse_fill_price(fp, o.side, self.slippage)
             rate = self.maker_fee if o.kind == "limit" else self.taker_fee
-            fee = _fee(o.size, slipped, rate, self.multiplier)
-            cash_impact = -(o.side * o.size) * slipped * self.multiplier - fee  # buys cost, sells free
+            fee = _fee(fill_size, slipped, rate, self.multiplier)
+            cash_impact = -(o.side * fill_size) * slipped * self.multiplier - fee  # buys cost, sells free
             if self.cash + cash_impact < 0.0:
-                self.dropped.append((s, o.kind, o.size, o.weight))
+                self.dropped.append((s, o.kind, fill_size, o.weight))
                 continue
-            self._apply_fill(s, o.side, o.size, fp, cur[s].ts, is_maker=o.kind == "limit")
+            self._apply_fill(s, o.side, fill_size, fp, cur[s].ts, is_maker=o.kind == "limit")
 
     def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int,
                     is_maker: bool = False) -> None:
@@ -536,6 +573,9 @@ class PortfolioEngine:
             pos.avg_price = price
             self._entry_fee[symbol] = fee
             self._entry_ts[symbol] = ts
+            # Reset excursion extremes to the fill price so MAE/MFE starts from entry.
+            self._hi_since[symbol] = price
+            self._lo_since[symbol] = price
             return
 
         if (pos.size > 0) == (delta > 0):  # add in the same direction
@@ -553,6 +593,19 @@ class PortfolioEngine:
         exit_fee_portion = fee * (closing / abs(delta)) if delta != 0 else 0.0
         realized = (price - pos.avg_price) * (sign * closing) * self.multiplier  # signed: works for shorts
         self._realized[symbol] += realized
+        # Compute MAE/MFE fractions relative to entry price (guard entry==0).
+        entry = pos.avg_price
+        hi = self._hi_since[symbol]
+        lo = self._lo_since[symbol]
+        if entry != 0:
+            if pos.size > 0:  # long
+                mfe = (hi - entry) / entry
+                mae = (lo - entry) / entry   # negative: adverse
+            else:              # short
+                mfe = (entry - lo) / entry
+                mae = (entry - hi) / entry   # negative: adverse
+        else:
+            mfe, mae = 0.0, 0.0
         self.trades.append(
             Trade(
                 entry_price=pos.avg_price,
@@ -563,6 +616,8 @@ class PortfolioEngine:
                 entry_ts=self._entry_ts[symbol],
                 exit_ts=ts,
                 symbol=symbol,
+                mae=mae,
+                mfe=mfe,
             )
         )
         remaining = abs(pos.size) - closing
@@ -577,6 +632,9 @@ class PortfolioEngine:
             pos.avg_price = price
             self._entry_fee[symbol] = fee * (leftover / abs(delta))
             self._entry_ts[symbol] = ts
+            # Reset excursion extremes for the new opposite-side position.
+            self._hi_since[symbol] = price
+            self._lo_since[symbol] = price
         else:  # flat
             pos.size = 0.0
             pos.avg_price = 0.0
