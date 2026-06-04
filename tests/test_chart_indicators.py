@@ -1104,3 +1104,14 @@ def test_build_curves_pens_use_width_and_style_oscillator(app):
     pen = curve.opts["pen"]
     assert pen.width() == 4
     assert pen.style() == QtCore.Qt.DotLine
+
+
+def test_all_intervals_and_normalize_helpers(app):
+    from vike_trader_app.ui.chart import _all_intervals, _normalize_intervals, _TIMEFRAMES
+    expected = [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+    assert _all_intervals() == expected
+    # every interval checked -> None (shows on all)
+    assert _normalize_intervals(set(expected)) is None
+    # a strict subset stays a set
+    sub = set(expected[:-1])
+    assert _normalize_intervals(sub) == sub

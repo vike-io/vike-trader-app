@@ -51,6 +51,18 @@ def _pen_style(name):
     }.get(name, QtCore.Qt.SolidLine)
 
 
+def _all_intervals():
+    """The flat, ordered list of every supported interval (single source for both the
+    per-interval legend menu / Visibility tab and the 'all ⇒ None' normalization)."""
+    return [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+
+
+def _normalize_intervals(chosen):
+    """'all checked ⇒ None' rule: None when every interval is selected, else the set."""
+    chosen = set(chosen)
+    return None if chosen >= set(_all_intervals()) else chosen
+
+
 class CandlestickItem(pg.GraphicsObject):
     """Draws OHLC candles for ``bars`` (a list of core.model.Bar)."""
 
@@ -2112,10 +2124,10 @@ class PriceChart(pg.PlotWidget):
     def _toggle_interval_visibility(self, ind: "_Indicator", interval: str):
         """Toggle whether ``ind`` shows on ``interval``. ``ind.intervals`` is None when it shows
         on all timeframes; otherwise it's the explicit set of allowed timeframes."""
-        all_iv = [iv for _sec, items in _TIMEFRAMES for _lbl, iv in items]
+        all_iv = _all_intervals()
         cur = set(ind.intervals) if ind.intervals is not None else set(all_iv)
         cur.discard(interval) if interval in cur else cur.add(interval)
-        ind.intervals = None if cur >= set(all_iv) else cur
+        ind.intervals = _normalize_intervals(cur)
         self._apply_visibility(ind)
         self._reveal_indicator(ind, self._reveal_index())
         self._refresh_legends()
