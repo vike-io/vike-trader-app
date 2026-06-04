@@ -173,6 +173,8 @@ class MultiSymbolStrategyRunner:
                                  cash_gate=self.config.cash_gate, active_mask=active_mask,
                                  timeframes=self.config.timeframes,
                                  max_open_positions=self.max_open_positions,
+                                 max_open_long=getattr(self.config, "max_open_long", 0),
+                                 max_open_short=getattr(self.config, "max_open_short", 0),
                                  sizer=getattr(self.config, "sizer", None))
         self._engine = engine
         return engine.run()
