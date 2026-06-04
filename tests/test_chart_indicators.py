@@ -833,3 +833,39 @@ def test_new_pane_wires_toolbar_and_refreshes(app):
     # top pane: up disabled, down enabled; bottom pane: up enabled, down disabled
     assert not top._toolbar._up.isEnabled() and top._toolbar._down.isEnabled()
     assert bottom._toolbar._up.isEnabled() and not bottom._toolbar._down.isEnabled()
+
+
+def test_pane_move_up_down_reorders_splitter(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    assert split.indexOf(b.pane) == 2
+    pc._pane_move_up(b.pane)
+    assert split.indexOf(b.pane) == 1 and split.indexOf(a.pane) == 2
+    pc._pane_move_down(b.pane)
+    assert split.indexOf(b.pane) == 2 and split.indexOf(a.pane) == 1
+
+
+def test_pane_move_clamps_at_edges(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # index 1
+    b = pc.add_indicator("macd")  # index 2
+    pc._pane_move_up(a.pane)      # already topmost (index 1) -> no-op (never above price@0)
+    assert split.indexOf(a.pane) == 1
+    pc._pane_move_down(b.pane)    # already bottom -> no-op
+    assert split.indexOf(b.pane) == 2
+
+
+def test_after_pane_reorder_realigns(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._pane_move_up(b.pane)
+    # bottom axis follows to the new lowest pane (Phase 1 _align_panes)
+    bottom = pc._panes_in_visual_order()[-1]
+    assert bottom.getAxis("bottom").isVisible()
+    assert not pc._panes_in_visual_order()[0].getAxis("bottom").isVisible()
+    # toolbars updated: new top can't go up, new bottom can't go down
+    panes = pc._panes_in_visual_order()
+    assert not panes[0]._toolbar._up.isEnabled()
+    assert not panes[-1]._toolbar._down.isEnabled()
