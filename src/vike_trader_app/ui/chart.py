@@ -35,6 +35,20 @@ _TIMEFRAMES = [
     ("Hours", [("1h", "1h"), ("2h", "2h"), ("4h", "4h")]),
     ("Days", [("1D", "1d"), ("1W", "1w")]),
 ]
+# Line-style picker (Style tab): (label, name) — name persists on _Indicator.styles.
+_LINE_STYLES = [("Solid", "solid"), ("Dashed", "dashed"), ("Dotted", "dotted")]
+_LINE_WIDTHS = [1, 2, 3, 4]  # line-width picker (px)
+# Distinct sentinel for _apply_edit optional args (NOT falsy — an empty list/dict is a real value).
+_UNSET = object()
+
+
+def _pen_style(name):
+    """Map a style name (solid/dashed/dotted) to a Qt.PenStyle; unknown -> SolidLine."""
+    return {
+        "solid": QtCore.Qt.SolidLine,
+        "dashed": QtCore.Qt.DashLine,
+        "dotted": QtCore.Qt.DotLine,
+    }.get(name, QtCore.Qt.SolidLine)
 
 
 class CandlestickItem(pg.GraphicsObject):

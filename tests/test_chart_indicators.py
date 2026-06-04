@@ -1068,3 +1068,14 @@ def test_indicator_spec_defaults_single_source(app):
     assert len(colors) == len(spec.outputs)
     assert widths == [1] * len(spec.outputs)
     assert styles == ["solid"] * len(spec.outputs)
+
+
+def test_pen_style_maps_names_to_qt(app):
+    from vike_trader_app.ui.chart import _pen_style, _LINE_STYLES, _LINE_WIDTHS, _UNSET
+    assert _pen_style("solid") == QtCore.Qt.SolidLine
+    assert _pen_style("dashed") == QtCore.Qt.DashLine
+    assert _pen_style("dotted") == QtCore.Qt.DotLine
+    assert _pen_style("bogus") == QtCore.Qt.SolidLine  # unknown -> solid
+    assert [v for _lbl, v in _LINE_STYLES] == ["solid", "dashed", "dotted"]
+    assert list(_LINE_WIDTHS) == [1, 2, 3, 4]
+    assert _UNSET is not None and _UNSET != [] and _UNSET != {}  # a distinct sentinel
