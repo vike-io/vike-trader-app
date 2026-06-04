@@ -56,3 +56,25 @@ def order_fill_price(o: "Order", bar):
         return trigger
     o.extreme = min(o.extreme, bar.low)
     return None
+
+
+def order_fill_price_granular(o: "Order", sub_bars):
+    """Resolve ``o`` against ordered finer ``sub_bars``.
+
+    Returns ``(fill_price, sub_index)`` of the FIRST sub-bar that triggers it, or ``None``.
+    ``market`` / ``market_close`` fill on the first sub-bar (open / close). ``limit`` / ``stop`` /
+    ``trailing`` walk ``sub_bars`` in chronological order, returning the first trigger
+    (``order_fill_price`` ratchets a trailing ``extreme`` in place as you go, exactly as it would over
+    the equivalent coarse bar). Pure except for that trailing ratchet (same contract as
+    ``order_fill_price``).
+    """
+    if not sub_bars:
+        return None
+    if o.kind in ("market", "market_close"):
+        # Market(-close) fills on the first sub-bar; order_fill_price returns open/close there.
+        return (order_fill_price(o, sub_bars[0]), 0)
+    for i, sub in enumerate(sub_bars):
+        fp = order_fill_price(o, sub)  # ratchets a trailing extreme in place per sub-bar
+        if fp is not None:
+            return (fp, i)
+    return None
