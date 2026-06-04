@@ -40,6 +40,10 @@ _LINE_STYLES = [("Solid", "solid"), ("Dashed", "dashed"), ("Dotted", "dotted")]
 _LINE_WIDTHS = [1, 2, 3, 4]  # line-width picker (px)
 # Distinct sentinel for _apply_edit optional args (NOT falsy — an empty list/dict is a real value).
 _UNSET = object()
+# Crosshair axis-tag style (hovered price/time read-outs) — shared by the price pane AND every
+# oscillator pane so the cross-pane crosshair tags match the price-pane tags pixel-for-pixel.
+_TAG_QSS = (f"color:{theme.TEXT};background:{theme.BORDER};border-radius:2px;padding:0 4px;"
+            f"font-family:{theme.FONT_MONO};font-size:10px;")
 
 
 def _pen_style(name):
@@ -1459,12 +1463,10 @@ class PriceChart(pg.PlotWidget):
         self._top_bar.move(0, 4)
 
         # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
-        _tag_qss = (f"color:{theme.TEXT};background:{theme.BORDER};border-radius:2px;padding:0 4px;"
-                    f"font-family:{theme.FONT_MONO};font-size:10px;")
         self._cx_price_tag = QtWidgets.QLabel(self)
         self._cx_time_tag = QtWidgets.QLabel(self)
         for _tag in (self._cx_price_tag, self._cx_time_tag):
-            _tag.setStyleSheet(_tag_qss)
+            _tag.setStyleSheet(_TAG_QSS)
             _tag.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
             _tag.hide()
 

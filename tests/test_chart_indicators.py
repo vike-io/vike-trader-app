@@ -1397,3 +1397,16 @@ def test_move_to_new_pane_while_maximized(app):
     assert bottom_owners[0] is live_panes[-1], (
         "Bottom time axis must be on the lowest pane"
     )
+
+
+# --- PHASE A: cross-pane crosshair --------------------------------------------------------------
+def test_tag_qss_is_module_const_and_reused(app):
+    from vike_trader_app.ui import chart as chart_mod
+    # the inline tag style is now a module constant…
+    assert isinstance(chart_mod._TAG_QSS, str)
+    assert "border-radius:2px" in chart_mod._TAG_QSS
+    assert "font-size:10px" in chart_mod._TAG_QSS
+    # …and the price-pane tags are styled from it (no behaviour change)
+    pc, _ = _chart(app)
+    assert pc._cx_price_tag.styleSheet() == chart_mod._TAG_QSS
+    assert pc._cx_time_tag.styleSheet() == chart_mod._TAG_QSS
