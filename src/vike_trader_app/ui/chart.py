@@ -1229,7 +1229,10 @@ class PriceChart(pg.PlotWidget):
                     self._add_marker(xi, t.exit_price, below=True, symbol="arrow_up",
                                      color=_EXIT_C, text="Buy")
                 self._conn.append((ei, t.entry_price, xi, t.exit_price))
+        for pane in self._osc_panes():  # re-feed each pane's time axis with the new bars
+            pane.set_bars(bars)
         self.show_upto(len(bars) - 1)
+        self._align_panes()
 
     def set_overlays(self, overlays: dict):
         """Set indicator overlay lines: ``{label: series aligned to bars}``."""
@@ -1267,8 +1270,11 @@ class PriceChart(pg.PlotWidget):
                         [], [], pen=pg.mkPen(color, width=1), name=label
                     )
             self._overlays = {**self._overlays, **overlays}
+        for pane in self._osc_panes():  # extend each pane's time axis to the live edge
+            pane.set_bars(bars)
         if repaint:
             self.show_upto(len(bars) - 1)
+        self._align_panes()
 
     # --- indicators (TradingView-style: pick from the catalog, overlay on the chart) ---
     def _open_indicator_picker(self):
@@ -1360,7 +1366,9 @@ class PriceChart(pg.PlotWidget):
         pane.actionRequested.connect(self._indicator_action)
         pane.dragMoved.connect(self._drag_pane)
         self._pane_host.addWidget(pane)
+        pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
         self._resize_panes()
+        self._align_panes()
         return pane
 
     def _drag_pane(self, pane, global_y: int):
@@ -1377,6 +1385,7 @@ class PriceChart(pg.PlotWidget):
             if global_y < ctr:
                 host.insertWidget(cur - 1, pane)
                 self._resize_panes()
+                self._align_panes()
                 return
         if cur < host.count() - 1:  # try to move below the lower neighbour
             down = host.widget(cur + 1)
@@ -1384,6 +1393,7 @@ class PriceChart(pg.PlotWidget):
             if global_y > ctr:
                 host.insertWidget(cur + 1, pane)
                 self._resize_panes()
+                self._align_panes()
 
     def _next_z(self) -> float:
         self._z_top += 1.0
@@ -1408,6 +1418,7 @@ class PriceChart(pg.PlotWidget):
             if ind.pane is None:           # fresh add -> its own pane (merge sets ind.pane first)
                 ind.pane = self._new_pane()
             ind.pane.add_ind(ind)
+            self._align_panes()            # merge path: pane pre-set, so realign here too
         elif ind.kind == "pattern":
             ind.scatter = pg.ScatterPlotItem(hoverable=True, pen=None,
                                              tip=lambda x, y, data: str(data))
@@ -1429,6 +1440,7 @@ class PriceChart(pg.PlotWidget):
                 ind.pane.setParent(None)
                 ind.pane.deleteLater()
                 self._resize_panes()
+                self._align_panes()      # after setParent(None): host no longer counts the pane
             ind.pane = None
         if ind.scatter is not None:
             self.removeItem(ind.scatter)
@@ -1603,6 +1615,7 @@ class PriceChart(pg.PlotWidget):
             return
         elif target in ("merge_above", "merge_below"):
             self._merge_into_adjacent(ind, target)
+        self._align_panes()  # finalize alignment after the unrender/render churn settles
         self._refresh_legends()
 
     def _reorder_pane(self, ind: "_Indicator", direction: str):
@@ -1614,6 +1627,7 @@ class PriceChart(pg.PlotWidget):
         if 1 <= new <= host.count() - 1:   # keep below the price chart (index 0)
             host.insertWidget(new, ind.pane)
             self._resize_panes()
+            self._align_panes()
 
     def _merge_into_adjacent(self, ind: "_Indicator", direction: str):
         host = self._pane_host
@@ -1630,6 +1644,7 @@ class PriceChart(pg.PlotWidget):
         ind.kind = "oscillator"
         ind.pane = target_pane             # _render adds it into the existing pane
         self._render(ind)
+        self._align_panes()                # pane count changed -> bottom axis must follow
 
     def _panes_in_visual_order(self):
         """Oscillator panes in top-to-bottom splitter order (NOT dict-insertion order).
@@ -2045,6 +2060,8 @@ class PriceChart(pg.PlotWidget):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
+        if getattr(self, "_pane_host", None) is not None and self._panes_in_visual_order():
+            self._align_panes()  # width settles after a resize -> re-equalize before reading it
         if hasattr(self, "_top_bar"):
             # span the chart width but stop short of the right price-axis labels, so the
             # far-right range selector clears them.
@@ -2068,6 +2085,7 @@ class PriceChart(pg.PlotWidget):
             for ind in self._indicators.values():
                 self._sync_shown(ind)
                 self._reveal_indicator(ind, self._reveal_index())
+        self._align_panes()
 
 
 class EquityChart(pg.PlotWidget):

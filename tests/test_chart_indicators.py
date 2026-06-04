@@ -482,7 +482,9 @@ def test_oscillator_pane_has_hidden_bottom_time_axis(app):
     pane = ind.pane
     assert isinstance(pane._time_axis, TimeAxis)
     assert pane.getAxis("bottom") is pane._time_axis
-    assert pane.getAxis("bottom").isVisible() is False  # hidden at init (price chart owns it)
+    # After Task 7 wiring: _new_pane calls _align_panes, so the single pane becomes the
+    # lowest pane and its bottom axis is shown immediately (price chart hides its own).
+    assert pane.getAxis("bottom").isVisible() is True
 
 
 def test_oscillator_pane_set_bars_feeds_time_axis(app):
@@ -586,3 +588,93 @@ def test_align_panes_order_reassign_before_sync(app):
     pc._sync_axis_width = lambda: order.append("sync")
     pc._align_panes()
     assert order == ["reassign", "sync"]
+
+
+def test_set_data_aligns_panes(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.set_data(_bars(50), [])  # re-feeds pane axes + re-equalizes
+    # pane axes were re-fed the new bars
+    assert len(a.pane._time_axis._bars) == 50
+    assert len(b.pane._time_axis._bars) == 50
+    # bottom axis still on the lowest pane, widths still equal
+    assert b.pane.getAxis("bottom").isVisible() is True
+    w = pc.getAxis("right").width()
+    assert a.pane.getAxis("right").width() == w and b.pane.getAxis("right").width() == w
+
+
+def test_apply_live_feeds_pane_axes(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pc.apply_live(_bars(90))
+    assert len(ind.pane._time_axis._bars) == 90
+
+
+def test_new_pane_seeds_bars_and_equalizes_on_add(app):
+    # A fresh pane's time axis isn't blank, and widths equalize on the very first add
+    # (the stale-width bug: equalize must work without a paint pass).
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.pane._time_axis._bars  # seeded, not blank
+    assert pc.getAxis("right").width() == ind.pane.getAxis("right").width()
+
+
+def test_remove_last_pane_restores_price_axis(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert pc.getAxis("bottom").isVisible() is False
+    pc.remove_indicator(ind.uid)  # _unrender drops the pane + _align_panes
+    assert split.count() == 1
+    assert pc.getAxis("bottom").isVisible() is True
+    # right axis restored to auto (fixedWidth cleared) so a lone chart isn't pinned
+    assert pc.getAxis("right").fixedWidth is None
+
+
+def test_reorder_keeps_bottom_axis_on_lowest(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "up")  # b -> index 1, a -> index 2 (lowest)
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert b.pane.getAxis("bottom").isVisible() is False
+    w = pc.getAxis("right").width()
+    assert a.pane.getAxis("right").width() == w and b.pane.getAxis("right").width() == w
+
+
+def test_drag_reorder_keeps_bottom_axis_on_lowest(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._drag_pane(b.pane, -100000)  # b -> index 1, a -> index 2 (lowest)
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert b.pane.getAxis("bottom").isVisible() is False
+
+
+def test_merge_keeps_bottom_axis_and_widths(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc.move_indicator(b.uid, "merge_above")  # macd merges into rsi's pane; one pane drops
+    assert split.count() == 2
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert pc.getAxis("right").width() == a.pane.getAxis("right").width()
+
+
+def test_move_to_new_then_price_realigns(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("ema")
+    pc.move_indicator(ind.uid, "new")    # overlay -> own pane
+    assert ind.pane.getAxis("bottom").isVisible() is True
+    pc.move_indicator(ind.uid, "price")  # back to price overlay -> no panes
+    assert split.count() == 1
+    assert pc.getAxis("bottom").isVisible() is True
+
+
+def test_set_timeframe_realigns(app):
+    pc, _ = _chart(app)
+    pc.set_timeframe("1m")
+    ind = pc.add_indicator("rsi")
+    pc.set_timeframe("5m")  # must keep the bottom axis on the lowest pane + widths equal
+    assert ind.pane.getAxis("bottom").isVisible() is True
+    assert pc.getAxis("right").width() == ind.pane.getAxis("right").width()
