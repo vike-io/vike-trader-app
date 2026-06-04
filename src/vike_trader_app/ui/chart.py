@@ -584,6 +584,29 @@ class _IndicatorSettings(dropdowns.PopupCard):
             sform.addRow(out.replace("_", " ").title(), roww)
         tabs.addTab(style, "Style")
 
+        # --- Visibility tab (per-interval checkboxes, grouped by section) ---
+        vis = QtWidgets.QWidget()
+        vform = QtWidgets.QVBoxLayout(vis)
+        vform.setContentsMargins(4, 10, 4, 4)
+        vform.setSpacing(4)
+        self._iv_checks = {}
+        cur_intervals = getattr(ind, "intervals", None)
+        for sec, items in _TIMEFRAMES:
+            seclbl = QtWidgets.QLabel(sec.upper())
+            seclbl.setStyleSheet(
+                f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+                f"background:transparent;margin-top:6px;"
+            )
+            vform.addWidget(seclbl)
+            for lbl, iv in items:
+                cb = QtWidgets.QCheckBox(lbl)
+                cb.setStyleSheet(f"color:{theme.TEXT2};background:transparent;")
+                cb.setChecked(cur_intervals is None or iv in cur_intervals)
+                self._iv_checks[iv] = cb
+                vform.addWidget(cb)
+        vform.addStretch(1)
+        tabs.addTab(vis, "Visibility")
+
         foot = QtWidgets.QHBoxLayout()
         foot.addStretch(1)
         cancel = QtWidgets.QPushButton("Cancel")
@@ -597,12 +620,10 @@ class _IndicatorSettings(dropdowns.PopupCard):
         self.resize(360, 440)
 
     def _chosen_intervals(self):
-        """Intervals selected in the Visibility tab (Task 65 builds the tab); until then,
-        fall back to the indicator's current intervals so accept always has a value."""
-        boxes = getattr(self, "_iv_checks", None)
-        if not boxes:
-            return getattr(self._ind, "intervals", None)
-        return _normalize_intervals(iv for iv, cb in boxes.items() if cb.isChecked())
+        """Intervals selected in the Visibility tab, normalized (all ⇒ None)."""
+        return _normalize_intervals(
+            iv for iv, cb in self._iv_checks.items() if cb.isChecked()
+        )
 
     @staticmethod
     def _set_btn_color(btn, color):

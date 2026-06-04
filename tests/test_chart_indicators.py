@@ -1157,3 +1157,49 @@ def test_settings_pattern_hides_width_and_style(app):
     )
     dlg._accept()  # must not crash for a pattern indicator
     assert "widths" in got
+
+
+def test_settings_visibility_tab_covers_all_intervals(app):
+    from vike_trader_app.ui.chart import _all_intervals
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    assert set(dlg._iv_checks) == set(_all_intervals())
+    assert all(cb.isChecked() for cb in dlg._iv_checks.values())  # intervals None -> all checked
+
+
+def test_settings_visibility_uncheck_emits_subset(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    dlg._iv_checks["1m"].setChecked(False)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+    )
+    dlg._accept()
+    assert got["intervals"] is not None and "1m" not in got["intervals"]
+
+
+def test_settings_visibility_all_checked_emits_none(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind)
+    for cb in dlg._iv_checks.values():
+        cb.setChecked(True)
+    got = {}
+    dlg.applied.connect(
+        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+    )
+    dlg._accept()
+    assert got["intervals"] is None  # all checked -> shows everywhere
+
+
+def test_settings_visibility_seeds_from_existing_set(app):
+    from vike_trader_app.ui.chart import _all_intervals
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.intervals = {iv for iv in _all_intervals() if iv != "1m"}  # restricted set
+    dlg = _IndicatorSettings(ind)
+    assert dlg._iv_checks["1m"].isChecked() is False
+    assert dlg._iv_checks["5m"].isChecked() is True
