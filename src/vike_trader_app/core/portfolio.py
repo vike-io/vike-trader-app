@@ -13,6 +13,8 @@ from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
 
+import bisect
+
 
 def _default_sizer():
     """The pass-through sizer (today's behavior): the strategy's literal size, unchanged."""
@@ -156,7 +158,8 @@ class PortfolioEngine:
                  cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
                  timeframes: list[str] | None = None, max_open_positions: int = 0,
                  max_open_long: int = 0, max_open_short: int = 0,
-                 sizer=None, volume_limit: float | None = None):
+                 sizer=None, volume_limit: float | None = None,
+                 granular_by_symbol: dict[str, list[Bar]] | None = None):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -216,6 +219,27 @@ class PortfolioEngine:
                 self._tf[s][tf] = (ms, resample(self.bars[s], ms))
         # Current step timestamp (shared across all symbols — they share an aligned timeline).
         self._now = self.bars[self.symbols[0]][0].ts if (self.symbols and self.n) else 0
+        # --- granular (intraday sub-bar) fill processing (WL "Use Granular Limit/Stop Processing") ---
+        # Opt-in finer bars per symbol. We bucket each symbol's sub-bars into the coarse step they fall
+        # into: sub-bar with ts ∈ [coarse[i].ts, coarse[i+1].ts) belongs to step i; the LAST coarse bar
+        # absorbs everything with ts >= coarse[i].ts (no upper edge). self._sub[symbol] is a list aligned
+        # to self.bars[symbol] step indices; each entry is the (time-ordered) sub-bar list for that step.
+        # A symbol with no granular data gets all-empty lists -> the coarse path is used for every step.
+        self.granular_by_symbol = granular_by_symbol
+        self._sub: dict[str, list[list[Bar]]] = {s: [[] for _ in range(self.n)] for s in self.symbols}
+        for s in self.symbols:
+            subs = (granular_by_symbol or {}).get(s)
+            if not subs:
+                continue
+            coarse = self.bars[s]
+            edges = [b.ts for b in coarse]  # ascending coarse timestamps (aligned series)
+            for sub in sorted(subs, key=lambda b: b.ts):
+                # Find the coarse step i such that edges[i] <= sub.ts < edges[i+1]
+                # (last step has no upper edge). bisect_right gives the count of edges <= sub.ts.
+                i = bisect.bisect_right(edges, sub.ts) - 1
+                if i < 0:
+                    continue  # sub-bar precedes the first coarse bar — not attributable to any step
+                self._sub[s][i].append(sub)
         strategy._engine = self
 
     # --- membership (dynamic DataSet) ---
@@ -361,15 +385,20 @@ class PortfolioEngine:
                 side = -1 if pos.size > 0 else 1
                 self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
 
-    def _check_protective_stops(self, cur):
+    def _check_protective_stops(self, cur, skip=None):
         """Force-close any position whose armed protective stop is breached by THIS bar.
 
         Runs at the top of the step's fill phase (before this step's resting/market fills and before
         on_bar), so it only ever sees stops armed on a PRIOR step — an entry can never be stopped on
         its own entry bar (the stop is armed during that bar's fill phase, checked from the next one).
         Long: breach when ``low <= stop`` (close at the stop). Short: breach when ``high >= stop``.
+        ``skip`` is the set of symbols handled by the granular path this step (their stop is checked
+        inside _fill_pending_granular, so we must not double-apply it here).
         """
+        skip = skip or set()
         for s in self.symbols:
+            if s in skip:
+                continue
             stop = self._stop[s]
             pos = self._pos[s]
             if stop is None or pos.size == 0:
@@ -470,14 +499,26 @@ class PortfolioEngine:
             self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
             self._now = cur[self.symbols[0]].ts if self.symbols else 0  # shared aligned timestamp
-            # Protective-stop breach check BEFORE this step's fills/on_bar. Only sees stops armed on a
-            # prior step (armed in the fill phase below), so an entry can't be stopped on its own bar.
-            self._check_protective_stops(cur)
+            # Symbols with finer sub-bars THIS step (and only on the non-gated path) resolve their
+            # protective-stop check + resting/market fills together inside _fill_pending_granular, in
+            # chronological sub-bar order. Granular + cash_gate is out of scope (documented): the gated
+            # shared-cash path always uses coarse bars, so granular symbols there fall back to coarse.
+            granular_syms = (
+                {s for s in self.symbols if self._sub[s][i]} if not self.cash_gate else set()
+            )
+            # Protective-stop breach check BEFORE this step's fills/on_bar, for the NON-granular symbols
+            # only (granular symbols do their own stop check inside _fill_pending_granular, so we must
+            # not double-apply). Only sees stops armed on a prior step, so an entry can't be stopped on
+            # its own bar.
+            self._check_protective_stops(cur, skip=granular_syms)
             if self.cash_gate:
                 self._fill_step_gated(cur)  # cross-symbol shared-cash priority + drop gate
             else:
                 for s in self.symbols:
-                    self._fill_pending(s, cur[s])  # fills before decisions => next-open
+                    if s in granular_syms:
+                        self._fill_pending_granular(s, i)  # sub-bar-ordered SL/TP/entry resolution
+                    else:
+                        self._fill_pending(s, cur[s])  # coarse: fills before decisions => next-open
             self.strategy.index = i
             for s in self.symbols:
                 bar = cur[s]
@@ -540,6 +581,84 @@ class PortfolioEngine:
                     if o.stop is not None and self._pos[symbol].size != 0:
                         self._stop[symbol] = o.stop
         self._pending[symbol] = still
+
+    def _cancel_protective_exits(self, symbol: str, was_long: bool) -> None:
+        """OCO: when a protective stop closes a position inside the granular path, cancel any pending
+        resting EXIT limit that was protecting it (a take-profit) so it can't re-fire on a later
+        sub-bar and accidentally open a fresh opposite-side position. The take-profit for a long is a
+        ``limit``/``limit_close`` SELL (side < 0); for a short it's a ``limit``/``limit_close`` BUY
+        (side > 0). Pending entry orders and same-direction adds are left untouched (they're not OCO
+        siblings of the stop)."""
+        closing_side = -1 if was_long else 1  # the side that REDUCES/closes the stopped-out position
+        self._pending[symbol] = [
+            o for o in self._pending[symbol]
+            if not (o.kind in ("limit", "limit_close") and o.side == closing_side)
+        ]
+
+    def _fill_pending_granular(self, symbol: str, i: int) -> None:
+        """Granular replacement for ``_check_protective_stops(symbol) + _fill_pending(symbol)`` at coarse
+        step ``i``, used WHEN finer sub-bars exist for this symbol/step.
+
+        Walk the step's sub-bars in chronological order. At each sub-bar build the set of events that
+        trigger at THIS sub-bar: the armed protective stop (if breached) plus every pending order whose
+        ``order_fill_price`` fires on this sub-bar. Apply them with a deterministic intra-sub-bar order
+        (protective stop first — the SL-vs-TP question is the cross-sub-bar TIME ordering, not the
+        within-sub-bar tiebreak), using the SAME opening gates as ``_fill_pending`` and arming
+        ``self._stop`` on opening fills. Filled orders leave ``self._pending``; a protective-stop close
+        clears ``self._stop``. Orders that never trigger across all sub-bars stay pending. Market /
+        market_close fill on the FIRST sub-bar (its open / close), exactly like the coarse path's
+        next-open. KEY: a take-profit limit and a protective stop on the same coarse bar resolve by
+        which sub-bar comes first.
+        """
+        sub_bars = self._sub[symbol][i]
+        for sub in sub_bars:
+            # 1) Protective stop first within this sub-bar (only sees a stop armed on a PRIOR step or a
+            #    prior sub-bar — same "can't stop on its own entry bar" guarantee as the coarse path,
+            #    since an entry filled in THIS sub-bar arms the stop after this point and is breach-
+            #    checked from the next sub-bar / step).
+            stop = self._stop[symbol]
+            pos = self._pos[symbol]
+            if stop is not None and pos.size != 0:
+                was_long = pos.size > 0
+                if was_long and sub.low <= stop:  # long protective sell-stop
+                    self._apply_fill(symbol, -1, abs(pos.size), stop, sub.ts)
+                    self._stop[symbol] = None
+                    self._cancel_protective_exits(symbol, was_long)  # OCO: drop the sibling TP exit
+                elif (not was_long) and sub.high >= stop:  # short protective buy-stop
+                    self._apply_fill(symbol, +1, abs(pos.size), stop, sub.ts)
+                    self._stop[symbol] = None
+                    self._cancel_protective_exits(symbol, was_long)  # OCO: drop the sibling TP exit
+            # 2) Resting / market orders that trigger on THIS sub-bar, in pending order.
+            still = []
+            for o in self._pending[symbol]:
+                fp = order_fill_price(o, sub)  # ratchets a trailing extreme in place per sub-bar
+                if fp is None:
+                    still.append(o)  # rest until a later sub-bar (or step) triggers it
+                    continue
+                pos = self._pos[symbol]
+                opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)
+                if opening and not self.is_active(symbol):
+                    continue  # inactive member: drop opening/adding fills (reduces still apply)
+                if pos.size == 0 and self._at_open_cap():
+                    continue  # MaxOpenPositions cap reached: drop new-symbol opens
+                if pos.size == 0 and o.side > 0 and self._at_long_cap():
+                    continue  # max_open_long cap reached
+                if pos.size == 0 and o.side < 0 and self._at_short_cap():
+                    continue  # max_open_short cap reached
+                fill_size = o.size
+                if self.volume_limit:
+                    allowed = self.volume_limit * sub.volume
+                    if fill_size > allowed:
+                        dropped_size = fill_size - allowed
+                        self.dropped.append((symbol, "volume_cap", dropped_size, 0.0))
+                        fill_size = allowed
+                if fill_size > 0:
+                    self._apply_fill(symbol, o.side, fill_size, fp, sub.ts, is_maker=o.kind == "limit")
+                    # Arm this entry's protective stop once the position is open. Armed within this
+                    # sub-bar's fill phase; breach-checked from the NEXT sub-bar / step (above).
+                    if o.stop is not None and self._pos[symbol].size != 0:
+                        self._stop[symbol] = o.stop
+            self._pending[symbol] = still
 
     def _fill_step_gated(self, cur):
         """Collect every triggered fill across symbols this bar, then apply with a shared-cash gate.

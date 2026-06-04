@@ -152,7 +152,7 @@ class MultiSymbolStrategyRunner:
     """Run a single-symbol ``Strategy`` class across every symbol in a DataSet (portfolio backtest)."""
 
     def __init__(self, strategy_cls, bars_by_symbol: dict, config, max_open_positions: int = 0,
-                 ranges: dict | None = None):
+                 ranges: dict | None = None, granular_by_symbol: dict | None = None):
         self.strategy_cls = strategy_cls
         self.bars_by_symbol = bars_by_symbol
         self.config = config
@@ -160,6 +160,10 @@ class MultiSymbolStrategyRunner:
         # Optional per-symbol membership windows {symbol: [DateRange, ...]} (dynamic DataSet). Falsy
         # (None / {}) leaves behavior identical to a static set — no activity mask is built.
         self.ranges = ranges
+        # Optional per-symbol finer (e.g. 1m) bars {symbol: [Bar, ...]} for granular intraday fill
+        # processing (WL "Use Granular Limit/Stop Processing"). Sub-bars are keyed by ts ranges in the
+        # engine, so they need NO alignment. Falsy (None) leaves behavior unchanged (coarse path).
+        self.granular_by_symbol = granular_by_symbol
         self._engine = None  # the PortfolioEngine built by the most recent run() (probe/diagnostics)
 
     def run(self) -> PortfolioResult:
@@ -185,7 +189,8 @@ class MultiSymbolStrategyRunner:
                                  max_open_long=getattr(self.config, "max_open_long", 0),
                                  max_open_short=getattr(self.config, "max_open_short", 0),
                                  sizer=getattr(self.config, "sizer", None),
-                                 volume_limit=getattr(self.config, "volume_limit", None))
+                                 volume_limit=getattr(self.config, "volume_limit", None),
+                                 granular_by_symbol=self.granular_by_symbol)
         self._engine = engine
         result = engine.run()
         # --- equal-weight buy-&-hold benchmark curve ---

@@ -1,7 +1,7 @@
 """Pure trigger function shared by both engines (extracted from BacktestEngine)."""
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.orders import Order, order_fill_price
+from vike_trader_app.core.orders import Order, order_fill_price, order_fill_price_granular
 
 
 def _bar(o, h, l, c):
@@ -53,6 +53,53 @@ def test_limit_close_sell_fills_only_when_close_at_or_above_price():
     assert order_fill_price(Order("limit_close", -1, 1.0, price=105.0), _bar(100, 115, 95, 103)) is None
     # exact: close == price -> fills
     assert order_fill_price(Order("limit_close", -1, 1.0, price=108.0), _bar(100, 115, 95, 108)) == 108.0
+
+
+# --- granular sub-bar resolution (order_fill_price_granular) ---
+
+def test_granular_limit_buy_triggers_at_first_dipping_sub_bar():
+    o = Order("limit", +1, 1.0, price=100.0)
+    subs = [_bar(105, 106, 101, 104), _bar(104, 105, 100, 102)]  # first stays > 100, second dips to 100
+    fp, idx = order_fill_price_granular(o, subs)
+    assert fp == 100.0
+    assert idx == 1
+
+
+def test_granular_stop_that_never_triggers_returns_none():
+    o = Order("stop", +1, 1.0, price=200.0)
+    subs = [_bar(105, 106, 101, 104), _bar(104, 105, 100, 102)]
+    assert order_fill_price_granular(o, subs) is None
+
+
+def test_granular_market_fills_at_first_sub_bar_open():
+    o = Order("market", +1, 1.0)
+    subs = [_bar(105, 106, 101, 104), _bar(104, 105, 100, 102)]
+    fp, idx = order_fill_price_granular(o, subs)
+    assert fp == 105.0
+    assert idx == 0
+
+
+def test_granular_market_close_fills_at_first_sub_bar_close():
+    o = Order("market_close", +1, 1.0)
+    subs = [_bar(105, 106, 101, 104), _bar(104, 105, 100, 102)]
+    fp, idx = order_fill_price_granular(o, subs)
+    assert fp == 104.0
+    assert idx == 0
+
+
+def test_granular_trailing_ratchets_across_sub_bars_then_triggers():
+    o = Order("trailing", -1, 1.0, trail=5.0, extreme=100.0)
+    # sub 0: new high to 110 -> trigger 95, low 100 > 95, no fill; extreme ratchets to 110
+    # sub 1: trigger now 110-5=105, low 104 <= 105 -> fills at 105 (sub-index 1)
+    subs = [_bar(100, 110, 100, 110), _bar(108, 108, 104, 104)]
+    fp, idx = order_fill_price_granular(o, subs)
+    assert fp == 105.0
+    assert idx == 1
+    assert o.extreme == 110.0
+
+
+def test_granular_empty_sub_bars_returns_none():
+    assert order_fill_price_granular(Order("market", +1, 1.0), []) is None
 
 
 def test_order_weight_defaults_zero_and_is_settable():
