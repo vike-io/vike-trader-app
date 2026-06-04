@@ -45,6 +45,7 @@ class TesterReport:
     equity_curve: list = field(default_factory=list, repr=False)
     verdict: object | None = None
     per_symbol_pnl: dict | None = None
+    per_symbol_curves: dict | None = None
 
     @classmethod
     def from_result(cls, result, periods_per_year: float = 365 * 24 * 60) -> "TesterReport":
@@ -78,6 +79,7 @@ class TesterReport:
             trades=tr,
             equity_curve=eq,
             per_symbol_pnl=getattr(result, "per_symbol_pnl", None),
+            per_symbol_curves=getattr(result, "per_symbol_curves", None),
         )
 
     def as_dict(self) -> dict:

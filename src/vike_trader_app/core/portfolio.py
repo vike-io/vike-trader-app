@@ -21,6 +21,7 @@ class PortfolioResult:
     equity_curve: list[float]
     final_equity: float
     per_symbol_pnl: dict = field(default_factory=dict)  # realized + unrealized PnL per symbol
+    per_symbol_curves: dict = field(default_factory=dict)  # cumulative PnL curve per symbol (one entry per bar)
 
 
 class PortfolioStrategy:
@@ -131,7 +132,8 @@ class PortfolioEngine:
                  slippage: float = 0.0, maker_fee: float | None = None,
                  taker_fee: float | None = None, multiplier: float = 1.0,
                  leverage: float | None = None, maint_margin: float = 0.0,
-                 cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None):
+                 cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
+                 timeframes: list[str] | None = None, max_open_positions: int = 0):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -152,6 +154,7 @@ class PortfolioEngine:
         # symbol a list[bool] aligned to the bar series — True == active member that bar. None
         # (default) == every symbol always active, i.e. today's behavior byte-for-byte.
         self.active_mask = active_mask
+        self.max_open_positions = max_open_positions
         self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
@@ -163,12 +166,28 @@ class PortfolioEngine:
         self._price: dict[str, float] = {
             s: bars_by_symbol[s][0].open if self.n else 0.0 for s in self.symbols
         }
+        # Per-symbol higher-TF aggregates: symbol -> tf -> (target_ms, [coarse bars]).
+        # Empty when no timeframes configured (opt-in — no change to existing behaviour).
+        from .timeframe import parse_timeframe, resample
+        self._tf: dict[str, dict[str, tuple[int, list]]] = {}
+        for s in self.symbols:
+            self._tf[s] = {}
+            for tf in timeframes or []:
+                ms = parse_timeframe(tf)
+                self._tf[s][tf] = (ms, resample(self.bars[s], ms))
+        # Current step timestamp (shared across all symbols — they share an aligned timeline).
+        self._now = self.bars[self.symbols[0]][0].ts if (self.symbols and self.n) else 0
         strategy._engine = self
 
     # --- membership (dynamic DataSet) ---
     def is_active(self, symbol: str) -> bool:
         """Whether ``symbol`` is an active member on the current step's bar. No mask == always active."""
         return self.active_mask is None or self.active_mask[symbol][self._step]
+
+    def _at_open_cap(self) -> bool:
+        """Return True when the MaxOpenPositions cap is set and already reached (count is live)."""
+        cap = self.max_open_positions
+        return bool(cap) and sum(1 for s in self.symbols if self._pos[s].size != 0) >= cap
 
     # --- reads exposed to the strategy ---
     def position_of(self, symbol: str) -> Position:
@@ -262,12 +281,37 @@ class PortfolioEngine:
     def cancel_all(self, symbol: str) -> None:
         self._pending[symbol] = []
 
+    # --- higher-TF reads (mirror BacktestEngine, per symbol) ---
+    def bars_for(self, symbol: str, tf: str):
+        """Completed higher-TF bars for ``symbol`` visible at the current step (no look-ahead)."""
+        ms, coarse = self._tf[symbol][tf]
+        window_start = self._now - self._now % ms
+        return [b for b in coarse if b.ts < window_start]
+
+    def forming_for(self, symbol: str, tf: str):
+        """The still-building coarse bar for ``tf`` / ``symbol`` from base bars seen so far, or None."""
+        ms, _ = self._tf[symbol][tf]
+        window_start = self._now - self._now % ms
+        window = [b for b in self.bars[symbol] if window_start <= b.ts <= self._now]
+        if not window:
+            return None
+        return Bar(
+            ts=window_start,
+            open=window[0].open,
+            high=max(b.high for b in window),
+            low=min(b.low for b in window),
+            close=window[-1].close,
+            volume=sum(b.volume for b in window),
+        )
+
     # --- run loop ---
     def run(self) -> PortfolioResult:
         equity_curve: list[float] = []
+        per_symbol_curve: dict[str, list[float]] = {s: [] for s in self.symbols}
         for i in range(self.n):
             self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
+            self._now = cur[self.symbols[0]].ts if self.symbols else 0  # shared aligned timestamp
             if self.cash_gate:
                 self._fill_step_gated(cur)  # cross-symbol shared-cash priority + drop gate
             else:
@@ -284,12 +328,15 @@ class PortfolioEngine:
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
             self.strategy.on_bar(ts, cur)
             equity_curve.append(self.equity_now())
+            for s in self.symbols:
+                pos = self._pos[s]
+                per_symbol_curve[s].append(self._realized[s] + pos.size * (self._price[s] - pos.avg_price) * self.multiplier)
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
             s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price) * self.multiplier
             for s in self.symbols
         }
-        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol)
+        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve)
 
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
         still = []
@@ -302,6 +349,8 @@ class PortfolioEngine:
                 opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)  # open-from-flat or same-dir add
                 if opening and not self.is_active(symbol):
                     continue                  # inactive member: drop opening/adding fills (reduces still apply)
+                if pos.size == 0 and self._at_open_cap():
+                    continue                  # MaxOpenPositions cap reached: drop new-symbol opens
                 self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
 
@@ -332,6 +381,10 @@ class PortfolioEngine:
             self._apply_fill(s, o.side, o.size, fp, cur[s].ts, is_maker=o.kind == "limit")
         # opens/adds: highest weight first, ties by trigger order; drop the unfundable
         for s, o, fp, _ in sorted(opens, key=lambda t: (-t[1].weight, t[3])):
+            # MaxOpenPositions cap: re-checked live so count updates as positions open during this loop
+            if self._pos[s].size == 0 and self._at_open_cap():
+                self.dropped.append((s, o.kind, o.size, o.weight))
+                continue
             slipped = adverse_fill_price(fp, o.side, self.slippage)
             rate = self.maker_fee if o.kind == "limit" else self.taker_fee
             fee = _fee(o.size, slipped, rate, self.multiplier)

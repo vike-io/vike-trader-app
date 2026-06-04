@@ -59,11 +59,12 @@ def test_shim_forwards_resting_orders_to_engine():
     assert eng._pending["A"] == []
 
 
-def test_shim_multitimeframe_still_unsupported():
+def test_shim_bars_for_raises_when_tf_not_configured():
     import pytest
     eng = PortfolioEngine({"A": [_bar(1, 1.0)]}, PortfolioStrategy(), cash=10.0)
     shim = SymbolEngineShim(eng, "A", None)
-    with pytest.raises(NotImplementedError):
+    # No timeframes configured -> KeyError (the tf is not in self._tf[symbol])
+    with pytest.raises(KeyError):
         shim.bars_for("1h")
 
 
@@ -282,6 +283,75 @@ def test_auto_close_on_removal_no_lookahead():
     assert len(closed) == 1
     assert closed[0].exit_price == 107.0          # removal-bar OPEN, not 120 (high) -> no look-ahead
     assert closed[0].entry_price == 100.0
+
+
+def test_multitimeframe_in_portfolio_mode():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    # 1-minute base bars; ask for a 5m higher timeframe
+    def _b(ts, c):
+        return Bar(ts=ts, open=c, high=c, low=c, close=c, volume=1.0)
+
+    seen = {}
+
+    class UsesHTF(Strategy):
+        def on_bar(self, bar):
+            # record how many completed 5m bars are visible at each step (look-ahead-safe)
+            seen[self.index] = len(self.bars("5m"))
+
+    a = [_b(i * 60_000, 100 + i) for i in range(12)]   # 12 one-minute bars = ~2 completed 5m bars
+    runner = MultiSymbolStrategyRunner(UsesHTF, {"A": a}, TesterConfig(cash=1000.0, timeframes=["5m"]))
+    runner.run()
+    # at the last 1m bar (index 11), at least one completed 5m bar should be visible; and the count is
+    # monotonic non-decreasing and never sees the future (no 5m bar whose window hasn't closed)
+    assert seen[11] >= 1
+    assert all(seen[i] <= seen[j] for i, j in zip(range(11), range(1, 12)))   # non-decreasing
+
+
+def test_forming_htf_bar_in_portfolio_mode():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    captured = {}
+
+    class UsesForming(Strategy):
+        def on_bar(self, bar):
+            captured[self.index] = self.forming("5m")
+
+    a = [Bar(ts=i * 60_000, open=100, high=100 + i, low=99, close=100 + i, volume=1.0) for i in range(7)]
+    runner = MultiSymbolStrategyRunner(UsesForming, {"A": a}, TesterConfig(cash=1000.0, timeframes=["5m"]))
+    runner.run()
+    # the forming 5m bar at index 6 aggregates the bars of the current (second) 5m window so far
+    assert captured[6] is not None and captured[6].high >= 100
+
+
+def test_max_open_positions_caps_resting_entries():
+    # A resting limit entry on a NEW symbol must be blocked when already at the MaxOpenPositions cap.
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _o(ts, o, h, l, c):
+        return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class LimitBuy(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.limit_buy(1.0, 100.0)   # both A and B rest a limit @100, both dip to 100 next bar
+
+    a = [_o(0, 100, 101, 99, 100), _o(1, 100, 101, 95, 100), _o(2, 100, 101, 99, 100)]
+    b = [_o(0, 100, 101, 99, 100), _o(1, 100, 101, 95, 100), _o(2, 100, 101, 99, 100)]
+    runner = MultiSymbolStrategyRunner(LimitBuy, {"A": a, "B": b}, TesterConfig(cash=10_000.0),
+                                       max_open_positions=1)
+    runner.run()
+    open_syms = [s for s in ("A", "B") if runner._engine._pos[s].size != 0]
+    assert len(open_syms) == 1
 
 
 def test_empty_ranges_identical_to_no_mask():
