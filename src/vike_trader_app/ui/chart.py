@@ -1619,6 +1619,32 @@ class PriceChart(pg.PlotWidget):
         return [host.widget(i) for i in range(1, host.count())
                 if isinstance(host.widget(i), OscillatorPane)]
 
+    def _axis_natural_width(self, axis) -> float:
+        """The width a right AxisItem *would* take for its CURRENT tick strings, computed
+        synchronously via QFontMetrics — paint-independent so headless tests can assert it
+        immediately. Mirrors pyqtgraph's AxisItem._updateWidth:
+            textWidth + style['tickTextOffset'][0] + max(0, style['tickLength']).
+        Reading axis.width() instead is unsafe: in pyqtgraph 0.14.0 it returns geometry from
+        the *last* layout pass, so it is stale (or 0) right after setWidth()."""
+        if not axis.isVisible():
+            return 0.0
+        mn, mx = axis.range
+        size = axis.height() or 300
+        try:
+            levels = axis.tickValues(mn, mx, size)
+        except Exception:  # noqa: BLE001 - degenerate range -> no strings to measure
+            levels = []
+        strings = []
+        for spacing, values in levels:
+            try:
+                strings += [s for s in axis.tickStrings(values, axis.scale, spacing) if s]
+            except Exception:  # noqa: BLE001
+                pass
+        font = axis.style.get("tickFont") or axis.font()
+        fm = QtGui.QFontMetrics(font)
+        text_w = max((fm.horizontalAdvance(s) for s in strings), default=axis.textWidth)
+        return float(text_w + axis.style["tickTextOffset"][0] + max(0, axis.style["tickLength"]))
+
     def _osc_panes(self):
         seen, panes = set(), []
         for i in self._indicators.values():

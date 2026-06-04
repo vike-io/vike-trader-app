@@ -423,3 +423,22 @@ def test_panes_in_visual_order_differs_from_osc_after_drag(app):
     assert pc._osc_panes() == [a.pane, b.pane]
     assert pc._panes_in_visual_order() == [b.pane, a.pane]
     assert pc._panes_in_visual_order() != pc._osc_panes()
+
+
+def test_axis_natural_width_exceeds_pyqtgraph_stale_width(app):
+    # The price axis shows wide labels (e.g. "117.50"); its natural width must reflect that,
+    # NOT the stale/default AxisItem.width() (~35 before a paint pass).
+    pc, _ = _chart(app)
+    ax = pc.getAxis("right")
+    nat = pc._axis_natural_width(ax)
+    assert nat > 50  # padded up from the longest current tick string, not the stale default
+
+
+def test_axis_natural_width_price_wider_than_oscillator(app):
+    # Price labels ("117.50") are wider than a 0-100 RSI pane's ("70.00"): proves the
+    # measurement keys off each axis's OWN current tick strings.
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    price_nat = pc._axis_natural_width(pc.getAxis("right"))
+    osc_nat = pc._axis_natural_width(ind.pane.getAxis("right"))
+    assert price_nat > osc_nat
