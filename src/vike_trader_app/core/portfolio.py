@@ -377,6 +377,18 @@ class PortfolioEngine:
         self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
                                            extreme=self._price[symbol], weight=weight))
 
+    def submit_market_close(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
+                            raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
+        size = self._cap_to_leverage(symbol, side_sign, size)
+        if size > 0.0:
+            self._pending[symbol].append(Order("market_close", side_sign, size, weight=weight))
+
+    def submit_limit_close(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
+                           raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
+        self._pending[symbol].append(Order("limit_close", side_sign, size, price=price, weight=weight))
+
     def cancel_all(self, symbol: str) -> None:
         self._pending[symbol] = []
 

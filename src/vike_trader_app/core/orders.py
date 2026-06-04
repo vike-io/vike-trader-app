@@ -28,6 +28,12 @@ def order_fill_price(o: "Order", bar):
     """
     if o.kind == "market":
         return bar.open
+    if o.kind == "market_close":
+        return bar.close
+    if o.kind == "limit_close":  # fills at the close only if the close is at-or-better than the limit
+        if o.side > 0:
+            return bar.close if bar.close <= o.price else None
+        return bar.close if bar.close >= o.price else None
     if o.kind == "limit":  # buy on a dip to price; sell on a rally to price
         if o.side > 0:
             return o.price if bar.low <= o.price else None

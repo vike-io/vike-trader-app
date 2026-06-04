@@ -83,6 +83,22 @@ class Strategy:
         """Protective trailing buy-stop for a short: covers ``trail`` above the trough."""
         self._engine.submit_trailing(+1, size, trail, weight=weight)
 
+    def buy_on_close(self, size: float) -> None:
+        """Market-on-Close buy: fills at the next bar's close (MOC semantics)."""
+        self._engine.submit_market_close(+1, size)
+
+    def sell_on_close(self, size: float) -> None:
+        """Market-on-Close sell: fills at the next bar's close (MOC semantics)."""
+        self._engine.submit_market_close(-1, size)
+
+    def limit_buy_on_close(self, size: float, price: float) -> None:
+        """Limit-on-Close buy: fills at close only if close <= price."""
+        self._engine.submit_limit_close(+1, size, price)
+
+    def limit_sell_on_close(self, size: float, price: float) -> None:
+        """Limit-on-Close sell: fills at close only if close >= price."""
+        self._engine.submit_limit_close(-1, size, price)
+
     def cancel_all(self) -> None:
         """Cancel all resting (and not-yet-filled) orders."""
         self._engine.cancel_all()

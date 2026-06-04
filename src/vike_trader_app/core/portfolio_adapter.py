@@ -92,6 +92,12 @@ class SymbolEngineShim:
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._engine.submit_trailing(self._symbol, side_sign, size, trail, weight=weight)
 
+    def submit_market_close(self, side_sign: int, size: float, weight: float = 0.0) -> None:
+        self._engine.submit_market_close(self._symbol, side_sign, size, weight=weight)
+
+    def submit_limit_close(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_limit_close(self._symbol, side_sign, size, price, weight=weight)
+
     def cancel_all(self) -> None:
         self._engine.cancel_all(self._symbol)
 

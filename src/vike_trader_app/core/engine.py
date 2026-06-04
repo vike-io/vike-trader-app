@@ -107,6 +107,12 @@ class BacktestEngine:
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._pending.append(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
 
+    def submit_market_close(self, side_sign: int, size: float) -> None:
+        self._pending.append(Order("market_close", side_sign, size))
+
+    def submit_limit_close(self, side_sign: int, size: float, price: float) -> None:
+        self._pending.append(Order("limit_close", side_sign, size, price=price))
+
     def cancel_all(self) -> None:
         self._pending = []
 
