@@ -442,3 +442,34 @@ def test_axis_natural_width_price_wider_than_oscillator(app):
     price_nat = pc._axis_natural_width(pc.getAxis("right"))
     osc_nat = pc._axis_natural_width(ind.pane.getAxis("right"))
     assert price_nat > osc_nat
+
+
+def test_sync_axis_width_equalizes_above_narrow_pane(app):
+    # After equalize, every right axis shares ONE width == the widest natural width,
+    # which is strictly GREATER than the narrow oscillator's own natural width
+    # (proves padding-up happened, not "two zeros are equal").
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    osc_ax = ind.pane.getAxis("right")
+    osc_nat = pc._axis_natural_width(osc_ax)
+    pc._sync_axis_width()
+    price_w = pc.getAxis("right").width()
+    osc_w = osc_ax.width()
+    assert price_w == osc_w            # equalized
+    assert osc_w > osc_nat             # the narrow pane was padded up to the price width
+
+
+def test_sync_axis_width_no_recursion(app):
+    # The _wsyncing guard must break the setWidth -> resize -> sigResized -> re-sync loop:
+    # a re-entrant call while syncing is a no-op.
+    pc, _ = _chart(app)
+    pc.add_indicator("rsi")
+    calls = []
+    real_natural = pc._axis_natural_width
+    pc._axis_natural_width = lambda ax: (calls.append(1), real_natural(ax))[1]
+    pc._wsyncing = True          # simulate "already inside a sync"
+    pc._sync_axis_width()        # must early-return, measuring nothing
+    assert calls == []
+    pc._wsyncing = False
+    pc._sync_axis_width()        # now it runs and measures
+    assert calls

@@ -996,6 +996,7 @@ class PriceChart(pg.PlotWidget):
         self._z_top = 1.0  # running z for overlay visual-order (kept above the candles at z=0)
         self._chart_interval = None  # current timeframe (for per-interval indicator visibility)
         self._vb2 = None  # secondary ViewBox for overlays pinned to their own scale
+        self._wsyncing = False  # re-entrancy guard for _sync_axis_width (mirrors _fitting)
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
@@ -1644,6 +1645,31 @@ class PriceChart(pg.PlotWidget):
         fm = QtGui.QFontMetrics(font)
         text_w = max((fm.horizontalAdvance(s) for s in strings), default=axis.textWidth)
         return float(text_w + axis.style["tickTextOffset"][0] + max(0, axis.style["tickLength"]))
+
+    def _sync_axis_width(self):
+        """Pin every pane's right price axis (and the price chart's) to one shared width so
+        plot columns are pixel-aligned in time. Width is the max natural width across axes,
+        computed synchronously (no dependence on a pending paint). When there are no panes,
+        the price axis is restored to auto so a lone chart isn't stuck at a stale pinned width."""
+        if self._wsyncing:
+            return
+        self._wsyncing = True
+        try:
+            panes = self._panes_in_visual_order()
+            price_ax = self.getAxis("right")
+            if not panes:
+                price_ax.setWidth(None)  # lone chart -> auto width
+                self.getPlotItem().layout.activate()
+                return
+            axes = [price_ax] + [p.getAxis("right") for p in panes]
+            w = int(round(max(self._axis_natural_width(a) for a in axes)))
+            for a in axes:
+                a.setWidth(w)
+            self.getPlotItem().layout.activate()
+            for p in panes:
+                p.getPlotItem().layout.activate()
+        finally:
+            self._wsyncing = False
 
     def _osc_panes(self):
         seen, panes = set(), []
