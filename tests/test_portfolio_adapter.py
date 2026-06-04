@@ -1,6 +1,8 @@
 # tests/test_portfolio_adapter.py
 """WealthLab-style portfolio backtest: one single-symbol Strategy per symbol, shared cash."""
 
+import pytest
+
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
 from vike_trader_app.core.portfolio_adapter import (
@@ -412,6 +414,30 @@ def test_default_passthrough_sizer_is_byte_for_byte():
     runner = MultiSymbolStrategyRunner(Enter, {"A": a}, TesterConfig(cash=10_000.0))  # no sizer
     runner.run()
     assert runner._engine._pos["A"].size == 3.0   # literal size, unchanged
+
+
+def test_buy_on_close_fills_at_next_bar_close_in_portfolio_mode():
+    """A buy_on_close submitted on bar 0 fills at bar 1's CLOSE in portfolio mode (MOC semantics)."""
+    from vike_trader_app.core.model import Bar as _Bar
+
+    def _o(ts, o, h, l, c):
+        return _Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+    class BuyOnCloseMOC(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy_on_close(1.0)
+
+    bars = [
+        _o(0, 100, 101, 99, 100),         # submit MOC buy
+        _o(60_000, 102, 108, 101, 107),   # fills at close = 107, NOT open 102
+        _o(120_000, 107, 110, 106, 109),
+    ]
+    runner = MultiSymbolStrategyRunner(BuyOnCloseMOC, {"A": bars}, TesterConfig(cash=10_000.0))
+    runner.run()
+    eng = runner._engine
+    assert eng._pos["A"].size == pytest.approx(1.0)
+    assert eng._pos["A"].avg_price == pytest.approx(107.0)  # bar[1].close, NOT bar[1].open
 
 
 def test_order_target_percent_is_not_resized_by_sizer():

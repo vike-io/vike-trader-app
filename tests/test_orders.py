@@ -110,6 +110,78 @@ def test_trailing_stop_exits_after_pullback_from_peak():
     assert result.trades[0].pnl == pytest.approx(5.0)  # 105 - 100 entry
 
 
+class _BuyOnClose(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.buy_on_close(1.0)  # fills at bar 1's CLOSE (MOC semantics)
+
+
+def test_buy_on_close_fills_at_next_bar_close():
+    bars = [
+        _bar(0, 100, 101, 99, 100),        # submit MOC buy
+        _bar(60_000, 102, 108, 101, 107),  # fills at THIS bar's close = 107
+        _bar(120_000, 107, 110, 106, 109),
+    ]
+    eng = BacktestEngine(bars, _BuyOnClose())
+    eng.run()
+    assert eng.position.size == pytest.approx(1.0)
+    assert eng.position.avg_price == pytest.approx(bars[1].close)  # 107, NOT 102 (open)
+
+
+class _SellOnClose(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.sell_on_close(1.0)  # short MOC
+
+
+def test_sell_on_close_fills_at_next_bar_close():
+    bars = [
+        _bar(0, 100, 101, 99, 100),
+        _bar(60_000, 98, 100, 95, 97),   # fills at close = 97
+        _bar(120_000, 97, 98, 95, 96),
+    ]
+    eng = BacktestEngine(bars, _SellOnClose())
+    eng.run()
+    assert eng.position.size == pytest.approx(-1.0)
+    assert eng.position.avg_price == pytest.approx(bars[1].close)  # 97
+
+
+class _LimitCloseNoFill(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.limit_buy_on_close(1.0, 90.0)  # close=100 on bar 1 -> 100 > 90 -> no fill
+
+
+def test_limit_buy_on_close_no_fill_when_close_above_price():
+    bars = [
+        _bar(0, 100, 101, 99, 100),
+        _bar(60_000, 100, 101, 99, 100),  # close=100 > 90 -> no fill
+        _bar(120_000, 100, 101, 99, 100),
+    ]
+    eng = BacktestEngine(bars, _LimitCloseNoFill())
+    result = eng.run()
+    assert result.trades == []
+    assert eng.position.size == 0.0
+
+
+class _LimitCloseFill(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.limit_buy_on_close(1.0, 105.0)  # close=103 on bar 1 -> 103 <= 105 -> fills at close
+
+
+def test_limit_buy_on_close_fills_at_close_when_close_at_or_below_price():
+    bars = [
+        _bar(0, 100, 101, 99, 100),
+        _bar(60_000, 100, 108, 98, 103),  # close=103 <= 105 -> fill at 103
+        _bar(120_000, 103, 105, 102, 104),
+    ]
+    eng = BacktestEngine(bars, _LimitCloseFill())
+    eng.run()
+    assert eng.position.size == pytest.approx(1.0)
+    assert eng.position.avg_price == pytest.approx(103.0)  # bar[1].close
+
+
 class _DCA(Strategy):
     def on_bar(self, bar):
         if self.index == 0:

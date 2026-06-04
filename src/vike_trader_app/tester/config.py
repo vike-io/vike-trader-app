@@ -21,6 +21,7 @@ class TesterConfig:
     sizer: object | None = None  # swappable PositionSizer; None -> engine uses PassThrough (literal size)
     max_open_long: int = 0   # cap on concurrent long positions (0 = no limit)
     max_open_short: int = 0  # cap on concurrent short positions (0 = no limit)
+    volume_limit: float | None = None  # %-of-volume liquidity cap (e.g. 0.1 = 10%); None/0 = no cap
     timeframes: list[str] | None = None
     cashflows: list[float] | None = None
     periods_per_year: float = 365 * 24 * 60  # 1-minute bars; for annualized Sharpe/Sortino/Calmar

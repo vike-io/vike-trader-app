@@ -43,3 +43,9 @@ class Trade:
     entry_ts: int = 0  # fill timestamp of the opening order (epoch ms)
     exit_ts: int = 0  # fill timestamp of the closing order (epoch ms)
     symbol: str = ""  # originating symbol ("" for single-symbol engine)
+    # MAE/MFE as fractions relative to entry price (portfolio mode only; 0.0 = not tracked).
+    # mae: max adverse excursion (negative = adverse for long, positive = adverse for short) expressed
+    #      as (low - entry)/entry for longs, (entry - high)/entry for shorts.
+    # mfe: max favorable excursion expressed as (high - entry)/entry for longs, (entry - low)/entry for shorts.
+    mae: float = 0.0
+    mfe: float = 0.0

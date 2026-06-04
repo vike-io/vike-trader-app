@@ -31,6 +31,30 @@ def test_trailing_sell_ratchets_then_triggers():
     assert order_fill_price(o, _bar(108, 108, 104, 104)) == 105.0
 
 
+def test_market_close_fills_at_bar_close():
+    bar = _bar(100, 110, 95, 108)
+    assert order_fill_price(Order("market_close", +1, 1.0), bar) == 108
+    assert order_fill_price(Order("market_close", -1, 1.0), bar) == 108
+
+
+def test_limit_close_buy_fills_only_when_close_at_or_below_price():
+    # close=108, limit=110 -> 108 <= 110 -> fills at close
+    assert order_fill_price(Order("limit_close", +1, 1.0, price=110.0), _bar(100, 115, 95, 108)) == 108.0
+    # close=112, limit=110 -> 112 > 110 -> no fill
+    assert order_fill_price(Order("limit_close", +1, 1.0, price=110.0), _bar(100, 115, 95, 112)) is None
+    # exact: close == price -> fills
+    assert order_fill_price(Order("limit_close", +1, 1.0, price=108.0), _bar(100, 115, 95, 108)) == 108.0
+
+
+def test_limit_close_sell_fills_only_when_close_at_or_above_price():
+    # close=108, limit=105 -> 108 >= 105 -> fills at close
+    assert order_fill_price(Order("limit_close", -1, 1.0, price=105.0), _bar(100, 115, 95, 108)) == 108.0
+    # close=103, limit=105 -> 103 < 105 -> no fill
+    assert order_fill_price(Order("limit_close", -1, 1.0, price=105.0), _bar(100, 115, 95, 103)) is None
+    # exact: close == price -> fills
+    assert order_fill_price(Order("limit_close", -1, 1.0, price=108.0), _bar(100, 115, 95, 108)) == 108.0
+
+
 def test_order_weight_defaults_zero_and_is_settable():
     assert Order("market", +1, 1.0).weight == 0.0
     assert Order("market", +1, 1.0, weight=2.5).weight == 2.5

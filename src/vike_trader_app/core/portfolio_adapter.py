@@ -92,6 +92,12 @@ class SymbolEngineShim:
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._engine.submit_trailing(self._symbol, side_sign, size, trail, weight=weight)
 
+    def submit_market_close(self, side_sign: int, size: float, weight: float = 0.0) -> None:
+        self._engine.submit_market_close(self._symbol, side_sign, size, weight=weight)
+
+    def submit_limit_close(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        self._engine.submit_limit_close(self._symbol, side_sign, size, price, weight=weight)
+
     def cancel_all(self) -> None:
         self._engine.cancel_all(self._symbol)
 
@@ -175,7 +181,8 @@ class MultiSymbolStrategyRunner:
                                  max_open_positions=self.max_open_positions,
                                  max_open_long=getattr(self.config, "max_open_long", 0),
                                  max_open_short=getattr(self.config, "max_open_short", 0),
-                                 sizer=getattr(self.config, "sizer", None))
+                                 sizer=getattr(self.config, "sizer", None),
+                                 volume_limit=getattr(self.config, "volume_limit", None))
         self._engine = engine
         return engine.run()
 
