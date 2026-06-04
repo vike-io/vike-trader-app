@@ -1574,3 +1574,28 @@ def test_price_leave_event_clears_crosshair(app):
     assert pc._cx_price_tag.isHidden() and pc._cx_time_tag.isHidden()
     assert a.pane._cx_v.isVisible() is False
     assert a.pane._cx_val_tag.isHidden() and a.pane._cx_time_tag.isHidden()
+
+
+def test_pane_hover_fans_to_price_and_other_panes(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    # a hover inside pane a is re-emitted by _new_pane's wiring -> _set_crosshair_x fans out
+    vb = a.pane.getViewBox()
+    inside = vb.sceneBoundingRect().center()
+    bar = int(round(vb.mapSceneToView(inside).x()))
+    a.pane._on_pane_mouse_moved(inside)
+    # price vertical line + the OTHER pane's line snap to the hovered bar
+    assert pc._cx_v.value() == bar and pc._cx_v.isVisible() is True
+    assert b.pane._cx_v.value() == bar and b.pane._cx_v.isVisible() is True
+    # the price-pane horizontal read-out line is NOT shown for a pane-originated hover
+    assert pc._cx_h.isVisible() is False
+    # leaving the pane fans a clear back to the price chart -> everything hidden
+    outside = QtCore.QPointF(vb.sceneBoundingRect().right() + 9999,
+                             vb.sceneBoundingRect().center().y())
+    a.pane._on_pane_mouse_moved(outside)
+    assert pc._cx_v.isVisible() is False
+    assert a.pane._cx_v.isVisible() is False and b.pane._cx_v.isVisible() is False

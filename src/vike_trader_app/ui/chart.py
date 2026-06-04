@@ -1763,6 +1763,10 @@ class PriceChart(pg.PlotWidget):
         pane.paneMoveDown.connect(self._pane_move_down)
         pane.paneMaximizeToggled.connect(self._toggle_maximize_pane)
         pane.paneDeleteRequested.connect(self._delete_pane)
+        # a hover inside this pane fans the bar-x out to the price chart, which re-fans to every
+        # other pane (and homes the time tag); leaving the pane clears the whole crosshair.
+        pane.crosshairMoved.connect(self._set_crosshair_x)
+        pane.crosshairLeft.connect(self._clear_crosshair)
         self._pane_host.addWidget(pane)
         pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
         self._resize_panes()
