@@ -243,6 +243,34 @@ _OVERLAY_NAMES = frozenset({
     "vwap", "linearreg", "linearreg_intercept", "tsf", "std_error_bands",
 })
 
+# Canonical threshold guide lines per oscillator (label, value). Each value is verified against
+# the indicator fn's NATIVE output range (e.g. williams_r is [-100, 0] -> -20/-80, NOT 20/80).
+# `mfi` is intentionally absent (not registered). Bands seed `_Indicator.bands`; they are editable
+# in the Style tab and render as dashed horizontal InfiniteLines in the oscillator pane.
+_BAND_ZERO = [("Zero", 0.0)]  # the 0-centerline family (macd/ppo/mom/roc/... all cross zero)
+_INDICATOR_BANDS = {
+    "rsi": [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)],
+    "stochastic": [("Upper", 80.0), ("Lower", 20.0)],
+    "stochf": [("Upper", 80.0), ("Lower", 20.0)],
+    "stochrsi": [("Upper", 80.0), ("Lower", 20.0)],
+    "williams_r": [("Upper", -20.0), ("Lower", -80.0)],   # native [-100, 0]
+    "cci": [("Upper", 100.0), ("Middle", 0.0), ("Lower", -100.0)],
+    "ultosc": [("Upper", 70.0), ("Lower", 30.0)],
+    "aroon": [("Upper", 70.0), ("Lower", 30.0)],
+    "adx": [("Threshold", 25.0)],
+    "adxr": [("Threshold", 25.0)],
+    "connors_rsi": [("Upper", 90.0), ("Lower", 10.0)],
+    "zscore": [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)],
+    "spread_zscore": [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)],
+    # 0-centerline family — a single guide line at zero
+    "macd": list(_BAND_ZERO), "ppo": list(_BAND_ZERO), "apo": list(_BAND_ZERO),
+    "mom": list(_BAND_ZERO), "roc": list(_BAND_ZERO), "rocp": list(_BAND_ZERO),
+    "ao": list(_BAND_ZERO), "ac": list(_BAND_ZERO), "dpo": list(_BAND_ZERO),
+    "trix": list(_BAND_ZERO), "tsi": list(_BAND_ZERO), "smi_ergodic": list(_BAND_ZERO),
+    "cmo": list(_BAND_ZERO), "elder_ray": list(_BAND_ZERO), "kvo": list(_BAND_ZERO),
+    "adosc": list(_BAND_ZERO), "net_volume": list(_BAND_ZERO), "bop": list(_BAND_ZERO),
+}
+
 # Full descriptive names for the picker's right column (TradingView-style). Candlestick
 # patterns aren't listed — they title-case cleanly from their snake_case name.
 _INDICATOR_NAMES = {

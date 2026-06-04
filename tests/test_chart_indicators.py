@@ -1921,3 +1921,31 @@ def test_clone_carries_non_default_source(app):
     # the clone's series must match the source-fed original (same params, same source):
     assert list(clone.series["sma"]) == list(ind.series["sma"])
     assert clone.label == "SMA 4 (hlc3)"
+
+
+# --- PHASE C: Threshold bands -----------------------------------------------------------------
+def test_indicator_bands_table_canonical_values(app):
+    from vike_trader_app.ui.chart import _INDICATOR_BANDS
+    # oscillators with explicit upper/middle/lower or two-line bands
+    assert _INDICATOR_BANDS["rsi"] == [("Upper", 70.0), ("Middle", 50.0), ("Lower", 30.0)]
+    assert _INDICATOR_BANDS["stochastic"] == [("Upper", 80.0), ("Lower", 20.0)]
+    assert _INDICATOR_BANDS["stochf"] == [("Upper", 80.0), ("Lower", 20.0)]
+    assert _INDICATOR_BANDS["stochrsi"] == [("Upper", 80.0), ("Lower", 20.0)]
+    # williams_r native range is [-100, 0] -> -20 / -80 (NOT 20/80)
+    assert _INDICATOR_BANDS["williams_r"] == [("Upper", -20.0), ("Lower", -80.0)]
+    assert _INDICATOR_BANDS["cci"] == [("Upper", 100.0), ("Middle", 0.0), ("Lower", -100.0)]
+    assert _INDICATOR_BANDS["ultosc"] == [("Upper", 70.0), ("Lower", 30.0)]
+    assert _INDICATOR_BANDS["aroon"] == [("Upper", 70.0), ("Lower", 30.0)]
+    assert _INDICATOR_BANDS["adx"] == [("Threshold", 25.0)]
+    assert _INDICATOR_BANDS["adxr"] == [("Threshold", 25.0)]
+    assert _INDICATOR_BANDS["connors_rsi"] == [("Upper", 90.0), ("Lower", 10.0)]
+    assert _INDICATOR_BANDS["zscore"] == [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)]
+    assert _INDICATOR_BANDS["spread_zscore"] == [("Upper", 2.0), ("Middle", 0.0), ("Lower", -2.0)]
+    # 0-centerline family -> a single Zero line
+    for name in ("macd", "ppo", "apo", "mom", "roc", "rocp", "ao", "ac", "dpo", "trix",
+                 "tsi", "smi_ergodic", "cmo", "elder_ray", "kvo", "adosc", "net_volume", "bop"):
+        assert _INDICATOR_BANDS[name] == [("Zero", 0.0)], name
+    # mfi is NOT registered, so it must NOT be in the table
+    assert "mfi" not in _INDICATOR_BANDS
+    # overlays / unlisted indicators have no bands
+    assert "ema" not in _INDICATOR_BANDS and "sma" not in _INDICATOR_BANDS
