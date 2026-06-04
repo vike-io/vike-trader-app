@@ -40,6 +40,36 @@ _LINE_STYLES = [("Solid", "solid"), ("Dashed", "dashed"), ("Dotted", "dotted")]
 _LINE_WIDTHS = [1, 2, 3, 4]  # line-width picker (px)
 # Distinct sentinel for _apply_edit optional args (NOT falsy — an empty list/dict is a real value).
 _UNSET = object()
+
+# TradingView price sources for single-series indicators (D1/D2). Default `close`.
+_SOURCE_OPTIONS = ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+
+
+def is_source_selectable(spec) -> bool:
+    """True when an indicator takes exactly one OHLC price column (so swapping the source is
+    meaningful). All 53 such indicators ship with `close`; pairs (`close`/`benchmark`), volume
+    (`obv`, `volume_osc`) and multi-price (stochastic/pattern) inputs are excluded automatically."""
+    return len(spec.inputs) == 1 and spec.inputs[0] in {"close", "open", "high", "low"}
+
+
+def _source_series(data, source):
+    """The price series for ``source`` from a `_data_cols`-style column dict: a raw o/h/l/c
+    column, or a derived blend — hl2=(h+l)/2, hlc3=(h+l+c)/3, ohlc4=(o+h+l+c)/4, hlcc4=(h+l+2c)/4.
+    Pure and list-based to match `_data_cols`. Unknown source falls back to `close`."""
+    o, h, l, c = data["open"], data["high"], data["low"], data["close"]
+    if source in ("open", "high", "low", "close"):
+        return list(data[source])
+    if source == "hl2":
+        return [(hi + lo) / 2 for hi, lo in zip(h, l)]
+    if source == "hlc3":
+        return [(hi + lo + cl) / 3 for hi, lo, cl in zip(h, l, c)]
+    if source == "ohlc4":
+        return [(op + hi + lo + cl) / 4 for op, hi, lo, cl in zip(o, h, l, c)]
+    if source == "hlcc4":
+        return [(hi + lo + 2 * cl) / 4 for hi, lo, cl in zip(h, l, c)]
+    return list(c)
+
+
 # Crosshair axis-tag style (hovered price/time read-outs) — shared by the price pane AND every
 # oscillator pane so the cross-pane crosshair tags match the price-pane tags pixel-for-pixel.
 _TAG_QSS = (f"color:{theme.TEXT};background:{theme.BORDER};border-radius:2px;padding:0 4px;"

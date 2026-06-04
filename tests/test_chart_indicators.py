@@ -1705,3 +1705,55 @@ def test_pane_value_tag_anchored_at_right_edge(app):
         f"Value tag right edge ({tag_right}) is not at pane right edge ({expected_right}); "
         "Fix-3 TV-consistent anchoring may have regressed"
     )
+
+
+# --- PHASE B: source helpers -----------------------------------------------------------------
+def test_is_source_selectable_count_is_53(app):
+    import vike_trader_app.core.indicators  # noqa: F401 - populate REGISTRY
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import is_source_selectable
+    sel = [s for s in _base.list_indicators() if is_source_selectable(s)]
+    assert len(sel) == 53
+    assert all(s.inputs[0] == "close" for s in sel)
+
+
+def test_is_source_selectable_gates_correctly(app):
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import is_source_selectable
+    assert is_source_selectable(_base.get("rsi")) is True
+    assert is_source_selectable(_base.get("sma")) is True
+    assert is_source_selectable(_base.get("bollinger")) is True   # single close, multi-output
+    assert is_source_selectable(_base.get("stochastic")) is False  # high/low/close
+    assert is_source_selectable(_base.get("obv")) is False         # close/volume
+    assert is_source_selectable(_base.get("volume_osc")) is False  # volume
+    assert is_source_selectable(_base.get("engulfing")) is False   # open/high/low/close
+    assert is_source_selectable(_base.get("ratio")) is False       # close/benchmark
+
+
+def test_source_options_are_the_eight_tv_sources(app):
+    from vike_trader_app.ui.chart import _SOURCE_OPTIONS
+    assert _SOURCE_OPTIONS == ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+
+
+def test_source_series_raw_and_derived_math(app):
+    from vike_trader_app.ui.chart import _source_series
+    data = {
+        "open": [10.0, 20.0], "high": [12.0, 24.0],
+        "low": [8.0, 16.0], "close": [11.0, 22.0], "volume": [0, 0],
+    }
+    assert _source_series(data, "open") == [10.0, 20.0]
+    assert _source_series(data, "high") == [12.0, 24.0]
+    assert _source_series(data, "low") == [8.0, 16.0]
+    assert _source_series(data, "close") == [11.0, 22.0]
+    # hl2 = (h+l)/2
+    assert _source_series(data, "hl2") == [(12.0 + 8.0) / 2, (24.0 + 16.0) / 2]
+    # hlc3 = (h+l+c)/3
+    assert _source_series(data, "hlc3") == [(12.0 + 8.0 + 11.0) / 3, (24.0 + 16.0 + 22.0) / 3]
+    # ohlc4 = (o+h+l+c)/4
+    assert _source_series(data, "ohlc4") == [(10.0 + 12.0 + 8.0 + 11.0) / 4,
+                                             (20.0 + 24.0 + 16.0 + 22.0) / 4]
+    # hlcc4 = (h+l+2c)/4
+    assert _source_series(data, "hlcc4") == [(12.0 + 8.0 + 2 * 11.0) / 4,
+                                             (24.0 + 16.0 + 2 * 22.0) / 4]
+    # unknown source -> close
+    assert _source_series(data, "bogus") == [11.0, 22.0]
