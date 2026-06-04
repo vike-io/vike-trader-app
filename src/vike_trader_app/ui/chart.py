@@ -1179,6 +1179,8 @@ class PriceChart(pg.PlotWidget):
         self._chart_interval = None  # current timeframe (for per-interval indicator visibility)
         self._vb2 = None  # secondary ViewBox for overlays pinned to their own scale
         self._wsyncing = False  # re-entrancy guard for _sync_axis_width (mirrors _fitting)
+        self._maximized_pane = None  # the pane currently maximized (locks _resize_panes)
+        self._saved_sizes = None     # host.sizes() snapshot to restore on un-maximize
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
@@ -1521,9 +1523,14 @@ class PriceChart(pg.PlotWidget):
         pane.moveRequested.connect(self.move_indicator)
         pane.actionRequested.connect(self._indicator_action)
         pane.dragMoved.connect(self._drag_pane)
+        pane.paneMoveUp.connect(self._pane_move_up)
+        pane.paneMoveDown.connect(self._pane_move_down)
+        pane.paneMaximizeToggled.connect(self._toggle_maximize_pane)
+        pane.paneDeleteRequested.connect(self._delete_pane)
         self._pane_host.addWidget(pane)
         pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
         self._resize_panes()
+        self._refresh_pane_toolbars()
         return pane
 
     def _drag_pane(self, pane, global_y: int):
@@ -1800,6 +1807,77 @@ class PriceChart(pg.PlotWidget):
         ind.pane = target_pane             # _render adds it into the existing pane
         self._render(ind)
 
+    def _pane_move_up(self, pane):
+        """Move a whole pane up one slot via its hover toolbar (keyed off the pane object, so a
+        merged multi-indicator pane moves atomically). Clamped to index >= 1 (never above price)."""
+        host = self._pane_host
+        if host is None:
+            return
+        idx = host.indexOf(pane)
+        if idx <= 1:
+            return  # already topmost oscillator pane (price is fixed at index 0)
+        host.insertWidget(idx - 1, pane)
+        self._after_pane_reorder()
+
+    def _pane_move_down(self, pane):
+        host = self._pane_host
+        if host is None:
+            return
+        idx = host.indexOf(pane)
+        if idx < 1 or idx >= host.count() - 1:
+            return  # already the bottom pane
+        host.insertWidget(idx + 1, pane)
+        self._after_pane_reorder()
+
+    def _after_pane_reorder(self):
+        """Common tail for a toolbar-driven reorder: resize, re-tag toolbars, and realign the
+        shared axis + bottom-time axis to the new lowest pane (Phase 1)."""
+        self._resize_panes()
+        self._refresh_pane_toolbars()
+        self._align_panes()
+
+    def _delete_pane(self, pane):
+        """Delete a whole pane via its toolbar: remove every indicator it hosts (the last
+        removal triggers `_unrender`'s empty-pane teardown), then re-tag the survivors. Null any
+        dangling maximized-pane lock so we don't reference a deleted QWidget."""
+        if pane is self._maximized_pane:
+            self._maximized_pane = None
+        for uid in list(pane.uids):
+            self.remove_indicator(uid)
+        self._refresh_pane_toolbars()
+
+    def _toggle_maximize_pane(self, pane):
+        """Toggle a pane between maximized and the normal stacked layout (TradingView's pane
+        maximize). Maximizing keeps a real price floor so OHLC stays visible; restoring replays
+        the user's pre-maximize splitter proportions when the pane count is unchanged."""
+        host = self._pane_host
+        if host is None:
+            return
+        if pane is self._maximized_pane:        # --- restore ---
+            self._maximized_pane = None
+            if self._saved_sizes is not None and len(self._saved_sizes) == host.count():
+                host.setSizes(self._saved_sizes)  # preserve user-dragged proportions (TV)
+            else:
+                self._resize_panes()
+            self._saved_sizes = None
+            pane.set_maximized(False)
+        else:                                    # --- maximize ---
+            self._saved_sizes = host.sizes()
+            self._maximized_pane = pane
+            total = sum(self._saved_sizes) or (host.height() or 600)
+            n = host.count()
+            idx = host.indexOf(pane)
+            price_floor = max(140, int(total * 0.15))
+            others = max(1, n - 2)               # panes that aren't price and aren't maximized
+            slim = 1                             # minimal share for the non-maximized panes
+            big = max(price_floor, total - price_floor - slim * others)
+            sizes = [slim] * n
+            sizes[0] = price_floor
+            sizes[idx] = big
+            host.setSizes(sizes)
+            pane.set_maximized(True)
+        self._refresh_pane_toolbars()
+
     def _panes_in_visual_order(self):
         """Oscillator panes in top-to-bottom splitter order (NOT dict-insertion order).
         Use this everywhere pane *order* matters — the bottom time axis and shared
@@ -1985,6 +2063,21 @@ class PriceChart(pg.PlotWidget):
         sizes = [price_h] + [pane_h] * n_panes
         sizes[-1] += axis_strip  # lowest pane carries the axis strip
         host.setSizes(sizes)
+
+    def _refresh_pane_toolbars(self):
+        """Sync every pane's hover-toolbar state to its current visual position: up enabled when
+        a pane is above, down enabled when a pane is below, max glyph reflecting the maximized
+        pane. Also re-tucks each toolbar left of the (now-settled) shared right axis."""
+        panes = self._panes_in_visual_order()
+        n = len(panes)
+        for p, pane in enumerate(panes):
+            tb = getattr(pane, "_toolbar", None)
+            if tb is None:
+                continue
+            tb.set_can_up(p > 0)
+            tb.set_can_down(p < n - 1)
+            tb.set_maximized(pane is self._maximized_pane)
+            pane._position_toolbar()
 
     def _refresh_legends(self):
         """Rebuild the price-pane legend (overlay + pattern indicators) + refresh pane headers."""

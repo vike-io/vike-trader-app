@@ -818,3 +818,18 @@ def test_oscillator_pane_hover_shows_hides_toolbar(app):
     assert not pane._toolbar.isHidden()
     pane.leaveEvent(None)
     assert pane._toolbar.isHidden()
+
+
+def test_new_pane_wires_toolbar_and_refreshes(app):
+    pc, _ = _chart(app)
+    assert pc._maximized_pane is None and pc._saved_sizes is None
+    a = pc.add_indicator("rsi")   # pane index 1 (top & bottom: only pane)
+    # single pane: can move neither up nor down
+    assert not a.pane._toolbar._up.isEnabled()
+    assert not a.pane._toolbar._down.isEnabled()
+    b = pc.add_indicator("macd")  # pane index 2
+    panes = pc._panes_in_visual_order()
+    top, bottom = panes[0], panes[-1]
+    # top pane: up disabled, down enabled; bottom pane: up enabled, down disabled
+    assert not top._toolbar._up.isEnabled() and top._toolbar._down.isEnabled()
+    assert bottom._toolbar._up.isEnabled() and not bottom._toolbar._down.isEnabled()
