@@ -344,3 +344,41 @@ def test_by_symbol_tab_empty_for_single_symbol_run(app):
                   for i in range(60)])
     tab.run_code()                       # single-symbol run -> per_symbol_pnl is None
     assert tab.results._by_symbol_table.rowCount() == 0
+
+
+def test_by_symbol_tab_has_6_columns_with_maxdd_and_sharpe(app):
+    """F3: portfolio By Symbol tab must have 6 columns; Max DD and Sharpe are non-empty for
+    a symbol that traded."""
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+    from vike_trader_app.ui.studio import StudioTab
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    # 10 bars so there are enough data points for Sharpe computation (needs >= 2 returns)
+    a = [Bar(ts=i, open=10.0, high=11.0, low=9.0, close=10.0 + i) for i in range(10)]
+    b = [Bar(ts=i, open=5.0, high=6.0, low=4.0, close=5.0 + i) for i in range(10)]
+    report = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=1000.0)).report()
+    tab = StudioTab()
+    tab.show_portfolio_report(report, "DS")
+
+    tbl = tab.results._by_symbol_table
+    # 6 columns: Symbol, Trades, Win %, PnL, Max DD, Sharpe
+    assert tbl.columnCount() == 6
+
+    rows = tbl.rowCount()
+    assert rows == 2  # two symbols
+
+    for r in range(rows):
+        sym = tbl.item(r, 0).text()
+        # A traded; B may or may not have traded — we check "A" specifically
+        if sym == "A":
+            maxdd_text = tbl.item(r, 4).text()
+            sharpe_text = tbl.item(r, 5).text()
+            assert maxdd_text != "—", f"Max DD for {sym} should be computed, got '—'"
+            assert sharpe_text != "—", f"Sharpe for {sym} should be computed, got '—'"

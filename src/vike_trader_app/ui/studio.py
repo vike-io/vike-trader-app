@@ -63,7 +63,7 @@ class ResultsPanel(QtWidgets.QWidget):
     _SIGNED = {"net_profit", "expected_payoff", "avg_win"}
 
     _TRADE_COLS = ["#", "Side", "Entry", "Exit", "Size", "PnL", "Return", "MFE", "MAE"]
-    _BY_SYMBOL_COLS = ["Symbol", "Trades", "Win %", "PnL"]
+    _BY_SYMBOL_COLS = ["Symbol", "Trades", "Win %", "PnL", "Max DD", "Sharpe"]
     _RUN_COLS = ["#", "Return", "Max DD", "Trades", "Sharpe"]
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
@@ -401,10 +401,12 @@ class ResultsPanel(QtWidgets.QWidget):
                 self._trades.setItem(r, c, item)
 
     def _fill_by_symbol(self, report) -> None:
+        from ..analysis import metrics as _m
         pnl_map = getattr(report, "per_symbol_pnl", None)
         if not pnl_map:
             self._by_symbol_table.setRowCount(0)
             return
+        curves_map = getattr(report, "per_symbol_curves", None) or {}
         # Count trades and wins per symbol
         trades_by_sym: dict[str, int] = {s: 0 for s in pnl_map}
         wins_by_sym: dict[str, int] = {s: 0 for s in pnl_map}
@@ -423,7 +425,18 @@ class ResultsPanel(QtWidgets.QWidget):
             pnl = pnl_map[sym]
             win_pct = f"{wins / n * 100:.2f}%" if n > 0 else "—"
             up = pnl >= 0
-            cells = [sym, str(n), win_pct, self._money(pnl)]
+            # Per-symbol Max DD and Sharpe from the cumulative PnL curve (offset by 1.0 so
+            # the ratio-based metrics work correctly on an equity-like series).
+            curve = curves_map.get(sym)
+            if curve and len(curve) >= 2:
+                base = 1.0
+                eq = [base + v for v in curve]
+                mdd_str = self._pct(_m.max_drawdown(eq))
+                sharpe_str = f"{_m.sharpe(eq, 252):.2f}"
+            else:
+                mdd_str = "—"
+                sharpe_str = "—"
+            cells = [sym, str(n), win_pct, self._money(pnl), mdd_str, sharpe_str]
             for c, text in enumerate(cells):
                 item = QtWidgets.QTableWidgetItem(text)
                 if c == 3:

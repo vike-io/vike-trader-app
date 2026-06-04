@@ -261,3 +261,35 @@ def test_cash_gate_off_by_default_allows_negative_cash():
     eng.run()
     assert eng._pos["A"].size == 8.0 and eng._pos["B"].size == 8.0   # both fill, cash goes negative
     assert eng.cash < 0.0
+
+
+# ---------------------------------------------------------------------------
+# F3: per-symbol PnL curves
+# ---------------------------------------------------------------------------
+
+def test_per_symbol_curves_length_and_last_value():
+    """per_symbol_curves has one entry per symbol, each of length == number of bars,
+    and the last value of each curve matches per_symbol_pnl[s]."""
+
+    class _BuyA(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("AAA", 1.0)
+
+    n_bars = 4
+    bars = {
+        "AAA": _series([100, 110, 120, 130]),
+        "BBB": _series([10, 10, 10, 10]),
+    }
+    eng = PortfolioEngine(bars, _BuyA(), cash=10_000.0)
+    result = eng.run()
+
+    assert result.per_symbol_curves is not None
+    for sym in ("AAA", "BBB"):
+        curve = result.per_symbol_curves[sym]
+        # one entry per bar
+        assert len(curve) == n_bars, f"{sym} curve length {len(curve)} != {n_bars}"
+        # last value matches per_symbol_pnl
+        assert abs(curve[-1] - result.per_symbol_pnl[sym]) < 1e-9, (
+            f"{sym}: curve[-1]={curve[-1]} != per_symbol_pnl={result.per_symbol_pnl[sym]}"
+        )
