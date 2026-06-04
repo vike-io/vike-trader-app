@@ -861,6 +861,9 @@ class OscillatorPane(pg.PlotWidget):
         _tick_font = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
         _tick_font.setPixelSize(12)
         _bottom.setStyle(tickLength=0, tickFont=_tick_font)
+        # Splitter floor so a pane never collapses below a readable height, independent of
+        # _resize_panes (Phase 2 disables that while a pane is maximized).
+        self.setMinimumHeight(64)
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()
         self.getViewBox().setMouseEnabled(x=False, y=False)  # driven by the price chart
@@ -1817,15 +1820,20 @@ class PriceChart(pg.PlotWidget):
         self._refresh_legends()
 
     def _resize_panes(self):
-        """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked)."""
+        """Give the price chart the bulk of the height; each oscillator pane ~22% (stacked).
+        The LOWEST pane gets an extra axis-strip (~20px) so its PLOT area matches its siblings'
+        (the bottom time axis lives there); cosmetic only — x-alignment is independent."""
         host = self._pane_host
         if host is None or host.count() <= 1:
             return
         n_panes = host.count() - 1
         total = host.height() or 600
+        axis_strip = 20  # bottom time-axis height on the lowest pane
         pane_h = max(96, int(total * 0.22))
-        price_h = max(140, total - pane_h * n_panes)
-        host.setSizes([price_h] + [pane_h] * n_panes)
+        price_h = max(140, total - pane_h * n_panes - axis_strip)
+        sizes = [price_h] + [pane_h] * n_panes
+        sizes[-1] += axis_strip  # lowest pane carries the axis strip
+        host.setSizes(sizes)
 
     def _refresh_legends(self):
         """Rebuild the price-pane legend (overlay + pattern indicators) + refresh pane headers."""

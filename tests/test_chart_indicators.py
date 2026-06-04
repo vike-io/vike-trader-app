@@ -678,3 +678,24 @@ def test_set_timeframe_realigns(app):
     pc.set_timeframe("5m")  # must keep the bottom axis on the lowest pane + widths equal
     assert ind.pane.getAxis("bottom").isVisible() is True
     assert pc.getAxis("right").width() == ind.pane.getAxis("right").width()
+
+
+def test_oscillator_pane_has_min_height(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.pane.minimumHeight() >= 64
+
+
+def test_resize_panes_gives_lowest_pane_axis_strip(app):
+    # The lowest pane carries the bottom time-axis strip; _resize_panes adds that strip to its
+    # allotment so its PLOT area matches the panes above it.
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    a = pc.add_indicator("rsi")   # index 1
+    b = pc.add_indicator("macd")  # index 2 (lowest)
+    pc._align_panes()
+    pc._resize_panes()
+    sizes = split.sizes()
+    # lowest pane (last entry) is the tallest among the oscillator panes (it owns the axis strip)
+    assert sizes[-1] >= sizes[1]
+    assert sizes[-1] - sizes[1] <= 40  # ~one axis strip taller, not wildly different
