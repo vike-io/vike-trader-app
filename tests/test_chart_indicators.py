@@ -502,3 +502,55 @@ def test_oscillator_pane_set_bottom_axis_visible_toggles(app):
     assert pane.getAxis("bottom").isVisible() is True
     pane.set_bottom_axis_visible(False)
     assert pane.getAxis("bottom").isVisible() is False
+
+
+def test_reassign_bottom_axis_zero_panes_keeps_price_axis(app):
+    pc, _ = _chart(app)
+    pc._reassign_bottom_axis()
+    assert pc.getAxis("bottom").isVisible() is True
+    assert pc._time_axis._bars is pc._bars
+
+
+def test_reassign_bottom_axis_moves_to_lowest_pane(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")   # index 1
+    b = pc.add_indicator("macd")  # index 2 (lowest)
+    pc._reassign_bottom_axis()
+    # exactly one visible bottom axis: the lowest pane's
+    assert pc.getAxis("bottom").isVisible() is False
+    assert a.pane.getAxis("bottom").isVisible() is False
+    assert b.pane.getAxis("bottom").isVisible() is True
+    # every pane axis was fed the same bars as the price chart
+    assert a.pane._time_axis._bars is pc._bars
+    assert b.pane._time_axis._bars is pc._bars
+
+
+def test_reassign_bottom_axis_follows_reorder(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._reassign_bottom_axis()
+    assert b.pane.getAxis("bottom").isVisible() is True
+    pc._drag_pane(b.pane, -100000)  # b -> index 1, a -> index 2 (now lowest)
+    pc._reassign_bottom_axis()
+    assert a.pane.getAxis("bottom").isVisible() is True
+    assert b.pane.getAxis("bottom").isVisible() is False
+
+
+def test_reassign_bottom_axis_syncs_vb2(app):
+    # Hiding the price bottom axis grows the price ViewBox; _vb2 must re-sync so own-scale
+    # overlays don't misalign. _reassign_bottom_axis calls _sync_vb2() explicitly.
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ema = pc.add_indicator("ema")
+    pc._indicator_action(ema.uid, "pin_own")  # creates _vb2
+    pc.add_indicator("rsi")                    # adds a pane -> price bottom axis will hide
+    pc._reassign_bottom_axis()
+    pc.getPlotItem().layout.activate()
+    app.processEvents()
+    vb = pc.getViewBox().sceneBoundingRect()
+    vb2 = pc._vb2.sceneBoundingRect()
+    assert abs(vb.height() - vb2.height()) < 2.0  # _vb2 tracks the (grown) price viewbox
+    assert abs(vb.top() - vb2.top()) < 2.0

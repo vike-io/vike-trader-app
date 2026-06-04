@@ -1693,6 +1693,26 @@ class PriceChart(pg.PlotWidget):
         finally:
             self._wsyncing = False
 
+    def _reassign_bottom_axis(self):
+        """Keep exactly one visible bottom time axis, on the LOWEST pane (TradingView puts the
+        time scale under the lowest pane, not under the candles). With no panes the price chart
+        keeps its own bottom axis."""
+        panes = self._panes_in_visual_order()
+        if not panes:
+            self.showAxis("bottom")
+            self._time_axis.set_bars(self._bars)
+        else:
+            self.hideAxis("bottom")
+            for p in panes:
+                p.set_bottom_axis_visible(False)
+                p.set_bars(self._bars)
+            panes[-1].set_bottom_axis_visible(True)  # lowest splitter index = bottom
+        # hideAxis/showAxis only INVALIDATE the layout (lazy); force it + re-sync the own-scale
+        # viewbox now so own-scale overlays don't lag behind the grown/shrunk price ViewBox.
+        self.getPlotItem().layout.activate()
+        self._sync_vb2()
+        self._autorange_vb2()
+
     def _osc_panes(self):
         seen, panes = set(), []
         for i in self._indicators.values():
