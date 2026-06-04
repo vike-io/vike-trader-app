@@ -1781,3 +1781,52 @@ def test_label_appends_non_default_source(app):
     assert ind.label == "RSI 14 (hl2)"    # non-default -> suffix
     ind.source = "close"
     assert ind.label == "RSI 14"          # back to default -> no suffix
+
+
+def test_compute_remaps_source_hl2_sma(app):
+    pc, _ = _chart(app)
+    bars = pc._bars
+    ind = pc.add_indicator("sma", params={"period": 3})
+    # baseline (close-fed) values:
+    close_vals = list(ind.series["sma"])
+    # switch source to hl2 and recompute:
+    ind.source = "hl2"
+    pc._compute(ind)
+    hl2_vals = list(ind.series["sma"])
+    # the two series must DIFFER (hl2 != close for these bars):
+    assert hl2_vals != close_vals
+    # and match a hand-computed 3-period SMA of hl2 = (high+low)/2:
+    hl2 = [(b.high + b.low) / 2 for b in bars]
+    p = 3
+    expected = [None] * (p - 1) + [
+        sum(hl2[i - p + 1:i + 1]) / p for i in range(p - 1, len(hl2))
+    ]
+    got = ind.series["sma"]
+    assert len(got) == len(expected)
+    for g, e in zip(got, expected):
+        if e is None:
+            assert g is None
+        else:
+            assert g == pytest.approx(e)
+
+
+def test_compute_default_source_is_byte_identical(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("sma", params={"period": 5})
+    before = list(ind.series["sma"])
+    # recompute with the (default) close source -> exact same series, no remap overhead path:
+    assert ind.source == "close"
+    pc._compute(ind)
+    after = list(ind.series["sma"])
+    assert after == before
+
+
+def test_compute_remaps_multi_output_bollinger_on_ohlc4(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("bollinger")
+    ind.source = "ohlc4"
+    pc._compute(ind)
+    # all three bands still populated after the single-column swap:
+    assert set(ind.series) == {"upper", "mid", "lower"}
+    for lbl in ("upper", "mid", "lower"):
+        assert _valid({lbl: ind.series[lbl]}) > 0

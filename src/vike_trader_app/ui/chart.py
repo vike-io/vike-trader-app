@@ -1772,6 +1772,11 @@ class PriceChart(pg.PlotWidget):
         data = self._data_cols()
         if ind.kind == "pairs":
             data["benchmark"] = ind.benchmark or []
+        # Source remap (D1/D2): swap the single input column for the chosen price source. Only
+        # for source-selectable indicators and only when non-default — the close path is untouched
+        # (zero overhead, byte-identical to pre-source behaviour).
+        if is_source_selectable(ind.spec) and getattr(ind, "source", "close") != "close":
+            data[ind.spec.inputs[0]] = _source_series(data, ind.source)
         try:
             result = _base.compute(ind.name, data, **ind.params)
         except Exception:  # noqa: BLE001 - bad inputs -> empty
