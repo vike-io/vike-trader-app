@@ -1023,7 +1023,26 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..tester import TesterConfig
 
             ranges = getattr(dataset, "ranges", None) or None  # dynamic/survivorship-free membership
-            report = MultiSymbolStrategyRunner(cls, bars_by_symbol, TesterConfig(), ranges=ranges).report()
+
+            # --- benchmark symbol resolution (opt-in; falls back to equal-weight when unset) ---
+            bench_sym = getattr(dataset, "benchmark", "")
+            benchmark_bars = None
+            if bench_sym:
+                # prefer bars already loaded for this run (free); else try to load from cache
+                benchmark_bars = bars_by_symbol.get(bench_sym)
+                if not benchmark_bars:
+                    try:
+                        from ..data.parquet_source import read_series
+                        loaded = read_series(self.datamanager._root, bench_sym, dataset.interval)
+                        benchmark_bars = loaded if loaded else None
+                    except Exception:  # noqa: BLE001 - cache miss / import error -> graceful fallback
+                        benchmark_bars = None
+
+            report = MultiSymbolStrategyRunner(
+                cls, bars_by_symbol, TesterConfig(), ranges=ranges,
+                benchmark_bars=benchmark_bars,
+                benchmark_label=bench_sym if bench_sym else "",
+            ).report()
         except Exception as exc:  # noqa: BLE001 - missing module / resting orders unsupported in portfolio mode
             self.studio.results.show_error(f"Portfolio test failed: {exc}")
             self.tabs.setCurrentWidget(self.studio)

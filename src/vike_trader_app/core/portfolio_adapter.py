@@ -7,8 +7,34 @@ engine is not touched. Resting orders (limit/stop/trailing) and multi-timeframe 
 ``timeframes=["5m", ...]`` on ``TesterConfig`` (opt-in; omitting it leaves behaviour unchanged).
 """
 
+import bisect
+
 from .model import Bar
 from .portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
+
+
+def _buyhold_asof(benchmark_bars: list, equity_ts: list, cash: float) -> list:
+    """As-of-aligned buy-&-hold curve for a benchmark symbol.
+
+    For each timestamp in *equity_ts* we find the last benchmark bar whose ``ts``
+    is <= that timestamp (forward-fill; no look-ahead). Before the first benchmark
+    bar the ratio is 1.0 (i.e. the benchmark hasn't started yet → value stays at
+    *cash*). Returns a list of floats with ``len(equity_ts)`` entries.
+    """
+    ts_list = [b.ts for b in benchmark_bars]
+    first_close = benchmark_bars[0].close
+    result: list[float] = []
+    for t in equity_ts:
+        # bisect_right gives the insertion point after all ts_list entries <= t;
+        # subtracting 1 gives the index of the last bar with ts <= t.
+        idx = bisect.bisect_right(ts_list, t) - 1
+        if idx < 0:
+            # Before the first benchmark bar — use ratio 1.0 (no movement yet)
+            close = first_close
+        else:
+            close = benchmark_bars[idx].close
+        result.append(cash * (close / first_close))
+    return result
 
 
 def align_bars(bars_by_symbol: dict) -> dict:
@@ -152,7 +178,8 @@ class MultiSymbolStrategyRunner:
     """Run a single-symbol ``Strategy`` class across every symbol in a DataSet (portfolio backtest)."""
 
     def __init__(self, strategy_cls, bars_by_symbol: dict, config, max_open_positions: int = 0,
-                 ranges: dict | None = None, granular_by_symbol: dict | None = None):
+                 ranges: dict | None = None, granular_by_symbol: dict | None = None,
+                 benchmark_bars: list | None = None, benchmark_label: str = ""):
         self.strategy_cls = strategy_cls
         self.bars_by_symbol = bars_by_symbol
         self.config = config
@@ -164,6 +191,9 @@ class MultiSymbolStrategyRunner:
         # processing (WL "Use Granular Limit/Stop Processing"). Sub-bars are keyed by ts ranges in the
         # engine, so they need NO alignment. Falsy (None) leaves behavior unchanged (coarse path).
         self.granular_by_symbol = granular_by_symbol
+        # Optional benchmark bars for a specific symbol; overrides the equal-weight default when set.
+        self.benchmark_bars = benchmark_bars
+        self.benchmark_label = benchmark_label
         self._engine = None  # the PortfolioEngine built by the most recent run() (probe/diagnostics)
 
     def run(self) -> PortfolioResult:
@@ -211,6 +241,13 @@ class MultiSymbolStrategyRunner:
                 bench.append(cash * mean_ratio)
             result.benchmark_curve = bench
             result.benchmark_label = "Equal-weight buy & hold"
+        # --- override with specific benchmark symbol if provided ---
+        if (self.benchmark_bars
+                and len(self.benchmark_bars) > 0
+                and self.benchmark_bars[0].close > 0
+                and result.equity_ts):
+            result.benchmark_curve = _buyhold_asof(self.benchmark_bars, result.equity_ts, cash)
+            result.benchmark_label = self.benchmark_label or "Benchmark"
         return result
 
     def report(self):

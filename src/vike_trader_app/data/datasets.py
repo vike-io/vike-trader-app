@@ -32,6 +32,7 @@ class DataSet:
     provider: str | None = None   # None = Auto (infer crypto/forex), else an explicit provider
     interval: str = "1m"
     ranges: dict[str, list[DateRange]] = field(default_factory=dict)
+    benchmark: str = ""  # optional benchmark symbol (e.g. "SPY", "BTCUSDT"); "" = equal-weight default
 
     def is_dynamic(self) -> bool:
         """True when any symbol has explicit membership windows (WealthLab dynamic DataSet)."""
@@ -94,6 +95,7 @@ def _dataset_to_dict(d: DataSet) -> dict:
             sym: [{"start_ts": w.start_ts, "end_ts": w.end_ts} for w in windows]
             for sym, windows in d.ranges.items()
         },
+        "benchmark": d.benchmark,
     }
 
 
@@ -108,6 +110,7 @@ def _dataset_from_dict(data: dict) -> DataSet:
         provider=data.get("provider"),
         interval=data.get("interval", "1m"),
         ranges=ranges,
+        benchmark=data.get("benchmark", ""),
     )
 
 
