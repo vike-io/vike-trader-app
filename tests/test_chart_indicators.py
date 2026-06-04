@@ -965,3 +965,18 @@ def test_splitter_drag_clears_maximize_lock(app):
     split.splitterMoved.emit(0, 1)              # a manual drag of a handle
     assert pc._maximized_pane is None            # exits maximize, like TV
     assert a.pane._toolbar._max.toolTip() == "Maximize pane"
+
+
+def test_toolbar_clears_right_axis_after_layout(app):
+    pc, split = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    split.resize(500, 600)
+    pane.resize(500, 140)
+    pc.show_upto(len(pc._bars) - 1)   # data settles -> axis width known
+    pc._refresh_pane_toolbars()
+    tb = pane._toolbar
+    axis_w = int(pane.getAxis("right").width())
+    # the toolbar's right edge must sit left of the price-axis labels (cleared, like TV)
+    assert tb.x() + tb.width() <= pane.width() - axis_w + 1
+    assert tb.x() >= 0

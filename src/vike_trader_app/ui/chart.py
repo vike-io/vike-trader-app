@@ -2156,6 +2156,10 @@ class PriceChart(pg.PlotWidget):
         for ind in self._indicators.values():  # reveal user indicators (overlay/osc/pattern)
             self._reveal_indicator(ind, index)
         self._autorange_vb2()  # fit own-scale overlays on their independent right axis
+        # axis label width only settles once data is revealed; re-tuck the pane toolbars so they
+        # clear the (now-known) shared right axis.
+        if self._pane_host is not None and self._panes_in_visual_order():
+            self._refresh_pane_toolbars()
 
     def _add_marker(self, x, price, *, below, symbol, color, text):
         """Register a trade marker + its bold 'Buy'/'Sell' label (TradeStation style)."""
