@@ -67,7 +67,10 @@ class BacktestEngine:
         strategy._engine = self
 
     # --- order intake (called from the strategy) ---
-    def submit(self, side_sign: int, size: float, weight: float = 0.0) -> None:
+    def submit(self, side_sign: int, size: float, weight: float = 0.0, stop=None) -> None:
+        # stop= is honored only in portfolio mode; the single-symbol engine accepts and ignores it
+        # to keep this path (and the numba kernel parity) byte-for-byte unchanged.
+        del stop
         size = self._cap_to_leverage(side_sign, size)
         if size > 0.0:
             self._pending.append(Order("market", side_sign, size, weight=weight))

@@ -56,12 +56,14 @@ class SymbolEngineShim:
         return self._driver.drawdown_now() if self._driver is not None else 0.0
 
     # --- market orders ---
-    def submit(self, side_sign: int, size: float, weight: float = 0.0, raw: bool = False) -> None:
+    def submit(self, side_sign: int, size: float, weight: float = 0.0, raw: bool = False,
+               stop=None) -> None:
         # buy/sell entries forward raw=False (the engine sizer decides the qty); order_target_*
-        # paths forward raw=True (explicit sizing the sizer must NOT re-size).
+        # paths forward raw=True (explicit sizing the sizer must NOT re-size). ``stop`` is the
+        # protective stop price (risk sizing + auto protective-stop arm).
         if size <= 0:
             return
-        self._engine.submit(self._symbol, side_sign, size, weight=weight, raw=raw)
+        self._engine.submit(self._symbol, side_sign, size, weight=weight, raw=raw, stop=stop)
 
     def submit_close(self) -> None:
         self._engine.submit_close(self._symbol)
@@ -83,8 +85,9 @@ class SymbolEngineShim:
     # NOTE: resting orders bypass the MaxOpenPositions cap for now (the cap is checked in
     # submit() for market entries only). This is an accepted v1 limitation — cap-at-fill
     # for resting orders is deferred to W2-C.
-    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        self._engine.submit_limit(self._symbol, side_sign, size, price, weight=weight)
+    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0,
+                     stop=None) -> None:
+        self._engine.submit_limit(self._symbol, side_sign, size, price, weight=weight, stop=stop)
 
     def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
         self._engine.submit_stop(self._symbol, side_sign, size, price, weight=weight)
