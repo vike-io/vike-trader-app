@@ -1148,7 +1148,7 @@ def test_settings_style_tab_combos_round_trip(app):
     dlg._style_combos[0].setCurrentIndex(si)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(
             widths=widths, styles=styles
         )
     )
@@ -1165,7 +1165,7 @@ def test_settings_pattern_hides_width_and_style(app):
     assert all(c.isHidden() for c in dlg._style_combos)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(widths=widths)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(widths=widths)
     )
     dlg._accept()  # must not crash for a pattern indicator
     assert "widths" in got
@@ -1187,7 +1187,7 @@ def test_settings_visibility_uncheck_emits_subset(app):
     dlg._iv_checks["1m"].setChecked(False)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(intervals=intervals)
     )
     dlg._accept()
     assert got["intervals"] is not None and "1m" not in got["intervals"]
@@ -1201,7 +1201,7 @@ def test_settings_visibility_all_checked_emits_none(app):
         cb.setChecked(True)
     got = {}
     dlg.applied.connect(
-        lambda params, colors, widths, styles, intervals: got.update(intervals=intervals)
+        lambda params, colors, widths, styles, intervals, source, bands: got.update(intervals=intervals)
     )
     dlg._accept()
     assert got["intervals"] is None  # all checked -> shows everywhere
@@ -2094,6 +2094,32 @@ def test_clone_carries_edited_bands(app):
     assert pc._indicators[ind.uid].bands[0][1] == 80.0
     # the clone's rendered band line reflects the carried value
     assert [ln.value() for ln in clone.pane._band_lines[clone.uid]] == [80.0, 50.0, 30.0]
+
+
+def test_clone_carries_both_source_and_bands(app):
+    from vike_trader_app.ui import theme
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    # Apply a non-default source AND edited band values together
+    pc._apply_edit(
+        ind.uid, dict(ind.params), list(ind.colors),
+        source="hl2",
+        bands=[
+            ("Upper", 80.0, theme.TEXT3),
+            ("Middle", 50.0, theme.TEXT3),
+            ("Lower", 30.0, theme.TEXT3),
+        ],
+    )
+    ind = pc._indicators[ind.uid]
+    clone = pc.clone_indicator(ind.uid)
+    assert clone is not None and clone.uid != ind.uid
+    # clone carries the non-default source
+    assert clone.source == "hl2"
+    # clone carries the edited band value
+    assert clone.bands[0][1] == 80.0
+    # deep-copy independence: mutating the clone must not affect the original
+    clone.bands[0][1] = 99.0
+    assert pc._indicators[ind.uid].bands[0][1] == 80.0
 
 
 def test_band_lines_follow_indicator_visibility(app):
