@@ -1453,9 +1453,20 @@ class PriceChart(pg.PlotWidget):
         dlg.activateWindow()
         dlg.raise_()
 
+    def _on_splitter_moved(self, *_):
+        """A manual splitter drag exits maximize (like TV) and re-tags the pane toolbars."""
+        if self._maximized_pane is not None:
+            pane = self._maximized_pane
+            self._maximized_pane = None
+            self._saved_sizes = None
+            if pane is not None:
+                pane.set_maximized(False)
+        self._refresh_pane_toolbars()
+
     def set_pane_host(self, splitter):
         """Give the chart the vertical QSplitter it shares with its oscillator sub-panes."""
         self._pane_host = splitter
+        splitter.splitterMoved.connect(self._on_splitter_moved)
 
     def add_indicator(self, name: str, params=None, benchmark=None):
         """Add a user indicator, routed by kind: price-overlay on the candles, oscillator in a

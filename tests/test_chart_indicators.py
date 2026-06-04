@@ -954,3 +954,14 @@ def test_delete_maximized_pane_clears_lock(app):
     pc._delete_pane(a.pane)
     assert pc._maximized_pane is None            # no dangling deleted-QWidget ref
     assert a.uid not in pc._indicators and split.count() == 2
+
+
+def test_splitter_drag_clears_maximize_lock(app):
+    pc, split = _chart(app)
+    a = pc.add_indicator("rsi")
+    b = pc.add_indicator("macd")
+    pc._toggle_maximize_pane(a.pane)
+    assert pc._maximized_pane is a.pane
+    split.splitterMoved.emit(0, 1)              # a manual drag of a handle
+    assert pc._maximized_pane is None            # exits maximize, like TV
+    assert a.pane._toolbar._max.toolTip() == "Maximize pane"
