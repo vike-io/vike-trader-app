@@ -2641,6 +2641,13 @@ class PriceChart(pg.PlotWidget):
             )
         self._position_price_legend()
 
+    def leaveEvent(self, e):  # noqa: N802 - Qt override
+        # cover the splitter-gutter case: leaving the price widget clears the whole crosshair
+        # (the out-of-rect branch in _on_mouse_moved alone can miss a fast exit into the gutter).
+        self._clear_crosshair()
+        if e is not None:
+            super().leaveEvent(e)
+
     def set_timeframe(self, interval: str):
         """Update the timeframe selector label + current interval, and refresh per-interval
         indicator visibility (indicators restricted to other timeframes hide here)."""

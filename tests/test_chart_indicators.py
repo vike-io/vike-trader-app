@@ -1557,3 +1557,20 @@ def test_price_set_crosshair_no_panes_uses_own_time_tag(app):
     # no panes -> price chart owns the bottom axis, so its OWN time tag is used
     assert pc._cx_v.value() == 10
     assert pc._cx_time_tag.isHidden() is False
+
+
+def test_price_leave_event_clears_crosshair(app):
+    pc, split = _chart(app)
+    split.resize(900, 800)
+    split.show()
+    app.processEvents()
+    a = pc.add_indicator("rsi")
+    # show the crosshair (e.g. a hover settled mid-chart) then leave the widget
+    pc._set_crosshair_x(22.0)
+    assert pc._cx_v.isVisible() is True and a.pane._cx_v.isVisible() is True
+    pc.leaveEvent(None)
+    # leaving the price chart clears the whole cross-pane crosshair (covers the splitter gutter)
+    assert pc._cx_v.isVisible() is False
+    assert pc._cx_price_tag.isHidden() and pc._cx_time_tag.isHidden()
+    assert a.pane._cx_v.isVisible() is False
+    assert a.pane._cx_val_tag.isHidden() and a.pane._cx_time_tag.isHidden()
