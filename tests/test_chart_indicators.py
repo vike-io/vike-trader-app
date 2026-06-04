@@ -56,7 +56,6 @@ def _valid(series_dict):
     return sum(1 for v in next(iter(series_dict.values())) if v is not None)
 
 
-_SOURCE_OPTIONS_FOR_TEST = ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
 
 
 # --- ADD: routing by kind --------------------------------------------------------------------
@@ -1880,7 +1879,8 @@ def test_settings_emits_source_on_ok(app):
     pc, _ = _chart(app)
     ind = pc.add_indicator("rsi")
     dlg = _IndicatorSettings(ind)
-    dlg._source_combo.setCurrentIndex(_SOURCE_OPTIONS_FOR_TEST.index("hl2"))
+    from vike_trader_app.ui.chart import _SOURCE_OPTIONS
+    dlg._source_combo.setCurrentIndex(_SOURCE_OPTIONS.index("hl2"))
     got = {}
     dlg.applied.connect(
         lambda params, colors, widths, styles, intervals, source: got.update(source=source)

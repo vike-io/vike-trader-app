@@ -513,7 +513,7 @@ class _Indicator:
 class _IndicatorSettings(dropdowns.PopupCard):
     """TradingView-style settings: **Inputs** (registry params), **Style** (per-output colour +
     line width + line style), and **Visibility** (per-interval) tabs. Emits
-    ``applied(params, colors, widths, styles, intervals)`` on Ok."""
+    ``applied(params, colors, widths, styles, intervals, source)`` on Ok."""
 
     applied = QtCore.Signal(dict, list, list, list, object, str)
 
