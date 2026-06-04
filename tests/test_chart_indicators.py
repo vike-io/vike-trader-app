@@ -707,18 +707,23 @@ def test_resize_panes_gives_lowest_pane_axis_strip(app):
     assert sizes[-1] - sizes[1] <= 40  # ~one axis strip taller, not wildly different
 
 
-def test_crosshair_time_tag_hidden_when_panes_exist(app):
+def test_crosshair_time_tag_rehomed_to_lowest_pane(app):
     pc, split = _chart(app)
     split.resize(900, 700)
     split.show()
     app.processEvents()
-    pc.add_indicator("rsi")  # a pane now owns the time axis -> price-chart time tag is orphaned
+    ind = pc.add_indicator("rsi")  # a pane now owns the time axis -> tag re-homes onto it
     # simulate a hover inside the price viewbox
     vb = pc.getViewBox()
     center = vb.sceneBoundingRect().center()
     pc._on_mouse_moved(center)
-    assert pc._cx_time_tag.isVisible() is False   # orphaned tag stays hidden
-    assert pc._cx_v.isVisible() is True           # the vertical crosshair still works
+    assert pc._cx_time_tag.isHidden() is True       # price-chart time tag stays hidden (re-homed)
+    assert pc._cx_v.isVisible() is True             # the vertical crosshair still works
+    # the lowest pane now shows the time tag, and its vertical line fanned out
+    low = pc._panes_in_visual_order()[-1]
+    assert low is ind.pane
+    assert not low._cx_time_tag.isHidden()
+    assert low._cx_v.isVisible() is True
 
 
 def test_crosshair_time_tag_shown_with_no_panes(app):

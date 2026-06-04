@@ -2605,35 +2605,22 @@ class PriceChart(pg.PlotWidget):
             return
         vb = self.getViewBox()
         if not vb.sceneBoundingRect().contains(scene_pos):
-            self._cx_v.hide()
-            self._cx_h.hide()
-            self._cx_price_tag.hide()
-            self._cx_time_tag.hide()
-            self._show_last_ohlc()
+            self._clear_crosshair()
             return
         pt = vb.mapSceneToView(scene_pos)
-        self._cx_v.setPos(pt.x())
+        # local price-pane read-outs: the horizontal segment + the right-scale price tag stay
+        # at the real hovered y (the vertical line + time tag are fanned out below).
         self._cx_h.setPos(pt.y())
-        self._cx_v.show()
         self._cx_h.show()
-        # axis tag boxes (scene coords ≈ widget pixels): price on the right, time on the bottom
         py = int(scene_pos.y())
         self._cx_price_tag.setText(f"{pt.y():,.2f}")
         self._cx_price_tag.adjustSize()
         self._cx_price_tag.move(self.width() - self._cx_price_tag.width() - 1,
                                 py - self._cx_price_tag.height() // 2)
         self._cx_price_tag.show()
-        if self._panes_in_visual_order():
-            # the time axis moved to the lowest pane -> this tag would float over the price plot
-            # with no axis beneath it. Hide it (Phase 4 adds the bottom-pane time tag).
-            self._cx_time_tag.hide()
-        else:
-            dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
-            self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
-            self._cx_time_tag.adjustSize()
-            self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
-                                   self.height() - self._cx_time_tag.height() - 1)
-            self._cx_time_tag.show()
+        # fan the snapped bar-x out to the price vertical line, every pane, and the time tag
+        # (re-homed onto the lowest pane when panes exist — replaces the Phase-1 hide block).
+        self._set_crosshair_x(pt.x())
         # NB: the OHLC header is intentionally NOT updated to the hovered bar — it stays
         # pinned to the latest candle (the crosshair still reads price/time off the axes).
 
