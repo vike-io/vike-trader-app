@@ -478,6 +478,7 @@ class _Indicator:
         self.colors = list(_OVERLAY_COLORS[: max(1, len(spec.outputs))])  # per-output colour
         self.widths = [1] * max(1, len(spec.outputs))    # per-output line width (px)
         self.styles = ["solid"] * max(1, len(spec.outputs))  # per-output line style name
+        self.source = "close"            # price source feeding a single-series indicator (D1/D2)
         self.series = {}                 # computed: output label -> full series
         # render handles (set when rendered):
         self.curves = {}                 # overlay/oscillator: output label -> PlotDataItem
@@ -487,20 +488,26 @@ class _Indicator:
     @staticmethod
     def spec_defaults(spec):
         """Single source of truth for the Defaults button and add_indicator seeding:
-        (params, colors, widths, styles) at the registry's defaults."""
+        (params, colors, widths, styles, source) at the registry's defaults."""
         n = max(1, len(spec.outputs))
         params = {p.name: p.default for p in spec.params}
         colors = list(_OVERLAY_COLORS[:n])
         widths = [1] * n
         styles = ["solid"] * n
-        return params, colors, widths, styles
+        source = "close"
+        return params, colors, widths, styles, source
 
     @property
     def label(self) -> str:
-        """Legend label, TradingView-style: 'RSI 14' (name + non-default param values)."""
+        """Legend label, TradingView-style: 'RSI 14' (name + non-default param values), with a
+        '(source)' suffix when the price source is non-default, e.g. 'RSI 14 (hl2)'."""
         base = _indicator_code(self.name)
         vals = [str(self.params[p.name]) for p in self.spec.params]
-        return f"{base} {' '.join(vals)}".strip() if vals else base
+        text = f"{base} {' '.join(vals)}".strip() if vals else base
+        source = getattr(self, "source", "close")
+        if source != "close":
+            text = f"{text} ({source})"
+        return text
 
 
 class _IndicatorSettings(dropdowns.PopupCard):
@@ -665,7 +672,7 @@ class _IndicatorSettings(dropdowns.PopupCard):
     def _reset_defaults(self):
         """Repopulate all three tabs from the registry defaults — form-only, no emit/close
         (matches TradingView's Defaults ▾ → Reset settings)."""
-        params, colors, widths, styles = _Indicator.spec_defaults(self._spec)
+        params, colors, widths, styles, _source = _Indicator.spec_defaults(self._spec)
         for p in self._spec.params:
             self._param_widgets[p.name].setValue(params[p.name])
         for i, btn in enumerate(self._color_btns):

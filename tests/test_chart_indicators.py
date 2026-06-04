@@ -1074,11 +1074,12 @@ def test_indicator_spec_defaults_single_source(app):
     from vike_trader_app.ui.chart import _Indicator
     from vike_trader_app.core.indicators import base as _base
     spec = _base.get("macd")
-    params, colors, widths, styles = _Indicator.spec_defaults(spec)
+    params, colors, widths, styles, source = _Indicator.spec_defaults(spec)
     assert params == {p.name: p.default for p in spec.params}
     assert len(colors) == len(spec.outputs)
     assert widths == [1] * len(spec.outputs)
     assert styles == ["solid"] * len(spec.outputs)
+    assert source == "close"
 
 
 def test_pen_style_maps_names_to_qt(app):
@@ -1757,3 +1758,26 @@ def test_source_series_raw_and_derived_math(app):
                                              (24.0 + 16.0 + 2 * 22.0) / 4]
     # unknown source -> close
     assert _source_series(data, "bogus") == [11.0, 22.0]
+
+
+def test_indicator_source_defaults_to_close(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.source == "close"
+
+
+def test_spec_defaults_includes_close_source(app):
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import _Indicator
+    params, colors, widths, styles, source = _Indicator.spec_defaults(_base.get("rsi"))
+    assert source == "close"
+
+
+def test_label_appends_non_default_source(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.label == "RSI 14"          # default close -> no suffix
+    ind.source = "hl2"
+    assert ind.label == "RSI 14 (hl2)"    # non-default -> suffix
+    ind.source = "close"
+    assert ind.label == "RSI 14"          # back to default -> no suffix
