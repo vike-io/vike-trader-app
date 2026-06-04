@@ -575,6 +575,51 @@ def _eye_icon(open_: bool) -> QtGui.QIcon:
     return QtGui.QIcon(pm)
 
 
+def _pane_icon(kind: str) -> QtGui.QIcon:
+    """Painter-drawn glyph for the pane hover toolbar — `up`/`down`/`max`/`restore`/`del`
+    (theme.TEXT3, no image assets), mirroring `_eye_icon`'s pixmap recipe."""
+    s, dpr = 18, 2
+    pm = QtGui.QPixmap(s * dpr, s * dpr)
+    pm.setDevicePixelRatio(dpr)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+    pen = QtGui.QPen(QtGui.QColor(theme.TEXT3))
+    pen.setWidthF(1.5)
+    pen.setCapStyle(QtCore.Qt.RoundCap)
+    pen.setJoinStyle(QtCore.Qt.RoundJoin)
+    p.setPen(pen)
+    if kind in ("up", "down"):
+        # chevron arrow
+        if kind == "up":
+            p.drawLine(QtCore.QPointF(4, 11), QtCore.QPointF(9, 6))
+            p.drawLine(QtCore.QPointF(9, 6), QtCore.QPointF(14, 11))
+        else:
+            p.drawLine(QtCore.QPointF(4, 7), QtCore.QPointF(9, 12))
+            p.drawLine(QtCore.QPointF(9, 12), QtCore.QPointF(14, 7))
+    elif kind == "max":
+        p.drawRect(QtCore.QRectF(4, 4, 10, 10))          # outer frame = maximize
+    elif kind == "restore":
+        p.drawRect(QtCore.QRectF(4, 6, 8, 8))            # two offset frames = restore
+        p.drawLine(QtCore.QPointF(6, 6), QtCore.QPointF(6, 4))
+        p.drawLine(QtCore.QPointF(6, 4), QtCore.QPointF(14, 4))
+        p.drawLine(QtCore.QPointF(14, 4), QtCore.QPointF(14, 12))
+        p.drawLine(QtCore.QPointF(14, 12), QtCore.QPointF(12, 12))
+    elif kind == "del":
+        p.drawLine(QtCore.QPointF(4, 5), QtCore.QPointF(14, 5))   # trash lid
+        p.drawLine(QtCore.QPointF(7, 5), QtCore.QPointF(7, 3))
+        p.drawLine(QtCore.QPointF(7, 3), QtCore.QPointF(11, 3))
+        p.drawLine(QtCore.QPointF(11, 3), QtCore.QPointF(11, 5))
+        path = QtGui.QPainterPath()                              # trash body
+        path.moveTo(5, 6)
+        path.lineTo(6, 15)
+        path.lineTo(12, 15)
+        path.lineTo(13, 6)
+        p.drawPath(path)
+    p.end()
+    return QtGui.QIcon(pm)
+
+
 class _DragGrip(QtWidgets.QLabel):
     """A small ⠿ handle for drag-to-reorder of an oscillator pane. Emits the cursor's global y
     while dragging so the chart can live-reorder the panes, and a signal on release."""

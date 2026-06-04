@@ -12,7 +12,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.ui.chart import (  # noqa: E402
@@ -745,3 +745,14 @@ def test_studio_second_chart_aligns_independently(app):
     assert studio_b.pane.getAxis("right").width() == sw
     # no cross-talk: neither chart's guard leaked
     assert main_pc._wsyncing is False and studio_pc._wsyncing is False
+
+
+# --- PHASE 2: pane hover toolbar ----------------------------------------------------------------
+def test_pane_icon_renders_all_kinds(app):
+    from vike_trader_app.ui.chart import _pane_icon
+    for kind in ("up", "down", "max", "restore", "del"):
+        ic = _pane_icon(kind)
+        assert isinstance(ic, QtGui.QIcon)
+        assert not ic.isNull()
+        pm = ic.pixmap(18, 18)
+        assert not pm.isNull() and pm.width() > 0
