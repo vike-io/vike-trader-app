@@ -292,6 +292,81 @@ def test_datamanager_truncate_removes_bars(app, tmp_path):
     assert "Truncated BTCUSDT 1m" in tab._log_view.toPlainText()
 
 
+# --- clean_series ---
+
+def test_clean_series_repairs_corrupt_bar_and_logs(app, tmp_path):
+    """A series with a zero-close bar is repaired in place; audit is non-empty and re-read bar is fixed."""
+    root = str(tmp_path)
+    nov = 1_700_000_000_000
+    good = Bar(ts=nov, open=100.0, high=101.0, low=99.0, close=100.0, volume=1.0)
+    corrupt = Bar(ts=nov + 60_000, open=100.0, high=101.0, low=99.0, close=0.0, volume=1.0)
+    ps.append_series([good, corrupt], root, "BTCUSDT", "1m")
+
+    tab = DataManagerTab(root=root, pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+
+    audit = tab.clean_series("BTCUSDT", "1m")
+
+    assert len(audit) >= 1
+    assert any("close" in a for a in audit)
+
+    # re-read and confirm the corrupt bar now has a valid close
+    bars = ps.read_series(root, "BTCUSDT", "1m")
+    assert all(b.close > 0 for b in bars)
+
+    log = tab._log_view.toPlainText()
+    assert "Clean BTCUSDT 1m" in log
+    assert "fix" in log
+
+
+def test_clean_series_high_below_open_is_clamped(app, tmp_path):
+    """A bar with high < open is clamped up; the repaired series reads back correctly."""
+    root = str(tmp_path)
+    nov = 1_700_000_000_000
+    corrupt = Bar(ts=nov, open=105.0, high=103.0, low=99.0, close=104.0, volume=1.0)
+    ps.append_series([corrupt], root, "ETHUSDT", "1m")
+
+    tab = DataManagerTab(root=root, pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+
+    audit = tab.clean_series("ETHUSDT", "1m")
+
+    assert len(audit) >= 1
+    bars = ps.read_series(root, "ETHUSDT", "1m")
+    assert bars[0].high >= bars[0].open  # clamped up
+
+
+def test_clean_series_clean_data_no_rewrite(app, tmp_path):
+    """A fully valid series produces an empty audit and the series is left untouched."""
+    root = str(tmp_path)
+    _seed(root)   # 5 clean bars of BTCUSDT 1m
+
+    tab = DataManagerTab(root=root, pins_path=str(tmp_path / "pins.json"))
+    tab.refresh()
+
+    # capture delete_series calls to confirm no rewrite happens
+    deleted = []
+    import vike_trader_app.data.parquet_source as _ps
+    original_delete = _ps.delete_series
+
+    def _spy_delete(r, s, i):
+        deleted.append((s, i))
+        original_delete(r, s, i)
+
+    import vike_trader_app.ui.datamanager as _dm
+    original_dm_delete = _dm.delete_series
+    _dm.delete_series = _spy_delete
+    try:
+        audit = tab.clean_series("BTCUSDT", "1m")
+    finally:
+        _dm.delete_series = original_dm_delete
+
+    assert audit == []
+    assert deleted == []   # no rewrite for a clean series
+    log = tab._log_view.toPlainText()
+    assert "Clean BTCUSDT 1m: 0 fix" in log
+
+
 def test_datamanager_remove_inactive(app, tmp_path, monkeypatch):
     from vike_trader_app.ui.datamanager import DataManagerTab
     tab = DataManagerTab(root=str(tmp_path), pins_path=str(tmp_path / "pins.json"))
