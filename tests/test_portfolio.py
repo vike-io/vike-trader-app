@@ -348,6 +348,30 @@ def test_long_short_caps_zero_means_no_limit():
     assert all(eng._pos[s].size > 0 for s in ("AAA", "BBB", "CCC"))
 
 
+def test_equity_ts_has_one_ts_per_equity_point():
+    """portfolio run equity_ts has exactly one timestamp per equity_curve point."""
+
+    class _BuyA(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("AAA", 1.0)
+
+    n_bars = 4
+    bars = {
+        "AAA": _series([100, 110, 120, 130]),
+        "BBB": _series([10, 10, 10, 10]),
+    }
+    eng = PortfolioEngine(bars, _BuyA(), cash=10_000.0)
+    result = eng.run()
+
+    assert result.equity_ts is not None
+    assert len(result.equity_ts) == len(result.equity_curve)
+    assert len(result.equity_ts) == n_bars
+    # timestamps are strictly increasing (aligned bar series with monotone ts)
+    for i in range(1, len(result.equity_ts)):
+        assert result.equity_ts[i] >= result.equity_ts[i - 1]
+
+
 def test_per_symbol_curves_length_and_last_value():
     """per_symbol_curves has one entry per symbol, each of length == number of bars,
     and the last value of each curve matches per_symbol_pnl[s]."""

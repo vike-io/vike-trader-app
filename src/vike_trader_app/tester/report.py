@@ -46,6 +46,7 @@ class TesterReport:
     verdict: object | None = None
     per_symbol_pnl: dict | None = None
     per_symbol_curves: dict | None = None
+    equity_ts: list | None = None  # epoch-ms timestamps aligned to equity_curve (portfolio runs only)
 
     @classmethod
     def from_result(cls, result, periods_per_year: float = 365 * 24 * 60) -> "TesterReport":
@@ -80,6 +81,7 @@ class TesterReport:
             equity_curve=eq,
             per_symbol_pnl=getattr(result, "per_symbol_pnl", None),
             per_symbol_curves=getattr(result, "per_symbol_curves", None),
+            equity_ts=getattr(result, "equity_ts", None) or None,
         )
 
     def as_dict(self) -> dict:

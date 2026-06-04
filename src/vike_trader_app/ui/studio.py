@@ -104,6 +104,9 @@ class ResultsPanel(QtWidgets.QWidget):
         self._build_by_symbol_tab()
         self._build_runs_tab()
         self._build_distribution_tab()
+        self._build_robustness_tab()
+        self._build_montecarlo_tab()
+        self._build_periods_tab()
 
         self.last_report: object = None
         self._report_trades: list = []           # row -> Trade, for the chart-focus linkage
@@ -240,6 +243,65 @@ class ResultsPanel(QtWidgets.QWidget):
         self._dist.setLabel("bottom", "trade return")
         self._dist.setLabel("left", "count")
         self._tabs.addTab(self._dist, "Distribution")
+
+    def _build_robustness_tab(self) -> None:
+        self._robust_table = QtWidgets.QTableWidget(0, 2)
+        self._robust_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self._robust_table.verticalHeader().setVisible(False)
+        self._robust_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._robust_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._robust_table.setAlternatingRowColors(True)
+        hdr = self._robust_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._tabs.addTab(self._robust_table, "Robustness")
+
+    def _build_montecarlo_tab(self) -> None:
+        self._mc_table = QtWidgets.QTableWidget(0, 2)
+        self._mc_table.setHorizontalHeaderLabels(["Metric", "Value"])
+        self._mc_table.verticalHeader().setVisible(False)
+        self._mc_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._mc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._mc_table.setAlternatingRowColors(True)
+        hdr = self._mc_table.horizontalHeader()
+        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._tabs.addTab(self._mc_table, "Monte Carlo")
+
+    def _build_periods_tab(self) -> None:
+        # Periods tab: a vertical splitter with the monthly heatmap on top and the drawdown table below.
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(_GAP)
+
+        self._periods_table = QtWidgets.QTableWidget(0, 14)  # Year + Jan..Dec + Year-total = 14 cols
+        self._periods_table.setHorizontalHeaderLabels(
+            ["Year", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+             "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Annual"])
+        self._periods_table.verticalHeader().setVisible(False)
+        self._periods_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._periods_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._periods_table.setAlternatingRowColors(True)
+        self._periods_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        layout.addWidget(self._periods_table, 2)
+
+        dd_label = QtWidgets.QLabel("TOP DRAWDOWNS")
+        dd_label.setStyleSheet(
+            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;padding:4px 0 0 0;"
+        )
+        layout.addWidget(dd_label)
+
+        self._dd_table = QtWidgets.QTableWidget(0, 4)
+        self._dd_table.setHorizontalHeaderLabels(["Depth", "Peak", "Trough", "Length (bars)"])
+        self._dd_table.verticalHeader().setVisible(False)
+        self._dd_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._dd_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._dd_table.setAlternatingRowColors(True)
+        self._dd_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        layout.addWidget(self._dd_table, 1)
+
+        self._tabs.addTab(container, "Periods")
 
     def mount_chart_tab(self, chart: QtWidgets.QWidget) -> None:
         """Add the price chart as a 'Chart' tab after Distribution, so the reports and the chart
@@ -445,6 +507,186 @@ class ResultsPanel(QtWidgets.QWidget):
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self._by_symbol_table.setItem(r, c, item)
 
+    # --- analytics tab fill helpers ---
+
+    @staticmethod
+    def _table_row(table: QtWidgets.QTableWidget, row: int, label: str, value: str,
+                   value_color: str | None = None) -> None:
+        """Set one key/value row on a two-column QTableWidget."""
+        label_item = QtWidgets.QTableWidgetItem(label)
+        value_item = QtWidgets.QTableWidgetItem(value)
+        value_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        if value_color:
+            value_item.setForeground(QtGui.QColor(value_color))
+        table.setItem(row, 0, label_item)
+        table.setItem(row, 1, value_item)
+
+    def _fill_robustness(self, report) -> None:
+        from ..analysis import metrics as _m
+        from ..analysis.overfit import probabilistic_sharpe_ratio
+
+        rows: list[tuple[str, str, str | None]] = []  # (label, value, color)
+
+        # PSR — needs per-observation Sharpe = Sharpe / sqrt(ppy).
+        eq = report.equity_curve or []
+        n = len(eq)
+        psr_val = "—"
+        if n >= 3:
+            try:
+                # Annualise: ppy≈252 daily; compute per-obs Sharpe from the curve returns
+                rets = [eq[i] / eq[i - 1] - 1.0 for i in range(1, n) if eq[i - 1] != 0]
+                if len(rets) >= 2:
+                    import math
+                    import statistics
+                    mu = statistics.mean(rets)
+                    sd = statistics.stdev(rets)
+                    sr_per_obs = mu / sd if sd > 0 else 0.0
+                    psr = probabilistic_sharpe_ratio(sr_per_obs, len(rets))
+                    psr_val = self._pct(psr)
+            except Exception:  # noqa: BLE001
+                psr_val = "—"
+
+        sharpe_raw = getattr(report, "sharpe", None)
+        sharpe_str = self._fmt("sharpe", sharpe_raw) if sharpe_raw is not None else "—"
+
+        rows.append(("PSR (Probabilistic Sharpe)", psr_val, None))
+        rows.append(("Sharpe Ratio", sharpe_str, None))
+
+        verdict = getattr(report, "verdict", None)
+        if verdict is not None:
+            level = verdict.level
+            color = theme.VERDICT.get(level, theme.WARN)
+            rows.append(("Overfit Risk Level", level, color))
+            reason = verdict.reasons[0] if verdict.reasons else ""
+            rows.append(("Primary Flag", reason, None))
+            # PBO and Deflated Sharpe are not stored on Verdict directly — they live as
+            # formatted strings in the reasons text; surface what we have.
+        else:
+            rows.append(("Overfit verdict", "Run Optimize/Walk-forward to populate", None))
+
+        self._robust_table.setRowCount(len(rows))
+        for r, (lbl, val, col) in enumerate(rows):
+            self._table_row(self._robust_table, r, lbl, val, col)
+
+    def _fill_montecarlo(self, report) -> None:
+        from ..analysis.montecarlo import mc_summary
+
+        trades = getattr(report, "trades", None) or []
+        if not trades:
+            self._mc_table.setRowCount(1)
+            self._table_row(self._mc_table, 0, "Monte Carlo", "No trades — run a backtest first", None)
+            return
+
+        pnls = [t.pnl for t in trades]
+        net = getattr(report, "net_profit", 0.0) or 0.0
+        final = getattr(report, "final_equity", 0.0) or 0.0
+        start_equity = final - net
+        if start_equity <= 0:
+            start_equity = 100_000.0
+
+        try:
+            s = mc_summary(pnls, start_equity=start_equity, n_sims=1000, seed=0)
+        except Exception:  # noqa: BLE001
+            self._mc_table.setRowCount(1)
+            self._table_row(self._mc_table, 0, "Monte Carlo", "Failed to compute", None)
+            return
+
+        rows: list[tuple[str, str, str | None]] = [
+            ("Terminal Equity P5", self._money(s["terminal_p5"]),
+             theme.DOWN if s["terminal_p5"] < start_equity else theme.UP),
+            ("Terminal Equity P50 (median)", self._money(s["terminal_p50"]),
+             theme.DOWN if s["terminal_p50"] < start_equity else theme.UP),
+            ("Terminal Equity P95", self._money(s["terminal_p95"]),
+             theme.UP if s["terminal_p95"] >= start_equity else theme.DOWN),
+            ("Max Drawdown P50", self._pct(s["max_dd_p50"]), theme.DOWN),
+            ("Max Drawdown P95", self._pct(s["max_dd_p95"]), theme.DOWN),
+            ("Prob(final < start)", self._pct(s["prob_loss"]),
+             theme.DOWN if s["prob_loss"] > 0.5 else theme.TEXT),
+            ("Risk of Ruin (50% loss)", self._pct(s["risk_of_ruin"]),
+             theme.DOWN if s["risk_of_ruin"] > 0.05 else theme.TEXT),
+        ]
+        self._mc_table.setRowCount(len(rows))
+        for r, (lbl, val, col) in enumerate(rows):
+            self._table_row(self._mc_table, r, lbl, val, col)
+
+    def _fill_periods(self, report) -> None:
+        from ..analysis.periods import drawdown_table, monthly_return_matrix
+        from datetime import datetime, timezone
+
+        eq = getattr(report, "equity_curve", None) or []
+        ts = getattr(report, "equity_ts", None) or []
+
+        if not eq or not ts or len(eq) != len(ts):
+            # Single-symbol run or missing timestamps — show a graceful hint row
+            self._periods_table.setRowCount(1)
+            item = QtWidgets.QTableWidgetItem(
+                "Periodic returns require a portfolio run (equity timestamps not available)"
+            )
+            item.setForeground(QtGui.QColor(theme.TEXT3))
+            self._periods_table.setItem(0, 0, item)
+            self._dd_table.setRowCount(0)
+            return
+
+        # Monthly return matrix
+        try:
+            mat = monthly_return_matrix(eq, ts)
+        except Exception:  # noqa: BLE001
+            self._periods_table.setRowCount(0)
+            self._dd_table.setRowCount(0)
+            return
+
+        years = mat["years"]
+        matrix = mat["matrix"]
+        annual = mat["annual"]
+        self._periods_table.setRowCount(len(years))
+        for r, year in enumerate(years):
+            year_item = QtWidgets.QTableWidgetItem(str(year))
+            year_item.setTextAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
+            self._periods_table.setItem(r, 0, year_item)
+            months = matrix.get(year, {})
+            for m in range(1, 13):
+                ret = months.get(m)
+                text = self._pct(ret) if ret is not None else "—"
+                cell = QtWidgets.QTableWidgetItem(text)
+                cell.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                if ret is not None:
+                    cell.setForeground(QtGui.QColor(theme.UP if ret >= 0 else theme.DOWN))
+                self._periods_table.setItem(r, m, cell)  # col 1..12 = Jan..Dec
+            ann = annual.get(year)
+            ann_item = QtWidgets.QTableWidgetItem(self._pct(ann) if ann is not None else "—")
+            ann_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            if ann is not None:
+                ann_item.setForeground(QtGui.QColor(theme.UP if ann >= 0 else theme.DOWN))
+            self._periods_table.setItem(r, 13, ann_item)
+
+        # Drawdown table
+        try:
+            dds = drawdown_table(eq, ts, top_n=5)
+        except Exception:  # noqa: BLE001
+            dds = []
+
+        self._dd_table.setRowCount(len(dds))
+        for r, ep in enumerate(dds):
+            depth_item = QtWidgets.QTableWidgetItem(self._pct(ep["depth"]))
+            depth_item.setForeground(QtGui.QColor(theme.DOWN))
+            depth_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+            def _ts_str(epoch_ms):
+                if epoch_ms is None:
+                    return "—"
+                dt = datetime.fromtimestamp(epoch_ms / 1000.0, tz=timezone.utc)
+                return dt.strftime("%Y-%m-%d")
+
+            peak_item = QtWidgets.QTableWidgetItem(_ts_str(ep["peak_ts"]))
+            trough_item = QtWidgets.QTableWidgetItem(_ts_str(ep["trough_ts"]))
+            length_item = QtWidgets.QTableWidgetItem(str(ep["length"]))
+            length_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+
+            self._dd_table.setItem(r, 0, depth_item)
+            self._dd_table.setItem(r, 1, peak_item)
+            self._dd_table.setItem(r, 2, trough_item)
+            self._dd_table.setItem(r, 3, length_item)
+
     def _on_trade_clicked(self, row: int, _col: int) -> None:
         """Trade-row click — selection only; price-chart focus lives in the Chart space now."""
         return
@@ -506,6 +748,9 @@ class ResultsPanel(QtWidgets.QWidget):
         self._fill_trades(report.trades, mm)
         self._fill_by_symbol(report)
         self._update_distribution(report_extras.trade_returns(report.trades))
+        self._fill_robustness(report)
+        self._fill_montecarlo(report)
+        self._fill_periods(report)
         self._tabs.setCurrentIndex(0)  # land on the Equity tab — the headline view
 
     def add_run(self, report, bars=None, overlays=None) -> None:
@@ -569,6 +814,10 @@ class ResultsPanel(QtWidgets.QWidget):
             lbl.setText("")
         self._trades.setRowCount(0)
         self._by_symbol_table.setRowCount(0)
+        self._robust_table.setRowCount(0)
+        self._mc_table.setRowCount(0)
+        self._periods_table.setRowCount(0)
+        self._dd_table.setRowCount(0)
 
     def clear(self) -> None:
         """Reset to blank state (including run history)."""
@@ -587,6 +836,10 @@ class ResultsPanel(QtWidgets.QWidget):
         self._trades.setRowCount(0)
         self._by_symbol_table.setRowCount(0)
         self._runs_table.setRowCount(0)
+        self._robust_table.setRowCount(0)
+        self._mc_table.setRowCount(0)
+        self._periods_table.setRowCount(0)
+        self._dd_table.setRowCount(0)
 
 
 # ---------------------------------------------------------------------------
