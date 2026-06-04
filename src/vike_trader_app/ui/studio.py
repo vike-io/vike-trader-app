@@ -1338,6 +1338,9 @@ class StudioTab(QtWidgets.QWidget):
         self._top_collapsed = False  # chart/report panel collapsed to give the cards full height
         self._saved_top_size = None  # remembered top height to restore on expand
         self._ratio_applied = False  # one-time 44:56 re-assert guard (see showEvent)
+        self._portfolio_bars = None  # None -> single-symbol mode; dict -> portfolio-optimize mode
+        self._portfolio_ranges = None  # per-symbol membership ranges (survivorship-free)
+        self._portfolio_name = ""    # DataSet name surfaced in toasts
 
         root = QtWidgets.QVBoxLayout(self)
         # No root inset — every visible gap is a single, uniform _GAP instead of doubling up
@@ -1593,11 +1596,19 @@ class StudioTab(QtWidgets.QWidget):
         except Exception:  # noqa: BLE001 - an empty/invalid editor just yields no strategy
             return None
 
-    def show_portfolio_report(self, report, name: str = "") -> None:
+    def show_portfolio_report(self, report, name: str = "", *,
+                              bars_by_symbol=None, ranges=None) -> None:
         """Display a portfolio backtest report in the results panel (no per-bar price chart).
 
         ``name`` (the DataSet) is surfaced in the results toast so the user sees which universe ran.
+        When ``bars_by_symbol`` is provided the Studio enters portfolio-optimize mode: subsequent
+        Walk-forward presses will optimize across the whole DataSet via ``PortfolioStrategyTester``
+        instead of the single-symbol path.
         """
+        if bars_by_symbol is not None:
+            self._portfolio_bars = bars_by_symbol
+            self._portfolio_ranges = ranges
+            self._portfolio_name = name
         self.results.add_run(report, [], {})
         if name:
             self.results.toast(f"✓ Portfolio · {name}")
@@ -1609,12 +1620,15 @@ class StudioTab(QtWidgets.QWidget):
 
         Honors the per-run config (starting capital + date-range slice) set via the
         Settings modal; falls back to the full bars + the tab's TesterConfig otherwise.
+        A single-symbol run exits portfolio-optimize mode so the Walk-forward button follows
+        the latest action.
         """
         from dataclasses import replace
 
         from vike_trader_app.core.strategy_loader import load_strategy_from_string
         from vike_trader_app.tester import StrategyTester, TesterConfig
 
+        self._portfolio_bars = None  # exit portfolio mode on a single-symbol run
         code = self.editor.text()
         config = self._config if self._config is not None else TesterConfig()
         if self._run_capital is not None:
@@ -1687,6 +1701,29 @@ class StudioTab(QtWidgets.QWidget):
         grid = getattr(cls, "PARAM_GRID", {}) or {}
         if not grid:
             self.results.toast("Add a PARAM_GRID to the strategy to walk-forward optimize it.")
+            return
+        if self._portfolio_bars:
+            from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester
+            n = min((len(b) for b in self._portfolio_bars.values()), default=0)
+            if n < 120:
+                self.results.toast("Need ≥120 bars per symbol to walk-forward optimize a portfolio.")
+                return
+            self.results.toast(f"Portfolio walk-forward optimizing {self._portfolio_name}…")
+            QtWidgets.QApplication.processEvents()
+            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+            try:
+                wf = PortfolioStrategyTester(self._portfolio_bars, config,
+                                             ranges=self._portfolio_ranges).walk_forward(
+                                                 cls.make, grid, n_splits=3)
+            except Exception as exc:  # noqa: BLE001
+                self.results.show_error(f"Portfolio optimize failed: {type(exc).__name__}: {exc}")
+                return
+            finally:
+                QtWidgets.QApplication.restoreOverrideCursor()
+            self.results.add_run(wf.oos_report, [])    # portfolio: no per-bar price chart
+            best = wf.windows[-1].best_params if wf.windows else {}
+            level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
+            self.results.toast(f"Portfolio WF-OOS · {self._portfolio_name} · overfit: {level} · best {best}")
             return
         if len(bars) < 120:
             self.results.toast("Need ≥120 bars to walk-forward optimize.")
