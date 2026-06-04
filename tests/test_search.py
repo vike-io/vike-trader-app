@@ -73,3 +73,38 @@ def test_optuna_search_raises_without_extra(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _block)
     with pytest.raises(RuntimeError, match="vike_trader_app\\[opt\\]"):
         optuna_search(_rising(), _make, GRID, n_trials=2, score_fn=SCORE)
+
+
+def test_optuna_unknown_sampler_raises_value_error():
+    """Unknown sampler name must raise ValueError with a clear message."""
+    pytest.importorskip("optuna")
+    with pytest.raises(ValueError, match="unknown sampler"):
+        optuna_search(_rising(), _make, GRID, n_trials=2, score_fn=SCORE, sampler="bogus")
+
+
+def test_optuna_gp_sampler_returns_valid_result():
+    """GP (Bayesian) sampler returns ranked results with the expected best param."""
+    pytest.importorskip("optuna")
+    res = optuna_search(_rising(), _make, GRID, n_trials=5, score_fn=SCORE, seed=42, sampler="gp")
+    assert res, "GP sampler returned empty results"
+    assert res == sorted(res, key=lambda r: r.score, reverse=True)
+    assert all(r.params["fast"] in GRID["fast"] and r.params["slow"] in GRID["slow"] for r in res)
+
+
+def test_optuna_cmaes_sampler_returns_valid_result():
+    """CMA-ES sampler (falls back to independent sampling for categoricals) returns ranked results."""
+    pytest.importorskip("optuna")
+    res = optuna_search(_rising(), _make, GRID, n_trials=8, score_fn=SCORE, seed=7, sampler="cmaes")
+    assert res, "CMA-ES sampler returned empty results"
+    assert res == sorted(res, key=lambda r: r.score, reverse=True)
+    assert all(r.params["fast"] in GRID["fast"] and r.params["slow"] in GRID["slow"] for r in res)
+
+
+def test_optuna_all_sampler_names_listed_in_error():
+    """ValueError message enumerates all valid sampler names."""
+    pytest.importorskip("optuna")
+    with pytest.raises(ValueError, match="cmaes") as exc_info:
+        optuna_search(_rising(), _make, GRID, n_trials=2, score_fn=SCORE, sampler="xyz")
+    msg = str(exc_info.value)
+    for name in ("tpe", "random", "gp", "cmaes"):
+        assert name in msg, f"Expected '{name}' in error message: {msg}"
