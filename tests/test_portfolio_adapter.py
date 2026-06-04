@@ -372,3 +372,67 @@ def test_empty_ranges_identical_to_no_mask():
     base = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=10_000.0)).run()
     withr = MultiSymbolStrategyRunner(BuyHold, {"A": a}, TesterConfig(cash=10_000.0), ranges={}).run()
     assert base.final_equity == withr.final_equity and len(base.trades) == len(withr.trades)
+
+
+def test_pct_equity_sizer_sizes_entries_off_equity():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.core.sizing import PctEquitySizer
+    from vike_trader_app.tester.config import TesterConfig
+    from dataclasses import replace
+
+    def _b(ts, px): return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class Enter(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)   # intent; the sizer decides the real qty
+
+    a = [_b(1, 100.0), _b(2, 100.0), _b(3, 100.0)]
+    cfg = replace(TesterConfig(cash=10_000.0), sizer=PctEquitySizer(0.5))
+    runner = MultiSymbolStrategyRunner(Enter, {"A": a}, cfg)
+    runner.run()
+    # 50% of 10k equity / price 100 = ~50 shares opened, NOT the literal 1.0
+    assert abs(runner._engine._pos["A"].size - 50.0) < 1e-6
+
+
+def test_default_passthrough_sizer_is_byte_for_byte():
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    def _b(ts, px): return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+    class Enter(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(3.0)
+    a = [_b(1, 100.0), _b(2, 100.0)]
+    runner = MultiSymbolStrategyRunner(Enter, {"A": a}, TesterConfig(cash=10_000.0))  # no sizer
+    runner.run()
+    assert runner._engine._pos["A"].size == 3.0   # literal size, unchanged
+
+
+def test_order_target_percent_is_not_resized_by_sizer():
+    """order_target_* compute an explicit qty and forward raw=True; the sizer must NOT re-size them."""
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.core.sizing import FixedSharesSizer
+    from vike_trader_app.tester.config import TesterConfig
+    from dataclasses import replace
+
+    def _b(ts, px): return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
+
+    class Target(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.order_target_percent(0.5)  # explicit: 50% of equity -> 50 shares
+
+    a = [_b(1, 100.0), _b(2, 100.0), _b(3, 100.0)]
+    # A FixedShares(7) sizer would force 7 shares IF it re-sized; raw=True must keep the explicit 50.
+    cfg = replace(TesterConfig(cash=10_000.0), sizer=FixedSharesSizer(7.0))
+    runner = MultiSymbolStrategyRunner(Target, {"A": a}, cfg)
+    runner.run()
+    assert abs(runner._engine._pos["A"].size - 50.0) < 1e-6

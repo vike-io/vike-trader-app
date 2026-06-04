@@ -11,6 +11,12 @@ from dataclasses import dataclass, field
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
+from .sizing import PassThroughSizer, SizeContext
+
+
+def _default_sizer():
+    """The pass-through sizer (today's behavior): the strategy's literal size, unchanged."""
+    return PassThroughSizer()
 
 
 @dataclass
@@ -133,7 +139,9 @@ class PortfolioEngine:
                  taker_fee: float | None = None, multiplier: float = 1.0,
                  leverage: float | None = None, maint_margin: float = 0.0,
                  cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
-                 timeframes: list[str] | None = None, max_open_positions: int = 0):
+                 timeframes: list[str] | None = None, max_open_positions: int = 0,
+                 max_open_long: int = 0, max_open_short: int = 0,
+                 sizer=None):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -155,6 +163,14 @@ class PortfolioEngine:
         # (default) == every symbol always active, i.e. today's behavior byte-for-byte.
         self.active_mask = active_mask
         self.max_open_positions = max_open_positions
+        # Per-direction open-position caps (0 = no limit).
+        self.max_open_long = max_open_long
+        self.max_open_short = max_open_short
+        # Swappable position sizer (WL PosSizer model). None -> PassThrough (the strategy's literal
+        # size), so default behavior is byte-for-byte unchanged.
+        self.sizer = sizer or _default_sizer()
+        # Equity peak for drawdown tracking (initialised to starting cash; updated each bar in run()).
+        self._equity_peak: float = cash
         self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
@@ -189,6 +205,45 @@ class PortfolioEngine:
         cap = self.max_open_positions
         return bool(cap) and sum(1 for s in self.symbols if self._pos[s].size != 0) >= cap
 
+    def _long_count(self) -> int:
+        """Count of symbols with a long (positive) open position."""
+        return sum(1 for s in self.symbols if self._pos[s].size > 0)
+
+    def _short_count(self) -> int:
+        """Count of symbols with a short (negative) open position."""
+        return sum(1 for s in self.symbols if self._pos[s].size < 0)
+
+    def _at_long_cap(self) -> bool:
+        """Return True when the max_open_long cap is set and already reached."""
+        cap = self.max_open_long
+        return bool(cap) and self._long_count() >= cap
+
+    def _at_short_cap(self) -> bool:
+        """Return True when the max_open_short cap is set and already reached."""
+        cap = self.max_open_short
+        return bool(cap) and self._short_count() >= cap
+
+    # --- ATR helper ---
+    def _atr(self, symbol: str, n: int = 14) -> float:
+        """Mean true range over the last ``n`` bars up to (and including) ``self._step``.
+
+        True range = max(high-low, |high-prevClose|, |low-prevClose|). Returns 0.0 when there are
+        fewer than 2 bars available (need at least one prev-close), using however many bars we have
+        if between 2 and n.
+        """
+        bars = self.bars[symbol]
+        end = self._step + 1           # exclusive: bars[:end] are the bars seen so far
+        start = max(1, end - n)        # need prev-close -> start at index >= 1
+        if end < 2:                    # no prev-close available at all
+            return 0.0
+        trs = []
+        for i in range(start, end):
+            bar = bars[i]
+            prev_close = bars[i - 1].close
+            tr = max(bar.high - bar.low, abs(bar.high - prev_close), abs(bar.low - prev_close))
+            trs.append(tr)
+        return sum(trs) / len(trs) if trs else 0.0
+
     # --- reads exposed to the strategy ---
     def position_of(self, symbol: str) -> Position:
         return self._pos[symbol]
@@ -198,6 +253,29 @@ class PortfolioEngine:
 
     def equity_now(self) -> float:
         return self.cash + sum(self._pos[s].size * self._price[s] * self.multiplier for s in self.symbols)
+
+    # --- sizing (WL PosSizer) ---
+    def _is_opening(self, symbol: str, side_sign: int) -> bool:
+        """True when an order on ``symbol`` in direction ``side_sign`` opens-from-flat or adds in the
+        same direction (an entry). False when it reduces/closes/flips. Mirrors the fill-loop's
+        ``opening = pos.size == 0 or (pos.size > 0) == (side > 0)`` test."""
+        pos = self._pos[symbol]
+        return pos.size == 0 or (pos.size > 0) == (side_sign > 0)
+
+    def _size_entry(self, symbol: str, side_sign: int, size: float, raw: bool) -> float:
+        """Run the sizer on opening/increasing entries; pass ``size`` through untouched when ``raw``
+        (explicit order_target_* sizing) or when the order reduces/closes the position."""
+        if raw or not self._is_opening(symbol, side_sign):
+            return size
+        equity = self.equity_now()
+        peak = self._equity_peak
+        drawdown = max(0.0, 1.0 - equity / peak) if peak > 0 else 0.0
+        return self.sizer.size(SizeContext(
+            symbol, side_sign, size, self._price[symbol],
+            equity, self.cash, self.multiplier,
+            atr=self._atr(symbol),
+            drawdown=drawdown,
+        ))
 
     # --- leverage / risk helpers ---
     def _cap_to_leverage(self, symbol: str, side_sign: int, size: float) -> float:
@@ -257,7 +335,9 @@ class PortfolioEngine:
                 self._apply_fill(s, side, abs(self._pos[s].size), cur[s].open, cur[s].ts)
 
     # --- order intake ---
-    def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0) -> None:
+    def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
+               raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
             self._pending[symbol].append(Order("market", side_sign, size, weight=weight))
@@ -268,13 +348,19 @@ class PortfolioEngine:
             side = -1 if pos.size > 0 else 1
             self._pending[symbol].append(Order("market", side, abs(pos.size)))
 
-    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+    def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
+                     raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
         self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight))
 
-    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+    def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
+                    raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
         self._pending[symbol].append(Order("stop", side_sign, size, price=price, weight=weight))
 
-    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
+    def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0,
+                        raw: bool = False) -> None:
+        size = self._size_entry(symbol, side_sign, size, raw)
         self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
                                            extreme=self._price[symbol], weight=weight))
 
@@ -327,7 +413,9 @@ class PortfolioEngine:
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
             self.strategy.on_bar(ts, cur)
-            equity_curve.append(self.equity_now())
+            eq = self.equity_now()
+            self._equity_peak = max(self._equity_peak, eq)  # track running peak for drawdown
+            equity_curve.append(eq)
             for s in self.symbols:
                 pos = self._pos[s]
                 per_symbol_curve[s].append(self._realized[s] + pos.size * (self._price[s] - pos.avg_price) * self.multiplier)
@@ -351,6 +439,11 @@ class PortfolioEngine:
                     continue                  # inactive member: drop opening/adding fills (reduces still apply)
                 if pos.size == 0 and self._at_open_cap():
                     continue                  # MaxOpenPositions cap reached: drop new-symbol opens
+                # Per-direction caps: only block new-symbol opens (pos.size == 0), not adds to existing
+                if pos.size == 0 and o.side > 0 and self._at_long_cap():
+                    continue                  # max_open_long cap reached
+                if pos.size == 0 and o.side < 0 and self._at_short_cap():
+                    continue                  # max_open_short cap reached
                 self._apply_fill(symbol, o.side, o.size, fp, bar.ts, is_maker=o.kind == "limit")
         self._pending[symbol] = still
 
@@ -383,6 +476,13 @@ class PortfolioEngine:
         for s, o, fp, _ in sorted(opens, key=lambda t: (-t[1].weight, t[3])):
             # MaxOpenPositions cap: re-checked live so count updates as positions open during this loop
             if self._pos[s].size == 0 and self._at_open_cap():
+                self.dropped.append((s, o.kind, o.size, o.weight))
+                continue
+            # Per-direction caps: re-checked live; only block new-symbol opens
+            if self._pos[s].size == 0 and o.side > 0 and self._at_long_cap():
+                self.dropped.append((s, o.kind, o.size, o.weight))
+                continue
+            if self._pos[s].size == 0 and o.side < 0 and self._at_short_cap():
                 self.dropped.append((s, o.kind, o.size, o.weight))
                 continue
             slipped = adverse_fill_price(fp, o.side, self.slippage)

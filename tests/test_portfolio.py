@@ -267,6 +267,87 @@ def test_cash_gate_off_by_default_allows_negative_cash():
 # F3: per-symbol PnL curves
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# max_open_long / max_open_short caps
+# ---------------------------------------------------------------------------
+
+class _BothBuy(PortfolioStrategy):
+    """Both symbols attempt to open longs at step 0."""
+    def on_bar(self, ts, bars):
+        if self.index == 0:
+            for sym in bars:
+                self._engine.submit(sym, +1, 1.0)
+
+
+def test_max_open_long_blocks_second_long():
+    """With max_open_long=1, two symbols both trying to open longs -> only one opens."""
+    bars = {
+        "AAA": _series([100, 100, 100]),
+        "BBB": _series([100, 100, 100]),
+    }
+    eng = PortfolioEngine(bars, _BothBuy(), cash=100_000.0, max_open_long=1)
+    eng.run()
+    open_longs = sum(1 for s in ("AAA", "BBB") if eng._pos[s].size > 0)
+    assert open_longs == 1
+
+
+class _BothSell(PortfolioStrategy):
+    """Both symbols attempt to open shorts at step 0."""
+    def on_bar(self, ts, bars):
+        if self.index == 0:
+            for sym in bars:
+                self._engine.submit(sym, -1, 1.0)
+
+
+def test_max_open_short_blocks_second_short():
+    """With max_open_short=1, two symbols both trying to open shorts -> only one opens."""
+    bars = {
+        "AAA": _series([100, 100, 100]),
+        "BBB": _series([100, 100, 100]),
+    }
+    eng = PortfolioEngine(bars, _BothSell(), cash=100_000.0, max_open_short=1)
+    eng.run()
+    open_shorts = sum(1 for s in ("AAA", "BBB") if eng._pos[s].size < 0)
+    assert open_shorts == 1
+
+
+def test_max_open_long_does_not_block_shorts():
+    """max_open_long=1 must NOT block short entries (different direction)."""
+    class _LongAndShort(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self._engine.submit("AAA", +1, 1.0)  # long
+                self._engine.submit("BBB", -1, 1.0)  # short
+
+    bars = {
+        "AAA": _series([100, 100, 100]),
+        "BBB": _series([100, 100, 100]),
+    }
+    eng = PortfolioEngine(bars, _LongAndShort(), cash=100_000.0, max_open_long=1)
+    eng.run()
+    assert eng._pos["AAA"].size > 0  # long opened
+    assert eng._pos["BBB"].size < 0  # short also opened (different cap)
+
+
+def test_long_short_caps_zero_means_no_limit():
+    """Default (0) must impose no limit — all positions open freely."""
+    bars = {
+        "AAA": _series([100, 100, 100]),
+        "BBB": _series([100, 100, 100]),
+        "CCC": _series([100, 100, 100]),
+    }
+
+    class _AllBuy(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                for sym in bars:
+                    self._engine.submit(sym, +1, 1.0)
+
+    eng = PortfolioEngine(bars, _AllBuy(), cash=100_000.0)  # max_open_long=0 by default
+    eng.run()
+    assert all(eng._pos[s].size > 0 for s in ("AAA", "BBB", "CCC"))
+
+
 def test_per_symbol_curves_length_and_last_value():
     """per_symbol_curves has one entry per symbol, each of length == number of bars,
     and the last value of each curve matches per_symbol_pnl[s]."""

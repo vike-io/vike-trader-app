@@ -56,10 +56,12 @@ class SymbolEngineShim:
         return self._driver.drawdown_now() if self._driver is not None else 0.0
 
     # --- market orders ---
-    def submit(self, side_sign: int, size: float, weight: float = 0.0) -> None:
+    def submit(self, side_sign: int, size: float, weight: float = 0.0, raw: bool = False) -> None:
+        # buy/sell entries forward raw=False (the engine sizer decides the qty); order_target_*
+        # paths forward raw=True (explicit sizing the sizer must NOT re-size).
         if size <= 0:
             return
-        self._engine.submit(self._symbol, side_sign, size, weight=weight)
+        self._engine.submit(self._symbol, side_sign, size, weight=weight, raw=raw)
 
     def submit_close(self) -> None:
         self._engine.submit_close(self._symbol)
@@ -67,7 +69,7 @@ class SymbolEngineShim:
     def order_target(self, target: float) -> None:
         delta = target - self._engine.position_of(self._symbol).size
         if abs(delta) > 1e-12:
-            self.submit(1 if delta > 0 else -1, abs(delta))
+            self.submit(1 if delta > 0 else -1, abs(delta), raw=True)  # explicit qty: do not re-size
 
     def order_target_value(self, value: float) -> None:
         price = self._engine.price_of(self._symbol)
@@ -170,7 +172,10 @@ class MultiSymbolStrategyRunner:
                                  leverage=self.config.leverage, maint_margin=self.config.maint_margin,
                                  cash_gate=self.config.cash_gate, active_mask=active_mask,
                                  timeframes=self.config.timeframes,
-                                 max_open_positions=self.max_open_positions)
+                                 max_open_positions=self.max_open_positions,
+                                 max_open_long=getattr(self.config, "max_open_long", 0),
+                                 max_open_short=getattr(self.config, "max_open_short", 0),
+                                 sizer=getattr(self.config, "sizer", None))
         self._engine = engine
         return engine.run()
 
