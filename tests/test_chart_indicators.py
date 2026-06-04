@@ -1468,3 +1468,41 @@ def test_pane_set_and_clear_crosshair(app):
     assert pane._cx_v.isVisible() is False
     assert pane._cx_val_tag.isHidden() and pane._cx_time_tag.isHidden()
     assert pane._cx_bar is None
+
+
+def test_pane_mouse_move_emits_moved_and_left(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    moved, left = [], []
+    pane.crosshairMoved.connect(moved.append)
+    pane.crosshairLeft.connect(lambda: left.append(1))
+    vb = pane.getViewBox()
+    # hover INSIDE the pane viewbox -> crosshairMoved(bar-index x)
+    inside = vb.sceneBoundingRect().center()
+    pane._on_pane_mouse_moved(inside)
+    assert len(moved) == 1
+    want_x = vb.mapSceneToView(inside).x()
+    assert moved[0] == pytest.approx(want_x)
+    # hover OUTSIDE the pane viewbox -> crosshairLeft
+    outside = QtCore.QPointF(vb.sceneBoundingRect().right() + 9999,
+                             vb.sceneBoundingRect().center().y())
+    pane._on_pane_mouse_moved(outside)
+    assert left == [1]
+
+
+def test_pane_leave_event_emits_crosshair_left_and_keeps_toolbar(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 120)
+    pane.enterEvent(None)        # toolbar shown
+    assert not pane._toolbar.isHidden()
+    left = []
+    pane.crosshairLeft.connect(lambda: left.append(1))
+    pane.leaveEvent(None)        # leaving the pane clears the crosshair AND hides the toolbar
+    assert left == [1]
+    assert pane._toolbar.isHidden()   # Phase-2 toolbar logic preserved

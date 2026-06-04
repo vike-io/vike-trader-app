@@ -1280,6 +1280,7 @@ class OscillatorPane(pg.PlotWidget):
             self._tb_timer.start()   # cursor moved onto a child/popup: re-check shortly
         else:
             self._toolbar.hide()
+        self.crosshairLeft.emit()    # leaving the pane clears the whole cross-pane crosshair
         if e is not None:
             super().leaveEvent(e)
 
@@ -1336,8 +1337,14 @@ class OscillatorPane(pg.PlotWidget):
         self._cx_time_tag.show()
 
     def _on_pane_mouse_moved(self, scene_pos):
-        """Crosshair fan-out for a hover inside this pane (wired in Task 5)."""
-        return
+        """Per-widget scenes: a hover anywhere in THIS pane maps to a bar-index x and fans out
+        via the price chart. Outside the viewbox -> clear the whole crosshair. NB the value tag
+        for this (hovered) pane is drawn by set_crosshair_x off the fan-out, not here."""
+        vb = self.getViewBox()
+        if not vb.sceneBoundingRect().contains(scene_pos):
+            self.crosshairLeft.emit()
+            return
+        self.crosshairMoved.emit(vb.mapSceneToView(scene_pos).x())
 
     def resizeEvent(self, e):  # noqa: N802 - Qt override
         super().resizeEvent(e)
