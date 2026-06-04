@@ -2057,12 +2057,17 @@ class PriceChart(pg.PlotWidget):
         self._cx_price_tag.move(self.width() - self._cx_price_tag.width() - 1,
                                 py - self._cx_price_tag.height() // 2)
         self._cx_price_tag.show()
-        dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
-        self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
-        self._cx_time_tag.adjustSize()
-        self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
-                               self.height() - self._cx_time_tag.height() - 1)
-        self._cx_time_tag.show()
+        if self._panes_in_visual_order():
+            # the time axis moved to the lowest pane -> this tag would float over the price plot
+            # with no axis beneath it. Hide it (Phase 4 adds the bottom-pane time tag).
+            self._cx_time_tag.hide()
+        else:
+            dt = datetime.fromtimestamp(x_to_ts(self._bars, pt.x()) / 1000, tz=timezone.utc)
+            self._cx_time_tag.setText(dt.strftime("%m-%d %H:%M"))
+            self._cx_time_tag.adjustSize()
+            self._cx_time_tag.move(int(scene_pos.x()) - self._cx_time_tag.width() // 2,
+                                   self.height() - self._cx_time_tag.height() - 1)
+            self._cx_time_tag.show()
         # NB: the OHLC header is intentionally NOT updated to the hovered bar — it stays
         # pinned to the latest candle (the crosshair still reads price/time off the axes).
 

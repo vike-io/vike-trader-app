@@ -699,3 +699,28 @@ def test_resize_panes_gives_lowest_pane_axis_strip(app):
     # lowest pane (last entry) is the tallest among the oscillator panes (it owns the axis strip)
     assert sizes[-1] >= sizes[1]
     assert sizes[-1] - sizes[1] <= 40  # ~one axis strip taller, not wildly different
+
+
+def test_crosshair_time_tag_hidden_when_panes_exist(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    pc.add_indicator("rsi")  # a pane now owns the time axis -> price-chart time tag is orphaned
+    # simulate a hover inside the price viewbox
+    vb = pc.getViewBox()
+    center = vb.sceneBoundingRect().center()
+    pc._on_mouse_moved(center)
+    assert pc._cx_time_tag.isVisible() is False   # orphaned tag stays hidden
+    assert pc._cx_v.isVisible() is True           # the vertical crosshair still works
+
+
+def test_crosshair_time_tag_shown_with_no_panes(app):
+    pc, split = _chart(app)
+    split.resize(900, 700)
+    split.show()
+    app.processEvents()
+    vb = pc.getViewBox()
+    center = vb.sceneBoundingRect().center()
+    pc._on_mouse_moved(center)
+    assert pc._cx_time_tag.isVisible() is True  # price chart owns the bottom axis -> tag shows
