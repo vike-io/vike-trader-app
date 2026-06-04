@@ -894,7 +894,7 @@ def test_delete_merged_pane_removes_all_indicators(app):
 def test_resize_panes_noop_while_maximized(app):
     pc, split = _chart(app)
     a = pc.add_indicator("rsi")
-    b = pc.add_indicator("macd")
+    pc.add_indicator("macd")
     split.resize(400, 600)
     pc._maximized_pane = a.pane          # simulate a maximized pane
     sentinel = [10, 700, 50]             # deliberately uneven, not what _resize_panes would set
@@ -933,7 +933,7 @@ def test_maximize_gives_dominant_share_with_price_floor(app):
 def test_restore_preserves_user_dragged_sizes(app):
     pc, split = _chart(app)
     a = pc.add_indicator("rsi")
-    b = pc.add_indicator("macd")
+    pc.add_indicator("macd")
     split.resize(400, 1000)
     user = [600, 250, 150]
     split.setSizes(user)
@@ -948,7 +948,7 @@ def test_restore_preserves_user_dragged_sizes(app):
 def test_delete_maximized_pane_clears_lock(app):
     pc, split = _chart(app)
     a = pc.add_indicator("rsi")
-    b = pc.add_indicator("macd")
+    pc.add_indicator("macd")
     pc._toggle_maximize_pane(a.pane)
     assert pc._maximized_pane is a.pane
     pc._delete_pane(a.pane)
@@ -959,7 +959,7 @@ def test_delete_maximized_pane_clears_lock(app):
 def test_splitter_drag_clears_maximize_lock(app):
     pc, split = _chart(app)
     a = pc.add_indicator("rsi")
-    b = pc.add_indicator("macd")
+    pc.add_indicator("macd")
     pc._toggle_maximize_pane(a.pane)
     assert pc._maximized_pane is a.pane
     split.splitterMoved.emit(0, 1)              # a manual drag of a handle
@@ -996,3 +996,55 @@ def test_studio_instance_pane_toolbar_parity(app):
     b.pane.paneDeleteRequested.emit(b.pane)      # routed to pc_b._delete_pane
     assert b.uid not in pc_b._indicators and split_b.count() == 1
     assert a.uid in pc_a._indicators             # unaffected
+
+
+# --- Fix A: grip drag-reorder must refresh toolbar enabled-states ----------------------------
+def test_drag_reorder_refreshes_toolbar_state(app):
+    """_drag_pane must call _refresh_pane_toolbars so enabled-states reflect the new order."""
+    pc, split = _chart(app)
+    pc.add_indicator("rsi")       # pane index 1 (visual 0)
+    b = pc.add_indicator("macd")  # pane index 2 (visual 1)
+    # drag bottom pane (b) far above -> b becomes visual index 0, a becomes visual index 1
+    pc._drag_pane(b.pane, -100000)
+    panes = pc._panes_in_visual_order()
+    top_pane = panes[0]   # b.pane is now at the top
+    bottom_pane = panes[-1]  # a.pane is now at the bottom
+    # top pane: move-up must be disabled (nothing above it)
+    assert not top_pane._toolbar._up.isEnabled(), "top pane move-up should be disabled after drag"
+    # bottom pane: move-down must be disabled (nothing below it)
+    assert not bottom_pane._toolbar._down.isEnabled(), "bottom pane move-down should be disabled after drag"
+
+
+# --- Fix B: grip drag-reorder while maximized must exit maximize ----------------------------
+def test_drag_reorder_clears_maximize_lock(app):
+    """_drag_pane must clear the maximize lock (like _on_splitter_moved) when it reorders."""
+    pc, split = _chart(app)
+    pc.add_indicator("rsi")       # pane index 1
+    b = pc.add_indicator("macd")  # pane index 2
+    # maximize one pane
+    pc._toggle_maximize_pane(b.pane)
+    assert pc._maximized_pane is b.pane
+    # perform a grip drag-reorder (b moves up, swapping with a)
+    pc._drag_pane(b.pane, -100000)
+    # maximize lock must have been cleared
+    assert pc._maximized_pane is None, "_drag_pane must clear _maximized_pane (exit maximize)"
+    assert not b.pane._toolbar._max.toolTip() == "Restore pane", \
+        "dragged pane toolbar should no longer show Restore glyph"
+
+
+# --- Minor #5: 120 ms re-check branch keeps toolbar visible when cursor is still inside ------
+def test_toolbar_maybe_hide_rechecks_cursor(app):
+    """_maybe_hide_toolbar hides only when cursor is outside; stays visible when inside."""
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    pane = ind.pane
+    pane.resize(400, 120)
+    pane._toolbar.show()
+    # monkeypatch: cursor is inside -> _maybe_hide_toolbar must NOT hide
+    pane._cursor_in_rect = lambda: True
+    pane._maybe_hide_toolbar()
+    assert not pane._toolbar.isHidden(), "toolbar must stay visible when cursor is inside"
+    # now cursor leaves -> _maybe_hide_toolbar must hide
+    pane._cursor_in_rect = lambda: False
+    pane._maybe_hide_toolbar()
+    assert pane._toolbar.isHidden(), "toolbar must hide when cursor is outside"

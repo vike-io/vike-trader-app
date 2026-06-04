@@ -1097,6 +1097,10 @@ class OscillatorPane(pg.PlotWidget):
         if tb is None:
             return
         tb.adjustSize()
+        # getAxis("right").width() here is the shared axis width equalised across all panes by
+        # _sync_axis_width(); it is only valid after a prior layout pass (_align_panes /
+        # show_upto / resizeEvent), which is why toolbar positioning is re-tucked from those
+        # call sites rather than being a one-shot operation.
         axis_w = int(self.getAxis("right").width()) if self.getAxis("right").isVisible() else 0
         x = self.width() - axis_w - tb.width() - 4
         tb.move(max(0, x), 3)
@@ -1562,17 +1566,31 @@ class PriceChart(pg.PlotWidget):
             up = host.widget(cur - 1)
             ctr = up.mapToGlobal(QtCore.QPoint(0, up.height() // 2)).y()
             if global_y < ctr:
+                # exit maximize before reordering so _resize_panes can re-lay-out freely
+                if self._maximized_pane is not None:
+                    prev_max = self._maximized_pane
+                    self._maximized_pane = None
+                    self._saved_sizes = None
+                    prev_max.set_maximized(False)
                 host.insertWidget(cur - 1, pane)
                 self._resize_panes()
                 self._align_panes()
+                self._refresh_pane_toolbars()
                 return
         if cur < host.count() - 1:  # try to move below the lower neighbour
             down = host.widget(cur + 1)
             ctr = down.mapToGlobal(QtCore.QPoint(0, down.height() // 2)).y()
             if global_y > ctr:
+                # exit maximize before reordering so _resize_panes can re-lay-out freely
+                if self._maximized_pane is not None:
+                    prev_max = self._maximized_pane
+                    self._maximized_pane = None
+                    self._saved_sizes = None
+                    prev_max.set_maximized(False)
                 host.insertWidget(cur + 1, pane)
                 self._resize_panes()
                 self._align_panes()
+                self._refresh_pane_toolbars()
 
     def _next_z(self) -> float:
         self._z_top += 1.0
@@ -1852,8 +1870,8 @@ class PriceChart(pg.PlotWidget):
         """Common tail for a toolbar-driven reorder: resize, re-tag toolbars, and realign the
         shared axis + bottom-time axis to the new lowest pane (Phase 1)."""
         self._resize_panes()
-        self._refresh_pane_toolbars()
         self._align_panes()
+        self._refresh_pane_toolbars()
 
     def _delete_pane(self, pane):
         """Delete a whole pane via its toolbar: remove every indicator it hosts (the last
