@@ -131,7 +131,8 @@ class PortfolioEngine:
                  slippage: float = 0.0, maker_fee: float | None = None,
                  taker_fee: float | None = None, multiplier: float = 1.0,
                  leverage: float | None = None, maint_margin: float = 0.0,
-                 cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None):
+                 cash_gate: bool = False, active_mask: dict[str, list[bool]] | None = None,
+                 timeframes: list[str] | None = None):
         self.symbols = list(bars_by_symbol)
         self.bars = bars_by_symbol
         lengths = {len(v) for v in bars_by_symbol.values()}
@@ -163,6 +164,17 @@ class PortfolioEngine:
         self._price: dict[str, float] = {
             s: bars_by_symbol[s][0].open if self.n else 0.0 for s in self.symbols
         }
+        # Per-symbol higher-TF aggregates: symbol -> tf -> (target_ms, [coarse bars]).
+        # Empty when no timeframes configured (opt-in — no change to existing behaviour).
+        from .timeframe import parse_timeframe, resample
+        self._tf: dict[str, dict[str, tuple[int, list]]] = {}
+        for s in self.symbols:
+            self._tf[s] = {}
+            for tf in timeframes or []:
+                ms = parse_timeframe(tf)
+                self._tf[s][tf] = (ms, resample(self.bars[s], ms))
+        # Current step timestamp (shared across all symbols — they share an aligned timeline).
+        self._now = self.bars[self.symbols[0]][0].ts if (self.symbols and self.n) else 0
         strategy._engine = self
 
     # --- membership (dynamic DataSet) ---
@@ -262,12 +274,36 @@ class PortfolioEngine:
     def cancel_all(self, symbol: str) -> None:
         self._pending[symbol] = []
 
+    # --- higher-TF reads (mirror BacktestEngine, per symbol) ---
+    def bars_for(self, symbol: str, tf: str):
+        """Completed higher-TF bars for ``symbol`` visible at the current step (no look-ahead)."""
+        ms, coarse = self._tf[symbol][tf]
+        window_start = self._now - self._now % ms
+        return [b for b in coarse if b.ts < window_start]
+
+    def forming_for(self, symbol: str, tf: str):
+        """The still-building coarse bar for ``tf`` / ``symbol`` from base bars seen so far, or None."""
+        ms, _ = self._tf[symbol][tf]
+        window_start = self._now - self._now % ms
+        window = [b for b in self.bars[symbol] if window_start <= b.ts <= self._now]
+        if not window:
+            return None
+        return Bar(
+            ts=window_start,
+            open=window[0].open,
+            high=max(b.high for b in window),
+            low=min(b.low for b in window),
+            close=window[-1].close,
+            volume=sum(b.volume for b in window),
+        )
+
     # --- run loop ---
     def run(self) -> PortfolioResult:
         equity_curve: list[float] = []
         for i in range(self.n):
             self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
+            self._now = cur[self.symbols[0]].ts if self.symbols else 0  # shared aligned timestamp
             if self.cash_gate:
                 self._fill_step_gated(cur)  # cross-symbol shared-cash priority + drop gate
             else:

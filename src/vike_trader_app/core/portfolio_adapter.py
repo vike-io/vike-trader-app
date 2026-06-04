@@ -2,9 +2,9 @@
 
 Runs one copy of a single-symbol ``Strategy`` per symbol; each copy's order calls are forwarded
 to one ``PortfolioEngine`` (one cash account, next-open fills, per-symbol PnL). The single-symbol
-engine is not touched. Resting orders (limit/stop/trailing) are forwarded to the shared engine and
-evaluated bar-by-bar via ``order_fill_price``. Multi-timeframe (bars_for/forming_for) is still
-unsupported in portfolio mode — those raise NotImplementedError.
+engine is not touched. Resting orders (limit/stop/trailing) and multi-timeframe reads
+(bars_for/forming_for) are forwarded to the shared engine. Multi-timeframe requires
+``timeframes=["5m", ...]`` on ``TesterConfig`` (opt-in; omitting it leaves behaviour unchanged).
 """
 
 from .model import Bar
@@ -100,11 +100,12 @@ class SymbolEngineShim:
     def cancel_all(self) -> None:
         self._engine.cancel_all(self._symbol)
 
-    # --- unsupported in portfolio mode (fail loudly) ---
-    def _unsupported(self, *_a, **_k):
-        raise NotImplementedError("resting/multi-timeframe orders are not supported in portfolio mode yet")
+    # --- multi-timeframe: forward to the shared engine (requires timeframes= on PortfolioEngine) ---
+    def bars_for(self, tf: str):
+        return self._engine.bars_for(self._symbol, tf)
 
-    bars_for = forming_for = _unsupported   # multi-timeframe still unsupported in portfolio mode
+    def forming_for(self, tf: str):
+        return self._engine.forming_for(self._symbol, tf)
 
     # --- helpers ---
     def _can_open(self) -> bool:
@@ -187,7 +188,8 @@ class MultiSymbolStrategyRunner:
                                  slippage=self.config.slippage, maker_fee=self.config.maker_fee,
                                  taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
                                  leverage=self.config.leverage, maint_margin=self.config.maint_margin,
-                                 cash_gate=self.config.cash_gate, active_mask=active_mask)
+                                 cash_gate=self.config.cash_gate, active_mask=active_mask,
+                                 timeframes=self.config.timeframes)
         self._engine = engine
         return engine.run()
 
