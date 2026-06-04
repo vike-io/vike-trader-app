@@ -382,3 +382,187 @@ def test_by_symbol_tab_has_6_columns_with_maxdd_and_sharpe(app):
             sharpe_text = tbl.item(r, 5).text()
             assert maxdd_text != "—", f"Max DD for {sym} should be computed, got '—'"
             assert sharpe_text != "—", f"Sharpe for {sym} should be computed, got '—'"
+
+
+# ---------------------------------------------------------------------------
+# Portfolio-optimize routing tests
+# ---------------------------------------------------------------------------
+
+
+def _portfolio_bars(n=130):
+    """Two symbols with >=120 bars each for the portfolio walk-forward test."""
+    import math
+    return {
+        "AAA": [Bar(ts=i * 86_400_000,
+                    open=100 + 10 * math.sin(i / 8.0),
+                    high=102 + 10 * math.sin(i / 8.0),
+                    low=98 + 10 * math.sin(i / 8.0),
+                    close=100 + 10 * math.sin(i / 8.0) + i * 0.04)
+                for i in range(n)],
+        "BBB": [Bar(ts=i * 86_400_000,
+                    open=50 + 5 * math.sin(i / 6.0),
+                    high=52 + 5 * math.sin(i / 6.0),
+                    low=48 + 5 * math.sin(i / 6.0),
+                    close=50 + 5 * math.sin(i / 6.0) + i * 0.02)
+                for i in range(n)],
+    }
+
+
+def test_show_portfolio_report_enters_portfolio_mode(app):
+    """show_portfolio_report with bars_by_symbol stashes portfolio state."""
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+    from vike_trader_app.core.strategy import Strategy
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    bbs = {"A": [Bar(ts=i, open=10.0, high=10, low=10, close=10.0 + i) for i in range(5)]}
+    report = MultiSymbolStrategyRunner(BuyHold, bbs, TesterConfig(cash=1000.0)).report()
+    tab = StudioTab()
+    assert tab._portfolio_bars is None  # initially not in portfolio mode
+    tab.show_portfolio_report(report, "MySet", bars_by_symbol=bbs, ranges=None)
+    assert tab._portfolio_bars is bbs
+    assert tab._portfolio_name == "MySet"
+    assert tab._portfolio_ranges is None
+
+
+def test_show_portfolio_report_without_bars_does_not_enter_portfolio_mode(app):
+    """show_portfolio_report without bars_by_symbol leaves _portfolio_bars as None."""
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+    from vike_trader_app.core.strategy import Strategy
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    bbs = {"A": [Bar(ts=i, open=10.0, high=10, low=10, close=10.0 + i) for i in range(5)]}
+    report = MultiSymbolStrategyRunner(BuyHold, bbs, TesterConfig(cash=1000.0)).report()
+    tab = StudioTab()
+    tab.show_portfolio_report(report, "X")  # no bars_by_symbol
+    assert tab._portfolio_bars is None      # did not enter portfolio mode
+
+
+def test_run_code_exits_portfolio_mode(app):
+    """run_code (single-symbol) clears _portfolio_bars regardless of prior portfolio state."""
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+    from vike_trader_app.core.strategy import Strategy
+
+    class BuyHold(Strategy):
+        def on_bar(self, bar):
+            if self.position.size == 0:
+                self.buy(1.0)
+
+    bbs = {"A": [Bar(ts=i, open=10.0, high=10, low=10, close=10.0 + i) for i in range(5)]}
+    report = MultiSymbolStrategyRunner(BuyHold, bbs, TesterConfig(cash=1000.0)).report()
+
+    tab = StudioTab()
+    tab.set_bars(_bars())
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(_GOOD)
+    # Put tab into portfolio mode
+    tab.show_portfolio_report(report, "DS", bars_by_symbol=bbs)
+    assert tab._portfolio_bars is not None
+    # Single-symbol run should exit portfolio mode
+    tab.run_code()
+    assert tab._portfolio_bars is None
+
+
+def test_optimize_routes_to_portfolio_path(app, monkeypatch):
+    """When _portfolio_bars is set, _optimize uses PortfolioStrategyTester (verified via monkeypatch)."""
+    import math
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+
+    called_with = {}
+
+    import vike_trader_app.tester.portfolio_tester as pt_mod
+
+    original_cls = pt_mod.PortfolioStrategyTester
+
+    class _Spy(original_cls):
+        def walk_forward(self, *args, **kwargs):
+            called_with["called"] = True
+            return super().walk_forward(*args, **kwargs)
+
+    monkeypatch.setattr(pt_mod, "PortfolioStrategyTester", _Spy)
+
+    # Use a known-good template that has PARAM_GRID + make (and passes the loader validator)
+    ma = next(t for t in TEMPLATES if "MaCrossover" in t.code)
+    bbs = _portfolio_bars(130)
+
+    tab = StudioTab()
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(ma.code)
+    tab._portfolio_bars = bbs
+    tab._portfolio_ranges = None
+    tab._portfolio_name = "TestDS"
+    tab._optimize()
+
+    assert called_with.get("called"), "PortfolioStrategyTester.walk_forward was not called"
+    assert tab.results.last_report is not None
+    v = tab.results.last_report.verdict
+    assert v is not None and v.level in ("Low", "Medium", "High")
+
+
+def test_optimize_portfolio_result_has_verdict(app):
+    """The report stored after a portfolio optimize carries a WF overfit verdict."""
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+
+    ma = next(t for t in TEMPLATES if "MaCrossover" in t.code)
+    bbs = _portfolio_bars(130)
+
+    tab = StudioTab()
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(ma.code)
+    tab._portfolio_bars = bbs
+    tab._portfolio_ranges = None
+    tab._portfolio_name = "TestDS2"
+    tab._optimize()
+    assert tab.results.last_report is not None
+    assert tab.results.last_report.verdict is not None
+
+
+def test_optimize_single_symbol_path_unchanged(app):
+    """When _portfolio_bars is None, _optimize uses the single-symbol StrategyTester path."""
+    import math
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+
+    bars = [Bar(ts=i * 60_000, open=100 + 10 * math.sin(i / 9.0),
+                high=102 + 10 * math.sin(i / 9.0), low=98 + 10 * math.sin(i / 9.0),
+                close=100 + 10 * math.sin(i / 9.0) + i * 0.04) for i in range(260)]
+    ma = next(t for t in TEMPLATES if "MaCrossover" in t.code)
+    tab = StudioTab()
+    tab.set_bars(bars)
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(ma.code)
+    assert tab._portfolio_bars is None   # confirm not in portfolio mode
+    tab._optimize()
+    assert tab.results.last_report is not None
+    assert tab.results.last_report.verdict is not None
+
+
+def test_optimize_portfolio_too_few_bars_shows_toast(app):
+    """Portfolio optimize with <120 bars per symbol shows a toast instead of running."""
+    from vike_trader_app.analysis.strategy_templates import TEMPLATES
+
+    # Only 10 bars per symbol - well below the 120-bar minimum
+    bbs = {
+        "A": [Bar(ts=i * 86_400_000, open=10.0, high=10, low=10, close=10.0 + i) for i in range(10)],
+        "B": [Bar(ts=i * 86_400_000, open=5.0, high=5, low=5, close=5.0 + i) for i in range(10)],
+    }
+    ma = next(t for t in TEMPLATES if "MaCrossover" in t.code)
+    tab = StudioTab()
+    tab.set_config(TesterConfig(taker_fee=0.0))
+    tab.set_text(ma.code)
+    tab._portfolio_bars = bbs
+    tab._portfolio_name = "SmallDS"
+    runs_before = len(tab.results._runs)
+    tab._optimize()
+    # A toast was shown but no run recorded
+    assert len(tab.results._runs) == runs_before
+    assert "120" in tab.results._status.text()  # the "need >=120 bars" toast text was set

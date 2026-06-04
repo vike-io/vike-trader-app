@@ -1047,7 +1047,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.studio.results.show_error(f"Portfolio test failed: {exc}")
             self.tabs.setCurrentWidget(self.studio)
             return
-        self.studio.show_portfolio_report(report, dataset.name)
+        self.studio.show_portfolio_report(report, dataset.name,
+                                          bars_by_symbol=bars_by_symbol, ranges=ranges)
         self.tabs.setCurrentWidget(self.studio)
 
     # --- data / strategy loading ---
