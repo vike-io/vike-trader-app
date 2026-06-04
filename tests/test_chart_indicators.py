@@ -476,7 +476,7 @@ def test_sync_axis_width_no_recursion(app):
     assert calls
 
 
-def test_oscillator_pane_has_hidden_bottom_time_axis(app):
+def test_oscillator_pane_bottom_axis_pane_owned(app):
     pc, _ = _chart(app)
     ind = pc.add_indicator("rsi")
     pane = ind.pane

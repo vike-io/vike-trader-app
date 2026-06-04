@@ -544,6 +544,13 @@ class _IndicatorSettings(dropdowns.PopupCard):
         self.accept()
 
 
+def _mono_tick_font() -> QtGui.QFont:
+    """The 12px monospace font used for chart axis tick labels."""
+    f = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
+    f.setPixelSize(12)
+    return f
+
+
 def _eye_icon(open_: bool) -> QtGui.QIcon:
     """A small eye (open) / eye-with-slash (hidden) icon for the legend's hide toggle."""
     s, dpr = 18, 2
@@ -858,9 +865,7 @@ class OscillatorPane(pg.PlotWidget):
         _bottom.setTextPen(theme.TEXT3)
         _bottom.setPen(_transparent)
         _bottom.setTickPen(pg.mkPen(theme.BORDER))
-        _tick_font = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
-        _tick_font.setPixelSize(12)
-        _bottom.setStyle(tickLength=0, tickFont=_tick_font)
+        _bottom.setStyle(tickLength=0, tickFont=_mono_tick_font())
         # Splitter floor so a pane never collapses below a readable height, independent of
         # _resize_panes (Phase 2 disables that while a pane is maximized).
         self.setMinimumHeight(64)
@@ -992,12 +997,10 @@ class PriceChart(pg.PlotWidget):
         # TradingView look: NO hard spine line by the labels — the axis pen is transparent,
         # and the grid is drawn via the (visible) tick pen, so only labels + gridlines show.
         _transparent = pg.mkPen(QtGui.QColor(0, 0, 0, 0))
-        _tick_font = QtGui.QFont(theme.FONT_MONO.split(",")[0].strip('"'))
-        _tick_font.setPixelSize(12)                          # readable axis labels (~TV's 11px)
         for _ax in ("right", "bottom"):
             self.getAxis(_ax).setPen(_transparent)          # no spine
             self.getAxis(_ax).setTickPen(pg.mkPen(theme.BORDER))  # gridline colour
-            self.getAxis(_ax).setStyle(tickLength=0, tickFont=_tick_font)
+            self.getAxis(_ax).setStyle(tickLength=0, tickFont=_mono_tick_font())
         self.showGrid(x=True, y=True, alpha=_GRID)
         self.hideButtons()  # hide pyqtgraph's built-in auto-range "A" button (we have our own "Auto")
         self.addLegend(offset=(10, 30), labelTextColor=theme.TEXT2)
@@ -1232,8 +1235,6 @@ class PriceChart(pg.PlotWidget):
                     self._add_marker(xi, t.exit_price, below=True, symbol="arrow_up",
                                      color=_EXIT_C, text="Buy")
                 self._conn.append((ei, t.entry_price, xi, t.exit_price))
-        for pane in self._osc_panes():  # re-feed each pane's time axis with the new bars
-            pane.set_bars(bars)
         self.show_upto(len(bars) - 1)
         self._align_panes()
 
@@ -1273,8 +1274,6 @@ class PriceChart(pg.PlotWidget):
                         [], [], pen=pg.mkPen(color, width=1), name=label
                     )
             self._overlays = {**self._overlays, **overlays}
-        for pane in self._osc_panes():  # extend each pane's time axis to the live edge
-            pane.set_bars(bars)
         if repaint:
             self.show_upto(len(bars) - 1)
         self._align_panes()
@@ -1371,7 +1370,6 @@ class PriceChart(pg.PlotWidget):
         self._pane_host.addWidget(pane)
         pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
         self._resize_panes()
-        self._align_panes()
         return pane
 
     def _drag_pane(self, pane, global_y: int):
@@ -1647,7 +1645,6 @@ class PriceChart(pg.PlotWidget):
         ind.kind = "oscillator"
         ind.pane = target_pane             # _render adds it into the existing pane
         self._render(ind)
-        self._align_panes()                # pane count changed -> bottom axis must follow
 
     def _panes_in_visual_order(self):
         """Oscillator panes in top-to-bottom splitter order (NOT dict-insertion order).
