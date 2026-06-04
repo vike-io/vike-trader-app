@@ -1048,3 +1048,23 @@ def test_toolbar_maybe_hide_rechecks_cursor(app):
     pane._cursor_in_rect = lambda: False
     pane._maybe_hide_toolbar()
     assert pane._toolbar.isHidden(), "toolbar must hide when cursor is outside"
+
+
+# --- PHASE 3: settings dialog parity --------------------------------------------------------
+def test_fresh_add_has_default_widths_and_styles(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("macd")  # 3 outputs
+    n = len(ind.spec.outputs)
+    assert ind.widths == [1] * n
+    assert ind.styles == ["solid"] * n
+
+
+def test_indicator_spec_defaults_single_source(app):
+    from vike_trader_app.ui.chart import _Indicator
+    from vike_trader_app.core.indicators import base as _base
+    spec = _base.get("macd")
+    params, colors, widths, styles = _Indicator.spec_defaults(spec)
+    assert params == {p.name: p.default for p in spec.params}
+    assert len(colors) == len(spec.outputs)
+    assert widths == [1] * len(spec.outputs)
+    assert styles == ["solid"] * len(spec.outputs)

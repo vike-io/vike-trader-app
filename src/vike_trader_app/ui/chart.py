@@ -416,11 +416,24 @@ class _Indicator:
         self.own_scale = False           # overlay pinned to its own (independent) right scale
         self.benchmark = None            # aligned 2nd-symbol closes (pairs only)
         self.colors = list(_OVERLAY_COLORS[: max(1, len(spec.outputs))])  # per-output colour
+        self.widths = [1] * max(1, len(spec.outputs))    # per-output line width (px)
+        self.styles = ["solid"] * max(1, len(spec.outputs))  # per-output line style name
         self.series = {}                 # computed: output label -> full series
         # render handles (set when rendered):
         self.curves = {}                 # overlay/oscillator: output label -> PlotDataItem
         self.pane = None                 # OscillatorPane (oscillator/pairs)
         self.scatter = None              # pattern marker ScatterPlotItem
+
+    @staticmethod
+    def spec_defaults(spec):
+        """Single source of truth for the Defaults button and add_indicator seeding:
+        (params, colors, widths, styles) at the registry's defaults."""
+        n = max(1, len(spec.outputs))
+        params = {p.name: p.default for p in spec.params}
+        colors = list(_OVERLAY_COLORS[:n])
+        widths = [1] * n
+        styles = ["solid"] * n
+        return params, colors, widths, styles
 
     @property
     def label(self) -> str:
