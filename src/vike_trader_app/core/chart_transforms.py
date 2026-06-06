@@ -257,7 +257,16 @@ def point_and_figure(bars: list[Bar], box_size: float | None = None, reversal: i
     only on a ``reversal``-box counter-move.
     """
     bars = _finite(bars)  # math.floor(NaN) raises -> drop non-finite closes up front
-    box = _resolve_box(bars, box_size)
+    if box_size and box_size > 0:
+        box = box_size
+    elif bars:
+        # P&F wants a COARSER box than ATR (one column per reversal): on a long intraday series a
+        # tiny ATR box smears into thousands of 1-px columns. Floor the box at ~1/50 of the price
+        # range so the X/O grid stays readable while still adapting to the instrument.
+        rng = max(b.high for b in bars) - min(b.low for b in bars)
+        box = max(auto_box(bars), rng / 50.0)
+    else:
+        box = 0.0
     if not bars or box <= 0:
         return PnFResult([], [], 0.0)
 
