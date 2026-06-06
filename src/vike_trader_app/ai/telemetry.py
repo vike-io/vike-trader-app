@@ -17,6 +17,8 @@ Enable via environment (the app publisher sets these when shipping):
     VIKE_TELEMETRY=1                  # turn on (writes a local JSONL log)
     VIKE_TELEMETRY_URL=https://...    # also POST each event to this endpoint
     VIKE_TELEMETRY_DIR=storage/telemetry   # where the local log + client id live
+    VIKE_TELEMETRY_TOKEN=...          # shared secret sent as the ``x-vike-token`` header
+                                      # (must match the receiver's VIKE_TELEMETRY_TOKEN)
 """
 
 from __future__ import annotations
@@ -47,6 +49,12 @@ def enabled() -> bool:
 def _endpoint() -> str | None:
     url = os.environ.get("VIKE_TELEMETRY_URL", "").strip()
     return url or None
+
+
+def _token() -> str | None:
+    """Shared secret for the receiver; sent as the ``x-vike-token`` header when set."""
+    tok = os.environ.get("VIKE_TELEMETRY_TOKEN", "").strip()
+    return tok or None
 
 
 def _client_id() -> str:
@@ -87,9 +95,11 @@ def _post(event: dict, url: str) -> None:
         import urllib.request
 
         data = json.dumps(event).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=data, headers={"Content-Type": "application/json"}, method="POST"
-        )
+        headers = {"Content-Type": "application/json"}
+        token = _token()
+        if token:
+            headers["x-vike-token"] = token
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         urllib.request.urlopen(req, timeout=3).close()
     except Exception:
         pass

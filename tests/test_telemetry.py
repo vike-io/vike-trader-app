@@ -47,6 +47,39 @@ def test_records_error_and_reraises(tmp_path, monkeypatch):
     assert ev["ok"] is False and ev["error"] == "ValueError"
 
 
+def _capture_post_headers(monkeypatch):
+    """Run telemetry._post with the network stubbed out; return the headers it built."""
+    import urllib.request
+
+    captured = {}
+
+    class _FakeReq:
+        def __init__(self, url, data=None, headers=None, method=None):
+            captured["headers"] = dict(headers or {})
+
+    class _FakeResp:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(urllib.request, "Request", _FakeReq)
+    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=0: _FakeResp())
+    telemetry._post({"ts_ms": 1, "client": "t", "tool": "x"}, "http://example.invalid/telemetry")
+    return captured.get("headers", {})
+
+
+def test_post_attaches_token_header_when_set(monkeypatch):
+    monkeypatch.setenv("VIKE_TELEMETRY_TOKEN", "s3cr3t")
+    headers = _capture_post_headers(monkeypatch)
+    assert headers.get("x-vike-token") == "s3cr3t"
+    assert headers.get("Content-Type") == "application/json"
+
+
+def test_post_omits_token_header_when_unset(monkeypatch):
+    monkeypatch.delenv("VIKE_TELEMETRY_TOKEN", raising=False)
+    headers = _capture_post_headers(monkeypatch)
+    assert "x-vike-token" not in headers
+
+
 def test_build_server_preserves_tool_schema_through_wrapper():
     srv = mcp_server.build_server()
     names = mcp_server.tool_names(srv)
