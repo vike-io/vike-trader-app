@@ -2,6 +2,8 @@
 
 from itertools import combinations
 
+import pytest
+
 from vike_trader_app.analysis.validation import (
     combinatorial_purged_splits,
     purged_kfold_indices,
@@ -24,6 +26,55 @@ def test_walk_forward_train_always_precedes_test():
         assert tr_s == 0
         assert tr_e == te_s  # no gap, no overlap
         assert te_s < te_e
+
+
+def test_walk_forward_anchored_is_default():
+    assert walk_forward_splits(10, 4) == walk_forward_splits(10, 4, mode="anchored")
+
+
+def test_walk_forward_rolling_fixed_width_windows():
+    splits = walk_forward_splits(10, 4, mode="rolling")
+    assert splits == [
+        (0, 2, 2, 4),
+        (2, 4, 4, 6),
+        (4, 6, 6, 8),
+        (6, 8, 8, 10),
+    ]
+
+
+def test_walk_forward_rejects_unknown_mode():
+    with pytest.raises(ValueError):
+        walk_forward_splits(10, 4, mode="sliding")
+
+
+def test_walk_forward_window_invariants_both_modes():
+    for n, k in [(10, 4), (100, 5), (37, 6), (60, 3), (24, 7)]:
+        chunk = n // (k + 1)
+        for mode in ("anchored", "rolling"):
+            for tr_s, tr_e, te_s, te_e in walk_forward_splits(n, k, mode=mode):
+                # ordering: 0 <= tr_s < tr_e == te_s < te_e <= n
+                assert 0 <= tr_s < tr_e
+                assert tr_e == te_s
+                assert te_s < te_e <= n
+                # train and test are disjoint, no look-ahead
+                assert set(range(tr_s, tr_e)).isdisjoint(range(te_s, te_e))
+                assert tr_e <= te_s  # all train indices < all test indices
+
+
+def test_walk_forward_rolling_train_width_is_chunk():
+    n, k = 100, 5
+    chunk = n // (k + 1)
+    splits = walk_forward_splits(n, k, mode="rolling")
+    # non-first windows have a fixed-width train of exactly one chunk
+    for tr_s, tr_e, _te_s, _te_e in splits[1:]:
+        assert tr_e - tr_s == chunk
+
+
+def test_walk_forward_anchored_train_width_grows():
+    splits = walk_forward_splits(100, 5, mode="anchored")
+    widths = [tr_e - tr_s for tr_s, tr_e, _, _ in splits]
+    assert widths == sorted(widths)
+    assert widths[0] < widths[-1]  # strictly expanding
 
 
 def test_purged_kfold_partitions_test_folds():

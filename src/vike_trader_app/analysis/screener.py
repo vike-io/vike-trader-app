@@ -8,8 +8,10 @@ the top. No look-ahead — rules read only the trailing window.
 
 from __future__ import annotations
 
+import json
 import statistics
 from dataclasses import dataclass
+from pathlib import Path
 
 _ORDER = {"long": 0, "short": 1, "neutral": 2}
 
@@ -104,12 +106,154 @@ RULES: list[ScreenRule] = [
 ]
 
 
-def screen(symbol_closes: dict, rule) -> list[ScreenRow]:
-    """Run ``rule`` (a ScreenRule or a bare fn) across ``{symbol: closes}``.
+# --- composite (multi-condition) rules ------------------------------------------------
+
+@dataclass(frozen=True)
+class Condition:
+    """One leg of a composite: a base ``ScreenRule.name`` and the required signal direction."""
+
+    rule: str                 # a base ScreenRule.name
+    direction: str = "long"   # required signal: "long" | "short" | "neutral"
+
+
+@dataclass(frozen=True)
+class CompositeRule:
+    """An AND/OR combination of base-rule conditions.
+
+    ``__call__(closes) -> (signal, value)`` where ``value`` is the count of satisfied
+    conditions. Fires (emits ``direction``) when ALL conditions hold (``combine='AND'``)
+    or ANY holds (``combine='OR'``); otherwise emits ``"neutral"``. It deliberately has no
+    ``.fn`` attribute, so ``screen`` falls back to calling the object directly.
+    """
+
+    name: str
+    description: str
+    conditions: tuple = ()
+    combine: str = "AND"
+    direction: str = "long"
+    long_low: bool = False
+
+    def __call__(self, closes):
+        satisfied = 0
+        for c in self.conditions:
+            base = rule_by_name(c.rule)
+            if base is None:
+                continue
+            sig, _ = base.fn(closes)
+            if sig == c.direction:
+                satisfied += 1
+        if self.combine.upper() == "AND":
+            fired = satisfied == len(self.conditions) and len(self.conditions) > 0
+        else:
+            fired = satisfied > 0
+        if fired:
+            return (self.direction, float(satisfied))
+        return ("neutral", float(satisfied))
+
+
+_COMPOSITES: dict[str, CompositeRule] = {}
+
+
+def register_composite(rule: CompositeRule) -> None:
+    """Add (or replace) ``rule`` in the live composite registry, keyed by name."""
+    _COMPOSITES[rule.name] = rule
+
+
+def composites() -> list[CompositeRule]:
+    """The currently registered composite rules."""
+    return list(_COMPOSITES.values())
+
+
+def rule_by_name(name: str):
+    """Resolve ``name`` to a base ``ScreenRule`` first, then a registered ``CompositeRule``.
+
+    Returns ``None`` when the name is unknown.
+    """
+    for r in RULES:
+        if r.name == name:
+            return r
+    return _COMPOSITES.get(name)
+
+
+def composite_to_dict(rule: CompositeRule) -> dict:
+    """Serialise a CompositeRule to a JSON-friendly dict."""
+    return {
+        "name": rule.name,
+        "description": rule.description,
+        "conditions": [{"rule": c.rule, "direction": c.direction} for c in rule.conditions],
+        "combine": rule.combine,
+        "direction": rule.direction,
+        "long_low": rule.long_low,
+    }
+
+
+def composite_from_dict(d: dict) -> CompositeRule:
+    """Rebuild a CompositeRule from ``composite_to_dict`` output (inverse)."""
+    conditions = tuple(
+        Condition(rule=c["rule"], direction=c.get("direction", "long"))
+        for c in d.get("conditions", [])
+    )
+    return CompositeRule(
+        name=d["name"],
+        description=d.get("description", ""),
+        conditions=conditions,
+        combine=d.get("combine", "AND"),
+        direction=d.get("direction", "long"),
+        long_low=d.get("long_low", False),
+    )
+
+
+class CompositeStore:
+    """JSON-file-backed list of CompositeRules; loading registers each into the live registry."""
+
+    def __init__(self, path: str = "storage/composites.json"):
+        self.path = Path(path)
+        self._rules: list[CompositeRule] = []
+        self.load()
+
+    def load(self) -> list[CompositeRule]:
+        self._rules = []
+        if self.path.exists():
+            try:
+                self._rules = [composite_from_dict(d)
+                               for d in json.loads(self.path.read_text(encoding="utf-8"))]
+            except (json.JSONDecodeError, TypeError, KeyError, OSError):
+                self._rules = []
+        for r in self._rules:
+            register_composite(r)
+        return list(self._rules)
+
+    def save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(
+            json.dumps([composite_to_dict(r) for r in self._rules], indent=2),
+            encoding="utf-8",
+        )
+
+    def add(self, rule: CompositeRule) -> None:
+        self._rules.append(rule)
+        register_composite(rule)
+        self.save()
+
+    def remove(self, name: str) -> None:
+        self._rules = [r for r in self._rules if r.name != name]
+        _COMPOSITES.pop(name, None)
+        self.save()
+
+    def names(self) -> list[str]:
+        return [r.name for r in self._rules]
+
+
+def screen(symbol_closes: dict, rule, *, symbol_volumes: dict | None = None,
+           min_volume: float = 0.0) -> list[ScreenRow]:
+    """Run ``rule`` (a ScreenRule, CompositeRule, or a bare fn) across ``{symbol: closes}``.
 
     Rows are grouped long, short, neutral; WITHIN each group they rank by setup STRENGTH
     (distance into the favourable tail), not raw value — so the strongest candidate is on top
     whether the rule is long-on-low (RSI/Z-score) or long-on-high (SMA-trend/ROC).
+
+    When ``symbol_volumes`` is given and ``min_volume > 0``, symbols whose mean volume falls
+    below ``min_volume`` are dropped before any rows are built; otherwise every symbol is kept.
     """
     fn = getattr(rule, "fn", rule)
     long_low = getattr(rule, "long_low", False)
@@ -117,6 +261,10 @@ def screen(symbol_closes: dict, rule) -> list[ScreenRow]:
     for sym, closes in symbol_closes.items():
         if not closes:
             continue
+        if symbol_volumes is not None and min_volume > 0.0:
+            vols = symbol_volumes.get(sym)
+            if not vols or statistics.fmean(vols) < min_volume:
+                continue
         signal, value = fn(closes)
         rows.append(ScreenRow(sym, signal, value, closes[-1]))
 

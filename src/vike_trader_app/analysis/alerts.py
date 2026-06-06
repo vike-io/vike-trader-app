@@ -12,6 +12,7 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from . import screener
 from .screener import RULES
 
 DEFAULT_PATH = "storage/alerts.json"
@@ -76,11 +77,12 @@ def evaluate(rules, symbol_closes: dict) -> list[AlertHit]:
     hits: list[AlertHit] = []
     for ar in rules:
         closes = symbol_closes.get(ar.symbol) or []
-        spec = _RULES_BY_NAME.get(ar.rule)
+        spec = screener.rule_by_name(ar.rule)   # resolves base rules AND registered composites
         if not closes or spec is None:
             hits.append(AlertHit(ar, False, "neutral", 0.0))
             continue
-        signal, value = spec.fn(closes)
+        fn = getattr(spec, "fn", spec)   # ScreenRule has .fn; CompositeRule is callable itself
+        signal, value = fn(closes)
         triggered = (signal != "neutral") if ar.direction == "any" else (signal == ar.direction)
         hits.append(AlertHit(ar, triggered, signal, value))
     return hits

@@ -1,5 +1,7 @@
 """Unit tests for the multi-symbol screener (pure logic)."""
 
+import pytest
+
 from vike_trader_app.analysis import screener as S
 
 
@@ -55,3 +57,194 @@ def test_long_low_rule_orders_strongest_oversold_first():
                         long_low=True)
     rows = S.screen({"LOW": [10.0], "HIGH": [40.0]}, rule)   # both long (-40, -10)
     assert [r.symbol for r in rows if r.signal == "long"] == ["LOW", "HIGH"]  # -40 (strongest) first
+
+
+# --- composite (multi-condition) rules ------------------------------------------------
+
+def _rising(n=60):
+    # RSI -> overbought -> "short"; ROC -> positive -> "long"; SMA-trend -> above -> "long"
+    return [100 + i for i in range(n)]
+
+
+def _falling(n=60):
+    # RSI -> oversold -> "long"; ROC -> negative -> "short"; SMA-trend -> below -> "short"
+    return [100 - i for i in range(n)]
+
+
+def test_composite_and_fires_only_when_all_match():
+    # both conditions long on a falling series (RSI oversold, ROC... is short, so use SMA-trend)
+    # Use a rising series: ROC long AND SMA-trend long both satisfied.
+    comp = S.CompositeRule(
+        "UP momentum",
+        "ROC long AND SMA-trend long",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("SMA(50) trend", "long")),
+        combine="AND",
+        direction="long",
+    )
+    sig, val = comp(_rising())
+    assert sig == "long"
+    assert val == 2.0          # both satisfied
+
+    # one condition fails -> neutral on AND
+    comp2 = S.CompositeRule(
+        "mismatch",
+        "ROC long AND RSI long",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("RSI(14) 30/70", "long")),
+        combine="AND",
+        direction="long",
+    )
+    sig2, val2 = comp2(_rising())   # ROC long (ok), RSI short (fail)
+    assert sig2 == "neutral"
+    assert val2 == 1.0          # one satisfied
+
+
+def test_composite_or_fires_when_any_match():
+    comp = S.CompositeRule(
+        "either",
+        "ROC long OR RSI long",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("RSI(14) 30/70", "long")),
+        combine="OR",
+        direction="long",
+    )
+    sig, val = comp(_rising())  # ROC long satisfied, RSI not
+    assert sig == "long"
+    assert val == 1.0           # exactly one satisfied
+
+    # OR with neither satisfied -> neutral
+    comp2 = S.CompositeRule(
+        "neither",
+        "ROC short OR RSI long",
+        (S.Condition("ROC(30) momentum", "short"), S.Condition("RSI(14) 30/70", "long")),
+        combine="OR",
+        direction="long",
+    )
+    sig2, val2 = comp2(_rising())   # ROC is long not short (fail); RSI short not long (fail)
+    assert sig2 == "neutral"
+    assert val2 == 0.0
+
+
+def test_composite_value_equals_count_satisfied():
+    comp = S.CompositeRule(
+        "count",
+        "",
+        (S.Condition("ROC(30) momentum", "long"),
+         S.Condition("SMA(50) trend", "long"),
+         S.Condition("RSI(14) 30/70", "long")),
+        combine="OR",
+        direction="long",
+    )
+    sig, val = comp(_rising())   # ROC long + SMA long satisfied, RSI not -> 2
+    assert sig == "long"
+    assert val == 2.0
+
+
+def test_composite_slots_into_screen_and_groups_sorts():
+    comp = S.CompositeRule(
+        "UP momentum",
+        "",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("SMA(50) trend", "long")),
+        combine="AND",
+        direction="long",
+    )
+    rows = S.screen({"UP": _rising(), "DN": _falling()}, comp)
+    sig = {r.symbol: r.signal for r in rows}
+    assert sig["UP"] == "long"
+    assert sig["DN"] == "neutral"
+    assert rows[0].signal == "long"     # longs grouped first
+
+
+def test_register_composite_and_rule_by_name():
+    # base rule resolves from RULES
+    base = S.rule_by_name("ROC(30) momentum")
+    assert isinstance(base, S.ScreenRule)
+    assert base.name == "ROC(30) momentum"
+
+    # unknown -> None
+    assert S.rule_by_name("does-not-exist") is None
+
+    comp = S.CompositeRule(
+        "regtest-composite",
+        "",
+        (S.Condition("ROC(30) momentum", "long"),),
+        combine="AND",
+        direction="long",
+    )
+    S.register_composite(comp)
+    try:
+        got = S.rule_by_name("regtest-composite")
+        assert isinstance(got, S.CompositeRule)
+        assert got.name == "regtest-composite"
+        assert comp in S.composites()
+    finally:
+        S._COMPOSITES.pop("regtest-composite", None)
+
+
+def test_composite_to_from_dict_inverse():
+    comp = S.CompositeRule(
+        "roundtrip",
+        "a description",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("RSI(14) 30/70", "short")),
+        combine="OR",
+        direction="short",
+        long_low=True,
+    )
+    d = S.composite_to_dict(comp)
+    assert isinstance(d, dict)
+    back = S.composite_from_dict(d)
+    assert back == comp
+
+
+def test_composite_store_roundtrip_and_reregister(tmp_path):
+    path = str(tmp_path / "composites.json")
+    store = S.CompositeStore(path)
+    comp = S.CompositeRule(
+        "store-composite",
+        "",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("SMA(50) trend", "long")),
+        combine="AND",
+        direction="long",
+    )
+    try:
+        store.add(comp)
+        assert "store-composite" in store.names()
+
+        # fresh store reloads + re-registers into the live registry
+        S._COMPOSITES.pop("store-composite", None)
+        store2 = S.CompositeStore(path)
+        loaded = store2.load()
+        assert any(c.name == "store-composite" for c in loaded)
+        assert S.rule_by_name("store-composite") is not None
+        assert isinstance(S.rule_by_name("store-composite"), S.CompositeRule)
+
+        store2.remove("store-composite")
+        assert "store-composite" not in store2.names()
+    finally:
+        S._COMPOSITES.pop("store-composite", None)
+
+
+# --- volume filter --------------------------------------------------------------------
+
+def test_volume_filter_drops_low_keeps_high():
+    closes = {
+        "HI": _rising(),
+        "LO": _rising(),
+    }
+    volumes = {
+        "HI": [1000.0] * 60,
+        "LO": [10.0] * 60,
+    }
+    rows = S.screen(closes, S._rule_roc(30), symbol_volumes=volumes, min_volume=100.0)
+    syms = [r.symbol for r in rows]
+    assert "HI" in syms
+    assert "LO" not in syms
+
+
+def test_volume_filter_noop_when_omitted():
+    closes = {"A": _rising(), "B": _rising()}
+    volumes = {"A": [10.0] * 60, "B": [10.0] * 60}
+    # no min_volume -> nothing dropped
+    rows = S.screen(closes, S._rule_roc(30))
+    assert {r.symbol for r in rows} == {"A", "B"}
+    # volumes given but min_volume 0 -> no-op
+    rows2 = S.screen(closes, S._rule_roc(30), symbol_volumes=volumes, min_volume=0.0)
+    assert {r.symbol for r in rows2} == {"A", "B"}
