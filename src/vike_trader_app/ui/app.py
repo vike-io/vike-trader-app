@@ -999,16 +999,11 @@ class MainWindow(QtWidgets.QMainWindow):
         No key -> the Studio's AI chat stays in the graceful 'No AI client configured' mode
         (and we avoid importing anthropic on every launch).
         """
-        import os
-
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            return
-        try:
-            from ..ai.llm import ClaudeClient
-
-            self.studio.set_agent_client(ClaudeClient())
-        except Exception:  # noqa: BLE001 - missing [ai] extra / bad key -> stay in no-AI mode
-            pass
+        # The Studio AI panel now owns LLM-client construction: a provider toggle (Claude / Cerebras)
+        # plus a BYO Cerebras key, persisted in QSettings (Claude still uses ANTHROPIC_API_KEY). It
+        # builds the client on construction and only imports a provider SDK when a key is present, so
+        # there is nothing to wire here at startup.
+        return
 
     # --- Data tab → Studio ---
     def _on_test_symbol(self, symbol, bars) -> None:
