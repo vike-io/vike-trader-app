@@ -1206,6 +1206,9 @@ class ChatPanel(QtWidgets.QWidget):
     """Empty-state (heading + example cards) → chat log, plus prompt input + AI button."""
 
     promptSubmitted = QtCore.Signal(str)
+    providerChanged = QtCore.Signal(str)
+    cerebrasKeyChanged = QtCore.Signal(str)
+    connectRequested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
@@ -1214,6 +1217,41 @@ class ChatPanel(QtWidgets.QWidget):
         # content-to-content distance equals _GAP (a card inset here would double up with the handle).
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(_GAP)
+
+        # --- AI provider toggle + "Connect to Claude" (subscription path) ---
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(_GAP)
+        self._provider = SegmentedControl(["Claude", "Cerebras"])
+        self._provider.valueChanged.connect(self._on_provider)
+        header.addWidget(self._provider)
+        header.addStretch(1)
+        self._btn_connect = QtWidgets.QPushButton("🤖 Connect")
+        self._btn_connect.setToolTip(
+            "Wire your local Claude (Desktop / Code) to this app over MCP — drive backtests on "
+            "your own Claude Pro/Max subscription."
+        )
+        self._btn_connect.clicked.connect(self.connectRequested.emit)
+        header.addWidget(self._btn_connect)
+        root.addLayout(header)
+
+        # --- Cerebras API-key field (hidden unless Cerebras is selected) ---
+        self._key_row = QtWidgets.QWidget()
+        kr = QtWidgets.QHBoxLayout(self._key_row)
+        kr.setContentsMargins(0, 0, 0, 0)
+        kr.setSpacing(_GAP)
+        klabel = QtWidgets.QLabel("Cerebras key")
+        klabel.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;")
+        kr.addWidget(klabel)
+        self._key_input = QtWidgets.QLineEdit()
+        self._key_input.setEchoMode(QtWidgets.QLineEdit.Password)
+        self._key_input.setPlaceholderText("csk-… (stored locally on this machine)")
+        self._key_input.editingFinished.connect(
+            lambda: self.cerebrasKeyChanged.emit(self._key_input.text().strip())
+        )
+        kr.addWidget(self._key_input, 1)
+        self._key_row.hide()
+        root.addWidget(self._key_row)
 
         # --- empty state (shown until the first message) ---
         self._empty = self._build_empty()
@@ -1300,6 +1338,26 @@ class ChatPanel(QtWidgets.QWidget):
         """Disable the prompt + Ask button while an AI request is in flight."""
         self._btn_ask.setEnabled(not busy)
         self._prompt_input.setEnabled(not busy)
+
+    # --- AI provider selection ---
+
+    def _on_provider(self, value: str) -> None:
+        self._key_row.setVisible(value.lower() == "cerebras")
+        self.providerChanged.emit(value.lower())
+
+    def provider(self) -> str:
+        return (self._provider.value() or "claude").lower()
+
+    def set_provider(self, name: str) -> None:
+        label = "Cerebras" if str(name).lower() == "cerebras" else "Claude"
+        self._provider.setValue(label)
+        self._key_row.setVisible(label == "Cerebras")
+
+    def cerebras_key(self) -> str:
+        return self._key_input.text().strip()
+
+    def set_cerebras_key(self, key: str) -> None:
+        self._key_input.setText(key or "")
 
 
 # ---------------------------------------------------------------------------
@@ -1867,6 +1925,10 @@ class StudioTab(QtWidgets.QWidget):
         self._vsplit.splitterMoved.connect(self._on_splitter_moved)
 
         self.chat.promptSubmitted.connect(self._on_prompt)
+        self.chat.providerChanged.connect(self._on_ai_provider_changed)
+        self.chat.cerebrasKeyChanged.connect(self._on_cerebras_key_changed)
+        self.chat.connectRequested.connect(self._open_connect_dialog)
+        self._load_ai_settings()
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # noqa: N802 - Qt override
         """Re-assert the 44:56 vertical split once the tab first gets real geometry — the
@@ -2221,6 +2283,91 @@ class StudioTab(QtWidgets.QWidget):
             res_lbl = dlg.resolution.value() or "base"
             self.results.toast(
                 f"Settings · capital ${cap:,.0f} · {res_lbl} · range set — press Run"
+            )
+
+    # --- AI provider / connect-to-Claude ---
+
+    def _ai_settings(self):
+        return QtCore.QSettings("vike-trader", "vike-trader-app")
+
+    def _load_ai_settings(self) -> None:
+        """Restore the saved provider + Cerebras key and build the initial AI client (silently)."""
+        s = self._ai_settings()
+        self.chat.set_provider(str(s.value("ai/provider", "claude")))
+        self.chat.set_cerebras_key(str(s.value("ai/cerebras_key", "") or ""))
+        self._rebuild_agent_client()
+
+    def _on_ai_provider_changed(self, provider: str) -> None:
+        self._ai_settings().setValue("ai/provider", provider)
+        self._rebuild_agent_client(announce=True)
+
+    def _on_cerebras_key_changed(self, key: str) -> None:
+        self._ai_settings().setValue("ai/cerebras_key", key)
+        if self.chat.provider() == "cerebras":
+            self._rebuild_agent_client(announce=True)
+
+    def _rebuild_agent_client(self, *, announce: bool = False) -> None:
+        """Construct the LLM client for the selected provider (BYO key); None -> graceful no-AI."""
+        import os
+
+        provider = self.chat.provider()
+        client = None
+        note = ""
+        try:
+            if provider == "cerebras":
+                key = self.chat.cerebras_key() or os.environ.get("CEREBRAS_API_KEY")
+                if key:
+                    from vike_trader_app.ai.llm import CerebrasClient
+                    client = CerebrasClient(api_key=key)
+                else:
+                    note = "Enter your Cerebras API key above to enable the AI assistant."
+            elif os.environ.get("ANTHROPIC_API_KEY"):
+                from vike_trader_app.ai.llm import ClaudeClient
+                client = ClaudeClient()
+            else:
+                note = "Set ANTHROPIC_API_KEY to use Claude, or switch to Cerebras and paste a key."
+        except Exception as exc:  # noqa: BLE001 - missing extra / bad config -> graceful no-AI mode
+            client, note = None, f"AI unavailable: {exc}"
+        self._agent_client = client
+        if announce and note:
+            self.chat.append_message("system", note)
+        elif announce and client is not None:
+            self.chat.append_message("system", f"AI provider set to {provider.capitalize()}.")
+
+    def _open_connect_dialog(self) -> None:
+        """Write the MCP server entry into Claude Desktop's config + offer the Claude Code command."""
+        from vike_trader_app.ai import connect
+
+        try:
+            data_root = connect.default_data_root()
+            cfg_path = connect.install_into_claude_desktop(data_root)
+            cmd = connect.claude_code_command_str(data_root)
+        except Exception as exc:  # noqa: BLE001
+            QtWidgets.QMessageBox.warning(self, "Connect to Claude", f"Couldn't configure Claude: {exc}")
+            return
+        box = QtWidgets.QMessageBox(self)
+        box.setWindowTitle("Connect to Claude")
+        box.setIcon(QtWidgets.QMessageBox.Information)
+        box.setTextFormat(QtCore.Qt.RichText)
+        box.setText(
+            "Added <b>vike-trader</b> to Claude Desktop:<br>"
+            f"<span style='color:gray;font-size:11px'>{cfg_path}</span><br><br>"
+            "Restart Claude Desktop, then ask it to backtest or optimise your strategies — it runs on "
+            "<b>your own Claude Pro/Max subscription</b>.<br><br>"
+            "Prefer Claude Code? Copy the command below and run it in your terminal."
+        )
+        btn_open = box.addButton("Open Claude Desktop", QtWidgets.QMessageBox.AcceptRole)
+        btn_copy = box.addButton("Copy Claude Code command", QtWidgets.QMessageBox.ActionRole)
+        box.addButton("Close", QtWidgets.QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is btn_copy:
+            QtWidgets.QApplication.clipboard().setText(cmd)
+        elif clicked is btn_open and not connect.launch_claude_desktop():
+            QtWidgets.QMessageBox.information(
+                self, "Connect to Claude",
+                "Couldn't find Claude Desktop automatically — please open it manually. "
+                "vike-trader is already configured.",
             )
 
     # --- chat ---
