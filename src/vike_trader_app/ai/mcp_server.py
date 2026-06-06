@@ -5,7 +5,7 @@ tool is a thin wrapper over ``ai/services.py`` (the single source of truth). Req
 extra: ``pip install vike_trader_app[mcp]``.
 """
 
-from . import services
+from . import services, telemetry
 
 
 def run_sma_backtest(closes, fast: int, slow: int, fee_rate: float = 0.0) -> dict:
@@ -46,11 +46,16 @@ def compute_indicator(name: str, ohlcv: dict, params: dict | None = None) -> dic
     return services.compute_indicator(name, ohlcv, params)
 
 
-# --- strategy-class tools: the real engine surface an agent drives ---------
+# --- discovery -------------------------------------------------------------
 
 def list_cached_data(root: str = "storage/parquet") -> dict:
     """List cached (symbol, interval) datasets with bar counts + time ranges (data discovery)."""
     return services.list_cached_data(root=root)
+
+
+def list_data_sets(root: str = "storage/parquet") -> dict:
+    """List named DataSets (symbol universes) for portfolio backtests: name, interval, symbols."""
+    return services.list_data_sets(root=root)
 
 
 def list_strategy_templates() -> dict:
@@ -58,10 +63,17 @@ def list_strategy_templates() -> dict:
     return services.list_strategy_templates()
 
 
+def list_scanner_rules() -> dict:
+    """List available screener rules (base + saved composites) usable by run_scanner."""
+    return services.list_scanner_rules()
+
+
 def validate_strategy(strategy_code: str) -> dict:
     """Static pre-flight check of strategy source (no execution); returns {ok, problems} for self-repair."""
     return services.validate_strategy(strategy_code)
 
+
+# --- single-symbol ---------------------------------------------------------
 
 def run_backtest(strategy_code: str, symbol: str, interval: str,
                  start_ms: int | None = None, end_ms: int | None = None,
@@ -97,10 +109,47 @@ def run_walk_forward(strategy_code: str, symbol: str, interval: str,
                                      sampler=sampler, config=config)
 
 
+# --- portfolio (multi-symbol over a DataSet) -------------------------------
+
+def run_portfolio_backtest(strategy_code: str, dataset: str, interval: str | None = None,
+                           start_ms: int | None = None, end_ms: int | None = None,
+                           params: dict | None = None, max_open_positions: int = 0,
+                           config: dict | None = None) -> dict:
+    """Run ONE portfolio backtest across a DataSet's symbols (shared cash); return portfolio metrics."""
+    return services.run_portfolio_backtest(strategy_code, dataset, interval, start_ms, end_ms,
+                                           params=params, max_open_positions=max_open_positions,
+                                           config=config)
+
+
+def run_portfolio_walk_forward(strategy_code: str, dataset: str, interval: str | None = None,
+                               start_ms: int | None = None, end_ms: int | None = None,
+                               param_grid: dict | None = None, n_splits: int = 4,
+                               criterion: str = "sharpe", mode: str = "anchored", method: str = "grid",
+                               seed: int = 0, n_trials: int | None = None, sampler: str = "tpe",
+                               max_open_positions: int = 0, config: dict | None = None) -> dict:
+    """Date-based walk-forward across a DataSet, scored on portfolio equity; return per-window OOS + verdict."""
+    return services.run_portfolio_walk_forward(strategy_code, dataset, interval, start_ms, end_ms,
+                                               param_grid=param_grid, n_splits=n_splits, criterion=criterion,
+                                               mode=mode, method=method, seed=seed, n_trials=n_trials,
+                                               sampler=sampler, max_open_positions=max_open_positions,
+                                               config=config)
+
+
+# --- scanner ---------------------------------------------------------------
+
+def run_scanner(rule_name: str, interval: str, symbols: list | None = None,
+                start_ms: int | None = None, end_ms: int | None = None,
+                min_volume: float = 0.0) -> dict:
+    """Screen a symbol universe by a named rule; return rows ranked long-first by setup strength."""
+    return services.run_scanner(rule_name, interval, symbols=symbols, start_ms=start_ms,
+                                end_ms=end_ms, min_volume=min_volume)
+
+
 _TOOLS = [run_sma_backtest, optimize_sma, fetch_ohlcv, overfit_check, query_kb,
           list_indicators, compute_indicator,
-          list_cached_data, list_strategy_templates, validate_strategy,
-          run_backtest, run_optimization, run_walk_forward]
+          list_cached_data, list_data_sets, list_strategy_templates, list_scanner_rules,
+          validate_strategy, run_backtest, run_optimization, run_walk_forward,
+          run_portfolio_backtest, run_portfolio_walk_forward, run_scanner]
 
 
 def build_server():
@@ -111,7 +160,8 @@ def build_server():
         raise ImportError("MCP server requires the optional extra: pip install vike_trader_app[mcp]") from e
     server = FastMCP("vike-trader")
     for fn in _TOOLS:
-        server.tool()(fn)
+        # instrument() records opt-in usage telemetry and preserves the schema (no-op when off)
+        server.tool()(telemetry.instrument(fn))
     return server
 
 
