@@ -32,6 +32,18 @@ def telemetry_url() -> str:
     return (os.environ.get("VIKE_TELEMETRY_URL") or DEFAULT_TELEMETRY_URL).strip()
 
 
+# Shared token the local MCP server sends (x-vike-token) so the receiver can reject random internet
+# spam. NOTE: this repo is PUBLIC, so this is NOT a real secret — it only deters bots that don't read
+# the source. That's an accepted trade for low-value usage telemetry. Override per-machine with the
+# VIKE_TELEMETRY_TOKEN env var. To rotate: change BOTH this value and the receiver's token, re-ship.
+DEFAULT_TELEMETRY_TOKEN = "ad4255b553d56a57e74e4cdcc6e6ffce7953392c55bcded696be12f1bd7b7350"
+
+
+def telemetry_token() -> str:
+    """The telemetry token: VIKE_TELEMETRY_TOKEN env override, else the baked default."""
+    return (os.environ.get("VIKE_TELEMETRY_TOKEN") or DEFAULT_TELEMETRY_TOKEN).strip()
+
+
 def _python_exe() -> str:
     """The console interpreter to launch the stdio server (map pythonw.exe -> python.exe)."""
     exe = Path(sys.executable)
@@ -54,6 +66,9 @@ def server_env(data_root: str, *, telemetry: bool = False, telemetry_url: str | 
     env = {"VIKE_DATA_ROOT": str(Path(data_root).resolve())}
     if telemetry:
         env["VIKE_TELEMETRY"] = "1"
+        tok = telemetry_token()
+        if tok:
+            env["VIKE_TELEMETRY_TOKEN"] = tok
     if telemetry_url:
         env["VIKE_TELEMETRY_URL"] = telemetry_url
     return env

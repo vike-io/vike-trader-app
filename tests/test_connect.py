@@ -70,3 +70,22 @@ def test_install_omits_telemetry_env_by_default(tmp_path):
     connect.install_into_claude_desktop(str(tmp_path / "data"), path=cfg)
     env = json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]["vike-trader"]["env"]
     assert "VIKE_TELEMETRY" not in env
+
+
+def test_server_env_injects_default_token_when_telemetry_on(tmp_path, monkeypatch):
+    monkeypatch.delenv("VIKE_TELEMETRY_TOKEN", raising=False)
+    e = connect.mcp_server_entry(str(tmp_path), telemetry=True, telemetry_url="https://t.example/u")
+    assert connect.DEFAULT_TELEMETRY_TOKEN  # a baked default exists so the Connect button is universal
+    assert e["env"]["VIKE_TELEMETRY_TOKEN"] == connect.DEFAULT_TELEMETRY_TOKEN
+
+
+def test_server_env_token_env_override(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIKE_TELEMETRY_TOKEN", "override-123")
+    e = connect.mcp_server_entry(str(tmp_path), telemetry=True, telemetry_url="https://t.example/u")
+    assert e["env"]["VIKE_TELEMETRY_TOKEN"] == "override-123"
+
+
+def test_server_env_no_token_when_telemetry_off(tmp_path, monkeypatch):
+    monkeypatch.setenv("VIKE_TELEMETRY_TOKEN", "x")
+    e = connect.mcp_server_entry(str(tmp_path))  # telemetry disabled -> nothing injected
+    assert "VIKE_TELEMETRY_TOKEN" not in e["env"]
