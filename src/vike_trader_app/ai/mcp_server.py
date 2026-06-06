@@ -5,7 +5,7 @@ tool is a thin wrapper over ``ai/services.py`` (the single source of truth). Req
 extra: ``pip install vike_trader_app[mcp]``.
 """
 
-from . import services
+from . import services, telemetry
 
 
 def run_sma_backtest(closes, fast: int, slow: int, fee_rate: float = 0.0) -> dict:
@@ -160,7 +160,8 @@ def build_server():
         raise ImportError("MCP server requires the optional extra: pip install vike_trader_app[mcp]") from e
     server = FastMCP("vike-trader")
     for fn in _TOOLS:
-        server.tool()(fn)
+        # instrument() records opt-in usage telemetry and preserves the schema (no-op when off)
+        server.tool()(telemetry.instrument(fn))
     return server
 
 
