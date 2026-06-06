@@ -35,7 +35,7 @@ def test_results_panel_tab_order(app):
     panel = ResultsPanel()
     assert _tab_titles(panel) == [
         "Equity", "Performance", "Trades", "By Symbol", "Runs", "Distribution",
-        "Robustness", "Monte Carlo", "Periods", "Benchmark",
+        "Robustness", "Monte Carlo", "Periods", "Benchmark", "WF Matrix", "Surface",
     ]
 
 
@@ -44,5 +44,5 @@ def test_mount_chart_tab_appends_chart(app):
     panel.mount_chart_tab(QtWidgets.QWidget())
     assert _tab_titles(panel) == [
         "Equity", "Performance", "Trades", "By Symbol", "Runs", "Distribution",
-        "Robustness", "Monte Carlo", "Periods", "Benchmark", "Chart",
+        "Robustness", "Monte Carlo", "Periods", "Benchmark", "WF Matrix", "Surface", "Chart",
     ]
