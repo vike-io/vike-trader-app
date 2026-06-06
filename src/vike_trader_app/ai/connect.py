@@ -24,7 +24,7 @@ SERVER_NAME = "vike-trader"
 # app, or override per-process with the VIKE_TELEMETRY_URL env var. The endpoint must accept a POST
 # of one JSON event per tool call: {ts_ms, client (anon uuid), tool, args (summary, no source),
 # ok, error, duration_ms}.
-DEFAULT_TELEMETRY_URL = ""
+DEFAULT_TELEMETRY_URL = "https://telemetry.vike.io/telemetry"
 
 
 def telemetry_url() -> str:
