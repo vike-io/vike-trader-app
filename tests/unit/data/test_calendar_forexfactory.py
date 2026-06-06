@@ -48,8 +48,9 @@ from pathlib import Path  # noqa: E402
 from vike_trader_app.data.calendar.providers.forexfactory import ForexFactoryProvider  # noqa: E402
 from vike_trader_app.data.calendar.model import week_start_utc, iso_to_ts_utc  # noqa: E402
 
-FIXTURE = json.loads(
-    (Path(__file__).parent / "fixtures" / "ff_calendar_thisweek.json").read_text("utf-8"))
+_FIXTURES = next(p / "fixtures" for p in Path(__file__).resolve().parents
+                 if (p / "fixtures").is_dir())  # tests/fixtures, wherever this test is nested
+FIXTURE = json.loads((_FIXTURES / "ff_calendar_thisweek.json").read_text("utf-8"))
 
 # the fixture's events live in the week of Mon 1 Jun 2026; pin "now" inside it so that
 # week is treated as "this week" by the week-aware provider.
