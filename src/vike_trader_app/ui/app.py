@@ -1065,11 +1065,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio.set_bars(bars)  # the Studio tab backtests the same data
         self._result = BacktestEngine(bars, self._strategy_factory()).run()
         self._replay = Replay(len(bars))
+        # A freshly loaded chart shows the LIVE EDGE (latest bars), like TradingView — not bar 0.
+        # Replay starts its cursor at index 0; without this seek, _render_frame() below would
+        # re-frame the view back to the oldest bars (jamming all candles to the left) whenever the
+        # slider's setValue doesn't fire a seek (same-length reload, interval switch, auto-load).
+        self._replay.seek(self._replay.last_index)
         overlays = self._strategy_factory().chart_overlays([b.close for b in bars])
         for ch in (self.price, self.studio_price):
-            ch.set_data(bars, self._result.trades)
-            # The Chart space is a CLEAN viewer — no auto strategy overlays (the SMA legend belongs to
-            # the Studio/backtest chart). Indicators on the Chart space come only from ƒx Indicators.
+            # The Chart space is a CLEAN viewer — no auto strategy markers OR overlays (those belong
+            # to the Studio/backtest chart). Trades + the SMA legend go to Studio only; indicators on
+            # the Chart space come only from ƒx Indicators — matching a plain TradingView chart.
+            ch.set_data(bars, self._result.trades if ch is self.studio_price else [])
             ch.set_overlays(overlays if ch is self.studio_price else {})
             ch.set_title(self._symbol)  # symbol-only; far-left toolbar label (no "· interval")
             ch.set_timeframe(self._interval)

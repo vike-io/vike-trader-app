@@ -230,6 +230,34 @@ def _draw_gear(p, c):  # settings cog: a ring with 8 short radial teeth + a smal
     p.drawEllipse(_P(cx, cy), 4.5, 4.5)          # inner hole
 
 
+def _draw_maximize(p, c):  # a single square frame — maximize a pane
+    p.drawRect(_R(14, 14, 20, 20))
+
+
+def _draw_restore(p, c):  # two offset frames — restore a maximized pane
+    p.drawRect(_R(13, 19, 18, 16))               # front frame
+    path = QtGui.QPainterPath()                  # back frame (top + right edges)
+    path.moveTo(19, 19)
+    path.lineTo(19, 13)
+    path.lineTo(35, 13)
+    path.lineTo(35, 29)
+    path.lineTo(31, 29)
+    p.drawPath(path)
+
+
+def _draw_trash(p, c):  # lidded bin — delete a pane
+    p.drawLine(QtCore.QLineF(13, 16, 35, 16))    # lid
+    p.drawLine(QtCore.QLineF(20, 16, 20, 12))    # handle
+    p.drawLine(QtCore.QLineF(20, 12, 28, 12))
+    p.drawLine(QtCore.QLineF(28, 12, 28, 16))
+    path = QtGui.QPainterPath()                  # body
+    path.moveTo(16, 19)
+    path.lineTo(18, 37)
+    path.lineTo(30, 37)
+    path.lineTo(32, 19)
+    p.drawPath(path)
+
+
 _DRAW = {
     "backtester": _draw_backtester, "studio": _draw_studio, "tools": _draw_tools,
     "screener": _draw_screener, "journal": _draw_journal, "alerts": _draw_alerts,
@@ -239,6 +267,7 @@ _DRAW = {
     "chevron_up": _draw_chevron_up, "chevron_down": _draw_chevron_down,
     "chevron_left": _draw_chevron_left, "chevron_right": _draw_chevron_right,
     "scale": _draw_scale, "folder": _draw_folder, "gear": _draw_gear,
+    "maximize": _draw_maximize, "restore": _draw_restore, "trash": _draw_trash,
 }
 
 # One on-screen size for EVERY directional chevron in the app (dropdown ▾, week-nav ‹ ›, the

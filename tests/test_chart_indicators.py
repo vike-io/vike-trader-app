@@ -21,6 +21,7 @@ from vike_trader_app.ui.chart import (  # noqa: E402
     _IndicatorPicker,
     _IndicatorSettings,
     _LegendRow,
+    _MA_SERIES_KEY,
     _ObjectTree,
     _PaneLegend,
     OscillatorPane,
@@ -398,7 +399,7 @@ def test_picker_lists_full_registry(app):
     from vike_trader_app.core.indicators import base as _base
 
     dlg = _IndicatorPicker()
-    assert len(dlg._rows) == len(_base.list_indicators()) == 176
+    assert len(dlg._rows) == len(_base.list_indicators()) == 177  # +mfi
 
 
 def test_picker_category_filter(app):
@@ -453,8 +454,12 @@ def test_axis_natural_width_matches_current_tick_strings(app):
     for spacing, values in ax.tickValues(mn, mx, ax.height() or 300):
         strings += [s for s in ax.tickStrings(values, ax.scale, spacing) if s]
     fm = QtGui.QFontMetrics(ax.style.get("tickFont") or ax.font())
-    expected = (max(fm.horizontalAdvance(s) for s in strings)
-                + ax.style["tickTextOffset"][0] + max(0, ax.style["tickLength"]))
+    # mirrors _axis_natural_width: boundingRect width + offset + tickLength + a ~1.5x line-height
+    # margin. The margin makes the pinned width match the width pyqtgraph auto-expands to on paint,
+    # so the full price ladder renders instead of autoReduceTextSpace dropping all but ~1 label.
+    expected = (max(fm.boundingRect(s).width() for s in strings)
+                + ax.style["tickTextOffset"][0] + max(0, ax.style["tickLength"])
+                + int(round(fm.height() * 1.5)))
     assert nat == pytest.approx(float(expected))
     assert nat > float(ax.style["tickTextOffset"][0])  # a real measurement, not ~0/stale
 
@@ -2158,3 +2163,109 @@ def test_band_lines_follow_indicator_visibility(app):
     assert all(ln.isVisible() for ln in lines), (
         "band lines must reappear when indicator is shown again"
     )
+
+
+# --- Smoothing (MA-on-indicator), TradeLocker "Smoothing Line" parity ------------------------
+def test_smoothing_default_is_noop(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    assert ind.smooth_type is None
+    assert _MA_SERIES_KEY not in ind.series  # no extra series unless smoothing is enabled
+
+
+def test_smoothing_sma_appends_ma_series_last(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.smooth_type, ind.smooth_len = "sma", 5
+    pc._compute(ind)
+    assert _MA_SERIES_KEY in ind.series
+    assert list(ind.series.keys())[-1] == _MA_SERIES_KEY            # appended LAST
+    assert len(ind.colors) == len(ind.spec.outputs)                # base colours unshifted
+    assert any(v is not None for v in ind.series[_MA_SERIES_KEY])  # produces real values
+
+
+def test_smoothing_legend_value_is_base_not_ma(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.smooth_type, ind.smooth_len = "sma", 5
+    pc._compute(ind)
+    ind.pane.update_ind(ind)
+    ind.pane.reveal(len(pc._bars) - 1)
+    base = [k for k in ind.series if k != _MA_SERIES_KEY][0]
+    expected = next((v for v in reversed(ind.series[base]) if v is not None), None)
+    assert ind.pane._rows[ind.uid]._val.text() == f"{expected:,.2f}"
+
+
+def test_smoothing_recompute_does_not_accumulate(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    ind.smooth_type = "ema"
+    pc._compute(ind)
+    pc._compute(ind)
+    assert list(ind.series.keys()).count(_MA_SERIES_KEY) == 1
+
+
+def test_legend_gear_emits_edit(app):
+    # Standalone row (NOT wired to a chart) so the gear only fires editRequested — clicking it on a
+    # chart-wired row would open the modal Settings dialog (dlg.exec) and hang a headless test.
+    from vike_trader_app.core.indicators import base as _base
+    from vike_trader_app.ui.chart import _Indicator
+    spec = _base.get("rsi")
+    ind = _Indicator("rsi", spec, {p.name: p.default for p in spec.params}, "oscillator")
+    row = _LegendRow(ind)
+    got = []
+    row.editRequested.connect(got.append)
+    row._gear.click()
+    assert got == [ind.uid]
+
+
+# --- bottom-left nav buttons (zoom / scroll / reset) -----------------------------------------
+def test_nav_zoom_scroll_reset(app):
+    pc, _ = _chart(app)
+    (x0, x1), _ = pc.getViewBox().viewRange()
+    span0 = x1 - x0
+    pc.nav_zoom(1 / 1.4)                       # zoom IN -> fewer bars visible
+    (a0, a1), _ = pc.getViewBox().viewRange()
+    assert (a1 - a0) < span0
+    pc.nav_scroll(-0.5)                        # scroll back -> span preserved, window shifted
+    (s0, s1), _ = pc.getViewBox().viewRange()
+    assert abs((s1 - s0) - (a1 - a0)) < 1 and s0 < a0
+    pc.nav_reset()                             # reset -> back to the default window
+    (r0, r1), _ = pc.getViewBox().viewRange()
+    assert abs((r1 - r0) - span0) < 5
+
+
+def test_nav_bar_docks_to_lowest_pane_and_survives_removal(app):
+    pc, _ = _chart(app)
+    nav = pc._nav_bar
+    assert nav.parent() is pc                  # no panes -> lives on the price chart
+    a = pc.add_indicator("rsi")
+    assert nav.parent() is a.pane              # docks onto the lowest pane
+    b = pc.add_indicator("macd")
+    assert nav.parent() is b.pane              # follows the new lowest pane
+    pc.remove_indicator(b.uid)                 # remove the host pane...
+    assert nav.parent() is a.pane              # ...nav survived + re-docked (not deleted with it)
+    pc.remove_indicator(a.uid)
+    assert nav.parent() is pc                  # back on the price chart
+
+
+# --- VWAP session-anchor + PSAR dots (TradeLocker render parity) -----------------------------
+def test_session_vwap_resets_at_day_boundary():
+    from vike_trader_app.ui.chart import _session_vwap
+    DAY = 86_400_000
+    bars = [
+        Bar(ts=0, open=100, high=100, low=100, close=100, volume=1.0),
+        Bar(ts=60_000, open=100, high=100, low=100, close=100, volume=1.0),
+        Bar(ts=DAY, open=200, high=200, low=200, close=200, volume=1.0),  # new UTC day -> reset
+    ]
+    vw = _session_vwap(bars)
+    assert vw[0] == 100.0 and vw[1] == 100.0
+    assert vw[2] == 200.0  # RESET, not the full-history cumulative (100+100+200)/3 = 133.3
+
+
+def test_psar_renders_as_dots(app):
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("psar")
+    curve = ind.curves["psar"]
+    assert curve.opts["pen"] is None       # no connecting line...
+    assert curve.opts["symbol"] == "o"     # ...discrete dots above/below the candles

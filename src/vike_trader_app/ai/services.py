@@ -195,3 +195,212 @@ def query_kb(query: str, k: int = 5, *, kb=None, embedder=None) -> dict:
         kb = default_knowledge_base(embedder)
     hits = kb.query(query, k=k, embedder=embedder)
     return {"n": len(hits), "hits": hits}
+
+
+# ---------------------------------------------------------------------------
+# Strategy-class tools: the real engine surface (run / optimize / walk-forward)
+#
+# These let an agent (Claude Code / Claude Desktop over MCP) drive the SAME
+# StrategyTester the GUI uses. Inputs/outputs are plain JSON types. Bars are
+# loaded from the local Parquet cache on the calling thread — safe here because
+# the MCP server is a headless single-threaded process (no Qt event loop).
+# ---------------------------------------------------------------------------
+
+_DATA_ROOT = "storage/parquet"
+
+# TesterConfig fields that are safe to set from a JSON payload.
+_CONFIG_KEYS = (
+    "cash", "fee_rate", "maker_fee", "taker_fee", "slippage", "multiplier",
+    "leverage", "maint_margin", "max_open_long", "max_open_short",
+    "volume_limit", "periods_per_year",
+)
+
+# Headline metrics returned per report/trial/window (keeps payloads small —
+# the bulky trades/equity_curve series are intentionally excluded).
+_BRIEF_KEYS = (
+    "total_return", "sharpe", "sortino", "calmar", "max_drawdown",
+    "profit_factor", "win_rate", "n_trades", "net_profit", "total_fees",
+    "final_equity",
+)
+
+
+def _strategy_cls(strategy_code: str):
+    """Compile a Strategy subclass from source text (AST pre-flight gate runs first)."""
+    from ..core.strategy_loader import load_strategy_from_string
+
+    return load_strategy_from_string(strategy_code, validate=True)
+
+
+def _make_config(config: dict | None):
+    """Build a TesterConfig from a JSON dict, rejecting unknown keys with a clear error."""
+    from ..tester.config import TesterConfig
+
+    cfg = dict(config or {})
+    unknown = set(cfg) - set(_CONFIG_KEYS)
+    if unknown:
+        raise ValueError(
+            f"unknown config keys {sorted(unknown)}; allowed: {list(_CONFIG_KEYS)}"
+        )
+    return TesterConfig(**cfg)
+
+
+def _load_bars(symbol: str, interval: str, start_ms, end_ms, root: str):
+    """Load cached bars for (symbol, interval) over the inclusive [start_ms, end_ms] range."""
+    from ..data.catalog import Catalog
+
+    bars = Catalog(root).query(symbol, interval, start_ms, end_ms)
+    if not bars:
+        raise ValueError(
+            f"no cached bars for {symbol!r} {interval!r} in range [{start_ms}, {end_ms}]; "
+            "run fetch_ohlcv to download it, or call list_cached_data to see what's available"
+        )
+    return bars
+
+
+def _grid(strategy_cls, param_grid: dict | None) -> dict:
+    """Resolve the optimization grid: explicit override, else the class PARAM_GRID."""
+    grid = dict(param_grid or getattr(strategy_cls, "PARAM_GRID", {}) or {})
+    if not grid:
+        raise ValueError(
+            "no param_grid to search: pass param_grid=... or declare PARAM_GRID on the strategy class"
+        )
+    return grid
+
+
+def _verdict(v) -> dict | None:
+    """Serialize an analysis.overfit.Verdict (or None) to a plain dict."""
+    if v is None:
+        return None
+    return {"level": getattr(v, "level", None), "reasons": list(getattr(v, "reasons", []))}
+
+
+def _brief(report) -> dict:
+    """Headline metrics of a TesterReport as a plain dict (no bulky series)."""
+    return {k: getattr(report, k) for k in _BRIEF_KEYS}
+
+
+def validate_strategy(strategy_code: str) -> dict:
+    """Static pre-flight check of strategy source (no execution); returns {ok, problems}.
+
+    Use this in a write -> validate -> fix loop before run_backtest: the ``problems`` list is the
+    exact set of AST-gate reasons load_strategy_from_string would reject, so the agent can self-correct.
+    """
+    from ..core.sandbox.preflight import check_strategy_source
+
+    problems = check_strategy_source(strategy_code)
+    return {"ok": not problems, "problems": list(problems)}
+
+
+def list_cached_data(root: str = _DATA_ROOT) -> dict:
+    """List every cached (symbol, interval) dataset with bar count + time range (for discovery)."""
+    from ..data.catalog import Catalog
+
+    ds = Catalog(root).list_datasets()
+    return {
+        "n": len(ds),
+        "datasets": [
+            {"symbol": d.symbol, "interval": d.interval, "n_bars": d.n_bars,
+             "start_ts": d.start_ts, "end_ts": d.end_ts}
+            for d in ds
+        ],
+    }
+
+
+def list_strategy_templates() -> dict:
+    """Return the gallery of ready-to-run example strategies (name, category, blurb, full code)."""
+    from ..analysis.strategy_templates import TEMPLATES
+
+    return {
+        "n": len(TEMPLATES),
+        "templates": [
+            {"name": t.name, "category": t.category, "description": t.description, "code": t.code}
+            for t in TEMPLATES
+        ],
+    }
+
+
+def run_backtest(strategy_code: str, symbol: str, interval: str, start_ms=None, end_ms=None, *,
+                 params: dict | None = None, config: dict | None = None, root: str = _DATA_ROOT) -> dict:
+    """Compile ``strategy_code`` and run ONE backtest on cached ``symbol``/``interval`` bars.
+
+    Returns the standardized TesterReport headline metrics (Sharpe/Sortino/Calmar/drawdown/profit
+    factor/win-rate/...) plus symbol/interval/n_bars. ``params`` overrides strategy attributes;
+    ``config`` sets costs/capital (cash, fee_rate, slippage, ...). Bulky trade/equity series are
+    excluded — use the metrics to decide the next step.
+    """
+    cls = _strategy_cls(strategy_code)
+    bars = _load_bars(symbol, interval, start_ms, end_ms, root)
+    strat = cls.make(**params) if params else cls()
+    from ..tester.strategy_tester import StrategyTester
+
+    report = StrategyTester(strat, bars, _make_config(config)).run()
+    out = report.as_dict()
+    out.update(symbol=symbol, interval=interval, n_bars=len(bars))
+    return out
+
+
+def run_optimization(strategy_code: str, symbol: str, interval: str, start_ms=None, end_ms=None, *,
+                     param_grid: dict | None = None, criterion: str = "sharpe", method: str = "grid",
+                     top_n: int = 10, seed: int = 0, n_trials: int | None = None, sampler: str = "tpe",
+                     config: dict | None = None, root: str = _DATA_ROOT) -> dict:
+    """Optimize ``strategy_code`` over a parameter grid, ranking combos by ``criterion``.
+
+    ``param_grid`` defaults to the class ``PARAM_GRID``. ``method`` is grid | random | genetic |
+    bayesian (bayesian needs the optional optuna extra; ``sampler`` = tpe | gpsampler | cmaes).
+    Returns the best combo (params + score + headline metrics), the top-N ranked combos, and the
+    correlation-aware effective trial count for overfit-awareness.
+    """
+    cls = _strategy_cls(strategy_code)
+    grid = _grid(cls, param_grid)
+    bars = _load_bars(symbol, interval, start_ms, end_ms, root)
+    from ..tester.strategy_tester import StrategyTester
+
+    rep = StrategyTester(cls(), bars, _make_config(config)).optimize(
+        cls.make, grid, criterion=criterion, method=method, seed=seed,
+        n_trials=n_trials, sampler=sampler,
+    )
+    return {
+        "criterion": rep.criterion,
+        "n_trials": rep.n_trials,
+        "effective_n": rep.effective_n,
+        "best": {"params": rep.best.params, "score": rep.best.score, "metrics": _brief(rep.best.report)},
+        "ranked": [{"params": t.params, "score": t.score} for t in rep.ranked[:top_n]],
+    }
+
+
+def run_walk_forward(strategy_code: str, symbol: str, interval: str, start_ms=None, end_ms=None, *,
+                     param_grid: dict | None = None, n_splits: int = 4, criterion: str = "sharpe",
+                     mode: str = "anchored", method: str = "grid", seed: int = 0,
+                     n_trials: int | None = None, sampler: str = "tpe",
+                     config: dict | None = None, root: str = _DATA_ROOT) -> dict:
+    """Walk-forward validation: optimize-on-train -> measure-OOS-on-test across ``n_splits`` windows.
+
+    This is the robust "split into time chunks and validate each out-of-sample" check. ``mode`` is
+    anchored (expanding train) or rolling (fixed-width sliding). Returns wf_efficiency (how much
+    in-sample edge survives OOS), wf_consistency, per-window IS-vs-OOS scores, and the stitched OOS
+    report with an overfitting ``verdict`` (level + plain-language reasons).
+    """
+    cls = _strategy_cls(strategy_code)
+    grid = _grid(cls, param_grid)
+    bars = _load_bars(symbol, interval, start_ms, end_ms, root)
+    from ..tester.strategy_tester import StrategyTester
+
+    wf = StrategyTester(cls(), bars, _make_config(config)).walk_forward(
+        cls.make, grid, n_splits=n_splits, criterion=criterion, mode=mode,
+        method=method, seed=seed, n_trials=n_trials, sampler=sampler,
+    )
+    return {
+        "n_windows": wf.n_windows,
+        "wf_efficiency": wf.wf_efficiency,
+        "wf_consistency": wf.wf_consistency,
+        "criterion": criterion,
+        "mode": mode,
+        "oos": {**_brief(wf.oos_report), "verdict": _verdict(getattr(wf.oos_report, "verdict", None))},
+        "windows": [
+            {"train_range": list(w.train_range), "test_range": list(w.test_range),
+             "best_params": w.best_params, "is_score": w.is_score, "oos_score": w.oos_score,
+             "oos_total_return": w.oos_report.total_return,
+             "oos_max_drawdown": w.oos_report.max_drawdown}
+            for w in wf.windows
+        ],
+    }

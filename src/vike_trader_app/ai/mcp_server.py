@@ -46,8 +46,61 @@ def compute_indicator(name: str, ohlcv: dict, params: dict | None = None) -> dic
     return services.compute_indicator(name, ohlcv, params)
 
 
+# --- strategy-class tools: the real engine surface an agent drives ---------
+
+def list_cached_data(root: str = "storage/parquet") -> dict:
+    """List cached (symbol, interval) datasets with bar counts + time ranges (data discovery)."""
+    return services.list_cached_data(root=root)
+
+
+def list_strategy_templates() -> dict:
+    """List ready-to-run example strategies (name, category, blurb, full code) to author from."""
+    return services.list_strategy_templates()
+
+
+def validate_strategy(strategy_code: str) -> dict:
+    """Static pre-flight check of strategy source (no execution); returns {ok, problems} for self-repair."""
+    return services.validate_strategy(strategy_code)
+
+
+def run_backtest(strategy_code: str, symbol: str, interval: str,
+                 start_ms: int | None = None, end_ms: int | None = None,
+                 params: dict | None = None, config: dict | None = None) -> dict:
+    """Compile a strategy and run ONE backtest on cached bars; return standardized headline metrics."""
+    return services.run_backtest(strategy_code, symbol, interval, start_ms, end_ms,
+                                 params=params, config=config)
+
+
+def run_optimization(strategy_code: str, symbol: str, interval: str,
+                     start_ms: int | None = None, end_ms: int | None = None,
+                     param_grid: dict | None = None, criterion: str = "sharpe",
+                     method: str = "grid", top_n: int = 10, seed: int = 0,
+                     n_trials: int | None = None, sampler: str = "tpe",
+                     config: dict | None = None) -> dict:
+    """Optimize a strategy over a param grid (grid/random/genetic/bayesian); return ranked combos."""
+    return services.run_optimization(strategy_code, symbol, interval, start_ms, end_ms,
+                                     param_grid=param_grid, criterion=criterion, method=method,
+                                     top_n=top_n, seed=seed, n_trials=n_trials, sampler=sampler,
+                                     config=config)
+
+
+def run_walk_forward(strategy_code: str, symbol: str, interval: str,
+                     start_ms: int | None = None, end_ms: int | None = None,
+                     param_grid: dict | None = None, n_splits: int = 4,
+                     criterion: str = "sharpe", mode: str = "anchored", method: str = "grid",
+                     seed: int = 0, n_trials: int | None = None, sampler: str = "tpe",
+                     config: dict | None = None) -> dict:
+    """Walk-forward validation across time chunks; return wf_efficiency, per-window OOS, overfit verdict."""
+    return services.run_walk_forward(strategy_code, symbol, interval, start_ms, end_ms,
+                                     param_grid=param_grid, n_splits=n_splits, criterion=criterion,
+                                     mode=mode, method=method, seed=seed, n_trials=n_trials,
+                                     sampler=sampler, config=config)
+
+
 _TOOLS = [run_sma_backtest, optimize_sma, fetch_ohlcv, overfit_check, query_kb,
-          list_indicators, compute_indicator]
+          list_indicators, compute_indicator,
+          list_cached_data, list_strategy_templates, validate_strategy,
+          run_backtest, run_optimization, run_walk_forward]
 
 
 def build_server():
