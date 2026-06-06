@@ -11,9 +11,20 @@ pytest.importorskip("PySide6")
 from PySide6 import QtWidgets  # noqa: E402
 
 from vike_trader_app.core.model import Bar  # noqa: E402
+from vike_trader_app.core.strategy import Strategy  # noqa: E402
 from vike_trader_app.data.store import Store  # noqa: E402
 from vike_trader_app.ui.app import MainWindow  # noqa: E402
 from vike_trader_app.ui.bots_panel import BotsPanel  # noqa: E402
+
+
+class _OverlayStrat(Strategy):
+    """A strategy that draws one overlay line — to verify where auto-overlays land."""
+
+    def on_bar(self, bar):  # noqa: ARG002
+        pass
+
+    def chart_overlays(self, closes):
+        return {"MA": list(closes)}
 
 
 @pytest.fixture(scope="module")
@@ -59,4 +70,15 @@ def test_launch_bot_records_run_and_populates_price_chart(app):
     # The price chart received the bars data.
     assert win.price._bars  # PriceChart._bars is set by set_data()
 
+    win.close()
+
+
+def test_chart_space_is_clean_no_auto_overlays(app):
+    """The Chart space is a clean viewer: the default strategy's overlays go to the Studio/backtest
+    chart only, never the Chart-space chart (indicators there come from the ƒx Indicators picker)."""
+    win = MainWindow()
+    win.store = Store(":memory:")
+    win.load_bars(_bars(40), strategy_factory=_OverlayStrat)
+    assert win.price._overlay_curves == {}            # Chart space: no auto strategy overlays
+    assert "MA" in win.studio_price._overlay_curves    # Studio/backtest chart: keeps them
     win.close()

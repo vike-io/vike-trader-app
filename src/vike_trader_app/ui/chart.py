@@ -2851,6 +2851,13 @@ class PriceChart(pg.PlotWidget):
     def _render_markers(self, index: int, off: float = 0.0):
         """Draw revealed buy/sell/exit arrows + 'Buy'/'Sell' labels + dotted connectors."""
         spots = []
+        # Anchor labels inward near the edges so a 'Buy'/'Sell' at the first/last visible bar isn't
+        # clipped by the plot border (centre otherwise).
+        if self._follow:
+            vlo, vhi = follow_window(index, len(self._bars), self._window)
+        else:
+            (vlo, vhi), _ = self.getViewBox().viewRange()
+        vspan = (vhi - vlo) or 1.0
         for m in self._markers:
             lbl = m["label"]
             if m["x"] > index:
@@ -2859,6 +2866,9 @@ class PriceChart(pg.PlotWidget):
             y = m["price"] - off if m["below"] else m["price"] + off
             spots.append({"pos": (m["x"], y), "symbol": m["symbol"], "size": _MARKER_SIZE,
                           "brush": pg.mkBrush(m["color"]), "pen": None})
+            frac = (m["x"] - vlo) / vspan
+            ax = 0.0 if frac < 0.05 else (1.0 if frac > 0.95 else 0.5)
+            lbl.setAnchor((ax, 0.0 if m["below"] else 1.0))
             lbl.setPos(m["x"], y - off * 1.15 if m["below"] else y + off * 1.15)
             lbl.show()
         self._marker_scatter.setData(spots)
@@ -2955,8 +2965,8 @@ class PriceChart(pg.PlotWidget):
         ref = bar.close
         # TradingView legend: the O/H/L/C *letters* are white; the *values* take the
         # candle's up/down colour. The change/percent at the end stays coloured too.
-        def _cell(letter, val):
-            return (f"<span style='color:{theme.TEXT}'>{letter}</span>"
+        def _cell(letter, val):  # &nbsp; so the letter doesn't jam into the value ("O 60,781")
+            return (f"<span style='color:{theme.TEXT}'>{letter}</span>&nbsp;"
                     f"<span style='color:{col}'>{fmt_price(val, ref)}</span>")
 
         body = "&nbsp;&nbsp;".join([_cell("O", bar.open), _cell("H", bar.high),
