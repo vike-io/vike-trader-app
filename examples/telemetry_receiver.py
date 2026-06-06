@@ -1,35 +1,41 @@
-"""Example vike.io telemetry receiver for the vike-trader MCP server.
+"""vike.io telemetry receiver for the vike-trader MCP server (hardened reference).
 
 The desktop app's LOCAL MCP server POSTs one JSON event per tool call to your
 ``VIKE_TELEMETRY_URL`` (see ``ai/telemetry.py``) — only when the user has opted in via the
-Connect dialog. This is a minimal reference receiver: it validates each event and appends it
-to a JSONL file. Point ``connect.DEFAULT_TELEMETRY_URL`` / ``VIKE_TELEMETRY_URL`` at the
-deployed URL and you'll collect anonymous usage (tool name, an argument SUMMARY, timing —
-never strategy source; the client id is a random per-install UUID).
+Connect dialog. This receiver validates each event, enforces a body-size cap, optionally checks
+a shared token, and appends to a JSONL sink. The client id is a random per-install UUID and the
+strategy source is never sent (only a sha + length), so events are anonymous/pseudonymous.
+
+Environment:
+    VIKE_TELEMETRY_SINK   JSONL output path (default /var/lib/vike-telemetry/events.jsonl)
+    VIKE_TELEMETRY_TOKEN  optional shared secret; when set, requests must carry header
+                          ``X-Vike-Token: <token>`` (the client must be built to send it)
 
 Run locally:
-    pip install "fastapi[standard]" uvicorn
-    uvicorn examples.telemetry_receiver:app --host 0.0.0.0 --port 8000
-    # then set the endpoint URL to:  https://<your-host>/telemetry
+    pip install fastapi "uvicorn[standard]" pydantic
+    uvicorn examples.telemetry_receiver:app --host 127.0.0.1 --port 8099
 
-PRODUCTION TODO (deliberately out of scope for this example):
-    * terminate TLS (HTTPS) in front of this; never collect over plain HTTP
-    * cap body size + add rate limiting; reject oversized / malformed payloads
-    * persist to a real DB / warehouse instead of a local file, and rotate it
-    * optionally require a shared header token to deter spoofed events
-    * honor retention + deletion requests (treat the anon client id as pseudonymous PII)
+Production (prod1: Ubuntu 24.04, nginx, no Docker) — bind localhost, front with nginx for TLS:
+    * systemd unit runs `uvicorn app:app --host 127.0.0.1 --port 8099` as a non-root user
+    * an isolated nginx vhost for telemetry.vike.io reverse-proxies to 127.0.0.1:8099 with a
+      `limit_req` rate limit + `client_max_body_size 8k`
+    * certbot --nginx -d telemetry.vike.io issues the Let's Encrypt cert
+  TLS and rate limiting are handled by nginx; this app handles validation, the body cap, and the
+  optional token. Persist to a real DB/warehouse (this server already runs Postgres/ClickHouse)
+  and honor retention/deletion when you move past the JSONL sink.
 """
 
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
 from fastapi import FastAPI, Request, Response
 from pydantic import BaseModel, ValidationError
 
-_SINK = Path(os.environ.get("VIKE_TELEMETRY_SINK", "telemetry-events.jsonl"))
+_SINK = Path(os.environ.get("VIKE_TELEMETRY_SINK", "/var/lib/vike-telemetry/events.jsonl"))
+_TOKEN = os.environ.get("VIKE_TELEMETRY_TOKEN", "")
+_MAX_BODY = 8192  # bytes — one event is well under this; reject anything larger
 
 app = FastAPI(title="vike-trader telemetry receiver")
 
@@ -46,19 +52,24 @@ class Event(BaseModel):
     duration_ms: float | None = None
 
 
+@app.get("/health")
+async def health() -> dict:
+    return {"ok": True}
+
+
 @app.post("/telemetry", status_code=204)
 async def telemetry(request: Request) -> Response:
-    """Validate one usage event and append it to the JSONL sink."""
+    """Validate one usage event and append it to the JSONL sink (token + size gated)."""
+    if _TOKEN and request.headers.get("x-vike-token") != _TOKEN:
+        return Response(status_code=401)
+    body = await request.body()
+    if len(body) > _MAX_BODY:
+        return Response(status_code=413)
     try:
-        event = Event.model_validate(await request.json())
-    except (ValidationError, json.JSONDecodeError, ValueError):
+        event = Event.model_validate_json(body)
+    except (ValidationError, ValueError):
         return Response(status_code=400)
     _SINK.parent.mkdir(parents=True, exist_ok=True)
     with _SINK.open("a", encoding="utf-8") as f:
         f.write(event.model_dump_json() + "\n")
     return Response(status_code=204)
-
-
-@app.get("/health")
-async def health() -> dict:
-    return {"ok": True}
