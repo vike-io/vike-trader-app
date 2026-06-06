@@ -1,0 +1,45 @@
+"""Tests for ai.connect — generating + installing the vike-trader MCP config for local Claude."""
+
+import json
+from pathlib import Path
+
+from vike_trader_app.ai import connect
+
+
+def test_mcp_server_entry_shape(tmp_path):
+    e = connect.mcp_server_entry(str(tmp_path))
+    assert Path(e["command"]).name.lower().startswith("python")
+    assert e["args"] == ["-m", "vike_trader_app.ai.mcp_server"]
+    assert e["env"]["VIKE_DATA_ROOT"] == str(tmp_path.resolve())
+    assert "VIKE_TELEMETRY" not in e["env"]
+
+
+def test_mcp_server_entry_telemetry(tmp_path):
+    e = connect.mcp_server_entry(str(tmp_path), telemetry=True, telemetry_url="https://x/y")
+    assert e["env"]["VIKE_TELEMETRY"] == "1"
+    assert e["env"]["VIKE_TELEMETRY_URL"] == "https://x/y"
+
+
+def test_install_preserves_existing_config(tmp_path):
+    cfg = tmp_path / "claude_desktop_config.json"
+    cfg.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}, "theme": "dark"}), encoding="utf-8")
+    connect.install_into_claude_desktop(str(tmp_path / "data"), path=cfg)
+    out = json.loads(cfg.read_text(encoding="utf-8"))
+    assert out["theme"] == "dark"                          # unrelated keys preserved
+    assert out["mcpServers"]["other"] == {"command": "x"}  # other servers preserved
+    assert out["mcpServers"]["vike-trader"]["args"] == ["-m", "vike_trader_app.ai.mcp_server"]
+
+
+def test_install_creates_when_missing(tmp_path):
+    cfg = tmp_path / "sub" / "claude_desktop_config.json"
+    connect.install_into_claude_desktop(str(tmp_path / "data"), path=cfg)
+    assert cfg.exists()
+    assert "vike-trader" in json.loads(cfg.read_text(encoding="utf-8"))["mcpServers"]
+
+
+def test_claude_code_command_str(tmp_path):
+    s = connect.claude_code_command_str(str(tmp_path))
+    assert "claude mcp add vike-trader" in s
+    assert "--env" in s and "VIKE_DATA_ROOT=" in s
+    assert " -- " in s
+    assert "vike_trader_app.ai.mcp_server" in s

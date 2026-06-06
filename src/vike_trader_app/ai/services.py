@@ -7,6 +7,8 @@ so they serialize cleanly to JSON without any additional transformation.
 
 from __future__ import annotations
 
+import os
+
 import numpy as np
 
 from ..core.model import Bar
@@ -206,7 +208,7 @@ def query_kb(query: str, k: int = 5, *, kb=None, embedder=None) -> dict:
 # single-threaded process (no Qt event loop).
 # ---------------------------------------------------------------------------
 
-_DATA_ROOT = "storage/parquet"
+_DATA_ROOT = os.environ.get("VIKE_DATA_ROOT") or "storage/parquet"
 
 # TesterConfig fields that are safe to set from a JSON payload.
 _CONFIG_KEYS = (
