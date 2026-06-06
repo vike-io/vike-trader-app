@@ -1853,6 +1853,9 @@ class PriceChart(pg.PlotWidget):
                         [], [], pen=pg.mkPen(color, width=1), name=label
                     )
             self._overlays = {**self._overlays, **overlays}
+        if not chart_styles.is_time_based(self._style):  # keep overlays hidden on non-time styles
+            for c in self._overlay_curves.values():
+                c.setVisible(False)
         if repaint:
             self.show_upto(len(bars) - 1)
         self._align_panes()
