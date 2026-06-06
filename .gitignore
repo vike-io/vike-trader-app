@@ -75,3 +75,10 @@ Thumbs.db
 
 # ---- Private notes / design docs (NOT shared publicly) ----
 docs/
+
+# scratch + logs (session artifacts)
+tmp/
+logs/
+
+CLAUDE.md
+

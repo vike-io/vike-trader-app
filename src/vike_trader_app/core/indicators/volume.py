@@ -32,6 +32,30 @@ def vwap(highs, lows, closes, volumes):
     return out
 
 
+@indicator(category="volume", inputs=["high", "low", "close", "volume"],
+           params=[Param("period", "int", 14, 2, 100, 1)], outputs=["mfi"])
+def mfi(highs, lows, closes, volumes, period: int = 14):
+    """Money Flow Index (0..100): a volume-weighted RSI on the typical price.
+
+    ``TP = (H+L+C)/3``; raw money flow ``RMF = TP*volume`` signed by TP vs the prior TP;
+    ``MFI = 100 - 100/(1 + sum(positive RMF, p)/sum(negative RMF, p))``. Matches
+    TradingView/TradeLocker's Money Flow Index. ``None`` during the ``period`` warm-up.
+    """
+    n = len(closes)
+    out: list[float | None] = [None] * n
+    tp = [(highs[i] + lows[i] + closes[i]) / 3.0 for i in range(n)]
+    rmf = [tp[i] * volumes[i] for i in range(n)]
+    for i in range(period, n):
+        pos = neg = 0.0
+        for j in range(i - period + 1, i + 1):
+            if tp[j] > tp[j - 1]:
+                pos += rmf[j]
+            elif tp[j] < tp[j - 1]:
+                neg += rmf[j]
+        out[i] = 100.0 if neg == 0 else 100.0 - 100.0 / (1.0 + pos / neg)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Tier A volume — Task 3
 # ---------------------------------------------------------------------------

@@ -728,8 +728,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._replay.n_bars = len(merged)
             self.slider.setMaximum(self._replay.last_index)
             overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
-            for ch in (self.price, self.studio_price):
-                ch.apply_live(merged, overlays, repaint=False)
+            for ch in (self.price, self.studio_price):  # Chart space stays clean (no auto overlays)
+                ch.apply_live(merged, overlays if ch is self.studio_price else None, repaint=False)
             if was_at_end:  # following the live edge -> advance the cursor and repaint
                 self._replay.seek(self._replay.last_index)
                 self._render_frame()
@@ -1060,10 +1060,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio.set_bars(bars)  # the Studio tab backtests the same data
         self._result = BacktestEngine(bars, self._strategy_factory()).run()
         self._replay = Replay(len(bars))
+        # A freshly loaded chart shows the LIVE EDGE (latest bars), like TradingView — not bar 0.
+        # Replay starts its cursor at index 0; without this seek, _render_frame() below would
+        # re-frame the view back to the oldest bars (jamming all candles to the left) whenever the
+        # slider's setValue doesn't fire a seek (same-length reload, interval switch, auto-load).
+        self._replay.seek(self._replay.last_index)
         overlays = self._strategy_factory().chart_overlays([b.close for b in bars])
         for ch in (self.price, self.studio_price):
-            ch.set_data(bars, self._result.trades)
-            ch.set_overlays(overlays)
+            # The Chart space is a CLEAN viewer — no auto strategy markers OR overlays (those belong
+            # to the Studio/backtest chart). Trades + the SMA legend go to Studio only; indicators on
+            # the Chart space come only from ƒx Indicators — matching a plain TradingView chart.
+            ch.set_data(bars, self._result.trades if ch is self.studio_price else [])
+            ch.set_overlays(overlays if ch is self.studio_price else {})
             ch.set_title(self._symbol)  # symbol-only; far-left toolbar label (no "· interval")
             ch.set_timeframe(self._interval)
         self.trades.update_trades(self._result.trades)
@@ -1547,7 +1555,7 @@ class MainWindow(QtWidgets.QMainWindow):
         overlays = self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
         for ch in (self.price, self.studio_price):
             ch.set_data(self._fwd_bars, res.trades)
-            ch.set_overlays(overlays)
+            ch.set_overlays(overlays if ch is self.studio_price else {})  # Chart space stays clean
             ch.show_upto(len(self._fwd_bars) - 1)
         self.trades.update_trades(res.trades)
         if self._fwd_bars:

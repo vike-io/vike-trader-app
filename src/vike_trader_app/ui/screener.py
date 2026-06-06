@@ -154,6 +154,7 @@ class ScreenerTab(QtWidgets.QWidget):
         self._min_vol.setRange(0.0, 1e12)
         self._min_vol.setDecimals(0)
         self._min_vol.setGroupSeparatorShown(True)
+        self._min_vol.setMaximumWidth(140)  # a number field shouldn't sprawl across the bar
         self._min_vol.setToolTip("Drop symbols whose mean bar volume is below this (0 = off)")
         self._live = QtWidgets.QCheckBox("Live")
         self._live.setToolTip("Auto-rescan the cache on a timer (main thread, read-only)")
@@ -183,7 +184,12 @@ class ScreenerTab(QtWidgets.QWidget):
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setAlternatingRowColors(True)
-        self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        # Compact columns sized to their content (a 4-char ticker shouldn't get a 500px column on a
+        # wide screen) with the last column absorbing the slack so the grid still reaches the edge.
+        hdr = self._table.horizontalHeader()
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        hdr.setStretchLastSection(True)
+        hdr.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         root.addWidget(self._table, 1)
 
         self._timer = QtCore.QTimer(self)

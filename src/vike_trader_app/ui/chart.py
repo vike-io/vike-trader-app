@@ -10,7 +10,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QRectF
 
 from ..core import chart_transforms
-from . import chart_styles, dropdowns, theme
+from . import chart_styles, dropdowns, icons, theme
 from .chartdata import (
     axis_time_label,
     bar_spacing,
@@ -44,6 +44,37 @@ _UNSET = object()
 
 # TradingView price sources for single-series indicators (D1/D2). Default `close`.
 _SOURCE_OPTIONS = ["open", "high", "low", "close", "hl2", "hlc3", "ohlc4", "hlcc4"]
+
+# Smoothing MA types for the Inputs-tab "Smoothing Line" dropdown (TradeLocker parity). Keys are
+# overlap.py function names; None = disabled (no-op). The MA of the first output is plotted as an
+# extra curve under _MA_SERIES_KEY, appended LAST in ind.series so base-output colors keep their
+# natural index and the legend/crosshair value stays on the base output, not the MA.
+_SMOOTHING_OPTIONS = [
+    ("None", None), ("SMA", "sma"), ("EMA", "ema"), ("SMMA (RMA)", "smma"), ("WMA", "wma"),
+]
+_MA_SERIES_KEY = "MA"
+
+# Overlays drawn as discrete DOTS (not a connected line) — Parabolic SAR, like TradingView.
+_DOT_OVERLAY_NAMES = frozenset({"psar"})
+
+
+def _session_vwap(bars):
+    """Session-anchored VWAP: cumulative typical-price×volume that RESETS each UTC trading day
+    (like TradingView/TradeLocker), so it tracks the current day instead of drifting off-screen
+    as a full-history cumulative. Aligned to ``bars`` (None until volume accrues)."""
+    out = [None] * len(bars)
+    cum_pv = cum_v = 0.0
+    prev_day = None
+    for i, b in enumerate(bars):
+        day = b.ts // 86_400_000  # UTC day bucket
+        if day != prev_day:
+            cum_pv = cum_v = 0.0
+            prev_day = day
+        tp = (b.high + b.low + b.close) / 3.0
+        cum_pv += tp * b.volume
+        cum_v += b.volume
+        out[i] = (cum_pv / cum_v) if cum_v else None
+    return out
 
 
 def is_source_selectable(spec) -> bool:
@@ -233,7 +264,7 @@ _OVERLAY_NAMES = frozenset({
     # overlap (all) — moving averages + bands on the price scale
     "alligator", "alma", "dema", "ema", "envelopes", "gmma", "hma", "ichimoku", "mcginley",
     "midpoint", "midprice", "psar", "sma", "smma", "supertrend", "t3", "tema", "trima",
-    "vwma", "wma", "zlema",
+    "vwma", "wma", "zlema", "chande_kroll_stop",
     # price transforms
     "avgprice", "medprice", "typprice", "wclprice",
     # structure (price levels / lines / fractals on the candles)
@@ -243,6 +274,30 @@ _OVERLAY_NAMES = frozenset({
     # volume / statistics that ride the price scale
     "vwap", "linearreg", "linearreg_intercept", "tsf", "std_error_bands",
 })
+
+# Oscillator outputs that render as a colored HISTOGRAM (bars), like TradingView/TradeLocker —
+# Awesome / Accelerator oscillators, the A/D oscillator, net volume, and MACD's `hist` output.
+# Bars are coloured by momentum (green when the value rises vs the previous bar, red when it
+# falls) and drawn from the zero line, matching the reference charts. Everything else is a line.
+_HISTOGRAM_OUTPUTS = {
+    "ao": {"ao"}, "ac": {"ac"}, "adosc": {"adosc"}, "net_volume": {"net_volume"},
+    "macd": {"hist"},
+}
+
+
+def _is_histogram(name: str, label: str) -> bool:
+    return label in _HISTOGRAM_OUTPUTS.get(name, ())
+
+
+def _hist_brushes(ys):
+    """Per-bar brushes for a histogram: green when the value rises vs the previous bar, red when
+    it falls (TradingView/TradeLocker AO/AC/MACD-hist colouring)."""
+    up, down = pg.mkBrush(theme.UP), pg.mkBrush(theme.DOWN)
+    out, prev = [], None
+    for v in ys:
+        out.append(up if (prev is None or v >= prev) else down)
+        prev = v
+    return out
 
 # Canonical threshold guide lines per oscillator (label, value). Each value is verified against
 # the indicator fn's NATIVE output range (e.g. williams_r is [-100, 0] -> -20/-80, NOT 20/80).
@@ -508,6 +563,9 @@ class _Indicator:
         self.widths = [1] * max(1, len(spec.outputs))    # per-output line width (px)
         self.styles = ["solid"] * max(1, len(spec.outputs))  # per-output line style name
         self.source = "close"            # price source feeding a single-series indicator (D1/D2)
+        self.smooth_type = None          # smoothing MA type (None = off) — TradeLocker "Smoothing Line"
+        self.smooth_len = 14             # smoothing MA period
+        self.smooth_color = theme.ORANGE if hasattr(theme, "ORANGE") else "#f5a623"  # MA curve colour
         # Threshold guide lines (oscillator/pairs only): mutable per-instance [label, value] pairs
         # seeded from _INDICATOR_BANDS, + a per-band colour (default dim theme.TEXT3). Kept OUT of
         # _curves so they never pollute reveal's autoscale or the crosshair value-at-x scan.
@@ -628,6 +686,27 @@ class _IndicatorSettings(dropdowns.PopupCard):
             form.addRow(p.name.replace("_", " ").title(), w)
         if not self._spec.params:
             form.addRow(QtWidgets.QLabel("This indicator has no inputs."))
+        # --- Smoothing (TradeLocker "Smoothing Line"): plot a moving average of the first output ---
+        self._smooth_combo = None
+        self._smooth_len_spin = None
+        if ind.kind != "pattern":
+            _sep = QtWidgets.QLabel("Smoothing")
+            _sep.setStyleSheet(
+                f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
+                f"background:transparent;"
+            )
+            form.addRow(_sep)
+            self._smooth_combo = QtWidgets.QComboBox()
+            for _lbl, _key in _SMOOTHING_OPTIONS:
+                self._smooth_combo.addItem(_lbl, _key)  # userData = overlap fn name or None
+            _cur = getattr(ind, "smooth_type", None)
+            _si = next((j for j, (_l, k) in enumerate(_SMOOTHING_OPTIONS) if k == _cur), 0)
+            self._smooth_combo.setCurrentIndex(_si)
+            form.addRow("Smoothing Line", self._smooth_combo)
+            self._smooth_len_spin = QtWidgets.QSpinBox()
+            self._smooth_len_spin.setRange(2, 500)
+            self._smooth_len_spin.setValue(int(getattr(ind, "smooth_len", 14)))
+            form.addRow("Smoothing Length", self._smooth_len_spin)
         tabs.addTab(inputs, "Inputs")
 
         # --- Style tab (per output: colour + line width + line style) ---
@@ -777,6 +856,9 @@ class _IndicatorSettings(dropdowns.PopupCard):
         if self._source_combo is not None:
             si = _SOURCE_OPTIONS.index(source) if source in _SOURCE_OPTIONS else _SOURCE_OPTIONS.index("close")
             self._source_combo.setCurrentIndex(si)
+        if self._smooth_combo is not None:           # smoothing default = None / length 14
+            self._smooth_combo.setCurrentIndex(0)
+            self._smooth_len_spin.setValue(14)
 
     @staticmethod
     def _set_btn_color(btn, color):
@@ -802,6 +884,11 @@ class _IndicatorSettings(dropdowns.PopupCard):
             (self._band_labels[i], float(spin.value()), btn.property("color_hex"))
             for i, (spin, btn) in enumerate(zip(self._band_value_spins, self._band_color_btns))
         ]
+        # Smoothing is set directly on the indicator (the dialog holds it) so the existing
+        # `applied` signal/_apply_edit path stays unchanged; _apply_edit -> _compute reads these.
+        if self._smooth_combo is not None:
+            self._ind.smooth_type = self._smooth_combo.currentData()
+            self._ind.smooth_len = int(self._smooth_len_spin.value())
         self.applied.emit(params, colors, widths, styles, intervals, source, bands)
         self.accept()
 
@@ -837,49 +924,17 @@ def _eye_icon(open_: bool) -> QtGui.QIcon:
     return QtGui.QIcon(pm)
 
 
+# The pane hover-toolbar reuses the app's ONE icon module (`icons.glyph_icon`) instead of a second,
+# divergent painter — so move-up/down, maximize/restore and delete render at the same geometry and
+# stroke as every other glyph in the app. up/down map to the app-wide unified chevron.
+_PANE_GLYPH = {"up": "chevron_up", "down": "chevron_down",
+               "max": "maximize", "restore": "restore", "del": "trash"}
+
+
 def _pane_icon(kind: str) -> QtGui.QIcon:
-    """Painter-drawn glyph for the pane hover toolbar — `up`/`down`/`max`/`restore`/`del`
-    (theme.TEXT3, no image assets), mirroring `_eye_icon`'s pixmap recipe."""
-    s, dpr = 18, 2
-    pm = QtGui.QPixmap(s * dpr, s * dpr)
-    pm.setDevicePixelRatio(dpr)
-    pm.fill(QtCore.Qt.transparent)
-    p = QtGui.QPainter(pm)
-    p.setRenderHint(QtGui.QPainter.Antialiasing, True)
-    pen = QtGui.QPen(QtGui.QColor(theme.TEXT3))
-    pen.setWidthF(1.5)
-    pen.setCapStyle(QtCore.Qt.RoundCap)
-    pen.setJoinStyle(QtCore.Qt.RoundJoin)
-    p.setPen(pen)
-    if kind in ("up", "down"):
-        # chevron arrow
-        if kind == "up":
-            p.drawLine(QtCore.QPointF(4, 11), QtCore.QPointF(9, 6))
-            p.drawLine(QtCore.QPointF(9, 6), QtCore.QPointF(14, 11))
-        else:
-            p.drawLine(QtCore.QPointF(4, 7), QtCore.QPointF(9, 12))
-            p.drawLine(QtCore.QPointF(9, 12), QtCore.QPointF(14, 7))
-    elif kind == "max":
-        p.drawRect(QtCore.QRectF(4, 4, 10, 10))          # outer frame = maximize
-    elif kind == "restore":
-        p.drawRect(QtCore.QRectF(4, 6, 8, 8))            # two offset frames = restore
-        p.drawLine(QtCore.QPointF(6, 6), QtCore.QPointF(6, 4))
-        p.drawLine(QtCore.QPointF(6, 4), QtCore.QPointF(14, 4))
-        p.drawLine(QtCore.QPointF(14, 4), QtCore.QPointF(14, 12))
-        p.drawLine(QtCore.QPointF(14, 12), QtCore.QPointF(12, 12))
-    elif kind == "del":
-        p.drawLine(QtCore.QPointF(4, 5), QtCore.QPointF(14, 5))   # trash lid
-        p.drawLine(QtCore.QPointF(7, 5), QtCore.QPointF(7, 3))
-        p.drawLine(QtCore.QPointF(7, 3), QtCore.QPointF(11, 3))
-        p.drawLine(QtCore.QPointF(11, 3), QtCore.QPointF(11, 5))
-        path = QtGui.QPainterPath()                              # trash body
-        path.moveTo(5, 6)
-        path.lineTo(6, 15)
-        path.lineTo(12, 15)
-        path.lineTo(13, 6)
-        p.drawPath(path)
-    p.end()
-    return QtGui.QIcon(pm)
+    """Pane hover-toolbar icon (`up`/`down`/`max`/`restore`/`del`) drawn by the shared `icons`
+    module in theme.TEXT3, so it stays unified with the rest of the app's line-art glyphs."""
+    return icons.glyph_icon(_PANE_GLYPH.get(kind, kind), theme.TEXT3)
 
 
 class _PaneToolbar(QtWidgets.QWidget):
@@ -991,12 +1046,17 @@ class _LegendRow(QtWidgets.QWidget):
         )
         self._val = QtWidgets.QLabel("")
         self._val.setStyleSheet(
-            f"color:{theme.TEXT3};font-size:13px;font-family:{theme.FONT_MONO};background:transparent;"
+            f"color:{theme.TEXT2};font-size:13px;font-family:{theme.FONT_MONO};background:transparent;"
         )
         self._eye = self._btn()
         self._eye.setIcon(_eye_icon(ind.visible))
         self._eye.setIconSize(QtCore.QSize(15, 15))
         self._eye.clicked.connect(lambda: self.hideToggled.emit(self._uid))
+        self._gear = self._btn()  # visible Settings affordance (TradeLocker shows a gear on hover)
+        self._gear.setText("⚙")
+        self._gear.setToolTip("Settings")
+        self._gear.setStyleSheet(self._gear.styleSheet() + "QToolButton{font-size:13px;}")
+        self._gear.clicked.connect(lambda: self.editRequested.emit(self._uid))
         self._more = self._btn()
         self._more.setText("⋯")
         self._more.setStyleSheet(self._more.styleSheet() + "QToolButton{font-size:14px;}")
@@ -1004,6 +1064,7 @@ class _LegendRow(QtWidgets.QWidget):
         h.addWidget(self._name)
         h.addWidget(self._val)
         h.addWidget(self._eye)
+        h.addWidget(self._gear)
         h.addWidget(self._more)
 
     def _btn(self) -> QtWidgets.QToolButton:
@@ -1333,10 +1394,21 @@ class OscillatorPane(pg.PlotWidget):
         widths = getattr(ind, "widths", [1])
         styles = getattr(ind, "styles", ["solid"])
         for i, label in enumerate(ind.series):
+            if label == _MA_SERIES_KEY:  # smoothing MA line (appended last -> own colour, own pen)
+                pen = pg.mkPen(getattr(ind, "smooth_color", "#f5a623"), width=1,
+                               style=_pen_style("solid"))
+                cs[label] = self.plot([], [], pen=pen)
+                continue
             col = ind.colors[i % len(ind.colors)]
-            pen = pg.mkPen(col, width=widths[i % len(widths)],
-                           style=_pen_style(styles[i % len(styles)]))
-            cs[label] = self.plot([], [], pen=pen)
+            if _is_histogram(ind.name, label):
+                # colored bars from the zero line (AO/AC/MACD-hist/…), like TradeLocker
+                item = pg.BarGraphItem(x=[], height=[], width=0.8, pen=None, brush=col)
+                self.addItem(item)
+                cs[label] = item
+            else:
+                pen = pg.mkPen(col, width=widths[i % len(widths)],
+                               style=_pen_style(styles[i % len(styles)]))
+                cs[label] = self.plot([], [], pen=pen)
         self._curves[ind.uid] = cs
         self._build_bands(ind)
 
@@ -1367,27 +1439,40 @@ class OscillatorPane(pg.PlotWidget):
             self._rows[ind.uid].refresh(ind)
 
     def reveal(self, index: int):
-        all_ys = []
+        # Fit the y-axis to the VISIBLE x-window only (like TradingView). Scaling to the whole
+        # revealed series lets a big historical swing (e.g. MACD during a large move) squash the
+        # on-screen part into the pane centre with empty margins. We still plot the full series
+        # (so panning back shows history); only the y-RANGE keys off the visible window.
+        (vx0, vx1), _ = self.getViewBox().viewRange()
+        win_lo, win_hi = max(0, int(vx0) - 1), int(vx1) + 1
+        win_ys, full_ys = [], []
         for ind in self._inds:
             last = None
             for label, curve in self._curves.get(ind.uid, {}).items():
                 series = ind.series.get(label, [])
                 xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
                 ys = [series[k] for k in xs]
-                curve.setData(xs, ys)
+                if isinstance(curve, pg.BarGraphItem):
+                    curve.setOpts(x=xs, height=ys, width=0.8, brushes=_hist_brushes(ys), pen=None)
+                else:
+                    curve.setData(xs, ys)
                 curve.setVisible(ind.shown)
                 if ind.shown:
-                    all_ys += ys
-                if ys:
+                    full_ys += ys
+                    win_ys += [series[k] for k in xs if win_lo <= k <= win_hi]
+                if ys and label != _MA_SERIES_KEY:  # legend value stays on the base output, not the MA
                     last = ys[-1]
             # union the threshold guide values (extend-only) so the dashed lines stay on-screen;
             # band lines live in _band_lines (ignoreBounds), so they never autoscale on their own.
             if ind.shown:
-                all_ys += [float(val) for _lbl, val in getattr(ind, "bands", [])]
+                band_vals = [float(val) for _lbl, val in getattr(ind, "bands", [])]
+                win_ys += band_vals
+                full_ys += band_vals
             for ln in self._band_lines.get(ind.uid, []):
                 ln.setVisible(ind.shown)
             if ind.uid in self._rows:
                 self._rows[ind.uid].set_value(f"{last:,.2f}" if last is not None else "")
+        all_ys = win_ys or full_ys  # fall back to the full series if nothing is in-window yet
         if all_ys:
             lo, hi = min(all_ys), max(all_ys)
             if hi > lo:
@@ -1511,6 +1596,13 @@ class OscillatorPane(pg.PlotWidget):
     def resizeEvent(self, e):  # noqa: N802 - Qt override
         super().resizeEvent(e)
         self._position_toolbar()
+        nav = self.findChild(QtWidgets.QWidget, "chartNavBar")  # the price chart docks it here
+        if nav is not None:                                     # when this is the lowest pane
+            nav.adjustSize()
+            ax_w = int(self.getAxis("right").width()) if self.getAxis("right").isVisible() else 0
+            nav.move(max(0, (self.width() - ax_w - nav.width()) // 2),
+                     max(0, self.height() - nav.height() - 26))           # centred above time axis
+            nav.raise_()
 
     def set_maximized(self, on: bool):
         """Delegate the maximize/restore glyph swap to the pane's hover toolbar."""
@@ -1774,6 +1866,33 @@ class PriceChart(pg.PlotWidget):
         self._price_legend.actionRequested.connect(self._indicator_action)
         self._position_price_legend()
 
+        # bottom-left chart navigation (zoom out/in, scroll back/forward, reset) — TradeLocker-style
+        self._nav_bar = QtWidgets.QWidget(self)
+        self._nav_bar.setObjectName("chartNavBar")  # so the lowest pane can re-tuck it on resize
+        _nav = QtWidgets.QHBoxLayout(self._nav_bar)
+        _nav.setContentsMargins(0, 0, 0, 0)
+        _nav.setSpacing(4)
+        _nav_qss = (
+            f"QToolButton{{color:{theme.TEXT2};background:{theme.PANEL};border:1px solid {theme.BORDER};"
+            f"border-radius:5px;min-width:24px;min-height:22px;font-size:14px;}}"
+            f"QToolButton:hover{{color:{theme.TEXT};border-color:{theme.TEXT3};}}"
+        )
+        for _txt, _tip, _fn in (
+            ("−", "Zoom out", lambda: self.nav_zoom(1.4)),
+            ("+", "Zoom in", lambda: self.nav_zoom(1 / 1.4)),
+            ("‹", "Scroll back", lambda: self.nav_scroll(-0.3)),
+            ("›", "Scroll forward", lambda: self.nav_scroll(0.3)),
+            ("↺", "Reset zoom / go to latest", lambda: self.nav_reset()),
+        ):
+            _nb = QtWidgets.QToolButton(self._nav_bar)
+            _nb.setText(_txt)
+            _nb.setToolTip(_tip)
+            _nb.setCursor(QtCore.Qt.PointingHandCursor)
+            _nb.setStyleSheet(_nav_qss)
+            _nb.clicked.connect(lambda _checked=False, fn=_fn: fn())
+            _nav.addWidget(_nb)
+        self._nav_bar.adjustSize()
+
     # --- data ---
     def set_title(self, text: str):
         """Set the symbol shown at the far left of the toolbar (before the timeframe selector)."""
@@ -1958,6 +2077,34 @@ class PriceChart(pg.PlotWidget):
             ind.series = {outs[0]: _clean(result)}
         else:
             ind.series = {lbl: _clean(s) for lbl, s in zip(outs, result)}
+        if ind.name == "vwap" and ind.kind != "pattern":
+            # The registry vwap is a full-history cumulative (fine for the API); on the CHART it
+            # must be session-anchored (daily reset) or it floats off-screen on multi-day loads.
+            ind.series = {"vwap": _session_vwap(self._bars)}
+        self._apply_smoothing(ind)
+
+    def _apply_smoothing(self, ind: "_Indicator"):
+        """Append a moving average of the FIRST output as an extra ``_MA_SERIES_KEY`` series
+        (TradeLocker "Smoothing Line"). Appended LAST so base-output colours keep their natural
+        index and the legend/crosshair value stays on the base output. No-op when smooth_type is
+        None — byte-identical to the unsmoothed result."""
+        st = getattr(ind, "smooth_type", None)
+        if not st or not ind.series or ind.kind == "pattern":
+            return
+        from vike_trader_app.core.indicators import overlap
+        fn = {"sma": overlap.sma, "ema": overlap.ema,
+              "smma": overlap.smma, "wma": overlap.wma}.get(st)
+        if fn is None:
+            return
+        base = ind.series[next(iter(ind.series))]          # first output's series
+        slen = max(2, int(getattr(ind, "smooth_len", 14)))
+        pairs = [(i, v) for i, v in enumerate(base) if v is not None]
+        ma = [None] * len(base)
+        if len(pairs) >= slen:
+            vals = [v for _, v in pairs]
+            for (idx, _), mv in zip(pairs, fn(vals, slen)):
+                ma[idx] = mv
+        ind.series[_MA_SERIES_KEY] = ma                    # appended last
 
     # --- render / reveal / lifecycle, per indicator ---
     def _new_pane(self) -> "OscillatorPane":
@@ -2031,11 +2178,20 @@ class PriceChart(pg.PlotWidget):
             ind.curves = {}
             widths = getattr(ind, "widths", [1])
             styles = getattr(ind, "styles", ["solid"])
+            dot = ind.name in _DOT_OVERLAY_NAMES   # Parabolic SAR etc. -> discrete dots, no line
             for i, lbl in enumerate(ind.series):
-                col = ind.colors[i % len(ind.colors)]
-                pen = pg.mkPen(col, width=widths[i % len(widths)],
-                               style=_pen_style(styles[i % len(styles)]))
-                curve = pg.PlotDataItem([], [], pen=pen)
+                if lbl == _MA_SERIES_KEY:  # smoothing MA line (appended last -> own colour)
+                    col = getattr(ind, "smooth_color", "#f5a623")
+                    pen = pg.mkPen(col, width=1, style=_pen_style("solid"))
+                else:
+                    col = ind.colors[i % len(ind.colors)]
+                    pen = pg.mkPen(col, width=widths[i % len(widths)],
+                                   style=_pen_style(styles[i % len(styles)]))
+                if dot and lbl != _MA_SERIES_KEY:  # SAR dots above/below the candles, like TradingView
+                    curve = pg.PlotDataItem([], [], pen=None, symbol="o", symbolSize=4,
+                                            symbolBrush=col, symbolPen=None)
+                else:
+                    curve = pg.PlotDataItem([], [], pen=pen)
                 if ind.own_scale:                 # independent right scale (secondary viewbox)
                     self._ensure_vb2()
                     self._vb2.addItem(curve)
@@ -2211,6 +2367,9 @@ class PriceChart(pg.PlotWidget):
             return None
         clone = self.add_indicator(ind.name, params=dict(ind.params), benchmark=ind.benchmark)
         if clone is not None:
+            clone.smooth_type = getattr(ind, "smooth_type", None)  # carry smoothing to the clone
+            clone.smooth_len = int(getattr(ind, "smooth_len", 14))
+            clone.smooth_color = getattr(ind, "smooth_color", clone.smooth_color)
             src_bands = getattr(ind, "bands", [])
             src_band_colors = getattr(ind, "band_colors", [])
             bands_payload = [
@@ -2411,7 +2570,12 @@ class PriceChart(pg.PlotWidget):
         the *last* layout pass, so it is stale (or 0) right after setWidth()."""
         if not axis.isVisible():
             return 0.0
-        mn, mx = axis.range
+        # axis.range is stale (default [0, 1]) before the first paint pass, which makes the price
+        # axis under-measure to "0.00"/"1.00" width -> the shared width gets pinned too narrow and
+        # the wide "60,850.00" price labels are dropped (only ~1 shows). Read the live y-range off
+        # the linked ViewBox so the width is correct on the very first sync (pre-paint).
+        vb = axis.linkedView()
+        mn, mx = vb.viewRange()[1] if vb is not None else axis.range
         size = axis.height() or 300
         try:
             levels = axis.tickValues(mn, mx, size)
@@ -2425,8 +2589,14 @@ class PriceChart(pg.PlotWidget):
                 pass
         font = axis.style.get("tickFont") or axis.font()
         fm = QtGui.QFontMetrics(font)
-        text_w = max((fm.horizontalAdvance(s) for s in strings), default=axis.textWidth)
-        return float(text_w + axis.style["tickTextOffset"][0] + max(0, axis.style["tickLength"]))
+        text_w = max((fm.boundingRect(s).width() for s in strings), default=axis.textWidth)
+        # pyqtgraph's pre-paint width estimate only fits ONE label's text + offset. Once panes pin
+        # every axis to that estimate, pyqtgraph's autoReduceTextSpace DROPS most price labels (only
+        # ~1 of ~18 shows). On paint, an un-pinned axis auto-expands wider than this estimate. Add a
+        # margin (~1.5x the tick line-height) so the pinned width matches that expanded width and the
+        # full price ladder renders like TradingView/TradeLocker.
+        margin = int(round(fm.height() * 1.5))
+        return float(text_w + axis.style["tickTextOffset"][0] + max(0, axis.style["tickLength"]) + margin)
 
     def _sync_axis_width(self):
         """Pin every pane's right price axis (and the price chart's) to one shared width so
@@ -2482,6 +2652,7 @@ class PriceChart(pg.PlotWidget):
         now-correct set of axes."""
         self._reassign_bottom_axis()
         self._sync_axis_width()
+        self._position_nav_bar()  # the lowest pane may have changed -> re-dock the nav bar
 
     def _osc_panes(self):
         seen, panes = set(), []
@@ -2851,6 +3022,13 @@ class PriceChart(pg.PlotWidget):
     def _render_markers(self, index: int, off: float = 0.0):
         """Draw revealed buy/sell/exit arrows + 'Buy'/'Sell' labels + dotted connectors."""
         spots = []
+        # Anchor labels inward near the edges so a 'Buy'/'Sell' at the first/last visible bar isn't
+        # clipped by the plot border (centre otherwise).
+        if self._follow:
+            vlo, vhi = follow_window(index, len(self._bars), self._window)
+        else:
+            (vlo, vhi), _ = self.getViewBox().viewRange()
+        vspan = (vhi - vlo) or 1.0
         for m in self._markers:
             lbl = m["label"]
             if m["x"] > index:
@@ -2859,6 +3037,9 @@ class PriceChart(pg.PlotWidget):
             y = m["price"] - off if m["below"] else m["price"] + off
             spots.append({"pos": (m["x"], y), "symbol": m["symbol"], "size": _MARKER_SIZE,
                           "brush": pg.mkBrush(m["color"]), "pen": None})
+            frac = (m["x"] - vlo) / vspan
+            ax = 0.0 if frac < 0.05 else (1.0 if frac > 0.95 else 0.5)
+            lbl.setAnchor((ax, 0.0 if m["below"] else 1.0))
             lbl.setPos(m["x"], y - off * 1.15 if m["below"] else y + off * 1.15)
             lbl.show()
         self._marker_scatter.setData(spots)
@@ -2906,6 +3087,42 @@ class PriceChart(pg.PlotWidget):
         self.setXRange(lo, last + 0.5, padding=0.0)
         self._fitting = False
         self._autoscale_y()
+
+    # --- bottom-left navigation (zoom / scroll / reset), TradeLocker-style -------------------
+    def _nav_apply(self, x0: float, x1: float):
+        """Set a new visible x-window (sticky, not following) and re-reveal at the current cursor
+        so price + indicator panes re-autoscale to the new window."""
+        self._follow = False
+        self._fitting = True
+        self.setXRange(x0, x1, padding=0.0)
+        self._fitting = False
+        self.show_upto(getattr(self, "_last_index", len(self._bars) - 1))
+
+    def nav_zoom(self, factor: float):
+        """Zoom the price view about its right (latest) edge: factor>1 zooms OUT, <1 zooms IN."""
+        if not self._bars:
+            return
+        (x0, x1), _ = self.getViewBox().viewRange()
+        span = max(2.0, x1 - x0)
+        new_span = max(10.0, min(span * factor, len(self._bars) * 1.5))
+        self._window = int(new_span)
+        self._nav_apply(x1 - new_span, x1)
+
+    def nav_scroll(self, frac: float):
+        """Scroll the view horizontally by ``frac`` of the visible span (<0 = back, >0 = forward)."""
+        if not self._bars:
+            return
+        (x0, x1), _ = self.getViewBox().viewRange()
+        shift = (x1 - x0) * frac
+        self._nav_apply(x0 + shift, x1 + shift)
+
+    def nav_reset(self):
+        """Reset the zoom to the default window and snap back to the live edge (TradingView ⟲)."""
+        if not self._bars:
+            return
+        self._window = 300
+        self._follow = True
+        self.show_upto(getattr(self, "_last_index", len(self._bars) - 1))
 
     # --- TradingView-style chrome ---
     def _autoscale_y(self):
@@ -2955,8 +3172,8 @@ class PriceChart(pg.PlotWidget):
         ref = bar.close
         # TradingView legend: the O/H/L/C *letters* are white; the *values* take the
         # candle's up/down colour. The change/percent at the end stays coloured too.
-        def _cell(letter, val):
-            return (f"<span style='color:{theme.TEXT}'>{letter}</span>"
+        def _cell(letter, val):  # &nbsp; so the letter doesn't jam into the value ("O 60,781")
+            return (f"<span style='color:{theme.TEXT}'>{letter}</span>&nbsp;"
                     f"<span style='color:{col}'>{fmt_price(val, ref)}</span>")
 
         body = "&nbsp;&nbsp;".join([_cell("O", bar.open), _cell("H", bar.high),
@@ -3063,7 +3280,25 @@ class PriceChart(pg.PlotWidget):
                 self.width() - self._auto_btn.width() - 8,
                 self.height() - self._auto_btn.height() - 6,
             )
+        self._position_nav_bar()
         self._position_price_legend()
+
+    def _position_nav_bar(self):
+        """Dock the zoom/scroll/reset bar at the bottom-left of the LOWEST chart pane, just above
+        the time axis (TradeLocker). When oscillator panes exist the lowest one owns the bottom,
+        so the bar is reparented onto it (a price-chart child would be clipped above the panes)."""
+        if not hasattr(self, "_nav_bar"):
+            return
+        panes = self._panes_in_visual_order() if self._pane_host is not None else []
+        host = panes[-1] if (panes and not self._panes_hidden) else self
+        if self._nav_bar.parent() is not host:
+            self._nav_bar.setParent(host)
+            self._nav_bar.show()
+        self._nav_bar.adjustSize()
+        ax_w = int(host.getAxis("right").width()) if host.getAxis("right").isVisible() else 0
+        x = max(0, (host.width() - ax_w - self._nav_bar.width()) // 2)  # centred over the plot area
+        self._nav_bar.move(x, max(0, host.height() - self._nav_bar.height() - 26))  # clear time axis
+        self._nav_bar.raise_()
 
     def leaveEvent(self, e):  # noqa: N802 - Qt override
         # cover the splitter-gutter case: leaving the price widget clears the whole crosshair
