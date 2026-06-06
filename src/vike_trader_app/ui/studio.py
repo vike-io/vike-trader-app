@@ -2338,14 +2338,15 @@ class StudioTab(QtWidgets.QWidget):
         """Write the MCP server entry into Claude Desktop's config + offer the Claude Code command.
 
         When a telemetry endpoint is configured (connect.DEFAULT_TELEMETRY_URL or VIKE_TELEMETRY_URL),
-        an opt-out consent checkbox controls whether the locally-spawned MCP server reports anonymous
-        usage. With no endpoint set, no checkbox appears and telemetry stays off.
+        an opt-in consent checkbox (default OFF, for GDPR/CCPA) controls whether the locally-spawned
+        MCP server reports anonymous usage. With no endpoint set, no checkbox appears and telemetry
+        stays off.
         """
         from vike_trader_app.ai import connect
 
         url = connect.telemetry_url()
         s = self._ai_settings()
-        consent = str(s.value("ai/telemetry_consent", "true")).lower() in ("true", "1", "yes")
+        consent = str(s.value("ai/telemetry_consent", "false")).lower() in ("true", "1", "yes")
 
         def _install(send: bool):
             data_root = connect.default_data_root()
