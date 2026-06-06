@@ -133,3 +133,43 @@ def test_pnf_reversal_adds_column():
 def test_pnf_empty():
     res = point_and_figure([], box_size=1.0)
     assert res.columns == [] and res.bars == []
+
+
+# --- robustness: malformed / degenerate data must not hang or crash --------------------------
+
+def _bad_single():
+    # a single malformed bar with high < low (auto_box would have been negative -> infinite loop)
+    return [Bar(ts=0, open=100.0, high=99.0, low=101.0, close=100.0)]
+
+
+def test_malformed_single_bar_does_not_hang():
+    # The regression: a high<low single bar made auto_box NEGATIVE -> renko/range looped forever.
+    # abs() in auto_box fixes it; these now all return promptly and bounded.
+    bad = _bad_single()
+    assert renko(bad) == []
+    assert range_bars(bad) == []
+    assert len(kagi(bad).prices) <= 1
+    assert len(point_and_figure(bad).columns) <= 1
+
+
+def test_negative_explicit_box_falls_back_to_auto_no_hang():
+    from vike_trader_app.core.chart_transforms import _MAX_UNITS
+    bricks = renko(_RISE, box_size=-1.0)            # invalid explicit -> positive auto box, bounded
+    assert 0 < len(bricks) <= _MAX_UNITS
+    assert renko([], box_size=-1.0) == []
+    assert range_bars(_RISE, range_size=0.0) != []  # 0 also falls back to auto (positive)
+
+
+def test_nan_close_does_not_crash_pnf():
+    nan = float("nan")
+    bars = [Bar(ts=i * 60_000, open=100, high=101, low=99, close=(nan if i == 0 else 100 + i))
+            for i in range(8)]
+    res = point_and_figure(bars, box_size=1.0)   # math.floor(nan) would raise without the finite filter
+    assert isinstance(res.columns, list)
+
+
+def test_runaway_box_is_capped():
+    from vike_trader_app.core.chart_transforms import _MAX_UNITS
+    # a tiny box vs a large move would build millions of bricks without the cap
+    bricks = renko(_bars([100.0, 100_000.0]), box_size=0.001)
+    assert len(bricks) <= _MAX_UNITS

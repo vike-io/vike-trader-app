@@ -28,8 +28,8 @@ def auto_box(bars: list[Bar]) -> float:
     """
     if not bars:
         return 0.0
-    if len(bars) < 2:
-        return (bars[0].high - bars[0].low) or abs(bars[0].close) * 0.005 or 1.0
+    if len(bars) < 2:  # abs(): a malformed single bar (high<low) must NOT yield a negative box
+        return abs(bars[0].high - bars[0].low) or abs(bars[0].close) * 0.005 or 1.0
     trs = []
     prev = bars[0].close
     for b in bars[1:]:
@@ -39,6 +39,22 @@ def auto_box(bars: list[Bar]) -> float:
     if atr <= 0:
         atr = abs(bars[-1].close) * 0.005 or 1.0
     return atr
+
+
+# Safety cap on synthetic units, so a pathologically tiny box vs a huge price range can't spin the
+# UI thread building millions of bricks/columns. Generous — real charts produce far fewer.
+_MAX_UNITS = 20_000
+
+
+def _finite(bars: list[Bar]) -> list[Bar]:
+    """Drop bars whose close is NaN/inf — keeps the non-time builders from crashing on bad data."""
+    return [b for b in bars if math.isfinite(b.close)]
+
+
+def _resolve_box(bars: list[Bar], box_size: float | None) -> float:
+    """Explicit positive box_size, else the ATR auto box; always strictly positive (or 0.0)."""
+    box = box_size if (box_size and box_size > 0) else auto_box(bars)
+    return box if box > 0 else 0.0
 
 
 def heikin_ashi(bars: list[Bar]) -> list[Bar]:
@@ -65,21 +81,24 @@ def renko(bars: list[Bar], box_size: float | None = None) -> list[Bar]:
     Each brick is a ``Bar`` whose open/close are the brick's price bounds (high/low equal them —
     Renko bricks have no wick), stamped with the timestamp of the bar that completed it.
     """
-    if not bars:
+    bars = _finite(bars)
+    box = _resolve_box(bars, box_size)
+    if not bars or box <= 0:
         return []
-    box = box_size if (box_size and box_size > 0) else auto_box(bars)
     bricks: list[Bar] = []
     last = bars[0].close
     for b in bars:
         c = b.close
-        while c >= last + box:
+        while c >= last + box and len(bricks) < _MAX_UNITS:
             o, cl = last, last + box
             bricks.append(Bar(ts=b.ts, open=o, high=cl, low=o, close=cl, volume=0.0))
             last = cl
-        while c <= last - box:
+        while c <= last - box and len(bricks) < _MAX_UNITS:
             o, cl = last, last - box
             bricks.append(Bar(ts=b.ts, open=o, high=o, low=cl, close=cl, volume=0.0))
             last = cl
+        if len(bricks) >= _MAX_UNITS:
+            break
     return bricks
 
 
@@ -89,15 +108,16 @@ def range_bars(bars: list[Bar], range_size: float | None = None) -> list[Bar]:
     Built from OHLC (not ticks), so the path within a source bar is approximated; direction is
     taken from the source bar's close vs the running anchor.
     """
-    if not bars:
+    bars = _finite(bars)
+    rng = _resolve_box(bars, range_size)
+    if not bars or rng <= 0:
         return []
-    rng = range_size if (range_size and range_size > 0) else auto_box(bars)
     out: list[Bar] = []
     anchor = bars[0].open
     hi, lo, ts = bars[0].high, bars[0].low, bars[0].ts
     for b in bars:
         hi, lo, ts = max(hi, b.high), min(lo, b.low), b.ts
-        while hi - lo >= rng:
+        while hi - lo >= rng and len(out) < _MAX_UNITS:
             if b.close >= anchor:
                 o, cl = lo, lo + rng
             else:
@@ -105,6 +125,8 @@ def range_bars(bars: list[Bar], range_size: float | None = None) -> list[Bar]:
             out.append(Bar(ts=ts, open=o, high=max(o, cl), low=min(o, cl), close=cl, volume=0.0))
             anchor = cl
             hi = lo = cl
+        if len(out) >= _MAX_UNITS:
+            break
     return out
 
 
@@ -114,11 +136,14 @@ def line_break(bars: list[Bar], n: int = 3) -> list[Bar]:
 
     Each line is a ``Bar`` block spanning the prior line's edge to the breakout close.
     """
+    bars = _finite(bars)
     if len(bars) < 2:
         return []
     blocks: list[dict] = []
     prev_close = bars[0].close
     for b in bars[1:]:
+        if len(blocks) >= _MAX_UNITS:
+            break
         c = b.close
         if not blocks:
             if c > prev_close:
@@ -164,13 +189,16 @@ def kagi(bars: list[Bar], reversal: float | None = None) -> KagiResult:
     Thickness flips (yang↔yin) when a segment breaks beyond the prior turning extreme — the
     standard shoulder/waist rule, approximated on closes.
     """
-    if not bars:
+    bars = _finite(bars)
+    rev = _resolve_box(bars, reversal)
+    if not bars or rev <= 0:
         return KagiResult([], [], [])
-    rev = reversal if (reversal and reversal > 0) else auto_box(bars)
     prices = [bars[0].close]
     tss = [bars[0].ts]
     direction = 0  # +1 rising, -1 falling
     for b in bars[1:]:
+        if len(prices) >= _MAX_UNITS:
+            break
         c, cur = b.close, prices[-1]
         if direction == 0:
             if abs(c - cur) >= rev:
@@ -228,9 +256,10 @@ def point_and_figure(bars: list[Bar], box_size: float | None = None, reversal: i
     """Close-based Point & Figure. Extend the current column by whole boxes; switch column (X↔O)
     only on a ``reversal``-box counter-move.
     """
-    if not bars:
+    bars = _finite(bars)  # math.floor(NaN) raises -> drop non-finite closes up front
+    box = _resolve_box(bars, box_size)
+    if not bars or box <= 0:
         return PnFResult([], [], 0.0)
-    box = box_size if (box_size and box_size > 0) else auto_box(bars)
 
     def fl(p: float) -> float:
         return math.floor(p / box) * box
@@ -238,6 +267,8 @@ def point_and_figure(bars: list[Bar], box_size: float | None = None, reversal: i
     cols: list[dict] = []
     cur: dict | None = None
     for b in bars:
+        if len(cols) >= _MAX_UNITS:
+            break
         c = b.close
         if cur is None:
             cur = {"up": True, "top": fl(c), "bottom": fl(c), "ts": b.ts}

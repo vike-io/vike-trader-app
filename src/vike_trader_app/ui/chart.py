@@ -1856,7 +1856,10 @@ class PriceChart(pg.PlotWidget):
         if not chart_styles.is_time_based(self._style):  # keep overlays hidden on non-time styles
             for c in self._overlay_curves.values():
                 c.setVisible(False)
-        if repaint:
+        # Non-time styles must re-derive their synthetic series so the axis/series stay in sync,
+        # even on a no-repaint tick (the synthetic render honours self._follow, so it won't yank
+        # the view when the user has scrolled back into history).
+        if repaint or not chart_styles.is_time_based(self._style):
             self.show_upto(len(bars) - 1)
         self._align_panes()
 
@@ -1974,7 +1977,9 @@ class PriceChart(pg.PlotWidget):
         pane.crosshairMoved.connect(self._set_crosshair_x)
         pane.crosshairLeft.connect(self._clear_crosshair)
         self._pane_host.addWidget(pane)
-        pane.set_bars(self._bars)  # so the fresh pane's time axis isn't blank
+        if self._panes_hidden:  # a non-time style is active -> don't pop a new orphan pane into view
+            pane.setVisible(False)
+        pane.set_bars(self._display_bars())  # so the fresh pane's time axis isn't blank
         self._resize_panes()
         self._refresh_pane_toolbars()
         return pane
@@ -2078,8 +2083,12 @@ class PriceChart(pg.PlotWidget):
         return self._last_index if self._bars else -1
 
     def _sync_shown(self, ind: "_Indicator"):
-        """Effective visibility = user toggle AND (no interval restriction OR current one allowed)."""
-        ind.shown = ind.visible and (
+        """Effective visibility = user toggle AND a 1:1 (time-based) style AND interval allowed.
+
+        Gating on the style here is the single chokepoint that keeps indicator overlays, pattern
+        markers, and oscillator-pane curves hidden on a non-time style (Renko/Kagi/…), even when the
+        user toggles/edits an indicator or changes timeframe while that style is active."""
+        ind.shown = ind.visible and chart_styles.is_time_based(self._style) and (
             ind.intervals is None or self._chart_interval in ind.intervals
         )
 
@@ -2767,8 +2776,9 @@ class PriceChart(pg.PlotWidget):
             c.setVisible(on)
         self._marker_scatter.setVisible(on)
         self._conn_curve.setVisible(on)
-        for lbl in self._marker_labels:
-            lbl.setVisible(on and lbl.isVisible())
+        if not on:  # hide all labels; when re-shown, the subsequent show_upto -> _render_markers
+            for lbl in self._marker_labels:  # re-shows only the in-range ones (single source of truth)
+                lbl.setVisible(False)
         for pane in self._panes_in_visual_order():
             pane.setVisible(on)
         self._resize_panes()

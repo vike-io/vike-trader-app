@@ -118,3 +118,39 @@ def test_oscillator_pane_hidden_on_nontime_then_restored(app):
     pc.set_style("Candles")
     assert pc._panes_hidden is False
     assert split.count() == 2
+
+
+def _chart_with_host():
+    from PySide6 import QtCore
+    pc = PriceChart()
+    split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+    split.addWidget(pc)
+    pc.set_pane_host(split)
+    pc.set_data(_bars(), [])
+    return pc, split
+
+
+def test_overlay_stays_hidden_when_toggled_while_nontime(app):
+    pc, _ = _chart_with_host()
+    ind = pc.add_indicator("ema")           # a price overlay
+    pc.set_style("Renko")
+    curve = next(iter(pc._indicators[ind.uid].curves.values()))
+    assert not curve.isVisible()
+    # toggling the indicator off/on while on Renko must NOT re-show it on the synthetic axis
+    pc.set_indicator_visible(ind.uid, False)
+    pc.set_indicator_visible(ind.uid, True)
+    assert not curve.isVisible()
+    pc.set_style("Candles")                 # back to a time style -> restored
+    curve = next(iter(pc._indicators[ind.uid].curves.values()))
+    assert curve.isVisible()
+
+
+def test_new_oscillator_added_while_nontime_is_hidden(app):
+    pc, split = _chart_with_host()
+    pc.set_style("Renko")
+    ind = pc.add_indicator("rsi")           # a NEW oscillator pane created WHILE on Renko
+    assert ind.pane is not None
+    assert ind.pane.isHidden()              # must not pop into view on the synthetic axis
+    assert split.count() == 2
+    pc.set_style("Candles")
+    assert not ind.pane.isHidden()          # restored on switch back
