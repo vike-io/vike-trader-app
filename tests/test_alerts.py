@@ -1,5 +1,6 @@
 """Unit tests for local watchlist alerts (store + evaluate)."""
 
+from vike_trader_app.analysis import screener as S
 from vike_trader_app.analysis.alerts import AlertRule, AlertStore, evaluate
 
 
@@ -33,3 +34,23 @@ def test_evaluate_matches_direction():
     assert hits[1].triggered is False
     assert hits[2].triggered is True and hits[2].signal == "long"
     assert hits[3].triggered is False
+
+
+def test_evaluate_resolves_registered_composite():
+    rising = [100 + i for i in range(60)]   # ROC long AND SMA-trend long
+    comp = S.CompositeRule(
+        "alert-composite",
+        "",
+        (S.Condition("ROC(30) momentum", "long"), S.Condition("SMA(50) trend", "long")),
+        combine="AND",
+        direction="long",
+    )
+    S.register_composite(comp)
+    try:
+        rules = [AlertRule("UP", "alert-composite", "long")]
+        hits = evaluate(rules, {"UP": rising})
+        assert hits[0].triggered is True
+        assert hits[0].signal == "long"
+        assert hits[0].value == 2.0    # both conditions satisfied
+    finally:
+        S._COMPOSITES.pop("alert-composite", None)

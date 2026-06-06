@@ -9,6 +9,7 @@ space (app.py), not here. The overfit-risk verdict banner sits above the tabs.
 import difflib
 import html
 
+import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
@@ -17,6 +18,39 @@ from . import icons, theme
 from .chart import EquityChart
 from .editor import CodeEditor
 from .flowlayout import FlowLayout
+
+# Optional 3D surface render. pyqtgraph.opengl needs PyOpenGL (the `vike_trader_app[viz3d]`
+# extra). When it's absent — or when running headless/offscreen, where GL can't initialise — we
+# fall back to a flat pyqtgraph ImageView heatmap, so the Surface tab always works.
+try:  # pragma: no cover - import guard
+    import pyqtgraph.opengl as _gl
+    _HAS_GL = True
+except Exception:  # noqa: BLE001
+    _gl = None
+    _HAS_GL = False
+
+
+def _gl_usable() -> bool:
+    """3D GL is usable only with PyOpenGL present AND a real (non-offscreen) display."""
+    if not _HAS_GL:
+        return False
+    app = QtGui.QGuiApplication.instance()
+    return app is not None and app.platformName() != "offscreen"
+
+
+# Bayesian optimization needs the optional `[opt]` extra (optuna). Cheap presence check (no import).
+import importlib.util as _ilu  # noqa: E402
+
+_HAS_OPTUNA = _ilu.find_spec("optuna") is not None
+
+
+# Optimizer-config option lists (mirror tester StrategyTester._CRITERIA + samplers methods).
+_OPT_METHODS = ["grid", "random", "genetic", "bayesian"]
+_OPT_CRITERIA = ["sharpe", "sortino", "calmar", "omega", "total_return", "profit_factor", "recovery_factor"]
+_WF_MODES = ["anchored", "rolling"]
+_BAYES_SAMPLERS = ["tpe", "gp", "cmaes", "random"]
+# Cap the in-sample grid we backtest to draw the optimization surface (combos = product of axes).
+_SURFACE_MAX_COMBOS = 400
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 
@@ -31,6 +65,31 @@ _PAD = 12
 # Smallest a splitter pane may be dragged to before the collapse-to-zero kicks in (keeps the tab
 # strip / toolbar visible). Lets the chart be shrunk smoothly instead of snapping shut past ~50%.
 _PANE_MIN = 32
+
+
+def _fmt_param(v) -> str:
+    """Compact param value for the matrix (3.0 -> '3', keep bools/strings as-is)."""
+    if isinstance(v, bool):
+        return str(v)
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return str(v)
+
+
+def _range_str(rng) -> str:
+    """Render a walk-forward window range — bar-index ('a–b') or epoch-ms ('date→date')."""
+    try:
+        lo, hi = rng
+    except Exception:  # noqa: BLE001
+        return "—"
+    if lo is None or hi is None:
+        return "—"
+    if lo >= 10 ** 11:  # epoch milliseconds (portfolio windows are date-based)
+        from datetime import datetime, timezone
+        def _d(ms):
+            return datetime.fromtimestamp(ms / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+        return f"{_d(lo)}→{_d(hi)}"
+    return f"{int(lo)}–{int(hi)}"
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +167,8 @@ class ResultsPanel(QtWidgets.QWidget):
         self._build_montecarlo_tab()
         self._build_periods_tab()
         self._build_benchmark_tab()
+        self._build_wf_matrix_tab()
+        self._build_surface_tab()
 
         self.last_report: object = None
         self._report_trades: list = []           # row -> Trade, for the chart-focus linkage
@@ -315,6 +376,87 @@ class ResultsPanel(QtWidgets.QWidget):
         hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         self._tabs.addTab(self._bench_table, "Benchmark")
+
+    _WF_COLS = ["Window", "Train", "Test", "Best params", "IS", "OOS", "Result"]
+
+    def _build_wf_matrix_tab(self) -> None:
+        # Walk-forward matrix: one row per IS/OOS window, with PASS/FAIL coloring (green = the
+        # window's out-of-sample result is profitable). The summary line carries the headline
+        # robustness numbers (efficiency / consistency / mode) that separate a robust system
+        # from a curve-fit one — the MultiCharts "Matrix Optimization" view, our way.
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
+        layout.setSpacing(_GAP)
+
+        self._wf_summary = QtWidgets.QLabel("Run Walk-forward to populate the matrix.")
+        self._wf_summary.setWordWrap(True)
+        self._wf_summary.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;")
+        layout.addWidget(self._wf_summary)
+
+        self._wf_table = QtWidgets.QTableWidget(0, len(self._WF_COLS))
+        self._wf_table.setHorizontalHeaderLabels(self._WF_COLS)
+        self._wf_table.verticalHeader().setVisible(False)
+        self._wf_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self._wf_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._wf_table.setAlternatingRowColors(True)
+        hdr = self._wf_table.horizontalHeader()
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        layout.addWidget(self._wf_table, 1)
+        self._tabs.addTab(container, "WF Matrix")
+
+    def _build_surface_tab(self) -> None:
+        # 3D optimization surface (param-x × param-y × metric). Real GLSurfacePlotItem when PyOpenGL
+        # is installed on a real display; a flat ImageView heatmap otherwise (headless/CI). The axis
+        # pickers re-pivot the SAME stored trials — no recompute — so flipping axes is instant.
+        container = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(container)
+        layout.setContentsMargins(_GAP, _GAP, _GAP, _GAP)
+        layout.setSpacing(_GAP)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(_GAP)
+        self._surface_caption = QtWidgets.QLabel("Run Walk-forward on a ≥2-param grid for the surface.")
+        self._surface_caption.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;")
+        row.addWidget(self._surface_caption)
+        row.addStretch(1)
+
+        def _axis_cap(text: str) -> QtWidgets.QLabel:
+            lab = QtWidgets.QLabel(text)
+            lab.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;")
+            return lab
+
+        self._surface_x = QtWidgets.QComboBox()
+        self._surface_y = QtWidgets.QComboBox()
+        for combo in (self._surface_x, self._surface_y):
+            combo.setMinimumWidth(90)
+            combo.currentIndexChanged.connect(self._render_surface)
+        row.addWidget(_axis_cap("X"))
+        row.addWidget(self._surface_x)
+        row.addWidget(_axis_cap("Y"))
+        row.addWidget(self._surface_y)
+        layout.addLayout(row)
+
+        # 2D fallback (always built — works headless). The GL view is built lazily on first render.
+        self._surface_img = pg.ImageView()
+        self._surface_img.ui.histogram.hide()
+        self._surface_img.ui.roiBtn.hide()
+        self._surface_img.ui.menuBtn.hide()
+        try:
+            self._surface_img.setColorMap(pg.colormap.get("inferno"))
+        except Exception:  # noqa: BLE001 - colormap name availability varies by pg build
+            pass
+        self._surface_stack = QtWidgets.QStackedWidget()
+        self._surface_stack.addWidget(self._surface_img)  # index 0 = 2D
+        self._surface_gl = None  # lazily-built GLViewWidget at index 1
+        self._surface_gl_item = None
+        layout.addWidget(self._surface_stack, 1)
+
+        self._surface_trials: list = []
+        self._surface_grid: dict = {}
+        self._surface_criterion = "sharpe"
+        self._tabs.addTab(container, "Surface")
 
     def mount_chart_tab(self, chart: QtWidgets.QWidget) -> None:
         """Add the price chart as a 'Chart' tab after Distribution, so the reports and the chart
@@ -737,6 +879,124 @@ class ResultsPanel(QtWidgets.QWidget):
         for r, (lbl, val, col) in enumerate(rows):
             self._table_row(self._bench_table, r, lbl, val, col)
 
+    # --- walk-forward matrix + optimization surface ---
+
+    def show_walk_forward(self, wf, criterion: str = "sharpe") -> None:
+        """Populate the WF Matrix tab from a WalkForwardReport: per-window IS vs OOS + PASS/FAIL."""
+        windows = list(getattr(wf, "windows", []) or [])
+        verdict = getattr(getattr(wf, "oos_report", None), "verdict", None)
+        level = verdict.level if verdict is not None else "?"
+        eff = getattr(wf, "wf_efficiency", 0.0) or 0.0
+        eff_str = f"{eff:.2f}" if eff else "—"  # 0.0 = non-positive IS edge (see wf_efficiency)
+        cons = getattr(wf, "wf_consistency", 0.0) or 0.0
+        n_pass = sum(1 for w in windows if getattr(w.oos_report, "total_return", 0.0) > 0)
+        self._wf_summary.setText(
+            f"Criterion: {criterion}  ·  Windows: {len(windows)}  ·  Passed OOS: {n_pass}/{len(windows)}"
+            f"  ·  WF efficiency: {eff_str}  ·  Consistency: {self._pct(cons)}  ·  Overfit risk: {level}"
+        )
+        self._wf_table.setRowCount(len(windows))
+        for r, w in enumerate(windows):
+            passed = getattr(w.oos_report, "total_return", 0.0) > 0
+            params = ", ".join(f"{k}={_fmt_param(v)}" for k, v in (w.best_params or {}).items())
+            cells = [
+                str(r + 1), _range_str(w.train_range), _range_str(w.test_range), params,
+                self._fmt(criterion, getattr(w, "is_score", 0.0)),
+                self._fmt(criterion, getattr(w, "oos_score", 0.0)),
+                "PASS" if passed else "FAIL",
+            ]
+            for c, text in enumerate(cells):
+                item = QtWidgets.QTableWidgetItem(text)
+                if c in (4, 5):
+                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                if c == 5:
+                    item.setForeground(QtGui.QColor(theme.UP if passed else theme.DOWN))
+                if c == 6:
+                    item.setTextAlignment(QtCore.Qt.AlignCenter)
+                    item.setForeground(QtGui.QColor(theme.BG))
+                    item.setBackground(QtGui.QColor(theme.UP if passed else theme.DOWN))
+                self._wf_table.setItem(r, c, item)
+
+    def show_surface(self, ranked, grid, criterion: str = "sharpe") -> None:
+        """Populate the Surface tab from optimization trials (each with .params/.score) over a grid."""
+        self._surface_trials = list(ranked or [])
+        self._surface_grid = dict(grid or {})
+        self._surface_criterion = criterion
+        multi = [k for k, vs in self._surface_grid.items() if len(vs) >= 2]
+        axes = multi or list(self._surface_grid)
+        if len(axes) < 2 or not self._surface_trials:
+            self._surface_caption.setText("Optimization surface needs a ≥2-parameter grid search.")
+            for combo in (self._surface_x, self._surface_y):
+                combo.blockSignals(True)
+                combo.clear()
+                combo.blockSignals(False)
+            return
+        for combo, default in ((self._surface_x, axes[0]), (self._surface_y, axes[1])):
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(axes)
+            combo.setCurrentText(default)
+            combo.blockSignals(False)
+        tail = "" if _gl_usable() else "  (2D — install vike_trader_app[viz3d] for 3D)"
+        self._surface_caption.setText(f"Optimization surface · {criterion}{tail}")
+        self._render_surface()
+
+    def _render_surface(self, *_args) -> None:
+        if not self._surface_trials or self._surface_x.count() == 0:
+            return
+        px, py = self._surface_x.currentText(), self._surface_y.currentText()
+        if not px or not py:
+            return
+        if px == py:  # keep the two axes distinct
+            for i in range(self._surface_y.count()):
+                if self._surface_y.itemText(i) != px:
+                    self._surface_y.blockSignals(True)
+                    self._surface_y.setCurrentIndex(i)
+                    self._surface_y.blockSignals(False)
+                    py = self._surface_y.currentText()
+                    break
+            if px == py:
+                return
+        from ..analysis.surface import surface_from_trials
+        best = max(self._surface_trials, key=lambda t: getattr(t, "score", float("-inf")))
+        best_params = getattr(best, "params", {}) or {}
+        fixed = {k: best_params[k] for k in self._surface_grid if k not in (px, py) and k in best_params}
+        self._draw_surface(surface_from_trials(self._surface_trials, px, py, fixed=fixed))
+
+    def _draw_surface(self, surf) -> None:
+        flat = [v for row in surf.z for v in row if v is not None]
+        if not flat:  # no trial matches these axes — blank rather than leave a stale image
+            self._surface_img.clear()
+            self._surface_stack.setCurrentWidget(self._surface_img)
+            return
+        floor = min(flat)
+        z = np.array([[(v if v is not None else floor) for v in row] for row in surf.z], dtype=float)
+        if _gl_usable():
+            try:
+                self._draw_surface_gl(z)
+                return
+            except Exception:  # noqa: BLE001 - fall back to the 2D heatmap on any GL hiccup
+                pass
+        self._surface_img.setImage(z.T, autoLevels=True)  # ImageView wants [x][y]
+        self._surface_stack.setCurrentWidget(self._surface_img)
+
+    def _draw_surface_gl(self, z) -> None:
+        if self._surface_gl is None:
+            self._surface_gl = _gl.GLViewWidget()
+            self._surface_gl.setBackgroundColor(theme.BG)
+            self._surface_gl_item = _gl.GLSurfacePlotItem(shader="heightColor", smooth=True,
+                                                          computeNormals=False)
+            self._surface_gl.addItem(self._surface_gl_item)
+            self._surface_gl.addItem(_gl.GLGridItem())
+            self._surface_stack.addWidget(self._surface_gl)
+        ny, nx = z.shape
+        zmin, zmax = float(z.min()), float(z.max())
+        span = (zmax - zmin) or 1.0
+        znorm = (z - zmin) / span * max(nx, ny) * 0.5  # visible relief
+        self._surface_gl_item.setData(x=np.arange(nx, dtype=float), y=np.arange(ny, dtype=float),
+                                      z=znorm.T)  # GLSurfacePlotItem z is z[x][y]
+        self._surface_gl.setCameraPosition(distance=max(nx, ny) * 2.2)
+        self._surface_stack.setCurrentWidget(self._surface_gl)
+
     def _on_trade_clicked(self, row: int, _col: int) -> None:
         """Trade-row click — selection only; price-chart focus lives in the Chart space now."""
         return
@@ -870,6 +1130,14 @@ class ResultsPanel(QtWidgets.QWidget):
         self._periods_table.setRowCount(0)
         self._dd_table.setRowCount(0)
         self._bench_table.setRowCount(0)
+        self._reset_wf_surface()
+
+    def _reset_wf_surface(self) -> None:
+        """Blank the WF matrix + optimization surface (used by clear / show_error)."""
+        self._wf_table.setRowCount(0)
+        self._wf_summary.setText("Run Walk-forward to populate the matrix.")
+        self._surface_trials = []
+        self._surface_caption.setText("Run Walk-forward on a ≥2-param grid for the surface.")
 
     def clear(self) -> None:
         """Reset to blank state (including run history)."""
@@ -893,6 +1161,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._periods_table.setRowCount(0)
         self._dd_table.setRowCount(0)
         self._bench_table.setRowCount(0)
+        self._reset_wf_surface()
 
 
 # ---------------------------------------------------------------------------
@@ -1239,6 +1508,111 @@ class BacktestConfigDialog(QtWidgets.QDialog):
         return cap, start_ts, end_ts, res_ms
 
 
+class OptimizerConfigDialog(QtWidgets.QDialog):
+    """Optimizer + walk-forward configuration: search method, ranking criterion, WF window mode.
+
+    The MultiCharts "Optimization" + "Walk-Forward" settings in one modal: pick exhaustive grid vs
+    random / genetic / Bayesian (Optuna TPE/GP/CMA-ES) search, the metric to rank by, and whether
+    the walk-forward train window is anchored (expanding) or rolling (fixed-width sliding).
+    """
+
+    def __init__(self, config: dict, parent: QtWidgets.QWidget | None = None):
+        super().__init__(parent)
+        self.setWindowTitle("Optimizer configuration")
+        self.setModal(True)
+        self.setMinimumWidth(440)
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(20, 18, 20, 18)
+        root.setSpacing(14)
+
+        eyebrow = QtWidgets.QLabel("OPTIMIZER")
+        eyebrow.setStyleSheet(f"color:{theme.ACCENT};font-size:10px;font-weight:700;letter-spacing:2px;")
+        title = QtWidgets.QLabel("Search & walk-forward")
+        title.setStyleSheet(f"color:{theme.TEXT};font-size:18px;font-weight:700;")
+        root.addWidget(eyebrow)
+        root.addWidget(title)
+
+        form = QtWidgets.QFormLayout()
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(12)
+
+        self.method = QtWidgets.QComboBox()
+        methods = _OPT_METHODS if _HAS_OPTUNA else [m for m in _OPT_METHODS if m != "bayesian"]
+        self.method.addItems(methods)
+        want = config.get("method", "grid")
+        self.method.setCurrentText(want if want in methods else "grid")
+        self.criterion = QtWidgets.QComboBox()
+        self.criterion.addItems(_OPT_CRITERIA)
+        self.criterion.setCurrentText(config.get("criterion", "sharpe"))
+        self.mode = QtWidgets.QComboBox()
+        self.mode.addItems(_WF_MODES)
+        self.mode.setCurrentText(config.get("mode", "anchored"))
+        self.sampler = QtWidgets.QComboBox()
+        self.sampler.addItems(_BAYES_SAMPLERS)
+        self.sampler.setCurrentText(config.get("sampler", "tpe"))
+
+        def _spin(lo, hi, val):
+            s = QtWidgets.QSpinBox()
+            s.setRange(lo, hi)
+            s.setValue(int(val))
+            return s
+
+        self.n_splits = _spin(2, 20, config.get("n_splits", 3))
+        self.n_trials = _spin(5, 2000, config.get("n_trials", 50))
+        self.pop_size = _spin(4, 500, config.get("pop_size", 20))
+        self.generations = _spin(1, 500, config.get("generations", 10))
+        self.seed = _spin(0, 1_000_000, config.get("seed", 0))
+
+        form.addRow("Search method", self.method)
+        form.addRow("Ranking criterion", self.criterion)
+        form.addRow("Walk-forward mode", self.mode)
+        form.addRow("WF splits", self.n_splits)
+        form.addRow("Trials (random / bayesian)", self.n_trials)
+        form.addRow("Population (genetic)", self.pop_size)
+        form.addRow("Generations (genetic)", self.generations)
+        form.addRow("Bayesian sampler", self.sampler)
+        form.addRow("Seed", self.seed)
+        root.addLayout(form)
+
+        hint_text = ("Grid is exhaustive; genetic/bayesian scale to large grids. "
+                     "Rolling WF uses a fixed-width sliding train window.")
+        if not _HAS_OPTUNA:
+            hint_text += "  Bayesian needs the optional vike_trader_app[opt] extra (optuna)."
+        hint = QtWidgets.QLabel(hint_text)
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
+        root.addWidget(hint)
+
+        self.method.currentTextChanged.connect(self._sync_enabled)
+        self._sync_enabled()
+
+        btns = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Cancel)
+        btns.addButton("Save", QtWidgets.QDialogButtonBox.AcceptRole)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        root.addWidget(btns)
+
+    def _sync_enabled(self) -> None:
+        m = self.method.currentText()
+        self.n_trials.setEnabled(m in ("random", "bayesian"))
+        self.pop_size.setEnabled(m == "genetic")
+        self.generations.setEnabled(m == "genetic")
+        self.sampler.setEnabled(m == "bayesian")
+
+    def values(self) -> dict:
+        return {
+            "method": self.method.currentText(),
+            "criterion": self.criterion.currentText(),
+            "mode": self.mode.currentText(),
+            "n_splits": self.n_splits.value(),
+            "n_trials": self.n_trials.value(),
+            "pop_size": self.pop_size.value(),
+            "generations": self.generations.value(),
+            "sampler": self.sampler.currentText(),
+            "seed": self.seed.value(),
+        }
+
+
 # ---------------------------------------------------------------------------
 # DiffDialog
 # ---------------------------------------------------------------------------
@@ -1341,6 +1715,10 @@ class StudioTab(QtWidgets.QWidget):
         self._portfolio_bars = None  # None -> single-symbol mode; dict -> portfolio-optimize mode
         self._portfolio_ranges = None  # per-symbol membership ranges (survivorship-free)
         self._portfolio_name = ""    # DataSet name surfaced in toasts
+        # Optimizer + walk-forward config (set via the Optimizer modal; consumed by _optimize).
+        self._opt_config = {"method": "grid", "criterion": "sharpe", "mode": "anchored",
+                            "n_splits": 3, "n_trials": 50, "pop_size": 20, "generations": 10,
+                            "sampler": "tpe", "seed": 0}
 
         root = QtWidgets.QVBoxLayout(self)
         # No root inset — every visible gap is a single, uniform _GAP instead of doubling up
@@ -1366,6 +1744,12 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_optimize.setToolTip("Walk-forward optimize the PARAM_GRID + attach an overfit verdict")
         self._btn_optimize.clicked.connect(self._optimize)
         toolbar.addWidget(self._btn_optimize)
+        self._btn_opt_config = QtWidgets.QPushButton("Optimizer")
+        self._btn_opt_config.setIcon(icons.glyph_icon("gear", theme.TEXT2))
+        self._btn_opt_config.setIconSize(QtCore.QSize(16, 16))
+        self._btn_opt_config.setToolTip("Optimizer settings — search method, criterion, walk-forward mode")
+        self._btn_opt_config.clicked.connect(self._open_optimizer_config)
+        toolbar.addWidget(self._btn_opt_config)
         self._btn_templates = QtWidgets.QPushButton()
         self._btn_templates.setIcon(icons.glyph_icon("folder", theme.TEXT2))
         self._btn_templates.setIconSize(QtCore.QSize(18, 18))
@@ -1702,6 +2086,10 @@ class StudioTab(QtWidgets.QWidget):
         if not grid:
             self.results.toast("Add a PARAM_GRID to the strategy to walk-forward optimize it.")
             return
+        cfg = self._opt_config
+        wf_kw = dict(n_splits=cfg["n_splits"], criterion=cfg["criterion"], mode=cfg["mode"],
+                     method=cfg["method"], seed=cfg["seed"], n_trials=cfg["n_trials"],
+                     pop_size=cfg["pop_size"], generations=cfg["generations"], sampler=cfg["sampler"])
         if self._portfolio_bars:
             from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester
             n = min((len(b) for b in self._portfolio_bars.values()), default=0)
@@ -1712,15 +2100,16 @@ class StudioTab(QtWidgets.QWidget):
             QtWidgets.QApplication.processEvents()
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
             try:
-                wf = PortfolioStrategyTester(self._portfolio_bars, config,
-                                             ranges=self._portfolio_ranges).walk_forward(
-                                                 cls.make, grid, n_splits=3)
+                pt = PortfolioStrategyTester(self._portfolio_bars, config, ranges=self._portfolio_ranges)
+                wf = pt.walk_forward(cls.make, grid, **wf_kw)
             except Exception as exc:  # noqa: BLE001
                 self.results.show_error(f"Portfolio optimize failed: {type(exc).__name__}: {exc}")
                 return
             finally:
                 QtWidgets.QApplication.restoreOverrideCursor()
             self.results.add_run(wf.oos_report, [])    # portfolio: no per-bar price chart
+            self.results.show_walk_forward(wf, cfg["criterion"])
+            self._populate_surface(pt, cls.make, grid, cfg["criterion"])
             best = wf.windows[-1].best_params if wf.windows else {}
             level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
             self.results.toast(f"Portfolio WF-OOS · {self._portfolio_name} · overfit: {level} · best {best}")
@@ -1732,16 +2121,53 @@ class StudioTab(QtWidgets.QWidget):
         QtWidgets.QApplication.processEvents()
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            wf = StrategyTester(cls(), bars, config).walk_forward(cls.make, grid, n_splits=3)
+            st = StrategyTester(cls(), bars, config)
+            wf = st.walk_forward(cls.make, grid, **wf_kw)
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"Optimize failed: {type(exc).__name__}: {exc}")
             return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self.results.add_run(wf.oos_report, bars)
+        self.results.show_walk_forward(wf, cfg["criterion"])
+        self._populate_surface(st, cls.make, grid, cfg["criterion"])
         best = wf.windows[-1].best_params if wf.windows else {}
         level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
         self.results.toast(f"Walk-forward OOS · overfit risk: {level} · best {best}")
+
+    def _populate_surface(self, optimizer, make, grid, criterion) -> None:
+        """Feed the Surface tab from an in-sample GRID optimize over ≤2 axes (capped, exhaustive).
+
+        The surface is the optimization LANDSCAPE — always a full grid (so neighbours are
+        comparable), independent of the walk-forward search method. Skipped (with a hint) when the
+        grid has <2 multi-valued params or exceeds _SURFACE_MAX_COMBOS backtests.
+        """
+        multi = [k for k, v in grid.items() if len(v) >= 2]
+        combos = 1
+        for v in grid.values():
+            combos *= len(v)
+        if len(multi) < 2 or combos > _SURFACE_MAX_COMBOS:
+            self.results.show_surface([], grid, criterion)  # shows the "needs a ≥2-param grid" hint
+            return
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)  # the grid sweep blocks; show busy
+        try:
+            rep = optimizer.optimize(make, grid, criterion=criterion, method="grid")
+        except Exception:  # noqa: BLE001 - surface is a nice-to-have, never block the WF result
+            return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
+        self.results.show_surface(rep.ranked, grid, criterion)
+
+    def _open_optimizer_config(self) -> None:
+        """Open the optimizer modal (search method, criterion, walk-forward mode) and store it."""
+        dlg = OptimizerConfigDialog(self._opt_config, parent=self)
+        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
+        if dlg.exec() == QtWidgets.QDialog.Accepted:
+            self._opt_config = dlg.values()
+            c = self._opt_config
+            self.results.toast(
+                f"Optimizer · {c['method']} · {c['criterion']} · WF {c['mode']} ({c['n_splits']}) — press Walk-forward"
+            )
 
     def _export_csv(self) -> None:
         """Export the current run's metrics + trades to a CSV file."""

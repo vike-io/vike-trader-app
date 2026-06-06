@@ -1,6 +1,7 @@
 """Cross-validation splitters for time series (anti-overfitting).
 
-- ``walk_forward_splits``: expanding-window out-of-sample evaluation.
+- ``walk_forward_splits``: out-of-sample evaluation via anchored (expanding) or
+  rolling (fixed-width sliding) train windows.
 - ``purged_kfold_indices``: k-fold with an embargo after each test fold
   (López de Prado, *Advances in Financial Machine Learning*, ch. 7).
 - ``combinatorial_purged_splits``: all C(groups, test_groups) train/test paths,
@@ -13,14 +14,23 @@ observations, so there is no label-overlap purge to apply before the block).
 from itertools import combinations
 
 
-def walk_forward_splits(n: int, n_splits: int):
-    """Expanding-window splits as ``(train_start, train_end, test_start, test_end)``."""
+def walk_forward_splits(n: int, n_splits: int, *, mode: str = "anchored"):
+    """Walk-forward splits as ``(train_start, train_end, test_start, test_end)``.
+
+    ``mode='anchored'`` (default): expanding window, ``train_start`` always 0.
+    ``mode='rolling'``: fixed-width train of one chunk immediately preceding the
+    test window (``train_start = max(0, test_start - chunk)``).
+    Any other ``mode`` raises ``ValueError``.
+    """
+    if mode not in ("anchored", "rolling"):
+        raise ValueError(f"unknown mode: {mode!r} (expected 'anchored' or 'rolling')")
     chunk = n // (n_splits + 1)
     splits = []
     for s in range(1, n_splits + 1):
         test_start = s * chunk
         test_end = n if s == n_splits else (s + 1) * chunk
-        splits.append((0, test_start, test_start, test_end))
+        train_start = 0 if mode == "anchored" else max(0, test_start - chunk)
+        splits.append((train_start, test_start, test_start, test_end))
     return splits
 
 

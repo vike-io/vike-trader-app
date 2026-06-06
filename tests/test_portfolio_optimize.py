@@ -166,3 +166,27 @@ def test_walk_forward_respects_membership_ranges():
     # runs end-to-end and BBB never trades out-of-sample
     assert rep.n_windows == 3
     assert all(tr.symbol != "BBB" for tr in rep.oos_report.trades)
+
+
+# --- samplers + rolling WF over the portfolio ----------------------------------------------------
+
+
+def test_portfolio_optimize_genetic_method():
+    pt = PortfolioStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
+    rep = pt.optimize(_make, _GRID, criterion="total_return", method="genetic",
+                      seed=1, pop_size=4, generations=3)
+    assert isinstance(rep, OptimizeReport)
+    # every returned trial is a distinct combo from the 2x2 grid (eval cache, no dupes)
+    assert len({tuple(sorted(t.params.items())) for t in rep.ranked}) == rep.n_trials
+    assert rep.ranked[0] is rep.best
+
+
+def test_portfolio_walk_forward_rolling_and_efficiency():
+    pt = PortfolioStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
+    rep = pt.walk_forward(_make, _GRID, n_splits=3, criterion="total_return", mode="rolling")
+    assert rep.n_windows == 3
+    assert isinstance(rep.wf_efficiency, float)
+    # rolling time windows still contiguous + non-overlapping
+    tests = [w.test_range for w in rep.windows]
+    for (lo0, hi0), (lo1, hi1) in zip(tests, tests[1:]):
+        assert hi0 == lo1

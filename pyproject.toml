@@ -17,8 +17,9 @@ options = ["yfinance>=0.2"]  # stock/index options chain backend (data/options/y
 cli = ["typer>=0.12"]
 analysis = ["skfolio>=0.6", "scikit-learn>=1.5"]
 fast = ["numba>=0.63"]  # compiled sweep fast-path (core/vectorized.py); numpy fallback when absent
-opt = ["optuna>=3"]     # TPE/CMA-ES optimizer backend (analysis/search.py); GA fallback when absent
+opt = ["optuna>=3"]     # TPE/CMA-ES optimizer backend (analysis/search.py + samplers.py); GA fallback when absent
 viz = ["plotly>=5"]     # interactive HTML tearsheet (analysis/interactive.py); static SVG otherwise
+viz3d = ["pyopengl>=3.1"]  # 3D optimization surface via pyqtgraph.opengl (ui/studio.py Surface tab); 2D ImageView fallback when absent
 live = ["websockets>=12"]  # push WebSocket feed (data/vike_live.py); PollingBarFeed needs no dep
 duck = ["duckdb>=1.0"]  # columnar read/resample engine (data/duck_catalog.py); Catalog needs no dep
 mcp = ["mcp>=1.2"]

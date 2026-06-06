@@ -46,3 +46,46 @@ def test_optimize_rejects_unknown_criterion():
     st = StrategyTester(_make, _bars(), TesterConfig())
     with pytest.raises(ValueError):
         st.optimize(_make, {"edge": [True]}, criterion="bogus")
+
+
+def test_optimize_grid_is_default_method_unchanged():
+    st = StrategyTester(_make, _bars(), TesterConfig(taker_fee=0.0))
+    rep = st.optimize(_make, {"edge": [True, False]}, criterion="total_return", method="grid")
+    assert rep.n_trials == 2  # full grid evaluated
+    assert rep.best.params == {"edge": True}
+
+
+def test_optimize_genetic_finds_best_and_caches():
+    st = StrategyTester(_make, _bars(), TesterConfig(taker_fee=0.0))
+    rep = st.optimize(_make, {"edge": [True, False]}, criterion="total_return",
+                      method="genetic", seed=1, pop_size=4, generations=3)
+    assert rep.best.params == {"edge": True}
+    assert rep.ranked[0].score >= rep.ranked[-1].score
+    # eval cache => at most the 2 distinct combos appear, never duplicated
+    assert rep.n_trials <= 2
+    assert len({tuple(sorted(t.params.items())) for t in rep.ranked}) == rep.n_trials
+
+
+def test_optimize_random_method_runs():
+    st = StrategyTester(_make, _bars(), TesterConfig(taker_fee=0.0))
+    rep = st.optimize(_make, {"edge": [True, False]}, criterion="total_return",
+                      method="random", seed=0, n_trials=5)
+    assert rep.best.params == {"edge": True}
+    assert isinstance(rep.best.report, TesterReport)
+
+
+def test_optimize_bayesian_method_runs():
+    import pytest
+    pytest.importorskip("optuna")
+    st = StrategyTester(_make, _bars(), TesterConfig(taker_fee=0.0))
+    rep = st.optimize(_make, {"edge": [True, False]}, criterion="total_return",
+                      method="bayesian", seed=0, n_trials=6)
+    assert rep.best.params in ({"edge": True}, {"edge": False})
+    assert rep.ranked[0].score >= rep.ranked[-1].score
+
+
+def test_optimize_rejects_unknown_method():
+    import pytest
+    st = StrategyTester(_make, _bars(), TesterConfig())
+    with pytest.raises(ValueError):
+        st.optimize(_make, {"edge": [True]}, method="bogus")
