@@ -2335,16 +2335,30 @@ class StudioTab(QtWidgets.QWidget):
             self.chat.append_message("system", f"AI provider set to {provider.capitalize()}.")
 
     def _open_connect_dialog(self) -> None:
-        """Write the MCP server entry into Claude Desktop's config + offer the Claude Code command."""
+        """Write the MCP server entry into Claude Desktop's config + offer the Claude Code command.
+
+        When a telemetry endpoint is configured (connect.DEFAULT_TELEMETRY_URL or VIKE_TELEMETRY_URL),
+        an opt-out consent checkbox controls whether the locally-spawned MCP server reports anonymous
+        usage. With no endpoint set, no checkbox appears and telemetry stays off.
+        """
         from vike_trader_app.ai import connect
 
-        try:
+        url = connect.telemetry_url()
+        s = self._ai_settings()
+        consent = str(s.value("ai/telemetry_consent", "true")).lower() in ("true", "1", "yes")
+
+        def _install(send: bool):
             data_root = connect.default_data_root()
-            cfg_path = connect.install_into_claude_desktop(data_root)
-            cmd = connect.claude_code_command_str(data_root)
+            kw = {"telemetry": send and bool(url), "telemetry_url": url or None}
+            return (connect.install_into_claude_desktop(data_root, **kw),
+                    connect.claude_code_command_str(data_root, **kw))
+
+        try:
+            cfg_path, cmd = _install(consent)
         except Exception as exc:  # noqa: BLE001
             QtWidgets.QMessageBox.warning(self, "Connect to Claude", f"Couldn't configure Claude: {exc}")
             return
+
         box = QtWidgets.QMessageBox(self)
         box.setWindowTitle("Connect to Claude")
         box.setIcon(QtWidgets.QMessageBox.Information)
@@ -2356,10 +2370,26 @@ class StudioTab(QtWidgets.QWidget):
             "<b>your own Claude Pro/Max subscription</b>.<br><br>"
             "Prefer Claude Code? Copy the command below and run it in your terminal."
         )
+        cb = None
+        if url:
+            cb = QtWidgets.QCheckBox(
+                "Share anonymous usage with vike.io (tool calls + timing — never your strategy code)"
+            )
+            cb.setChecked(consent)
+            box.setCheckBox(cb)
         btn_open = box.addButton("Open Claude Desktop", QtWidgets.QMessageBox.AcceptRole)
         btn_copy = box.addButton("Copy Claude Code command", QtWidgets.QMessageBox.ActionRole)
         box.addButton("Close", QtWidgets.QMessageBox.RejectRole)
         box.exec()
+
+        if cb is not None and cb.isChecked() != consent:
+            consent = cb.isChecked()
+            s.setValue("ai/telemetry_consent", consent)
+            try:
+                cfg_path, cmd = _install(consent)  # rewrite config with the chosen telemetry setting
+            except Exception:  # noqa: BLE001
+                pass
+
         clicked = box.clickedButton()
         if clicked is btn_copy:
             QtWidgets.QApplication.clipboard().setText(cmd)

@@ -19,6 +19,18 @@ from pathlib import Path
 
 SERVER_NAME = "vike-trader"
 
+# Default analytics endpoint for opt-in usage telemetry. EMPTY = telemetry stays OFF even if the
+# user consents (there's nowhere to send). Set this to your vike.io receiver URL when you ship the
+# app, or override per-process with the VIKE_TELEMETRY_URL env var. The endpoint must accept a POST
+# of one JSON event per tool call: {ts_ms, client (anon uuid), tool, args (summary, no source),
+# ok, error, duration_ms}.
+DEFAULT_TELEMETRY_URL = ""
+
+
+def telemetry_url() -> str:
+    """The telemetry endpoint: VIKE_TELEMETRY_URL env override, else DEFAULT_TELEMETRY_URL."""
+    return (os.environ.get("VIKE_TELEMETRY_URL") or DEFAULT_TELEMETRY_URL).strip()
+
 
 def _python_exe() -> str:
     """The console interpreter to launch the stdio server (map pythonw.exe -> python.exe)."""
