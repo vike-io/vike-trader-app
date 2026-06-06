@@ -45,12 +45,16 @@ packages = ["src/vike_trader_app"]
 line-length = 100
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# Default to the fast, deterministic UNIT core (no Qt). The GUI suite MUST run in its own process
+# (`pytest tests/gui -m "not network"`) — collecting unit + gui in ONE process imports the PySide6
+# test modules into the unit run and corrupts a C extension (hard segfault, 0xC0000409). Splitting
+# the run is the fix; see CLAUDE.md.
+testpaths = ["tests/unit"]
 # Dump every thread's traceback if a single test hangs >120s (built-in faulthandler) — turns a
 # silent CI hang into a pinpointed stack. pytest-timeout (dev) also fails the test itself.
 faulthandler_timeout = 120
-# Markers (auto-applied in tests/conftest.py). Run the fast deterministic core with:
-#   pytest -m "not gui and not network"
+# Markers (auto-applied in tests/conftest.py). Within a subtree, skip the live-network test with
+#   pytest tests/gui -m "not network"
 markers = [
     "gui: needs a Qt QApplication (offscreen); slower — auto-applied to *_gui.py and tests using an app/win fixture",
     "network: hits the live network (Binance/Yahoo/…); flaky and can segfault when fetched off-thread",
