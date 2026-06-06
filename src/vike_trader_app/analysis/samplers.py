@@ -197,8 +197,12 @@ def optimize(
     ``method`` is one of ``{"grid", "random", "genetic", "bayesian"}``. ``grid``
     evaluates every :func:`grid_points` combo; ``random`` samples
     :func:`random_points`; both ``random`` and ``bayesian`` default ``n_trials``
-    to 50 when ``None``.
+    to 50 when ``None``. Raises ``ValueError`` for an unknown method or a param whose
+    candidate-value list is empty (which would otherwise yield zero trials).
     """
+    empty = [k for k, vs in param_grid.items() if not vs]
+    if empty:
+        raise ValueError(f"param_grid has no candidate values for: {empty}")
     if method == "grid":
         cache: dict[tuple, tuple[dict, float]] = {}
         for params in grid_points(param_grid):

@@ -126,3 +126,25 @@ def test_live_toggle_starts_timer_and_hide_stops_it(app, tmp_path, monkeypatch):
     assert tab._timer.isActive()
     tab.hideEvent(QtGui.QHideEvent())           # leaving the tab stops background cache reads
     assert not tab._timer.isActive()
+
+
+def test_scan_survives_catalog_read_error(app, tmp_path, monkeypatch):
+    # A corrupt/locked shard raising mid-read must NOT escape the (live-timer) slot — it is caught,
+    # surfaced in the status line, and the wait-cursor is restored.
+    _wire(tmp_path, monkeypatch)
+    tab = ScreenerTab()
+
+    class _Boom:
+        def symbols(self):
+            return ["XUSD"]
+
+        def intervals(self, _s):
+            return ["1m"]
+
+        def query(self, _s, _iv):
+            raise RuntimeError("corrupt shard")
+
+    monkeypatch.setattr(tab, "_catalog", lambda: _Boom())
+    tab.scan()  # must not raise
+    assert "Scan failed" in tab._status.text()
+    assert QtWidgets.QApplication.overrideCursor() is None  # cursor balanced

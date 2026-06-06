@@ -118,12 +118,18 @@ class StrategyTester:
 
 
 def wf_efficiency(windows) -> float:
-    """mean(OOS criterion) / mean(IS criterion) across windows; 0.0 when IS mean is 0."""
+    """mean(OOS criterion) / mean(IS criterion) across windows — the walk-forward efficiency ratio.
+
+    Only meaningful when the in-sample edge is positive, so we return 0.0 when the mean IS score is
+    non-positive (a losing/degenerate system): a negative denominator would otherwise sign-invert
+    (two losing windows reading as a "robust" positive ratio) or blow up near zero. The UI renders
+    the 0.0 sentinel as "—".
+    """
     if not windows:
         return 0.0
     mean_is = sum(w.is_score for w in windows) / len(windows)
     mean_oos = sum(w.oos_score for w in windows) / len(windows)
-    return mean_oos / mean_is if mean_is else 0.0
+    return mean_oos / mean_is if mean_is > 1e-9 else 0.0
 
 
 def _returns(equity_curve) -> list:

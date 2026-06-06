@@ -82,3 +82,21 @@ def test_walk_forward_genetic_method_runs():
     assert rep.n_windows == 2
     for w in rep.windows:
         assert "edge" in w.best_params
+
+
+def test_wf_efficiency_guards_nonpositive_is_edge():
+    import pytest
+    from vike_trader_app.tester.strategy_tester import wf_efficiency
+
+    class _W:
+        def __init__(self, is_score, oos_score):
+            self.is_score = is_score
+            self.oos_score = oos_score
+
+    # both windows losing in-sample -> non-positive IS mean -> 0.0 (no sign-inverted "robust" ratio)
+    assert wf_efficiency([_W(-1.0, -2.0), _W(-1.0, -2.0)]) == 0.0
+    # near-cancelling IS mean -> 0.0, not a blown-up ratio
+    assert wf_efficiency([_W(1.0, 0.5), _W(-1.0000001, 0.5)]) == 0.0
+    # healthy positive IS edge -> the real ratio
+    assert wf_efficiency([_W(2.0, 1.0), _W(2.0, 1.0)]) == pytest.approx(0.5)
+    assert wf_efficiency([]) == 0.0

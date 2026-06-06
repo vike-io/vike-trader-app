@@ -162,3 +162,11 @@ def test_bayesian_raises_runtime_error_without_optuna(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _block)
     with pytest.raises(RuntimeError, match="vike_trader_app\\[opt\\]"):
         bayesian_optimize(GRID, _obj, n_trials=2)
+
+
+def test_optimize_rejects_empty_value_list():
+    """A PARAM_GRID param with no candidate values is a clear ValueError, not an opaque IndexError."""
+    with pytest.raises(ValueError):
+        optimize({"a": []}, lambda p: 0.0, method="grid")
+    with pytest.raises(ValueError):
+        optimize({"a": [1, 2], "b": []}, lambda p: 0.0, method="genetic", seed=0)

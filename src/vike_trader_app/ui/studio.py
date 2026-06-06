@@ -38,6 +38,12 @@ def _gl_usable() -> bool:
     return app is not None and app.platformName() != "offscreen"
 
 
+# Bayesian optimization needs the optional `[opt]` extra (optuna). Cheap presence check (no import).
+import importlib.util as _ilu  # noqa: E402
+
+_HAS_OPTUNA = _ilu.find_spec("optuna") is not None
+
+
 # Optimizer-config option lists (mirror tester StrategyTester._CRITERIA + samplers methods).
 _OPT_METHODS = ["grid", "random", "genetic", "bayesian"]
 _OPT_CRITERIA = ["sharpe", "sortino", "calmar", "omega", "total_return", "profit_factor", "recovery_factor"]
@@ -881,11 +887,12 @@ class ResultsPanel(QtWidgets.QWidget):
         verdict = getattr(getattr(wf, "oos_report", None), "verdict", None)
         level = verdict.level if verdict is not None else "?"
         eff = getattr(wf, "wf_efficiency", 0.0) or 0.0
+        eff_str = f"{eff:.2f}" if eff else "—"  # 0.0 = non-positive IS edge (see wf_efficiency)
         cons = getattr(wf, "wf_consistency", 0.0) or 0.0
         n_pass = sum(1 for w in windows if getattr(w.oos_report, "total_return", 0.0) > 0)
         self._wf_summary.setText(
             f"Criterion: {criterion}  ·  Windows: {len(windows)}  ·  Passed OOS: {n_pass}/{len(windows)}"
-            f"  ·  WF efficiency: {eff:.2f}  ·  Consistency: {self._pct(cons)}  ·  Overfit risk: {level}"
+            f"  ·  WF efficiency: {eff_str}  ·  Consistency: {self._pct(cons)}  ·  Overfit risk: {level}"
         )
         self._wf_table.setRowCount(len(windows))
         for r, w in enumerate(windows):
@@ -957,7 +964,9 @@ class ResultsPanel(QtWidgets.QWidget):
 
     def _draw_surface(self, surf) -> None:
         flat = [v for row in surf.z for v in row if v is not None]
-        if not flat:
+        if not flat:  # no trial matches these axes — blank rather than leave a stale image
+            self._surface_img.clear()
+            self._surface_stack.setCurrentWidget(self._surface_img)
             return
         floor = min(flat)
         z = np.array([[(v if v is not None else floor) for v in row] for row in surf.z], dtype=float)
@@ -1528,8 +1537,10 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
         form.setVerticalSpacing(12)
 
         self.method = QtWidgets.QComboBox()
-        self.method.addItems(_OPT_METHODS)
-        self.method.setCurrentText(config.get("method", "grid"))
+        methods = _OPT_METHODS if _HAS_OPTUNA else [m for m in _OPT_METHODS if m != "bayesian"]
+        self.method.addItems(methods)
+        want = config.get("method", "grid")
+        self.method.setCurrentText(want if want in methods else "grid")
         self.criterion = QtWidgets.QComboBox()
         self.criterion.addItems(_OPT_CRITERIA)
         self.criterion.setCurrentText(config.get("criterion", "sharpe"))
@@ -1563,8 +1574,11 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
         form.addRow("Seed", self.seed)
         root.addLayout(form)
 
-        hint = QtWidgets.QLabel("Grid is exhaustive; genetic/bayesian scale to large grids. "
-                                "Rolling WF uses a fixed-width sliding train window.")
+        hint_text = ("Grid is exhaustive; genetic/bayesian scale to large grids. "
+                     "Rolling WF uses a fixed-width sliding train window.")
+        if not _HAS_OPTUNA:
+            hint_text += "  Bayesian needs the optional vike_trader_app[opt] extra (optuna)."
+        hint = QtWidgets.QLabel(hint_text)
         hint.setWordWrap(True)
         hint.setStyleSheet(f"color:{theme.TEXT3};font-size:11px;")
         root.addWidget(hint)
@@ -2135,10 +2149,13 @@ class StudioTab(QtWidgets.QWidget):
         if len(multi) < 2 or combos > _SURFACE_MAX_COMBOS:
             self.results.show_surface([], grid, criterion)  # shows the "needs a ≥2-param grid" hint
             return
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)  # the grid sweep blocks; show busy
         try:
             rep = optimizer.optimize(make, grid, criterion=criterion, method="grid")
         except Exception:  # noqa: BLE001 - surface is a nice-to-have, never block the WF result
             return
+        finally:
+            QtWidgets.QApplication.restoreOverrideCursor()
         self.results.show_surface(rep.ranked, grid, criterion)
 
     def _open_optimizer_config(self) -> None:

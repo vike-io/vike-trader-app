@@ -13,10 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import screener
-from .screener import RULES
 
 DEFAULT_PATH = "storage/alerts.json"
-_RULES_BY_NAME = {r.name: r for r in RULES}
 
 
 @dataclass

@@ -255,7 +255,12 @@ class ScreenerTab(QtWidgets.QWidget):
         """Load every cached symbol for the interval, run the rule (+ volume filter), fill the table."""
         cat = self._catalog()
         interval = self._interval.currentText()
-        syms = [s for s in cat.symbols() if interval in cat.intervals(s)]
+        try:
+            syms = [s for s in cat.symbols() if interval in cat.intervals(s)]
+        except Exception as exc:  # noqa: BLE001 - a bad/locked cache must not escape the live timer slot
+            self._table.setRowCount(0)
+            self._status.setText(f"Scan failed: {exc}")
+            return
         if not syms:
             self._table.setRowCount(0)
             self._status.setText("No cached data for this interval — fetch some symbols first.")
@@ -267,6 +272,9 @@ class ScreenerTab(QtWidgets.QWidget):
             volumes = {s: [b.volume for b in bars] for s, bars in bars_by.items()}
             min_vol = self._min_vol.value()
             rows = screen(closes, self._rule.currentData(), symbol_volumes=volumes, min_volume=min_vol)
+        except Exception as exc:  # noqa: BLE001 - a corrupt/locked shard mid-write must not crash the timer
+            self._status.setText(f"Scan failed: {exc}")
+            return
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         avg_vol = {s: (statistics.fmean(v) if v else 0.0) for s, v in volumes.items()}

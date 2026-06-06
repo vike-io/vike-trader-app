@@ -111,3 +111,12 @@ def test_clear_resets_wf_and_surface(app):
     panel.clear()
     assert panel._wf_table.rowCount() == 0
     assert panel._surface_trials == []
+
+
+def test_optimizer_dialog_hides_bayesian_without_optuna(app, monkeypatch):
+    import vike_trader_app.ui.studio as studio
+    monkeypatch.setattr(studio, "_HAS_OPTUNA", False)
+    dlg = studio.OptimizerConfigDialog({"method": "bayesian"})
+    methods = [dlg.method.itemText(i) for i in range(dlg.method.count())]
+    assert "bayesian" not in methods
+    assert dlg.method.currentText() == "grid"  # a requested-but-unavailable method falls back
