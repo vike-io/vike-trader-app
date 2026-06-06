@@ -9,7 +9,8 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 from PySide6.QtCore import QRectF
 
-from . import dropdowns, theme
+from ..core import chart_transforms
+from . import chart_styles, dropdowns, theme
 from .chartdata import (
     axis_time_label,
     bar_spacing,
@@ -1572,6 +1573,17 @@ class PriceChart(pg.PlotWidget):
 
         self._candles = CandlestickItem([])
         self.addItem(self._candles)
+        # Chart-style switch: the price pane can render as candles/bars/line/Heikin-Ashi/Renko/…
+        # `_display` is the (possibly transformed) bar list the price pane shows; None = raw bars.
+        # Non-time styles (Renko/Kagi/…) hide overlays/markers/panes (see _overlays_visible).
+        self._style = "Candles"
+        self._display = None        # transformed display bars, or None for the raw-OHLC styles
+        self._shown = []            # the revealed slice currently drawn (for OHLC header / last line)
+        self._last_index = 0        # last revealed index (style-independent reveal cursor)
+        self._style_items = {}      # render family -> lazily-built price item (besides _candles)
+        self._kagi_res = None       # cached Kagi/P&F structures for their render items
+        self._pnf_res = None
+        self._panes_hidden = False  # True while a non-time style hides the oscillator panes
         # dashed entry->exit connectors (under the candles); markers on top.
         # TradeStation/TradingView use a few long dashes, not many tiny dots. Light grey +
         # slightly thicker so the dashes read clearly against the candles.
@@ -1672,6 +1684,27 @@ class PriceChart(pg.PlotWidget):
         self._ind_btn.setStyleSheet(_btn_qss)
         self._ind_btn.clicked.connect(self._open_indicator_picker)
         _tb.addWidget(self._ind_btn)
+        _tb.addWidget(_divider())
+
+        # chart-style selector (grouped dropdown) -> set_style(...)
+        self._style_btn = QtWidgets.QPushButton("Candles", self._top_bar)
+        self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._style_btn.setStyleSheet(_btn_qss)
+        _style_menu = QtWidgets.QMenu(self._style_btn)
+        _style_menu.setStyleSheet(  # re-assert the unified popup surface (see the timeframe menu)
+            f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+            f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
+            f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
+            f"color:{theme.TEXT2};}}"
+            f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+            f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
+        )
+        for _sec, _styles in chart_styles.STYLE_SECTIONS:
+            _style_menu.addSection(_sec)
+            for _st in _styles:
+                _style_menu.addAction(_st, lambda s=_st: self.set_style(s))
+        self._style_btn.setMenu(_style_menu)
+        _tb.addWidget(self._style_btn)
         _tb.addWidget(_divider())
 
         # OHLC legend
@@ -1792,6 +1825,9 @@ class PriceChart(pg.PlotWidget):
             self._overlay_curves[label] = self.plot(
                 [], [], pen=pg.mkPen(color, width=1), name=label
             )
+        if not chart_styles.is_time_based(self._style):  # overlays stay hidden on non-time styles
+            for c in self._overlay_curves.values():
+                c.setVisible(False)
         self.show_upto(len(self._bars) - 1 if self._bars else 0)
 
     def apply_live(self, bars, overlays=None, *, repaint=True):
@@ -2036,7 +2072,7 @@ class PriceChart(pg.PlotWidget):
             ind.scatter = None
 
     def _reveal_index(self) -> int:
-        return (len(self._candles._bars) - 1) if self._candles._bars else len(self._bars) - 1
+        return self._last_index if self._bars else -1
 
     def _sync_shown(self, ind: "_Indicator"):
         """Effective visibility = user toggle AND (no interval restriction OR current one allowed)."""
@@ -2409,15 +2445,17 @@ class PriceChart(pg.PlotWidget):
         """Keep exactly one visible bottom time axis, on the LOWEST pane (TradingView puts the
         time scale under the lowest pane, not under the candles). With no panes the price chart
         keeps its own bottom axis."""
-        panes = self._panes_in_visual_order()
+        # a non-time style hides the panes (_panes_hidden) -> the price chart keeps its own axis
+        panes = [] if self._panes_hidden else self._panes_in_visual_order()
+        disp = self._display_bars()
         if not panes:
             self.showAxis("bottom")
-            self._time_axis.set_bars(self._bars)
+            self._time_axis.set_bars(disp)
         else:
             self.hideAxis("bottom")
             for p in panes:
                 p.set_bottom_axis_visible(False)
-                p.set_bars(self._bars)
+                p.set_bars(disp)
             panes[-1].set_bottom_axis_visible(True)  # lowest splitter index = bottom
         # hideAxis/showAxis only INVALIDATE the layout (lazy); force it + re-sync the own-scale
         # viewbox now so own-scale overlays don't lag behind the grown/shrunk price ViewBox.
@@ -2563,11 +2601,188 @@ class PriceChart(pg.PlotWidget):
             legend.move(10, 36)  # just under the OHLC toolbar, top-left
             legend.raise_()
 
+    # --- chart-style switch ---
+
+    def set_style(self, style: str):
+        """Switch the price-pane render style (candles/bars/line/Heikin-Ashi/Renko/Kagi/…)."""
+        if style not in chart_styles.ALL_STYLES:
+            return
+        self._style = style
+        self._style_btn.setText(style)
+        time_based = chart_styles.is_time_based(style)
+        self._overlays_visible(time_based)   # non-time styles can't align indicators/markers/panes
+        # Reveal the full series — the prior style's reveal index doesn't map to a different-length one.
+        self.show_upto(len(self._bars) - 1 if self._bars else 0)
+        self._align_panes()
+
+    def _display_bars(self):
+        """The bar list the price pane renders: transformed for HA/Renko/…, raw otherwise."""
+        return self._display if self._display is not None else self._bars
+
+    def _compute_display(self):
+        """Recompute the transformed display series for the active style (cheap; idempotent)."""
+        self._kagi_res = self._pnf_res = None
+        s = self._style
+        if s == "Heikin Ashi":
+            self._display = chart_transforms.heikin_ashi(self._bars)
+        elif s == "Renko":
+            self._display = chart_transforms.renko(self._bars)
+        elif s == "Range":
+            self._display = chart_transforms.range_bars(self._bars)
+        elif s == "Line break":
+            self._display = chart_transforms.line_break(self._bars)
+        elif s == "Kagi":
+            self._kagi_res = chart_transforms.kagi(self._bars)
+            self._display = self._kagi_res.bars
+        elif s == "Point & Figure":
+            self._pnf_res = chart_transforms.point_and_figure(self._bars)
+            self._display = self._pnf_res.bars
+        else:
+            self._display = None  # raw OHLC styles render self._bars directly
+
+    def _make_style_item(self, fam: str):
+        if fam == "hollow":
+            return chart_styles.CandleItem(hollow=True)
+        if fam == "volcandle":
+            return chart_styles.CandleItem()
+        if fam in ("bar_ohlc", "bar_hlc", "bar_hl"):
+            return chart_styles.BarItem({"bar_ohlc": "ohlc", "bar_hlc": "hlc", "bar_hl": "hl"}[fam])
+        if fam == "block":
+            return chart_styles.BlockItem()
+        if fam == "kagi":
+            return chart_styles.KagiItem()
+        if fam == "pnf":
+            return chart_styles.PnFItem()
+        if fam == "columns":
+            return pg.BarGraphItem(x=[], height=[], width=0.7, pen=None)
+        pen = pg.mkPen(theme.ACCENT, width=1.6)
+        if fam == "linemark":
+            return pg.PlotDataItem([], [], pen=pen, symbol="o", symbolSize=4,
+                                   symbolBrush=theme.ACCENT, symbolPen=None)
+        if fam == "step":
+            return pg.PlotDataItem([], [], pen=pen, stepMode="right")
+        if fam in ("area", "baseline", "hlcarea"):
+            fill = QtGui.QColor(theme.ACCENT)
+            fill.setAlpha(40)
+            return pg.PlotDataItem([], [], pen=pen, fillLevel=0.0, brush=pg.mkBrush(fill))
+        return pg.PlotDataItem([], [], pen=pen)  # "line"
+
+    def _ensure_style_item(self, fam: str):
+        if fam == "candle":
+            return self._candles
+        item = self._style_items.get(fam)
+        if item is None:
+            item = self._make_style_item(fam)
+            item.setZValue(-1)  # price glyphs sit behind overlays/markers
+            self.addItem(item)
+            self._style_items[fam] = item
+        return item
+
+    def _set_active_price_item(self, active):
+        """Show only ``active``; hide the candle item + every other lazily-built style item."""
+        self._candles.setVisible(active is self._candles)
+        for it in self._style_items.values():
+            it.setVisible(it is active)
+
+    @staticmethod
+    def _volume_widths(shown):
+        vols = [max(0.0, b.volume) for b in shown]
+        mx = max(vols, default=0.0)
+        if mx <= 0:
+            return None
+        return [0.2 + 0.65 * (v / mx) for v in vols]
+
+    def _feed_time_item(self, fam, item, shown):
+        """Feed the active 1:1 (time-based) price item the revealed bar slice."""
+        if fam in ("candle", "hollow"):
+            item.set_bars(shown)
+        elif fam == "volcandle":
+            item.set_bars(shown, widths=self._volume_widths(shown))
+        elif fam in ("bar_ohlc", "bar_hlc", "bar_hl"):
+            item.set_bars(shown)
+        elif fam == "columns":
+            xs = list(range(len(shown)))
+            brushes = [pg.mkBrush(_UP if b.close >= b.open else _DOWN) for b in shown]
+            item.setOpts(x=xs, height=[b.close for b in shown], width=0.7, brushes=brushes, pen=None)
+        elif fam == "hlcarea":
+            xs = list(range(len(shown)))
+            item.setData(xs, [(b.high + b.low + b.close) / 3.0 for b in shown])
+        else:  # line / linemark / step / area / baseline -> close series
+            xs = list(range(len(shown)))
+            closes = [b.close for b in shown]
+            item.setData(xs, closes)
+            if fam == "area" and closes:
+                item.setFillLevel(min(closes))
+            elif fam == "baseline" and closes:
+                item.setFillLevel(closes[0])  # baseline = first revealed close
+
+    def _render_price(self, shown):
+        """Swap the price-pane glyph to the active 1:1 style and feed it ``shown``."""
+        fam = chart_styles.family(self._style)
+        item = self._ensure_style_item(fam)
+        self._set_active_price_item(item)
+        self._feed_time_item(fam, item, shown)
+
+    def _render_nontime(self):
+        """Render a non-time style (Renko/Range/Line-break/Kagi/P&F) on the synthetic ordinal axis.
+
+        Overlays/markers/panes are already hidden (set_style). The time axis labels from the
+        synthetic units' source timestamps via ``_display_bars`` (approximate — these styles are
+        non-linear in time)."""
+        fam = chart_styles.family(self._style)
+        item = self._ensure_style_item(fam)
+        self._set_active_price_item(item)
+        disp = self._display_bars()
+        self._shown = disp
+        self._last_index = len(disp) - 1
+        if fam == "block":
+            item.set_bars(disp)
+        elif fam == "kagi":
+            item.set_kagi(self._kagi_res)
+        elif fam == "pnf":
+            item.set_pnf(self._pnf_res)
+        self._cursor.hide()
+        n = len(disp)
+        if self._follow and n:
+            self._fitting = True
+            self.setXRange(max(0, n - self._window), n + 0.5, padding=0.02)
+            self._fitting = False
+        self._update_last()
+        self._autoscale_y()
+        self._show_last_ohlc()
+
+    def _overlays_visible(self, on: bool):
+        """Toggle ALL price overlays + trade markers + oscillator panes together (non-time styles
+        can't align them to a synthetic ordinal axis, so they're hidden while such a style is on)."""
+        self._panes_hidden = not on
+        for ind in self._indicators.values():
+            for c in ind.curves.values():
+                c.setVisible(on and ind.shown)
+            if ind.scatter is not None:
+                ind.scatter.setVisible(on and ind.shown)
+        for c in self._overlay_curves.values():
+            c.setVisible(on)
+        self._marker_scatter.setVisible(on)
+        self._conn_curve.setVisible(on)
+        for lbl in self._marker_labels:
+            lbl.setVisible(on and lbl.isVisible())
+        for pane in self._panes_in_visual_order():
+            pane.setVisible(on)
+        self._resize_panes()
+
     def show_upto(self, index: int):
-        """Reveal candles/markers/overlays up to and including ``index``."""
+        """Reveal candles/markers/overlays up to and including ``index`` (style-aware)."""
         if not self._bars:
             return
-        self._candles.set_bars(self._bars[: index + 1])
+        self._compute_display()
+        if not chart_styles.is_time_based(self._style):
+            self._render_nontime()  # non-time styles render their own synthetic series + return
+            return
+        disp = self._display_bars()           # raw bars, or HA (same length -> indices still align)
+        index = min(index, len(disp) - 1)
+        self._last_index = index
+        self._shown = disp[: index + 1]
+        self._render_price(self._shown)
         # marker offset proportional to the visible price range, so buy/sell/exit arrows
         # sit clearly off the candles on any instrument (BTC vs a 0.99 forex pair).
         if self._follow:
@@ -2575,7 +2790,7 @@ class PriceChart(pg.PlotWidget):
         else:
             (vx0, vx1), _ = self.getViewBox().viewRange()
             lo, hi = max(0, int(vx0)), min(len(self._bars), int(vx1) + 1)
-        yb = y_bounds(self._bars, lo, min(hi, index + 1))
+        yb = y_bounds(disp, lo, min(hi, index + 1))
         marker_off = (yb[1] - yb[0]) * 0.04 if yb and yb[1] > yb[0] else 0.0
         self._marker_off = marker_off  # cached so pattern markers re-place on hide/show + edits
         self._render_markers(index, marker_off)
@@ -2684,10 +2899,11 @@ class PriceChart(pg.PlotWidget):
         """Fit the Y range to the candles visible in the current X window (when Auto is on)."""
         if self._fitting or not self._yauto or not self._bars:
             return
+        disp = self._display_bars()
         (x0, x1), _ = self.getViewBox().viewRange()
         lo = max(0, int(x0))
-        hi = min(len(self._bars), int(x1) + 1)
-        yb = y_bounds(self._bars, lo, hi)
+        hi = min(len(disp), int(x1) + 1)
+        yb = y_bounds(disp, lo, hi)
         if yb and yb[1] > yb[0]:
             self._fitting = True
             self.setYRange(yb[0], yb[1], padding=0.08)
@@ -2699,7 +2915,7 @@ class PriceChart(pg.PlotWidget):
             self._autoscale_y()
 
     def _update_last(self):
-        bars = self._candles._bars
+        bars = self._shown
         if not bars:
             self._last_line.hide()
             self._last_badge.hide()
@@ -2742,7 +2958,7 @@ class PriceChart(pg.PlotWidget):
         self._ohlc_label.adjustSize()
 
     def _show_last_ohlc(self):
-        bars = self._candles._bars
+        bars = self._shown
         if not bars:
             self._set_ohlc(None)
             return
@@ -2766,7 +2982,7 @@ class PriceChart(pg.PlotWidget):
         panes = self._panes_in_visual_order()
         for p in panes:
             p.set_crosshair_x(bar)
-        dt = datetime.fromtimestamp(x_to_ts(self._bars, bar) / 1000, tz=timezone.utc)
+        dt = datetime.fromtimestamp(x_to_ts(self._display_bars(), bar) / 1000, tz=timezone.utc)
         text = dt.strftime("%m-%d %H:%M")
         if panes:
             # time axis lives under the lowest pane -> home the time tag there (its own scene x)
