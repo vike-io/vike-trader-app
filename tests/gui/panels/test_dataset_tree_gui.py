@@ -42,3 +42,9 @@ def test_new_dataset_creates_and_emits(app, tmp_path):
     assert load_dataset("Fresh", str(tmp_path)) is not None
     assert "Fresh" in tree.node_names("All")
     assert seen and seen[-1] == "Fresh"
+
+
+def test_tree_has_min_width_so_names_dont_elide(app, tmp_path):
+    # Regression (live-QA): nested DataSet names elided to an ambiguous "Crypto …" — needs min width.
+    tree = DataSetTree(str(tmp_path))
+    assert tree._tree.minimumWidth() >= 180
