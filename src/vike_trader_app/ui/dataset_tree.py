@@ -34,6 +34,7 @@ class DataSetTree(QtWidgets.QWidget):
         layout.addWidget(self.btn_new)
         self._tree = QtWidgets.QTreeWidget()
         self._tree.setHeaderHidden(True)
+        self._tree.setMinimumWidth(180)  # else nested DataSet names elide to an ambiguous "Crypto …"
         self._tree.currentItemChanged.connect(self._on_current_changed)
         layout.addWidget(self._tree, 1)
 

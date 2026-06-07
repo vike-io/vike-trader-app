@@ -149,3 +149,11 @@ def test_save_preserves_ranges_after_load(app, tmp_path):
     back = load_dataset("R", str(tmp_path))
     assert back.is_dynamic()
     assert back.ranges["AAA"][0].end_ts is None
+
+
+def test_symbols_list_has_label(app, tmp_path):
+    # Regression (live-QA): the selectable symbols list was unlabelled, so an empty DataSet showed a
+    # mystery blank box. It must carry a header label now.
+    panel = DataSetPanel(str(tmp_path))
+    labels = [w.text() for w in panel.findChildren(QtWidgets.QLabel)]
+    assert any("Symbols in this DataSet" in t for t in labels)

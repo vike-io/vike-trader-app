@@ -44,6 +44,8 @@ class DataSetPanel(QtWidgets.QWidget):
         form.addRow("Benchmark", self._benchmark)
         layout.addLayout(form)
 
+        # Labelled so an empty DataSet reads as "(no symbols yet)" instead of a mystery blank box.
+        layout.addWidget(QtWidgets.QLabel("Symbols in this DataSet — select one to Test"))
         self._symbols_list = QtWidgets.QListWidget()  # selectable rows for 'Test symbol'
         layout.addWidget(self._symbols_list, 1)
         layout.addWidget(QtWidgets.QLabel("Symbols (comma or newline separated)"))
