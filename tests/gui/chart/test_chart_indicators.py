@@ -2219,6 +2219,19 @@ def test_legend_gear_emits_edit(app):
     assert got == [ind.uid]
 
 
+def test_settings_dialog_unified_background(app):
+    # Settings dialog must be ONE flat tone like TradeLocker: input fields share the card SURFACE
+    # (border-defined), NOT the darker theme.BG fill that made it two-tone.
+    from vike_trader_app.ui import theme
+    pc, _ = _chart(app)
+    ind = pc.add_indicator("rsi")
+    dlg = _IndicatorSettings(ind, pc)
+    qss = dlg.styleSheet()
+    field_rule = qss.split("QSpinBox,QDoubleSpinBox,QComboBox{", 1)[1].split("}", 1)[0]
+    assert theme.SURFACE in field_rule          # fields use the card tone...
+    assert theme.BG not in field_rule           # ...not the darker BG (the old two-tone)
+
+
 # --- bottom-left nav buttons (zoom / scroll / reset) -----------------------------------------
 def test_nav_zoom_scroll_reset(app):
     pc, _ = _chart(app)
