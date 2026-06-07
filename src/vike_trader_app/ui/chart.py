@@ -623,9 +623,14 @@ class _IndicatorSettings(dropdowns.PopupCard):
             f"border:none;border-bottom:2px solid transparent;font-size:13px;font-weight:600;}}"
             f"QTabBar::tab:selected{{color:{theme.TEXT};border-bottom:2px solid {theme.ACCENT};}}"
             f"QTabWidget::pane{{border:none;}}"
-            f"QSpinBox,QDoubleSpinBox,QComboBox{{background:{theme.BG};color:{theme.TEXT};"
+            # Fields share the card background (border-defined), so the dialog is ONE flat tone like
+            # TradeLocker — not a darker BG fill on a lighter SURFACE card (the old two-tone look).
+            f"QSpinBox,QDoubleSpinBox,QComboBox{{background:{theme.SURFACE};color:{theme.TEXT};"
             f"border:1px solid {theme.BORDER};border-radius:6px;padding:4px 8px;min-width:90px;}}"
-            f"QPushButton{{background:{theme.BG};color:{theme.TEXT};border:1px solid {theme.BORDER};"
+            f"QSpinBox::up-button,QSpinBox::down-button,QDoubleSpinBox::up-button,"
+            f"QDoubleSpinBox::down-button{{background:transparent;border:none;width:16px;}}"
+            f"QComboBox::drop-down{{border:none;background:transparent;width:20px;}}"
+            f"QPushButton{{background:{theme.SURFACE};color:{theme.TEXT};border:1px solid {theme.BORDER};"
             f"border-radius:7px;padding:6px 14px;}}"
             f"QPushButton#ok{{background:{theme.ACCENT};color:{theme.ON_ACCENT};border:none;font-size:14px;font-weight:700;}}"
         ))
