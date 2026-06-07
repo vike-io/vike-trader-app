@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from PySide6 import QtCore, QtWidgets
 
 from ..analysis.journal import Journal, JournalEntry
+from .panels import TablePlaceholder
 
 _COLS = ["Date (UTC)", "Title", "Symbol", "Strategy", "Notes"]
 
@@ -52,6 +53,7 @@ class JournalTab(QtWidgets.QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setStretchLastSection(True)
         root.addWidget(self._table, 1)
+        self._placeholder = TablePlaceholder(self._table, "No journal entries yet")
 
         self._btn_del = QtWidgets.QPushButton("Remove selected")
         self._btn_del.clicked.connect(self._remove)
@@ -91,3 +93,4 @@ class JournalTab(QtWidgets.QWidget):
                 if c == 0:
                     item.setForeground(QtCore.Qt.GlobalColor.gray)
                 self._table.setItem(r, c, item)
+        self._placeholder.sync()

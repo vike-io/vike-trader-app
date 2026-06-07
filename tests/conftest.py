@@ -14,7 +14,11 @@ _GUI_FIXTURES = {"app", "qapp", "qtbot", "win", "main_window", "mainwindow"}
 # Tests known to hit the LIVE network (real Binance/Yahoo fetch). These can segfault when the fetch
 # runs on a background thread during GC, so they are also excludable via ``-m "not network"``.
 _NETWORK_TESTS = {
+    # The datamanager update/download paths spawn a background loader that hits Binance directly
+    # (bypassing the foreground get_bars monkeypatch), which can segfault during GC — exclude them.
     "test_datamanager_update_all_extends_each_series",
+    "test_datamanager_download_dataset_iterates_symbols",
+    "test_datamanager_download_series_routes_through_chain",
 }
 
 

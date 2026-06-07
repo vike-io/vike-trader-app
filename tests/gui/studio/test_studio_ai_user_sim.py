@@ -38,6 +38,21 @@ def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _sync_chat_worker(monkeypatch):
+    """Run the AI ChatWorker SYNCHRONOUSLY on the main thread. The real QThread running
+    develop_strategy + GC can hard-segfault under full-suite load on Python 3.14; a synchronous
+    start() makes the agent journey deterministic — result + finished are delivered direct on the
+    same thread, so the existing emit()/_pump_until flow still works (the predicate is just already
+    true), and tab._worker is cleared as in production."""
+    def _sync_start(self):
+        self.run()             # develop_strategy + result.emit -> _on_agent_result (direct)
+        self.finished.emit()   # -> _on_worker_finished -> clears the tab's _worker reference
+    monkeypatch.setattr(studio_mod.ChatWorker, "start", _sync_start)
+    monkeypatch.setattr(studio_mod.ChatWorker, "isRunning", lambda self: False)
+    yield
+
+
 def _bars(n=16):
     return [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i,
                 close=100.0 + i, volume=1.0)

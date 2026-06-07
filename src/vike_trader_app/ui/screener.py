@@ -23,6 +23,7 @@ from ..analysis.screener import (
     screen,
 )
 from . import theme
+from .panels import TablePlaceholder
 
 _COLS = ["Symbol", "Signal", "Value", "Last", "Avg Vol"]
 
@@ -191,6 +192,7 @@ class ScreenerTab(QtWidgets.QWidget):
         hdr.setStretchLastSection(True)
         hdr.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         root.addWidget(self._table, 1)
+        self._placeholder = TablePlaceholder(self._table, "No results — click Scan universe")
 
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self.scan)
@@ -265,10 +267,12 @@ class ScreenerTab(QtWidgets.QWidget):
             syms = [s for s in cat.symbols() if interval in cat.intervals(s)]
         except Exception as exc:  # noqa: BLE001 - a bad/locked cache must not escape the live timer slot
             self._table.setRowCount(0)
+            self._placeholder.sync()
             self._status.setText(f"Scan failed: {exc}")
             return
         if not syms:
             self._table.setRowCount(0)
+            self._placeholder.sync()
             self._status.setText("No cached data for this interval — fetch some symbols first.")
             return
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
@@ -303,6 +307,7 @@ class ScreenerTab(QtWidgets.QWidget):
                 if c >= 2:
                     item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 self._table.setItem(r, c, item)
+        self._placeholder.sync()
 
     # --- live auto-rescan (MAIN-THREAD timer; data layer is not thread-safe) ---
 

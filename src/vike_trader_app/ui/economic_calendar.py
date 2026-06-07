@@ -29,6 +29,36 @@ _FLAG_DIR = os.path.join(os.path.dirname(__file__), "resources", "flags")
 _COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
 
 
+class _EmptyOverlay(QtCore.QObject):
+    """A dim, centred placeholder painted over an empty QTreeWidget — turns the big black
+    void into a clear "Loading…" / "No events for this week" message. The label is parented
+    to the tree's viewport and kept sized to it (so it stays centred on resize); call
+    ``update(has_rows, text)`` from the populate/refresh path to toggle it automatically."""
+
+    def __init__(self, tree: QtWidgets.QTreeWidget):
+        super().__init__(tree)
+        self._label = QtWidgets.QLabel("", tree.viewport())
+        self._label.setAlignment(QtCore.Qt.AlignCenter)
+        self._label.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;background:transparent;")
+        self._label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self._label.hide()
+        tree.viewport().installEventFilter(self)   # keep the overlay sized to the viewport
+
+    def eventFilter(self, obj, event):  # noqa: N802 - Qt override
+        if event.type() == QtCore.QEvent.Resize:
+            self._label.resize(event.size())
+        return False
+
+    def update(self, has_rows: bool, text: str) -> None:
+        """Show *text* centred when the tree is empty; hide it once it has rows."""
+        if has_rows or not text:
+            self._label.hide()
+            return
+        self._label.setText(text)
+        self._label.resize(self._label.parentWidget().size())
+        self._label.show()
+
+
 # Simple recognizable flag drawings (no bundled assets): iso2 -> ('h'|'v', [hex bands]).
 # Stripe flags are exact; a few iconic ones get a custom painter (below). Anything not here
 # falls back to an ISO-code chip — and the Country column always shows the full name too.
@@ -207,6 +237,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         for col in (4, 5, 6):   # Actual/Forecast/Prior headers right-aligned to sit over their numbers
             self._tree.headerItem().setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
+        self._overlay = _EmptyOverlay(self._tree)   # centred "Loading…" / empty message over the table
         self._toolbar = self._build_toolbar()
         root.addWidget(self._toolbar)   # hidden when embedded in CalendarSpace (controls move to top nav)
         # (day-card strip now owned by CalendarSpace so it can show Economic/Earnings/
@@ -424,6 +455,8 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             self._refresh_strip()
         if hasattr(self, "_lbl_range"):
             self._refresh_range_label()
+        # Toggle the centred placeholder: nothing to show -> "No events for this week".
+        self._overlay.update(self.visible_event_count() > 0, "No events for this week")
         self.eventsChanged.emit()
 
     def _now_marker(self, now: int) -> QtWidgets.QTreeWidgetItem:
@@ -518,6 +551,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     def _on_failed(self, msg) -> None:
         if self._loading_week == self._week_start:
+            self._overlay.update(False, f"Calendar error: {msg}")   # replace the "Loading…" overlay
             self._status.setText(f"Calendar error: {msg}")
             self._status.setVisible(True)
 
@@ -536,6 +570,7 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             title.setText(f"{dt.strftime('%a')} {dt.day}")
             count.setText("…")
         self._tree.clear()
+        self._overlay.update(False, "Loading…")   # centred while the fetch is in flight
         self._status.setText("Loading…")
         self._status.setVisible(True)
 
