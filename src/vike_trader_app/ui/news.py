@@ -354,7 +354,7 @@ class NewsTab(QtWidgets.QWidget):
         self._title.setStyleSheet(
             f"color:{theme.TEXT};font-size:26px;font-weight:700;line-height:128%;")
         self._meta = QtWidgets.QLabel("")
-        self._meta.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;")
+        self._meta.setStyleSheet(f"color:{theme.TEXT2};font-size:13px;")
         self._body = QtWidgets.QTextBrowser()
         self._body.setOpenExternalLinks(False)
         self._body.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)  # text wraps; no sideways scroll
@@ -368,7 +368,13 @@ class NewsTab(QtWidgets.QWidget):
         self._open_btn.setEnabled(False)
         for x in (self._title, self._meta, self._body, self._chips, self._open_btn):
             v.addWidget(x)
-        v.setStretchFactor(self._body, 1)
+        # Let the body grow with its content (and scroll inside itself for long articles) while
+        # a trailing stretch — not the body — absorbs the leftover height. This keeps the chips +
+        # "Open original" button hugging the body instead of being flung to the very bottom of the
+        # pane with a large dead gap above them.
+        self._body.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Maximum)
+        self._body.setMinimumHeight(120)
+        v.addStretch(1)
         return w
 
     def _chip_html(self, it: NewsItem) -> str:
@@ -380,7 +386,7 @@ class NewsTab(QtWidgets.QWidget):
             if c and c.lower() not in seen:
                 seen.add(c.lower())
                 chips.append(c)
-        cell = (f"<span style='background:{theme.RAISE};color:{theme.TEXT2};"
+        cell = (f"<span style='background:{theme.RAISE};color:{theme.TEXT};"
                 f"padding:3px 10px;margin-right:6px;font-size:12px;'>&nbsp;{{t}}&nbsp;</span>")
         return "".join(cell.format(t=html.escape(c)) for c in chips[:6])
 

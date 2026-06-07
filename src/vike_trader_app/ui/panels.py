@@ -11,6 +11,48 @@ from . import icons, theme
 from .tables import TRADE_HEADERS, trade_rows
 
 
+class TablePlaceholder(QtCore.QObject):
+    """Dim, centred empty-state label overlaid on a results table.
+
+    Parented to the table's viewport so it floats over the (otherwise blank) grid; it stays centred
+    on resize via an event filter and is shown only when the table has 0 rows. Call ``sync()`` from
+    the table's populate/refresh path so it toggles automatically.
+    """
+
+    def __init__(self, table: QtWidgets.QTableView, text: str):
+        super().__init__(table)
+        self._table = table
+        self._label = QtWidgets.QLabel(text, table.viewport())
+        self._label.setAlignment(QtCore.Qt.AlignCenter)
+        self._label.setStyleSheet(f"color:{theme.TEXT3};font-size:13px;background:transparent;")
+        self._label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        table.viewport().installEventFilter(self)
+        self._reposition()
+        self.sync()
+
+    def eventFilter(self, obj, event):  # noqa: N802 - keep the overlay centred as the viewport resizes
+        # The filter is installed only on the table's viewport, so any Resize here is ours. Don't
+        # re-fetch self._table.viewport() (it raises if the C++ table was deleted during teardown).
+        if event.type() == QtCore.QEvent.Resize:
+            self._reposition()
+        return False
+
+    def _reposition(self) -> None:
+        try:
+            self._label.setGeometry(self._table.viewport().rect())
+        except RuntimeError:
+            pass  # table/viewport torn down (C++ object already deleted)
+
+    def sync(self) -> None:
+        """Show the placeholder only when the table is empty."""
+        try:
+            model = self._table.model()
+            rows = model.rowCount() if model is not None else 0
+            self._label.setVisible(rows == 0)
+        except RuntimeError:
+            pass  # table torn down
+
+
 def _card(label: str) -> tuple[QtWidgets.QFrame, QtWidgets.QLabel]:
     """A small stat card: dim uppercase label over a big value. Returns (card, value)."""
     card = QtWidgets.QFrame()

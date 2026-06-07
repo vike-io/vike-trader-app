@@ -9,6 +9,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..analysis.alerts import AlertRule, AlertStore, evaluate
 from ..analysis.screener import RULES
 from . import theme
+from .panels import TablePlaceholder
 
 _COLS = ["Symbol", "Rule", "Notify on", "Status", "Signal", "Value"]
 _TF_RANK = {"1m": 0, "5m": 1, "15m": 2, "30m": 3, "1h": 4, "4h": 5, "1d": 6, "1w": 7, "1M": 8}
@@ -65,6 +66,7 @@ class AlertsTab(QtWidgets.QWidget):
         self._table.setAlternatingRowColors(True)
         self._table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         root.addWidget(self._table, 1)
+        self._placeholder = TablePlaceholder(self._table, "No alerts yet — add one above")
 
         self._btn_del = QtWidgets.QPushButton("Remove selected")
         self._btn_del.clicked.connect(self._remove)
@@ -132,3 +134,4 @@ class AlertsTab(QtWidgets.QWidget):
                     item.setForeground(QtGui.QColor(
                         {"long": theme.UP, "short": theme.DOWN}.get(signal, theme.TEXT3)))
                 self._table.setItem(r, c, item)
+        self._placeholder.sync()

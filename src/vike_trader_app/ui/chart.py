@@ -3352,9 +3352,46 @@ class EquityChart(pg.PlotWidget):
         )
         self.addItem(self._baseline)
         self._baseline.hide()
+        # Empty-state placeholder: before any run the plot would auto-range to a degenerate
+        # ±0.4 grid. Show a centred prompt and hide the empty axes/grid instead, then restore
+        # them once real data arrives (set_data).
+        self._placeholder = QtWidgets.QLabel("Run a backtest to see results", self)
+        self._placeholder.setAlignment(QtCore.Qt.AlignCenter)
+        self._placeholder.setStyleSheet(
+            f"color:{theme.TEXT3};font-family:{theme.FONT_UI};font-size:13px;background:transparent;"
+        )
+        self._placeholder.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self._show_empty_state()
+
+    def _show_empty_state(self) -> None:
+        """No run yet — hide the degenerate axes/grid and show the centred prompt."""
+        self.showGrid(x=False, y=False)
+        self.getAxis("left").hide()
+        self.getAxis("bottom").hide()
+        self._placeholder.setGeometry(self.rect())
+        self._placeholder.show()
+        self._placeholder.raise_()
+
+    def _hide_empty_state(self) -> None:
+        """Real data — restore the axes/grid and drop the placeholder."""
+        self._placeholder.hide()
+        self.getAxis("left").show()
+        self.getAxis("bottom").show()
+        self.showGrid(x=True, y=True, alpha=_GRID)
+
+    def resizeEvent(self, e):  # noqa: N802 - keep the placeholder centred on the plot
+        super().resizeEvent(e)
+        # pg.PlotWidget fires a resize during __init__ (before _placeholder exists); guard for it.
+        ph = self.__dict__.get("_placeholder")
+        if ph is not None and ph.isVisible():
+            ph.setGeometry(self.rect())
 
     def set_data(self, equity_curve):
         self._equity = list(equity_curve)
+        if self._equity:
+            self._hide_empty_state()
+        else:
+            self._show_empty_state()
         peak, m = [], float("-inf")
         for v in self._equity:
             m = v if v > m else m

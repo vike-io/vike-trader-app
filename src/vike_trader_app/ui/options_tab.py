@@ -175,6 +175,64 @@ class _ExpiryStrip(QtWidgets.QScrollArea):
         return next((iso for iso, b in self._buttons.items() if b.isChecked()), None)
 
 
+class _CallsPutsBand(QtWidgets.QWidget):
+    """A thin super-header band that paints "CALLS" over the left half, "Strike" over the centre
+    spine (Strike+IV) and "PUTS" over the right half — TradingView/TradeLocker-style, so the two
+    mirror-identical halves of the chain are never confused.
+
+    It tracks the table's real column geometry (the centre = the Strike+IV columns; everything left
+    of it = calls, right = puts) by reading the header's section positions, and repaints whenever the
+    header resizes or scrolls — so it stays aligned no matter the content-sized column widths.
+    """
+
+    def __init__(self, table: QtWidgets.QTableWidget, parent=None) -> None:
+        super().__init__(parent)
+        self._table = table
+        self._strike_col = 0       # left edge of the centre spine (Strike column)
+        self.setFixedHeight(24)
+        hh = table.horizontalHeader()
+        hh.sectionResized.connect(lambda *_: self.update())
+        hh.geometriesChanged.connect(self.update)
+        table.horizontalScrollBar().valueChanged.connect(lambda *_: self.update())
+
+    def set_strike_col(self, strike_col: int) -> None:
+        self._strike_col = strike_col
+        self.update()
+
+    def _x(self, col: int) -> int:
+        """Viewport-x of a column's left edge, offset for the table's left margin + h-scroll."""
+        hh = self._table.horizontalHeader()
+        return self._table.verticalHeader().width() + hh.sectionViewportPosition(col)
+
+    def paintEvent(self, _event) -> None:  # noqa: N802 (Qt override)
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing, True)
+        sc = self._strike_col
+        ncols = self._table.columnCount()
+        if ncols < sc + 2:
+            return
+        call_l, call_r = self._x(0), self._x(sc)
+        centre_r = self._x(sc + 2)          # right edge of the IV column (centre = Strike + IV)
+        put_r = self.width()
+        font = QtGui.QFont(self.font())
+        font.setBold(True)
+        font.setLetterSpacing(QtGui.QFont.AbsoluteSpacing, 1.5)
+        p.setFont(font)
+        p.setPen(QtGui.QColor(theme.BLUE))   # calls — blue (matches the call volume bar)
+        p.drawText(QtCore.QRect(call_l, 0, call_r - call_l, self.height()),
+                   QtCore.Qt.AlignCenter, "CALLS")
+        p.setPen(QtGui.QColor(theme.TEXT3))
+        p.drawText(QtCore.QRect(call_r, 0, centre_r - call_r, self.height()),
+                   QtCore.Qt.AlignCenter, "Strike")
+        p.setPen(QtGui.QColor(theme.DOWN))   # puts — red (matches the put volume bar)
+        p.drawText(QtCore.QRect(centre_r, 0, put_r - centre_r, self.height()),
+                   QtCore.Qt.AlignCenter, "PUTS")
+        # thin divider lines under the band, bracketing the centre spine
+        p.setPen(QtGui.QColor(theme.BORDER))
+        p.drawLine(call_r, 4, call_r, self.height() - 4)
+        p.drawLine(centre_r, 4, centre_r, self.height() - 4)
+
+
 class OptionsTab(QtWidgets.QWidget):
     """The Options space (full-width central tab)."""
 
@@ -250,7 +308,25 @@ class OptionsTab(QtWidgets.QWidget):
         self.table.verticalHeader().setDefaultSectionSize(36)
         self._bar = _GridDelegate(self.table)
         self.table.setItemDelegate(self._bar)
-        root.addWidget(self.table, 1)
+
+        # "CALLS | Strike | PUTS" super-header band, sitting directly above the column headers so
+        # the two mirror-identical halves of the chain are disambiguated (TradingView/TradeLocker).
+        self.calls_puts_band = _CallsPutsBand(self.table)
+        root.addWidget(self.calls_puts_band)
+
+        # The grid + an overlaid centred placeholder (loading / no-data) for the empty state — a dim
+        # centred note instead of a bare void while a chain is fetched or absent.
+        grid_stack = QtWidgets.QWidget()
+        stack_layout = QtWidgets.QGridLayout(grid_stack)
+        stack_layout.setContentsMargins(0, 0, 0, 0)
+        stack_layout.addWidget(self.table, 0, 0)
+        self.placeholder = QtWidgets.QLabel("", grid_stack)
+        self.placeholder.setAlignment(QtCore.Qt.AlignCenter)
+        self.placeholder.setStyleSheet(
+            f"color:{theme.TEXT3};background:transparent;border:none;font-size:14px;")
+        stack_layout.addWidget(self.placeholder, 0, 0)
+        self.placeholder.hide()
+        root.addWidget(grid_stack, 1)
 
         # Provider scopes the underlying list; picking a preset fires `activated`; for the editable
         # (yfinance) combo, typing a custom ticker + Enter fires the line-edit's `returnPressed`.
@@ -306,6 +382,14 @@ class OptionsTab(QtWidgets.QWidget):
     def set_status(self, text: str) -> None:
         self.status_label.setText(text)
 
+    def _show_placeholder(self, text: str) -> None:
+        """Centred dim note over the empty grid (loading / no data); empty text hides it."""
+        if text:
+            self.placeholder.setText(text)
+            self.placeholder.show()
+        else:
+            self.placeholder.hide()
+
     def set_expiries(self, expiries) -> None:
         """Populate the expiry tab strip; selecting the nearest expiry fires expiryChanged."""
         self.expiry_strip.set_expiries(expiries)
@@ -318,12 +402,14 @@ class OptionsTab(QtWidgets.QWidget):
         self._sort = None
         self._render()                       # _setup_columns() resets the table to 0 rows
         self.expiry_strip.set_expiries([])
+        self._show_placeholder(f"Loading {underlying} chain…")
         self.set_status(f"Loading {underlying}…")
 
     def no_data(self, underlying: str) -> None:
         """No expiries came back for this underlying — say so instead of showing a stale grid."""
         self._chain = None
         self._render()
+        self._show_placeholder(f"No options data for {underlying}")
         self.set_status(f"No options data for {underlying}")
 
     @staticmethod
@@ -336,6 +422,7 @@ class OptionsTab(QtWidgets.QWidget):
     def set_chain(self, chain: OptionChain) -> None:
         """Show one expiry's flat chain grid."""
         self._chain = chain
+        self._show_placeholder("")           # data arrived — hide the loading/no-data note
         self._render()
         px = "—" if chain.underlying_price is None else f"{chain.underlying_price:,.2f}"
         self.set_status(
@@ -364,6 +451,7 @@ class OptionsTab(QtWidgets.QWidget):
         # Content-size every column. Strike was Fixed at 76px — fine for VIX's 2-digit strikes, but
         # it truncated Deribit BTC's 5-digit strikes ("64,000…"); content-sizing fits both.
         hh.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
+        self.calls_puts_band.set_strike_col(strike_col)   # keep the CALLS|PUTS band aligned
         return call_fields, put_fields, len(headers), strike_col
 
     @staticmethod

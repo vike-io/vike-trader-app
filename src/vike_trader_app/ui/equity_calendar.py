@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import dropdowns, icons, theme
+from .economic_calendar import _EmptyOverlay
 
 _DAY_MS = 24 * 3600 * 1000
 _CAL_GAP = 8   # one unified distance for the Calendar space: between day-cards AND between rows
@@ -253,6 +254,7 @@ class EquityCalendarTab(QtWidgets.QWidget):
         for col in self._right_cols:   # numeric headers right-aligned to sit over their numbers
             self._tree.headerItem().setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         root.addWidget(self._tree, 1)
+        self._overlay = _EmptyOverlay(self._tree)   # centred "Loading…" / empty message over the table
 
         _app = QtWidgets.QApplication.instance()
         if _app is not None:
@@ -311,6 +313,7 @@ class EquityCalendarTab(QtWidgets.QWidget):
     def refresh_async(self) -> None:
         self._refresh_range_label()
         self._tree.clear()
+        self._overlay.update(False, "Loading…")   # centred while the fetch is in flight
         self._status.setText("Loading…")
         self._status.setVisible(True)
         if self._loading_week is None:
@@ -402,6 +405,8 @@ class EquityCalendarTab(QtWidgets.QWidget):
         msg = "" if rows else "No events for this week."
         self._status.setText(msg)
         self._status.setVisible(bool(msg))
+        # Mirror it as a dim, centred placeholder over the empty table (instead of a black void).
+        self._overlay.update(bool(rows), "No events for this week")
 
     def _refresh_range_label(self) -> None:
         a = datetime.fromtimestamp(self._week_start / 1000, tz=timezone.utc)
