@@ -79,9 +79,11 @@ def test_forward_locks_backtest_controls(app):
 
 
 def test_main_window_has_studio_tools_screener_tabs(app):
+    from vike_trader_app.ui.dockshell import SpaceDeck
+
     win = MainWindow()
-    # the central widget now wraps the tab stack alongside the left icon rail
-    assert isinstance(win.tabs, QtWidgets.QTabWidget)
+    # the spaces live as ADS center-area tabs behind the QTabWidget-compatible facade
+    assert isinstance(win.tabs, SpaceDeck)
     assert win.tabs.isAncestorOf(win.studio)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
     # Tools tab hidden per user request — it's no longer mounted in the rail/tab stack.
@@ -95,7 +97,7 @@ def test_screener_tab_also_hides_backtester_docks(app):
     win = MainWindow()
     screener_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.screener)
     win.tabs.setCurrentIndex(screener_idx)
-    assert all(d.isHidden() for d in win._docks)   # docks show only on the Backtester tab
+    assert all(d.isClosed() for d in win._docks)   # docks show only on the Backtester tab
     win.close()
 
 
@@ -139,15 +141,15 @@ def test_studio_agent_unconfigured_without_key(app, monkeypatch):
 
 def test_studio_tab_hides_backtester_docks(app):
     win = MainWindow()
-    # Chart-first: Market watch + Trades start HIDDEN on first run.
-    assert all(d.isHidden() for d in win._docks)
+    # Chart-first: Market watch + Trades start CLOSED on first run (ADS "closed", not hidden).
+    assert all(d.isClosed() for d in win._docks)
     # Open them via the rail toggles, then verify the tab switch hides on Studio
     # and restores them on the Backtester.
     for key in ("market", "trades"):
         win._panel_btns[key].setChecked(True)
     studio_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.studio)
     win.tabs.setCurrentIndex(studio_idx)
-    assert all(d.isHidden() for d in win._docks)      # clean Studio workspace
+    assert all(d.isClosed() for d in win._docks)      # clean Studio workspace
     win.tabs.setCurrentIndex(0)                        # back to Backtester
-    assert all(not d.isHidden() for d in win._docks)  # restored per the (now-on) toggles
+    assert all(not d.isClosed() for d in win._docks)  # restored per the (now-on) toggles
     win.close()

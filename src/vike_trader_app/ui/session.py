@@ -35,6 +35,7 @@ class SessionState:
     interval: str = "1m"
     space: int = 0                 # rail/tab index of the active space
     geometry_hex: str = ""         # QWidget.saveGeometry() as hex ("" = none saved)
+    dock_state_hex: str = ""       # CDockManager.saveState() as hex — panel layout/pins/sizes
     maximized: bool = True
     panels: dict = field(default_factory=dict)              # panel key -> shown
     chart_indicators: list = field(default_factory=list)    # Chart space (price)
