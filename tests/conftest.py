@@ -7,7 +7,15 @@ live network off-thread, which can segfault the whole run (see CLAUDE.md, data-l
 No per-file edits needed: a test is treated as GUI if its file is ``*_gui.py`` OR it uses one of the
 Qt fixtures below (catches ``test_chart_*``/``test_forward_ui`` etc. that drive a real window).
 """
+import os
+
 import pytest
+
+# Session persistence is disabled for the whole suite: tests construct MainWindow() bare, and a
+# developer's local storage/session.json would otherwise leak state (start space, symbol, panel
+# toggles) into them. Session tests opt back in by passing an explicit session_path (the env
+# kill-switch only applies to the default path — see MainWindow.__init__).
+os.environ.setdefault("VIKE_DISABLE_SESSION", "1")
 
 _GUI_FIXTURES = {"app", "qapp", "qtbot", "win", "main_window", "mainwindow"}
 

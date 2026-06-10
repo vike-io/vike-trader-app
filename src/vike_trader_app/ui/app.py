@@ -6,6 +6,7 @@ full-width header. The "⚠ Validate" button runs the anti-overfit report and li
 up the verdict banner — the differentiator.
 """
 
+import os
 import time
 from pathlib import Path
 
@@ -39,6 +40,13 @@ from .panels import (
     strategy_params,
 )
 from .replay import Replay
+from .session import (
+    SessionState,
+    apply_indicator_states,
+    indicator_states,
+    load_session,
+    save_session,
+)
 from .watchlist_data import is_stale, quote_from_bars
 from .studio import StudioTab
 from .alerts import AlertsTab
@@ -70,6 +78,7 @@ _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
 }
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
 _PINS_PATH = "storage/pins.json"  # pinned (symbol, interval) series kept precomputed (rollups)
+_SESSION_PATH = "storage/session.json"  # last-session snapshot (geometry/space/symbol/indicators)
 _ROLLUP_REFRESH_MS = 60_000       # backstop: keep pinned rollups current (incremental, cheap)
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
 _FORWARD_FEE = 0.001
@@ -165,7 +174,7 @@ class _RuleOverlay(QtWidgets.QWidget):
 class MainWindow(QtWidgets.QMainWindow):
     """Main application window."""
 
-    def __init__(self):
+    def __init__(self, session_path: str | None = _SESSION_PATH):
         super().__init__()
         self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[0][1]}")  # space name updated on tab change
         self.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))  # brand V in the title bar
@@ -175,12 +184,21 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMainWindow.AnimatedDocks | QtWidgets.QMainWindow.AllowNestedDocks
         )
 
+        # Session restore. The env kill-switch applies only to the DEFAULT path: the offscreen
+        # test suite sets it (tests/conftest.py) so a developer's local session file can't leak
+        # state into tests that construct MainWindow() bare — while session tests still exercise
+        # persistence by passing an explicit tmp path.
+        if session_path == _SESSION_PATH and os.environ.get("VIKE_DISABLE_SESSION"):
+            session_path = None
+        self._session_path = session_path
+        self._session = load_session(session_path) if session_path else None
+
         self._bars = []
         self._result = None
         self._replay = Replay(0)
         self._strategy_factory = default_strategy_factory()
-        self._symbol = "BTCUSDT"
-        self._interval = "1m"
+        self._symbol = self._session.symbol if self._session else "BTCUSDT"
+        self._interval = self._session.interval if self._session else "1m"
 
         # forward (paper) mode state
         self._forward = None      # PaperTester while live, else None
@@ -250,14 +268,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self._clock.start(1000)
         self._tick_clock()
 
-        # Place the window fully on-screen. We have no saved geometry, so without
-        # this Windows can position a 1440-wide window past the right edge — which
-        # pushed the Market watch dock (and its resize splitter) off-screen.
-        self._center_on_screen()
+        # Saved geometry restores the window where the user left it (Qt clamps it back
+        # on-screen if the monitor layout changed). Without one, place the window fully
+        # on-screen — Windows can otherwise position a 1440-wide window past the right
+        # edge, pushing the Market watch dock (and its resize splitter) off-screen.
+        self._restored_geometry = False
+        if self._session and self._session.geometry_hex:
+            try:
+                self._restored_geometry = bool(self.restoreGeometry(
+                    QtCore.QByteArray.fromHex(self._session.geometry_hex.encode("ascii"))
+                ))
+            except Exception:  # noqa: BLE001 - stale/garbled blob -> default placement
+                self._restored_geometry = False
+        if not self._restored_geometry:
+            self._center_on_screen()
 
-        # Open BTCUSDT by default (cache-first; on the main thread per the data-layer
-        # thread-safety constraint), so the app starts on a populated chart.
-        QtCore.QTimer.singleShot(200, lambda: self._load_symbol("BTCUSDT"))
+        # Reopen the last session's space (rail + title sync via _on_tab_changed).
+        if self._session and 0 <= self._session.space < self.tabs.count():
+            self.tabs.setCurrentIndex(self._session.space)
+
+        # Open the last session's symbol (default BTCUSDT) cache-first, on the main thread
+        # per the data-layer thread-safety constraint, so the app starts on a populated chart.
+        QtCore.QTimer.singleShot(200, self._startup_load)
+
+    def _startup_load(self) -> None:
+        """Load the session symbol/interval, then re-apply each chart's saved indicators.
+
+        Indicators only re-attach when the load actually produced bars (add_indicator
+        no-ops on an empty chart) — a failed load just leaves a clean chart."""
+        self._load_symbol(self._symbol, self._interval)
+        if self._session and self._bars:
+            apply_indicator_states(self.price, self._session.chart_indicators)
+            apply_indicator_states(self.studio_price, self._session.studio_indicators)
 
     def _center_on_screen(self) -> None:
         """Clamp the window to the available screen area and center it."""
@@ -937,12 +979,13 @@ class MainWindow(QtWidgets.QMainWindow):
             sc = QtGui.QShortcut(QtGui.QKeySequence(shortcut), self)
             sc.activated.connect(self._panel_btns[key].toggle)
 
-        # Chart-first on first run: Market watch + Trades start CLOSED (not active/opened).
+        # Chart-first on a FRESH run: Market watch + Trades start CLOSED (not active/opened).
         # Un-checking the rail toggle hides the dock via the wiring above; the toggle (or its
-        # Ctrl shortcut) re-opens it. Other panels (e.g. the chart) stay on.
-        for _k in ("market", "trades"):
-            if _k in self._panel_btns:
-                self._panel_btns[_k].setChecked(False)
+        # Ctrl shortcut) re-opens it. A saved session restores whatever the user last had open.
+        saved = self._session.panels if self._session else {}
+        for key, btn in self._panel_btns.items():
+            fresh_default = key not in ("market", "trades")  # chart on; side panels closed
+            btn.setChecked(bool(saved.get(key, fresh_default)))
 
     def _toggle_panel(self, key: str, on: bool) -> None:
         self._panel_visible[key] = on
@@ -1641,7 +1684,23 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:  # noqa: BLE001 - older Windows / no DWM -> keep the default caption
             pass
 
+    def _save_session(self) -> None:
+        """Snapshot the session to disk (no-op when persistence is disabled)."""
+        if not self._session_path:
+            return
+        save_session(self._session_path, SessionState(
+            symbol=self._symbol,
+            interval=self._interval,
+            space=self.tabs.currentIndex(),
+            geometry_hex=bytes(self.saveGeometry().toHex()).decode("ascii"),
+            maximized=self.isMaximized(),
+            panels=dict(self._panel_visible),
+            chart_indicators=indicator_states(self.price),
+            studio_indicators=indicator_states(self.studio_price),
+        ))
+
     def closeEvent(self, event):  # noqa: N802 - Qt override
+        self._save_session()  # snapshot before teardown so the next launch resumes here
         self._stop_forward()  # never leave a feed thread running
         if hasattr(self, "news"):
             self.news.stop_feed()  # halt the news poller thread
@@ -1707,8 +1766,12 @@ def main():
     # Open MAXIMIZED so the window always fits the screen. The fixed 1440x900 + plain show()
     # overflowed on 1366x768-class laptops (the 900px height exceeded the usable screen, so
     # _center_on_screen shrank it). _center_on_screen still runs in __init__, so un-maximizing
-    # restores a screen-fitted, centered window.
-    win.showMaximized()
+    # restores a screen-fitted, centered window. A restored session that was left UN-maximized
+    # opens at its saved geometry instead.
+    if win._restored_geometry and win._session is not None and not win._session.maximized:
+        win.show()
+    else:
+        win.showMaximized()
     sys.exit(app.exec())
 
 
