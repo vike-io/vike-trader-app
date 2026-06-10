@@ -29,11 +29,14 @@ from ..data.polling_feed import PollingBarFeed
 from ..data.rollup import load_pins, refresh_pinned
 from ..data.sources import select_source
 from ..data.store import RunRecord, Store
+import PySide6QtAds as QtAds
+
 from . import icons, theme
 from .bots_panel import BotsPanel
 from .chart import PriceChart
 from .datamanager import DataManagerTab
 from .dialogs import LoadDataDialog, default_strategy_factory
+from .dockshell import SpaceDeck, configure_dock_manager_defaults, dock_qss, make_panel_dock
 from .panels import (
     TradesTable,
     WatchlistPanel,
@@ -283,9 +286,33 @@ class MainWindow(QtWidgets.QMainWindow):
         if not self._restored_geometry:
             self._center_on_screen()
 
-        # Reopen the last session's space (rail + title sync via _on_tab_changed).
-        if self._session and 0 <= self._session.space < self.tabs.count():
-            self.tabs.setCurrentIndex(self._session.space)
+        # Restore the dock layout (panel positions/sizes/pins, splitters). All dock widgets
+        # exist by objectName at this point, so restoreState maps 1:1. Guarded as a
+        # PROGRAMMATIC change: the layout blob reflects the close-time dock state (e.g. docks
+        # force-closed off the Chart space) — letting its viewToggled bleed into the rail
+        # toggles would overwrite the user's remembered per-panel intent (saved `panels`).
+        if self._session and self._session.dock_state_hex:
+            self._syncing_docks = True
+            try:
+                self.dock_manager.restoreState(
+                    QtCore.QByteArray.fromHex(self._session.dock_state_hex.encode("ascii"))
+                )
+            except Exception:  # noqa: BLE001 - stale/garbled blob -> keep the default layout
+                pass
+            finally:
+                self._syncing_docks = False
+
+        # Reopen the last session's space. restoreState above can REBUILD the center dock area,
+        # so SpaceDeck's currentChanged forward must be re-resolved and the shell re-synced
+        # regardless of which space we land on — hence setCurrentIndex (which re-resolves) plus
+        # an UNCONDITIONAL _on_tab_changed (rail check, title bar, per-space dock visibility).
+        # The saved index is CLAMPED: a build that dropped/reordered a space (precedent: the
+        # Tools space) could leave space >= count, which previously skipped the whole re-sync
+        # and left the visible space disconnected from the rail until the first click.
+        if self._session:
+            space = min(max(self._session.space, 0), self.tabs.count() - 1)
+            self.tabs.setCurrentIndex(space)
+        self._on_tab_changed(self.tabs.currentIndex())
 
         # Open the last session's symbol (default BTCUSDT) cache-first, on the main thread
         # per the data-layer thread-safety constraint, so the app starts on a populated chart.
@@ -379,8 +406,16 @@ class MainWindow(QtWidgets.QMainWindow):
         # The Chart space (clean price chart) and the Studio (AI strategy dev) are sibling
         # tabs of one window. The replay/data control bar and the Bots panel now live in the
         # Studio workspace (moved out of the Chart space and the right dock respectively).
+        #
+        # The spaces are CDockWidget tabs of an ADS (Qt-Advanced-Docking-System) center area,
+        # behind a QTabWidget-compatible facade (SpaceDeck) so all existing tab wiring holds.
+        # ADS also hosts the side panels (dockable/floatable/pinnable) and provides the
+        # save/restoreState used for layout persistence (and Phase 4's named workspaces).
         self._backtester = container
-        self.tabs = QtWidgets.QTabWidget()
+        configure_dock_manager_defaults()  # static config — must precede CDockManager()
+        self.dock_manager = QtAds.CDockManager(self)  # installs itself as the central widget
+        self.dock_manager.setStyleSheet(dock_qss())
+        self.tabs = SpaceDeck(self.dock_manager)
         self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
@@ -434,10 +469,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._options_started = False
         self._wire_options()
 
-        # The left icon rail is the PRIMARY navigation (TradeLocker-style) — the horizontal
-        # tab strip is hidden, so the rail alone switches between the spaces.
-        self.tabs.tabBar().hide()
-        self.setCentralWidget(self.tabs)
+        # The left icon rail stays the PRIMARY navigation (TradeLocker-style); the ADS tab row
+        # above the spaces is the document strip (the Vanguard/VS-Code pattern) and will carry
+        # the multi-instance chart documents in Phase 2. ADS makes the LAST-added dock current,
+        # so snap back to the Chart space before any currentChanged consumers are wired.
+        self.tabs.setCurrentIndex(0)
         # The rail lives in the LEFT TOOLBAR AREA so it sits flush against the window's left
         # edge — *outside* (left of) the Markets/Strategy dock area, like a VS Code / TradeLocker
         # activity bar. Inside the central widget it rendered to the right of the left docks,
@@ -704,6 +740,13 @@ class MainWindow(QtWidgets.QMainWindow):
         hand-loaded views call ``_stop_live_updates`` instead, so live polling stays scoped to
         the live-symbol path.
         """
+        # Test kill-switch: the offscreen suite (tests/conftest.py sets this) must do NO real
+        # network I/O — the live updater spawns _LiveFetchWorker threads that hit Binance/Yahoo,
+        # and a leaked one bleeds real fetches + renders into later, unrelated tests, stalling
+        # the headless run (the data-layer-not-thread-safe / no-network-in-headless rule). The
+        # live-edge merge logic itself is covered by unit tests (test_live_update.py).
+        if os.environ.get("VIKE_DISABLE_LIVE"):
+            return
         if self._forward is not None:
             return
         self._live_fail_streak = 0
@@ -854,44 +897,34 @@ class MainWindow(QtWidgets.QMainWindow):
         return panel, scrubber
 
     # --- docks ---
-    def _dock(self, title, widget):
-        d = QtWidgets.QDockWidget(title.upper(), self)
-        # Locked, stable IDE layout: no float / move / tear-off. The default Movable|Floatable
-        # let the user drag the panel out of the window or to another edge, which read as the
-        # panel "moving/resizing unexpectedly". Side-dock WIDTH is pinned in _build_docks so the
-        # right Market-watch panel can't be drag-resized left/right either.
-        d.setFeatures(QtWidgets.QDockWidget.NoDockWidgetFeatures)
-        d.setWidget(widget)
-        return d
-
     def _build_docks(self):
         # TradeLocker-style information architecture:
         #   Chart (centre) · Market watch (right) · Trades & Positions (full-width bottom).
-        # The Bots panel now lives in the Studio workspace, not a right dock.
-        # The bottom area owns both lower corners so the trades strip spans the full width,
-        # with the side docks sitting above it.
-        self.setCorner(QtCore.Qt.BottomLeftCorner, QtCore.Qt.BottomDockWidgetArea)
-        self.setCorner(QtCore.Qt.BottomRightCorner, QtCore.Qt.BottomDockWidgetArea)
-
-        market = self._dock("Market watch", self.watchlist)
-        # Pin the right Market-watch width so its dock splitter can't be dragged left/right
-        # (min==max makes the auto-inserted resize handle inert). 300px matches resizeDocks below.
-        self.watchlist.setFixedWidth(300)
-        trades = self._dock("Trades & Positions", self._build_trades_panel())
-
-        # RIGHT: Market watch.  BOTTOM: Trades & Positions, spanning the full width.
-        self.addDockWidget(QtCore.Qt.RightDockWidgetArea, market)
-        self.addDockWidget(QtCore.Qt.BottomDockWidgetArea, trades)
+        # Both are ADS panel docks now — UNLOCKED: drag to another edge, float to a separate
+        # window (multi-monitor), or pin to the edge (auto-hide collapsed tab). The old locked
+        # QDockWidget layout (fixed 300px, NoDockWidgetFeatures) is gone with the ADS shell.
+        self.watchlist.setMinimumWidth(240)  # was setFixedWidth(300) when the layout was locked
+        market = make_panel_dock(self.dock_manager, "MARKET WATCH", self.watchlist,
+                                 QtAds.RightDockWidgetArea)
+        trades = make_panel_dock(self.dock_manager, "TRADES & POSITIONS",
+                                 self._build_trades_panel(), QtAds.BottomDockWidgetArea)
 
         # rail PANELS toggle targets (key must match _PANELS)
         self._market_dock = market
         self._trades_dock = trades
         self._panel_dock_map = {"market": market, "trades": trades}
-        # Sizes used when the user OPENS a dock via the rail toggle (both start hidden on first
-        # run — see _wire_panels_toggle, chart-first).
-        self.resizeDocks([market], [300], QtCore.Qt.Horizontal)
-        self.resizeDocks([trades], [190], QtCore.Qt.Vertical)
         self._docks = [market, trades]
+        # Programmatic open/close (space switches, rail toggles) is guarded so the user-driven
+        # viewToggled (title-bar X / drag-close) is the only thing that updates the rail state.
+        self._syncing_docks = False
+        for key, dock in self._panel_dock_map.items():
+            dock.viewToggled.connect(lambda on, k=key: self._on_dock_view_toggled(k, on))
+        # Initial pane sizes for when the docks first open (both start closed — chart-first).
+        try:
+            self.dock_manager.setSplitterSizes(market.dockAreaWidget(), [1100, 300])
+            self.dock_manager.setSplitterSizes(trades.dockAreaWidget(), [620, 190])
+        except Exception:  # noqa: BLE001 - sizing is cosmetic; never block construction
+            pass
 
     def _scroll(self, widget):
         sc = QtWidgets.QScrollArea()
@@ -987,15 +1020,40 @@ class MainWindow(QtWidgets.QMainWindow):
             fresh_default = key not in ("market", "trades")  # chart on; side panels closed
             btn.setChecked(bool(saved.get(key, fresh_default)))
 
+    def _set_dock_open(self, dock, on: bool) -> None:
+        """Programmatic open/close of an ADS panel dock. ``toggleView`` is the ADS way (plain
+        setVisible desyncs its internal state); the guard keeps the resulting viewToggled
+        signal from feeding back into the rail toggle bookkeeping. The guard SAVES/RESTORES its
+        prior value rather than hard-clearing it, so a nested call (e.g. inside the restoreState
+        guarded region) can't drop an outer guard on unwind."""
+        prev = self._syncing_docks
+        self._syncing_docks = True
+        try:
+            dock.toggleView(on)
+        finally:
+            self._syncing_docks = prev
+
+    def _on_dock_view_toggled(self, key: str, on: bool) -> None:
+        """The user closed/opened a panel via its own chrome (title-bar X, pin, tab) —
+        mirror it into the rail toggle + remembered intent so the two never fight."""
+        if self._syncing_docks:
+            return
+        self._panel_visible[key] = on
+        btn = self._panel_btns.get(key)
+        if btn is not None and btn.isChecked() != on:
+            btn.blockSignals(True)   # reflect state only — _toggle_panel already ran or must not
+            btn.setChecked(on)
+            btn.blockSignals(False)
+
     def _toggle_panel(self, key: str, on: bool) -> None:
         self._panel_visible[key] = on
         if self.tabs.currentWidget() is not self._backtester:
             return
         if key == "backtester":
-            # Hide the centre (chart + controls); QMainWindow expands the docks to fill.
+            # Hide the centre (the spaces dock area); ADS expands the panel docks to fill.
             self.tabs.setVisible(on)
         else:
-            self._panel_dock_map[key].setVisible(on)
+            self._set_dock_open(self._panel_dock_map[key], on)
 
     def _refresh_pinned_tick(self) -> None:
         """Backstop timer: keep pinned rollups current (main thread — reads/writes Parquet).
@@ -1012,29 +1070,37 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_tab_changed(self, index: int) -> None:
         """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width."""
-        on_backtester = self.tabs.currentWidget() is self._backtester
-        # The centre must be visible to show any non-Backtester space; on the Backtester space
-        # itself, honor the "backtester" hide toggle.
-        self.tabs.setVisible(
-            self._panel_visible.get("backtester", True) if on_backtester else True
-        )
-        for d in self._docks:
-            d.setVisible(on_backtester)
-        if on_backtester:  # honor each panel's manual hide when returning to the Backtester
+        # Re-entrancy guard: toggling a panel dock here can, in pathological layouts, drive ADS
+        # to re-emit the center area's currentChanged synchronously and re-enter this slot —
+        # an unbounded close/reopen loop (stack overflow). The spaces being a central-widget
+        # area already blocks the known trigger (foreign drops); this is the belt-and-suspenders.
+        if getattr(self, "_in_tab_change", False):
+            return
+        self._in_tab_change = True
+        try:
+            on_backtester = self.tabs.currentWidget() is self._backtester
+            # The centre must be visible to show any non-Backtester space; on the Backtester
+            # space itself, honor the "backtester" hide toggle.
+            self.tabs.setVisible(
+                self._panel_visible.get("backtester", True) if on_backtester else True
+            )
+            # Panels show only on the Chart space, and there per each panel's remembered toggle.
             for key, dock in getattr(self, "_panel_dock_map", {}).items():
-                dock.setVisible(self._panel_visible.get(key, True))
-        btn = self._rail_group.button(index)  # keep the icon rail in sync with the tabs
-        if btn is not None:
-            btn.setChecked(True)
-        # the OS title bar is the active-space indicator now (tab strip + header chip are gone)
-        if 0 <= index < len(self._RAIL_ITEMS):
-            self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
-        # Options space: start fetching on first open; pause polling when navigating away.
-        if getattr(self, "options", None) is not None:
-            if self.tabs.currentWidget() is self.options:
-                self._maybe_start_options()
-            elif getattr(self, "_options_started", False):
-                self._options_svc.stop_polling()
+                self._set_dock_open(dock, on_backtester and self._panel_visible.get(key, True))
+            btn = self._rail_group.button(index)  # keep the icon rail in sync with the tabs
+            if btn is not None:
+                btn.setChecked(True)
+            # the OS title bar is the active-space indicator (tab strip + header chip are gone)
+            if 0 <= index < len(self._RAIL_ITEMS):
+                self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
+            # Options space: start fetching on first open; pause polling when navigating away.
+            if getattr(self, "options", None) is not None:
+                if self.tabs.currentWidget() is self.options:
+                    self._maybe_start_options()
+                elif getattr(self, "_options_started", False):
+                    self._options_svc.stop_polling()
+        finally:
+            self._in_tab_change = False
 
     def _wire_studio_agent(self) -> None:
         """Give the Studio a live Claude client iff an API key + the [ai] extra are present.
@@ -1693,6 +1759,7 @@ class MainWindow(QtWidgets.QMainWindow):
             interval=self._interval,
             space=self.tabs.currentIndex(),
             geometry_hex=bytes(self.saveGeometry().toHex()).decode("ascii"),
+            dock_state_hex=bytes(self.dock_manager.saveState().toHex()).decode("ascii"),
             maximized=self.isMaximized(),
             panels=dict(self._panel_visible),
             chart_indicators=indicator_states(self.price),
@@ -1702,6 +1769,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here
         self._stop_forward()  # never leave a feed thread running
+        # Halt the live chart auto-updater AND wait out any in-flight fetch worker. Without
+        # this a closed window keeps its _live_timer firing _live_tick -> _LiveFetchWorker
+        # (real network) -> _on_live_fetched render; in the offscreen test process that leaked
+        # work bleeds into later, unrelated tests (e.g. a bare NewsTab test pumping
+        # processEvents), stalling the suite. The other long-lived timers/threads below were
+        # already stopped here — _live_timer/_live_worker were simply missed.
+        self._stop_live_updates()
+        if getattr(self, "_live_worker", None) is not None:
+            self._live_worker.wait(2000)
+            self._live_worker = None
         if hasattr(self, "news"):
             self.news.stop_feed()  # halt the news poller thread
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)

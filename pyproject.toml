@@ -12,7 +12,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ui = ["pyside6>=6.7", "pyqtgraph>=0.13", "duckdb>=1.0"]  # duckdb: fast DuckCatalog (stats-only) for the Data manager — without it the catalog scan falls back to a slow Polars full-read that freezes the Data space (~13s). The standalone `duck` extra below remains for headless installs.
+ui = ["pyside6>=6.7", "pyqtgraph>=0.13", "duckdb>=1.0", "PySide6-QtAds>=4.5"]  # duckdb: fast DuckCatalog (stats-only) for the Data manager — without it the catalog scan falls back to a slow Polars full-read that freezes the Data space (~13s). The standalone `duck` extra below remains for headless installs. PySide6-QtAds: the dockable shell (ui/dockshell.py).
 options = ["yfinance>=0.2"]  # stock/index options chain backend (data/options/yfinance.py); lazy-imported
 cli = ["typer>=0.12"]
 analysis = ["skfolio>=0.6", "scikit-learn>=1.5"]

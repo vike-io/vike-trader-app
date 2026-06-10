@@ -17,6 +17,14 @@ import pytest
 # kill-switch only applies to the default path — see MainWindow.__init__).
 os.environ.setdefault("VIKE_DISABLE_SESSION", "1")
 
+# Live chart auto-updates are disabled suite-wide: _arm_live_updates spawns _LiveFetchWorker
+# threads that hit the real network (Binance/Yahoo). A MainWindow left un-closed by one test
+# keeps polling, and its fetched->render callbacks fire during a later, unrelated test's
+# processEvents() — real network in a headless run, which stalls/segfaults the suite (see
+# CLAUDE.md: data layer not thread-safe; no network in non-interactive paths). The live-edge
+# merge logic is unit-tested directly in tests/unit/data/test_live_update.py.
+os.environ.setdefault("VIKE_DISABLE_LIVE", "1")
+
 _GUI_FIXTURES = {"app", "qapp", "qtbot", "win", "main_window", "mainwindow"}
 
 # Tests known to hit the LIVE network (real Binance/Yahoo fetch). These can segfault when the fetch
