@@ -167,9 +167,9 @@ def test_chart_window_title_bar(app, _synthetic_load):
     win = MainWindow(session_path=None)
     doc = win._new_chart_document("ETHUSDT", "2h")
     frame = win._chart_frames[0]
-    assert frame._title.text() == "ETHUSDT · 2h"
+    assert frame._bar._title.text() == "ETHUSDT · 2h"   # title lives in the shared UnifiedTitleBar
     doc.load("ETHUSDT", "4h")                       # title follows the document
-    assert frame._title.text() == "ETHUSDT · 4h"
+    assert frame._bar._title.text() == "ETHUSDT · 4h"
     win.close()
 
 
