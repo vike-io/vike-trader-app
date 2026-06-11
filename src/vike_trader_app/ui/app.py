@@ -6,6 +6,7 @@ full-width header. The "⚠ Validate" button runs the anti-overfit report and li
 up the verdict banner — the differentiator.
 """
 
+import json
 import os
 import time
 from pathlib import Path
@@ -360,6 +361,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             finally:
                 self._syncing_docks = False
+        # restoreState rebuilds tab widgets and re-shows the space tabs — re-hide them (the
+        # rail is the space switcher; the center strip carries only chart documents).
+        self.tabs.hide_space_tabs()
 
         # Reopen the last session's space. restoreState above can REBUILD the center dock area,
         # so SpaceDeck's currentChanged forward must be re-resolved and the shell re-synced
@@ -607,6 +611,31 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabs.currentChanged.connect(self._on_space_changed)
         self._rail_tb = rail_tb  # anchor for the rail separator line (see _place_rules)
 
+        # --- top command/launcher bar (S2) + hamburger menu (S3) — MC16-style row ----------
+        from .menus import build_main_menu
+        from .topbar import CommandBar
+
+        self.topbar = CommandBar(self._commands)
+        self.topbar.set_menu(build_main_menu(self))
+        self.topbar.symbolSubmitted.connect(self._on_topbar_symbol)
+        self.topbar.intervalSubmitted.connect(self._on_topbar_interval)
+        self.topbar.commandSubmitted.connect(self._run_command_label)
+        # window-type launchers (the MC16 top-right cluster): new chart window + each space
+        self.topbar.add_launcher("chart", "New chart window (Ctrl+N)",
+                                 lambda: self._open_in_new_chart(self._symbol))
+        for icon_name, label, idx in (("screener", "Screener", 2), ("data", "Data", 5),
+                                      ("news", "News", 6), ("calendar", "Calendar", 7),
+                                      ("options", "Options", 8), ("studio", "Studio", 1)):
+            self.topbar.add_launcher(icon_name, label,
+                                     lambda i=idx: self.tabs.setCurrentIndex(i))
+        top_tb = QtWidgets.QToolBar("Command bar")
+        top_tb.setObjectName("commandbar")
+        top_tb.setMovable(False)
+        top_tb.setFloatable(False)
+        top_tb.setStyleSheet(f"QToolBar{{border:none;background:{theme.BG};padding:0;}}")
+        top_tb.addWidget(self.topbar)
+        self.addToolBar(QtCore.Qt.TopToolBarArea, top_tb)
+
         # Full-width separator hairlines (under the title bar + above the status bar), painted
         # in device-pixel space by one overlay so they match exactly at any display scaling.
         # The top one also replaces the rail's old vertical border.
@@ -763,6 +792,10 @@ class MainWindow(QtWidgets.QMainWindow):
                         activated=lambda: self._open_in_new_chart(self._symbol))
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+K"), self,
                         activated=self._open_command_palette)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+C"), self,
+                        activated=self._copy_active_document)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self,
+                        activated=self._paste_document)
 
         # "Layout" — named workspaces menu (open / save / delete), rebuilt on each open so the
         # saved list is always current. Sits with the action buttons, not the exclusive rail.
@@ -2078,6 +2111,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             finally:
                 self._syncing_docks = False
+        self.tabs.hide_space_tabs()   # restoreState re-shows space tabs; the rail switches spaces
 
         space = min(max(state.space, 0), self.tabs.count() - 1)
         self.tabs.setCurrentIndex(space)
@@ -2088,6 +2122,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if state is None:
             return False
         self._apply_workspace_state(state)
+        self._workspaces.record_recent(name)   # File > Recent Workspaces (S4)
         return True
 
     def _save_workspace_as(self, name: str) -> bool:
@@ -2140,9 +2175,19 @@ class MainWindow(QtWidgets.QMainWindow):
                      lambda: self.tabs.arrange_documents("tabs")))
         cmds.append(("Save workspace as…", self._prompt_save_workspace))
         cmds.append(("AI: generate a layout…", self._prompt_ai_layout))
+        cmds.append(("Copy window", self._copy_active_document))
+        cmds.append(("Paste window", self._paste_document))
+        cmds.append(("Float current document", self._float_current_document))
         for key, _icon, tip, _sc in self._PANELS:
             cmds.append((f"Toggle panel: {tip}", lambda k=key: self._panel_btns[k].toggle()))
         return cmds
+
+    def _run_command_label(self, label: str) -> None:
+        """Execute a palette command by its label (the top bar's command path)."""
+        for cmd_label, callback in self._commands():
+            if cmd_label == label:
+                callback()
+                return
 
     def _open_command_palette(self) -> None:
         from .command_palette import CommandPalette
@@ -2151,6 +2196,84 @@ class MainWindow(QtWidgets.QMainWindow):
         center = self.geometry().center()
         pal.move(center.x() - 280, center.y() - 160)
         pal.exec()
+
+    # --- top-bar routing + window verbs (S2/S4 of the shell-ux plan) -------------------------
+    def _on_topbar_symbol(self, symbol: str) -> None:
+        """Symbol typed in the command bar: route to the focused chart document, else the
+        Chart space (which also switches there so the user SEES the result)."""
+        current = self.tabs.currentWidget()
+        if isinstance(current, ChartDocument):
+            current.load(symbol=symbol)
+            return
+        self.tabs.setCurrentIndex(0)
+        self._load_symbol(symbol)
+
+    def _on_topbar_interval(self, interval: str) -> None:
+        current = self.tabs.currentWidget()
+        if isinstance(current, ChartDocument):
+            current.load(interval=interval)
+            return
+        self._on_interval_chosen(interval)
+
+    def _copy_active_document(self) -> None:
+        """MC's Copy Window: serialize the focused chart document (or the Chart space's view)
+        to the clipboard as JSON; Paste recreates it — works across app instances too."""
+        current = self.tabs.currentWidget()
+        if isinstance(current, ChartDocument):
+            payload = current.state()
+        else:
+            payload = {"symbol": self._symbol, "interval": self._interval,
+                       "indicators": indicator_states(self.price)}
+        QtWidgets.QApplication.clipboard().setText(
+            json.dumps({"vike_window": payload}))
+        self.statusBar().showMessage("Window copied — paste with Ctrl+Shift+V", 4000)
+
+    def _paste_document(self) -> None:
+        try:
+            raw = json.loads(QtWidgets.QApplication.clipboard().text())
+            state = raw["vike_window"]
+        except Exception:  # noqa: BLE001 - clipboard isn't ours — ignore quietly
+            self.statusBar().showMessage("Clipboard has no copied window.", 3000)
+            return
+        self._new_chart_document(state.get("symbol", self._symbol),
+                                 state.get("interval", self._interval), state=state)
+
+    def _float_current_document(self) -> None:
+        current = self.tabs.currentWidget()
+        for dock in getattr(self.tabs, "_documents", []):
+            if dock.widget() is current:
+                dock.setFloating()
+                return
+        self.statusBar().showMessage("Focus a chart window to float it.", 3000)
+
+    def _activate_document(self, doc) -> None:
+        for dock in getattr(self.tabs, "_documents", []):
+            if dock.widget() is doc:
+                dock.setAsCurrentTab()
+                dock.raise_()
+                return
+
+    def _export_chart_image(self) -> None:
+        """Save the active chart (document or Chart space) as a PNG. Interactive path only."""
+        chart = getattr(self.tabs.currentWidget(), "chart", None) or self.price
+        path, _f = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export chart image", f"{self._symbol}.png", "PNG image (*.png)")
+        if path:
+            chart.grab().save(path)
+            self.statusBar().showMessage(f"Saved {path}", 4000)
+
+    def _show_shortcuts(self) -> None:
+        rows = ["Ctrl+K — command palette", "Ctrl+N — new chart window",
+                "/ — focus the command bar", "Ctrl+Shift+C / V — copy / paste window",
+                "Ctrl+G / Ctrl+M / Ctrl+T — chart / market watch / trades panels",
+                "Middle-click tab — close window", "Double-click tab — float window"]
+        QtWidgets.QMessageBox.information(self, "Keyboard shortcuts", "\n".join(rows))
+
+    def _show_about(self) -> None:
+        QtWidgets.QMessageBox.about(
+            self, "vike-trader",
+            "vike-trader — crypto-first backtesting & forward-testing desktop.\n"
+            "Charting · Studio (AI strategy lab) · Screener · Options · Calendars.")
 
     # --- agent-emitted workspaces (Phase 5) -------------------------------------------------
     def _apply_agent_spec(self, spec: dict) -> None:
