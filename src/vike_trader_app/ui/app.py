@@ -2146,6 +2146,8 @@ def _install_qt_log_filter():
     functional impact — text still renders via the fallback family."""
     import logging
 
+    from ..crash import report_qt as _report_qt
+
     _benign = ("Cannot find font directory", "propagateSizeHints",
                "QFont::setPointSize: Point size", "QFont::setPixelSize: Pixel size")
     qt_log = logging.getLogger("vike.qt")
@@ -2157,6 +2159,8 @@ def _install_qt_log_filter():
         if any(s in msg for s in _benign):
             return
         qt_log.log(_levels.get(int(mode), logging.WARNING), "%s", msg)
+        if int(mode) == 3:  # QtFatalMsg — the app is aborting; spool it for next-launch report
+            _report_qt(int(mode), msg)
 
     QtCore.qInstallMessageHandler(handler)
 
@@ -2176,6 +2180,16 @@ def main():
 
     log_path = configure_logging()  # rotating file (logs/) + console; Qt filter feeds it below
     logging.getLogger("vike.app").info("starting vike-trader-app (log file: %s)", log_path)
+
+    from ..crash import install as install_crash  # crash capture + drain last run's spool (opt-in upload)
+
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        _ver = _pkg_version("vike-trader-app")
+    except Exception:  # noqa: BLE001 - metadata may be absent in a source checkout
+        _ver = None
+    install_crash(app_version=_ver)
     _install_qt_log_filter()
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(theme.stylesheet())
