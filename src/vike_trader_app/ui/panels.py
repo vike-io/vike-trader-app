@@ -212,14 +212,18 @@ class TradesTable(QtWidgets.QTableWidget):
     """Read-only table of completed trades."""
 
     def __init__(self):
-        super().__init__(0, len(TRADE_HEADERS))
-        self.setHorizontalHeaderLabels(TRADE_HEADERS)
+        super().__init__(0, len(TRADE_HEADERS) + 1)  # +1: trailing spacer column
+        self.setHorizontalHeaderLabels([*TRADE_HEADERS, ""])
         self.verticalHeader().setVisible(False)
         self.setAlternatingRowColors(True)
         self.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.horizontalHeader().setStretchLastSection(True)
-        self.horizontalHeader().setDefaultAlignment(QtCore.Qt.AlignRight)
+        # Slack goes to an empty trailing spacer, NOT the last data column — stretching
+        # right-aligned "Fees" ballooned it and pinned its values to the table edge.
+        hdr = self.horizontalHeader()
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(len(TRADE_HEADERS), QtWidgets.QHeaderView.Stretch)
+        hdr.setDefaultAlignment(QtCore.Qt.AlignRight)
 
     def update_trades(self, trades):
         rows = trade_rows(trades)
@@ -465,7 +469,10 @@ class HistoryPanel(QtWidgets.QTableWidget):
         self.setAlternatingRowColors(True)
         self.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self.horizontalHeader().setStretchLastSection(True)
+        # Strategy (free text) absorbs the slack — stretching the last numeric column
+        # ("Trades") ballooned it (the calendar bug class).
+        self.horizontalHeader().setStretchLastSection(False)
+        self.horizontalHeader().setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
         self.itemDoubleClicked.connect(self._double_clicked)
 
     def update_runs(self, runs):
