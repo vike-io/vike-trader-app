@@ -96,3 +96,61 @@ def test_remove_member_stops_delivery():
 def test_link_color_table_covers_all_groups():
     assert set(LINK_COLOR) == {gid for gid, _c, _n in LINK_GROUPS}
     assert LINK_COLOR[0] == "#6e7681"          # unlinked = grey
+
+
+# --- independent interval link channel (MultiCharts-parity: symbol vs timeframe colours) ---
+
+class FakeDualMember:
+    """A member carrying BOTH a symbol channel (link_group) and an interval channel."""
+
+    def __init__(self, group=0, interval_group=0):
+        self.link_group = group
+        self.interval_link_group = interval_group
+        self.applied: list[tuple] = []
+
+    def apply_link(self, symbol, interval):
+        self.applied.append((symbol, interval))
+
+
+def test_interval_channel_independent_of_symbol():
+    """A window can share the interval colour without sharing the symbol colour, and vice-versa."""
+    bus = SymbolLinkBus()
+    src = FakeDualMember(group=1, interval_group=2)
+    both = FakeDualMember(group=1, interval_group=2)    # shares symbol AND interval
+    ivl_only = FakeDualMember(group=3, interval_group=2)  # shares only interval
+    sym_only = FakeDualMember(group=1, interval_group=5)  # shares only symbol
+    for m in (src, both, ivl_only, sym_only):
+        bus.add_member(m)
+
+    bus.broadcast(1, src, "ETHUSDT", "4h", interval_group=2)
+    assert both.applied == [("ETHUSDT", "4h")]
+    assert ivl_only.applied == [(None, "4h")]            # interval follows, symbol does not
+    assert sym_only.applied == [("ETHUSDT", None)]       # symbol follows, interval does not
+    assert src.applied == []
+
+
+def test_interval_unlinked_source_does_not_push_interval():
+    bus = SymbolLinkBus()
+    src = FakeDualMember(group=1, interval_group=0)      # interval channel = unlinked
+    a = FakeDualMember(group=1, interval_group=0)
+    bus.add_member(src)
+    bus.add_member(a)
+    bus.broadcast(1, src, "ETHUSDT", "4h", interval_group=0)
+    assert a.applied == [("ETHUSDT", None)]              # symbol synced, interval suppressed
+
+
+def test_legacy_member_without_interval_attr_follows_symbol_colour_for_interval():
+    """Back-compat: a member with only link_group still gets interval on that same colour."""
+    bus = SymbolLinkBus()
+    a = FakeMember(group=1)                              # no interval_link_group attribute
+    bus.add_member(a)
+    bus.broadcast(1, object(), "ETHUSDT", "4h")         # legacy call (no interval_group kwarg)
+    assert a.applied == [("ETHUSDT", "4h")]
+
+
+def test_symbol_unlinked_but_interval_linked_routes_interval_only():
+    bus = SymbolLinkBus()
+    a = FakeDualMember(group=0, interval_group=2)
+    bus.add_member(a)
+    bus.broadcast(0, object(), "ETHUSDT", "4h", interval_group=2)
+    assert a.applied == [(None, "4h")]                  # symbol channel off, interval on

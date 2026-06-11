@@ -68,18 +68,25 @@ class ChartDocument(QtWidgets.QWidget):
         outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(6)
 
-        # Symbol link group (Phase 3): a colour dot in a thin header. Same colour on >1 chart =
-        # they move together (symbol + interval). 0 = unlinked. The bus is injected via set_bus.
+        # Link groups (Phase 3): two colour dots in a thin header — an independent SYMBOL channel
+        # (●) and INTERVAL/timeframe channel (◆), MultiCharts-style. Same symbol colour on >1 chart
+        # syncs their symbol; same interval colour syncs their timeframe; the two are independent
+        # (a chart can follow another's timeframe without following its symbol). 0 = unlinked. The
+        # bus is injected via set_bus.
         from .panels import LinkDot  # local import keeps the panels<->chartdoc edge one-way
 
         self.link_group = 0
+        self.interval_link_group = None      # None = follow the symbol link (back-compat default)
         self._bus = None
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(2, 0, 2, 0)
         header.addStretch(1)
-        self._link_dot = LinkDot(0)
+        self._link_dot = LinkDot(0, label="Symbol")
         self._link_dot.groupChanged.connect(self._set_link_group)
         header.addWidget(self._link_dot)
+        self._ivl_dot = LinkDot(-1, label="Interval", glyph=("◇", "◆"), follow=True)
+        self._ivl_dot.groupChanged.connect(self._set_interval_link_group)
+        header.addWidget(self._ivl_dot)
         outer.addLayout(header)
         outer.addWidget(card)
 
@@ -166,12 +173,19 @@ class ChartDocument(QtWidgets.QWidget):
         self.link_group = gid
         self._link_dot.set_group(gid)   # keep the dot in sync when set directly (not via menu)
 
+    def _set_interval_link_group(self, gid: int) -> None:
+        # dot sentinel -1 ("follow symbol") maps to None on the bus; 0 = unlinked; 1-6 = own colour
+        self.interval_link_group = None if gid < 0 else gid
+        self._ivl_dot.set_group(gid)
+
     def _broadcast_link(self, symbol: str, interval: str) -> None:
-        """Push this doc's (symbol, interval) to its link group. The bus re-entrancy guard
-        keeps a received apply_link -> load -> symbolChanged from looping back; _suppress_broadcast
-        additionally blocks focus-triggered ensure_loaded top-ups from broadcasting."""
+        """Push this doc's symbol to its symbol-link group and interval to its (independent)
+        interval-link group. The bus re-entrancy guard keeps a received apply_link -> load ->
+        symbolChanged from looping back; _suppress_broadcast additionally blocks focus-triggered
+        ensure_loaded top-ups from broadcasting."""
         if self._bus is not None and not getattr(self, "_suppress_broadcast", False):
-            self._bus.broadcast(self.link_group, self, symbol, interval)
+            self._bus.broadcast(self.link_group, self, symbol, interval,
+                                interval_group=self.interval_link_group)
 
     def apply_link(self, symbol: str | None, interval: str | None) -> None:
         """Receive a link broadcast: switch to (symbol, interval), keeping whichever is None."""
@@ -182,10 +196,11 @@ class ChartDocument(QtWidgets.QWidget):
     def state(self) -> dict:
         return {"symbol": self._symbol, "interval": self._interval,
                 "link_group": self.link_group,
+                "interval_link_group": self.interval_link_group,
                 "indicators": indicator_states(self.chart)}
 
     def apply_state(self, state: dict) -> None:
-        """Re-attach saved indicators + link colour (call after a load put bars on the chart)."""
+        """Re-attach saved indicators + link colours (call after a load put bars on the chart)."""
         from .linkbus import LINK_COLOR
 
         apply_indicator_states(self.chart, (state or {}).get("indicators") or [])
@@ -194,6 +209,16 @@ class ChartDocument(QtWidgets.QWidget):
             gid = 0
         self.link_group = gid
         self._link_dot.set_group(gid)
+        raw_ivl = (state or {}).get("interval_link_group", None)
+        if raw_ivl is None:                 # legacy/older session -> follow symbol link
+            self.interval_link_group = None
+            self._ivl_dot.set_group(-1)
+        else:
+            igid = int(raw_ivl)
+            if igid not in LINK_COLOR:       # hand-edited / removed group -> unlinked
+                igid = 0
+            self.interval_link_group = igid
+            self._ivl_dot.set_group(igid)
 
 
 class LiveHub(QtCore.QObject):

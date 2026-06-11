@@ -47,22 +47,40 @@ class SymbolLinkBus:
             self._members.remove(member)
 
     def broadcast(self, group: int, source, symbol: str | None = None,
-                  interval: str | None = None) -> None:
-        """Push (symbol, interval) to every member in ``group`` except ``source``.
+                  interval: str | None = None, *, interval_group: int | None = None) -> None:
+        """Push symbol on the SYMBOL channel and interval on the INTERVAL channel.
 
-        No-op for the unlinked group (0) or while already broadcasting. ``symbol``/``interval``
-        are individually optional: a watchlist click sends symbol only (interval stays per
-        chart); a chart change sends both (full TradingView-style sync)."""
-        if not group or self._broadcasting:
+        ``group`` is the symbol-link colour; ``interval_group`` is the (independent) interval-link
+        colour. When ``interval_group`` is omitted it defaults to ``group`` — so a single colour
+        still links symbol AND interval together (legacy/TradingView-style sync). Setting a
+        *different* interval colour gives MultiCharts-style independent channels: a chart can
+        follow another chart's timeframe without following its symbol, and vice-versa.
+
+        Members carry ``link_group`` (symbol) and optionally ``interval_link_group`` (interval); a
+        member without the latter falls back to ``link_group`` so single-channel members keep
+        syncing interval on their symbol colour. ``symbol``/``interval`` are individually optional
+        (a watchlist click sends symbol only). No-op while already broadcasting, or when both
+        channels are unlinked, or when there is nothing to send."""
+        if self._broadcasting:
             return
         if symbol is None and interval is None:
+            return
+        igroup = group if interval_group is None else interval_group
+        if not group and not igroup:
             return
         self._broadcasting = True
         try:
             for member in list(self._members):
                 if member is source:
                     continue
-                if getattr(member, "link_group", 0) == group:
-                    member.apply_link(symbol, interval)
+                sym = symbol if (symbol is not None and group
+                                 and getattr(member, "link_group", 0) == group) else None
+                m_igroup = getattr(member, "interval_link_group", None)
+                if m_igroup is None:                       # legacy member -> symbol colour
+                    m_igroup = getattr(member, "link_group", 0)
+                itv = interval if (interval is not None and igroup
+                                   and m_igroup == igroup) else None
+                if sym is not None or itv is not None:
+                    member.apply_link(sym, itv)
         finally:
             self._broadcasting = False

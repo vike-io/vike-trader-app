@@ -226,6 +226,68 @@ def test_link_group_set_via_dot_signal_syncs_attr_and_dot(app, _synthetic_load):
     win.close()
 
 
+def test_interval_link_defaults_to_follow_symbol(app, _synthetic_load):
+    """A fresh doc's interval channel follows the symbol link (back-compat: one colour = both)."""
+    win = MainWindow(session_path=None)
+    d = win._new_chart_document("ETHUSDT", "1h")
+    assert d.interval_link_group is None          # None == follow symbol
+    assert d._ivl_dot.group() == -1               # dot shows the "follow symbol" sentinel
+    win.close()
+
+
+def test_interval_channel_links_timeframe_without_symbol(app, _synthetic_load):
+    """MultiCharts parity: charts can share an INTERVAL colour without sharing a symbol colour —
+    changing one's timeframe syncs the other's timeframe but NOT its symbol."""
+    win = MainWindow(session_path=None)
+    a = win._new_chart_document("ETHUSDT", "1h")
+    b = win._new_chart_document("SOLUSDT", "1h")
+    a._set_interval_link_group(2); b._set_interval_link_group(2)   # interval=green, symbols unlinked
+
+    a.load(interval="4h")
+    assert b.interval == "4h"                      # timeframe followed
+    assert b.symbol == "SOLUSDT"                   # symbol did NOT follow (channels independent)
+    win.close()
+
+
+def test_interval_unlinked_frees_timeframe_under_symbol_link(app, _synthetic_load):
+    """Symbol-linked charts can hold INDEPENDENT timeframes when interval is set to unlinked (0)."""
+    win = MainWindow(session_path=None)
+    a = win._new_chart_document("ETHUSDT", "1h")
+    b = win._new_chart_document("SOLUSDT", "1h")
+    a._set_link_group(3); b._set_link_group(3)                    # both symbol-linked (blue)
+    a._set_interval_link_group(0); b._set_interval_link_group(0)  # interval explicitly unlinked
+
+    a.load("ETHUSDT", "4h")
+    assert b.symbol == "ETHUSDT"                   # symbol still synced
+    assert b.interval == "1h"                      # but timeframe stays independent
+    win.close()
+
+
+def test_interval_link_dot_follow_color_round_trip(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    d = win._new_chart_document("ETHUSDT", "1h")
+    d._ivl_dot.set_group(4, emit=True)            # pick a colour -> decoupled
+    assert d.interval_link_group == 4
+    d._ivl_dot.set_group(-1, emit=True)           # back to "follow symbol"
+    assert d.interval_link_group is None
+    win.close()
+
+
+def test_interval_link_group_persists_and_restores(app, _synthetic_load, tmp_path):
+    path = tmp_path / "session.json"
+    first = MainWindow(session_path=str(path))
+    d = first._new_chart_document("ETHUSDT", "4h")
+    d._set_interval_link_group(2)                  # green interval channel
+    first.close()
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["documents"][0]["interval_link_group"] == 2
+
+    second = MainWindow(session_path=str(path))
+    assert second._doc_widgets[0].interval_link_group == 2
+    second.close()
+
+
 def test_focusing_restored_linked_doc_does_not_broadcast(app, monkeypatch):
     """ensure_loaded (focus top-up of a restored doc) must NOT overwrite same-group peers."""
     monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
