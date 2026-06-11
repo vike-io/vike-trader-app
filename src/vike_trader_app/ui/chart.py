@@ -11,6 +11,7 @@ from PySide6.QtCore import QRectF
 
 from ..core import chart_transforms
 from . import chart_styles, dropdowns, icons, theme
+from .style_icons import style_icon
 from .chartdata import (
     axis_time_label,
     bar_spacing,
@@ -1783,8 +1784,13 @@ class PriceChart(pg.PlotWidget):
         _tb.addWidget(self._ind_btn)
         _tb.addWidget(_divider())
 
-        # chart-style selector (grouped dropdown) -> set_style(...)
-        self._style_btn = QtWidgets.QPushButton("Candles", self._top_bar)
+        # chart-style selector (grouped dropdown) -> set_style(...). TradingView-style: the
+        # button shows ONLY the current style's glyph (tooltip names it); every dropdown entry
+        # carries its own glyph (style_icons.py).
+        self._style_btn = QtWidgets.QPushButton(self._top_bar)
+        self._style_btn.setIcon(style_icon("Candles"))
+        self._style_btn.setIconSize(QtCore.QSize(18, 18))
+        self._style_btn.setToolTip("Chart style · Candles")
         self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
         self._style_btn.setStyleSheet(_btn_qss)
         _style_menu = QtWidgets.QMenu(self._style_btn)
@@ -1799,7 +1805,7 @@ class PriceChart(pg.PlotWidget):
         for _sec, _styles in chart_styles.STYLE_SECTIONS:
             _style_menu.addSection(_sec)
             for _st in _styles:
-                _style_menu.addAction(_st, lambda s=_st: self.set_style(s))
+                _style_menu.addAction(style_icon(_st), _st, lambda s=_st: self.set_style(s))
         self._style_btn.setMenu(_style_menu)
         _tb.addWidget(self._style_btn)
         self._ohlc_divider = _divider()   # toggled with the OHLC legend on narrow charts
@@ -2797,7 +2803,8 @@ class PriceChart(pg.PlotWidget):
         if style not in chart_styles.ALL_STYLES:
             return
         self._style = style
-        self._style_btn.setText(style)
+        self._style_btn.setIcon(style_icon(style))   # icon-only button; the tooltip names it
+        self._style_btn.setToolTip(f"Chart style · {style}")
         time_based = chart_styles.is_time_based(style)
         self._overlays_visible(time_based)   # non-time styles can't align indicators/markers/panes
         # Reveal the full series — the prior style's reveal index doesn't map to a different-length one.
