@@ -167,6 +167,14 @@ def report_crash(event: dict) -> None:
         payload["client"] = _client_id()
         payload["env"] = _safe_env(event.get("app_version"))
         record(payload)
+        # Also forward to Bugsnag (dedicated vike-trader project) for grouping/dedup/alerting —
+        # best-effort, only when BUGSNAG_API_KEY is set; never breaks the local record above.
+        try:
+            from . import bugsnag
+
+            bugsnag.report_crash(payload)
+        except Exception:  # noqa: BLE001
+            pass
     except Exception:  # noqa: BLE001 - crash reporting must never raise
         pass
 
