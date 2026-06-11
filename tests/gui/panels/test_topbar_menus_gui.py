@@ -65,15 +65,20 @@ def test_topbar_exists_with_menu_and_launchers(app):
     win.close()
 
 
-def test_topbar_symbol_and_interval_route(app):
+def test_topbar_symbol_and_interval_route(app, monkeypatch):
+    """The bar routes to the SHELL's load/interval entry points (the data outcome itself is
+    environment-dependent — CI has no parquet cache — so assert the routing contract)."""
     win = MainWindow(session_path=None)
+    calls = []
+    monkeypatch.setattr(win, "_load_symbol", lambda sym, interval=None: calls.append(sym))
+    monkeypatch.setattr(win, "_on_interval_chosen", lambda iv: calls.append(iv))
     win.topbar.box.setText("ETHUSDT")
     win.topbar._submit()
-    assert win._symbol == "ETHUSDT"
+    assert calls == ["ETHUSDT"]
     assert win.tabs.currentIndex() == 0               # routed to (and showed) the Chart space
     win.topbar.box.setText("5m")
     win.topbar._submit()
-    assert win._interval == "5m"
+    assert calls == ["ETHUSDT", "5m"]
     win.close()
 
 
