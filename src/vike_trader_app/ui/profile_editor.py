@@ -2,11 +2,12 @@
 
 Launched from the Data Manager. Lets you pick a broker profile, edit each instrument's
 tick / pip / step / contract-size (the keystone spec), add/remove instruments, bulk-edit a
-selection ('mass edit instruments'), and save back to ``storage/profiles/<name>.json``.
+selection ('mass edit instruments'), and save back to the instrument DB
+(``storage/db/instruments.sqlite`` — state lives in SQLite; JSON only via Export/Import).
 
 The mutating logic is the pure ``data.instruments`` helpers + ``profile_editor_data`` row
 conversion; the public methods (``save``, ``add_row``, ``delete_rows``, ``apply_mass_edit``,
-``new_profile``) are dialog-free so they're unit-testable.
+``new_profile``, ``export_current``, ``import_from``) are dialog-free so they're unit-testable.
 """
 
 from PySide6 import QtCore, QtWidgets
@@ -16,6 +17,8 @@ from ..data.instruments import (
     InstrumentSpec,
     default_spec_for,
     ensure_presets,
+    export_profile_json,
+    import_profile_json,
     list_profiles,
     load_profile,
     mass_edit_specs,
@@ -67,13 +70,18 @@ class ProfileEditorDialog(QtWidgets.QDialog):
         self.btn_add = QtWidgets.QPushButton("＋ Add instrument")
         self.btn_del = QtWidgets.QPushButton("🗑 Remove")
         self.btn_mass = QtWidgets.QPushButton("✎ Mass edit…")
+        self.btn_export = QtWidgets.QPushButton("📤 Export…")
+        self.btn_import = QtWidgets.QPushButton("📥 Import…")
         self.btn_save = QtWidgets.QPushButton("💾 Save")
         self.btn_new.clicked.connect(self._on_new_profile)
         self.btn_add.clicked.connect(lambda: self.add_row())
         self.btn_del.clicked.connect(lambda: self.delete_rows(self._selected_rows()))
         self.btn_mass.clicked.connect(self._on_mass_edit)
+        self.btn_export.clicked.connect(self._on_export)
+        self.btn_import.clicked.connect(self._on_import)
         self.btn_save.clicked.connect(self._on_save)
-        for b in (self.btn_new, self.btn_add, self.btn_del, self.btn_mass):
+        for b in (self.btn_new, self.btn_add, self.btn_del, self.btn_mass,
+                  self.btn_export, self.btn_import):
             bar.addWidget(b)
         bar.addStretch(1)
         self._status = QtWidgets.QLabel("")
@@ -164,6 +172,27 @@ class ProfileEditorDialog(QtWidgets.QDialog):
         self._combo.setCurrentText(name)
         return prof
 
+    def export_current(self, path: str):
+        """Export the selected profile *as stored* to interchange JSON at ``path``.
+
+        Exports the saved state (the only JSON I/O sanctioned by the state-in-DB rule) —
+        unsaved table edits aren't included, mirroring what any other process would see.
+        """
+        name = self._combo.currentText()
+        out = export_profile_json(name, self._root, path)
+        self._status.setText(f"exported {name} → {out.name}")
+        return out
+
+    def import_from(self, path: str) -> BrokerProfile:
+        """Import an interchange JSON into the DB (replacing any same-name profile) + show it."""
+        prof = import_profile_json(path, self._root)
+        if self._combo.findText(prof.name) < 0:
+            self._combo.addItem(prof.name)
+        self._combo.setCurrentText(prof.name)
+        self._load(prof.name)  # force-refresh: setCurrentText is a no-op if already selected
+        self._status.setText(f"imported {prof.name} ({len(prof.instruments)} instruments)")
+        return prof
+
     # --- dialog handlers ---
     def _on_new_profile(self) -> None:
         name, ok = QtWidgets.QInputDialog.getText(self, "New profile", "Profile name:")
@@ -185,6 +214,19 @@ class ProfileEditorDialog(QtWidgets.QDialog):
     def _on_save(self) -> None:
         prof = self.save()
         self._status.setText(f"saved {prof.name} ({len(prof.instruments)} instruments)")
+
+    def _on_export(self) -> None:
+        name = self._combo.currentText()
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export profile (interchange JSON)", f"{name}.json", "JSON (*.json)")
+        if path:
+            self.export_current(path)
+
+    def _on_import(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import profile (interchange JSON)", "", "JSON (*.json)")
+        if path:
+            self.import_from(path)
 
 
 class _MassEditDialog(QtWidgets.QDialog):
