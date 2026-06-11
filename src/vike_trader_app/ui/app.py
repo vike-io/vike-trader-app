@@ -882,7 +882,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _update_chart_header(self) -> None:
         """Drive the chart-space header title (the single MC-style line). For chart-bearing
         spaces it reads SPACE · SYMBOL · INTERVAL; other spaces show just their name. The live
-        price (· 62,403 ▲0.18%) is appended by _refresh_header_price — the overcome-MC win."""
+        price (· 62,403 ▲0.18%) is appended by _header_price_html — the overcome-MC win."""
         if not hasattr(self, "tabs"):
             return
         idx = self.tabs.currentIndex()

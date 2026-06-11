@@ -84,18 +84,10 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                        deck.close_current_document, danger=True)
         bar.set_active(True)
         self._header = bar
-        bar.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        try:
-            self.insertWidget(0, bar)
-        except (RuntimeError, TypeError):
-            self.layout().insertWidget(0, bar)
         # Grow the header to fill the row; the MainWindow then caps its max width to the
         # right-panel's left edge (the dock area itself extends BEHIND the panels), so the
         # ⧉ ─ □ ✕ land at the visible chart's right edge — never under the watchlist.
-        try:
-            self.layout().setStretchFactor(bar, 1)
-        except (RuntimeError, TypeError, AttributeError):
-            pass
+        self._install_header_widget(bar)
         self.refresh_native_hidden()
         deck._request_fit()
 
@@ -110,6 +102,20 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
     def set_header_icon(self, pixmap) -> None:
         if self._header is not None:
             self._header.set_icon(pixmap)
+
+    def _install_header_widget(self, bar) -> None:
+        """Insert the UnifiedTitleBar into this title bar's row, expanded to fill it. Shared by
+        the chart-space header and the unified panel bars (the chart header is then capped to
+        the panel edge by the MainWindow; panel bars fill their own narrow area)."""
+        bar.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        try:
+            self.insertWidget(0, bar)
+        except (RuntimeError, TypeError):
+            self.layout().insertWidget(0, bar)
+        try:
+            self.layout().setStretchFactor(bar, 1)
+        except (RuntimeError, TypeError, AttributeError):
+            pass
 
     def refresh_native_hidden(self) -> None:
         """Hide every native child of the dock-area title bar except our inserted header. ADS
@@ -167,20 +173,16 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         bar.add_button("max", "□", "Maximize / restore", self._panel_max)
         bar.add_button("close", "✕", "Close", self._panel_close, danger=True)
         self._header = bar
-        bar.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        try:
-            self.insertWidget(0, bar)
-        except (RuntimeError, TypeError):
-            self.layout().insertWidget(0, bar)
-        try:
-            self.layout().setStretchFactor(bar, 1)
-        except (RuntimeError, TypeError, AttributeError):
-            pass
+        self._install_header_widget(bar)
         self.refresh_native_hidden()
         # ADS re-shows the native tab/buttons after its deferred relayout — re-hide next turn
         # (tied to self so a destroyed title bar cancels it rather than crashing)
         QtCore.QTimer.singleShot(0, self, self.refresh_native_hidden)
         self._sync_panel_title()
+        # Connect THIS instance's slot once (mark_as_panel is guarded by `if self._header`).
+        # ADS recreates the area's title bar on relayout; the OLD instance is destroyed, which
+        # auto-removes its connection — so no disconnect bookkeeping is needed (and a manual
+        # disconnect of this fresh instance's slot just spams "Failed to disconnect" warnings).
         try:
             self._area_w.currentChanged.connect(self._sync_panel_title)
         except (RuntimeError, AttributeError):
@@ -344,7 +346,7 @@ class SpaceDeck(QtCore.QObject):
             if self._area is not None:
                 try:
                     self._area.currentChanged.disconnect(self._emit_current)
-                except Exception:  # noqa: BLE001 - old area may already be torn down
+                except (RuntimeError, TypeError):  # old area torn down / not connected
                     pass
             area.currentChanged.connect(self._emit_current)
             self._area = area
@@ -554,22 +556,25 @@ class SpaceDeck(QtCore.QObject):
         (restoreState, document add/close, current-tab changes), so this runs at every mutation
         point — immediately AND once more on the next event-loop turn to catch ADS's deferred
         relayouts."""
-        def _hide():
-            for dock in self._docks:
-                try:
-                    dock.tabWidget().setVisible(False)
-                except RuntimeError:   # a tab widget mid-rebuild during restore — skip
-                    pass
-            # Unified title bar: the central area's title bar is now WANTED chrome (it hosts
-            # the single-title chart header). Keep it VISIBLE; only re-hide the native tab
-            # strip + native buttons the header replaces, which ADS re-shows on relayout.
-            area = self._resolve_area()
-            if area is not None:
-                tb = area.titleBar()
-                if hasattr(tb, "refresh_native_hidden"):
-                    tb.refresh_native_hidden()
-        _hide()
-        QtCore.QTimer.singleShot(0, _hide)
+        self._hide_space_tabs_now()
+        # tied to self: a destroyed SpaceDeck cancels the deferred call instead of running it
+        # on a torn-down object (the segfault class fixed across the title-bar timers)
+        QtCore.QTimer.singleShot(0, self, self._hide_space_tabs_now)
+
+    def _hide_space_tabs_now(self) -> None:
+        for dock in self._docks:
+            try:
+                dock.tabWidget().setVisible(False)
+            except RuntimeError:   # a tab widget mid-rebuild during restore — skip
+                pass
+        # Unified title bar: the central area's title bar is now WANTED chrome (it hosts the
+        # single-title chart header). Keep it VISIBLE; only re-hide the native tab strip +
+        # native buttons the header replaces, which ADS re-shows on relayout.
+        area = self._resolve_area()
+        if area is not None:
+            tb = area.titleBar()
+            if hasattr(tb, "refresh_native_hidden"):
+                tb.refresh_native_hidden()
 
     def dock(self, index: int) -> "QtAds.CDockWidget":
         """The CDockWidget wrapping space ``index`` (Phase 2+ uses this directly)."""
