@@ -41,6 +41,7 @@ class SessionState:
     chart_indicators: list = field(default_factory=list)    # Chart space (price)
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
     documents: list = field(default_factory=list)           # open chart documents (Phase 2)
+    watchlist_link: int = 0                                  # watchlist symbol-link group (Phase 3)
 
     def to_dict(self) -> dict:
         return {"version": _VERSION, **asdict(self)}

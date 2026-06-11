@@ -198,6 +198,94 @@ def test_interval_change_updates_tab_title(app, _synthetic_load):
     win.close()
 
 
+def test_link_group_syncs_symbol_and_interval(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    d1 = win._new_chart_document("ETHUSDT", "1h")
+    d2 = win._new_chart_document("SOLUSDT", "1h")
+    d3 = win._new_chart_document("ADAUSDT", "1h")
+    d1._set_link_group(3); d2._set_link_group(3); d3._set_link_group(1)   # blue, blue, red
+
+    # watchlist (blue) picks a symbol -> blue charts follow, red one does not
+    win._set_watchlist_link(3)
+    win.watchlist.symbolChosen.emit("BTCUSDT")
+    assert (d1.symbol, d2.symbol, d3.symbol) == ("BTCUSDT", "BTCUSDT", "ADAUSDT")
+
+    # changing one blue chart's interval syncs the other blue chart (symbol + interval), not red
+    d1.load(interval="4h")
+    assert (d2.symbol, d2.interval) == ("BTCUSDT", "4h")
+    assert (d3.symbol, d3.interval) == ("ADAUSDT", "1h")
+    win.close()
+
+
+def test_link_group_set_via_dot_signal_syncs_attr_and_dot(app, _synthetic_load):
+    """Picking a colour on the dot updates both the doc's link_group and the dot visual."""
+    win = MainWindow(session_path=None)
+    d = win._new_chart_document("ETHUSDT", "1h")
+    d._link_dot.set_group(4, emit=True)          # simulates the menu pick
+    assert d.link_group == 4 and d._link_dot.group() == 4
+    win.close()
+
+
+def test_focusing_restored_linked_doc_does_not_broadcast(app, monkeypatch):
+    """ensure_loaded (focus top-up of a restored doc) must NOT overwrite same-group peers."""
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
+    win = MainWindow(session_path=None)
+    # peer in blue with its own symbol
+    peer = win._new_chart_document("SOLUSDT", "1h")
+    peer._set_link_group(3)
+    # a "restored" doc: cache-only load (so _loaded stays False -> ensure_loaded will top up)
+    restored = win._new_chart_document("ETHUSDT", "1h", network=False, make_current=False)
+    restored._set_link_group(3)
+    # focusing it triggers ensure_loaded -> must not broadcast ETHUSDT onto the peer
+    restored.ensure_loaded()
+    assert peer.symbol == "SOLUSDT"
+    win.close()
+
+
+def test_failed_link_load_rolls_back_symbol(app, monkeypatch):
+    """A failed apply_link (bad symbol) must leave the doc on its real symbol, not corrupt it."""
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
+    doc = ChartDocument("ETHUSDT", "1h")
+    doc.load()
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult([]))  # now fails
+    assert doc.apply_link("BADSYM", "1h") is None      # apply_link calls load (returns False)
+    assert doc.symbol == "ETHUSDT" and doc.title() == "ETHUSDT · 1h"
+
+
+def test_out_of_range_link_group_clamps_to_unlinked(app, _synthetic_load):
+    doc = ChartDocument("ETHUSDT", "1h")
+    doc.load()
+    doc.apply_state({"link_group": 99, "indicators": []})
+    assert doc.link_group == 0
+
+
+def test_unlinked_documents_do_not_follow(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    d1 = win._new_chart_document("ETHUSDT", "1h")     # group 0 (unlinked) by default
+    win._set_watchlist_link(0)
+    win.watchlist.symbolChosen.emit("BTCUSDT")
+    assert d1.symbol == "ETHUSDT"                      # unlinked -> unaffected
+    win.close()
+
+
+def test_link_group_persists_and_restores(app, _synthetic_load, tmp_path):
+    path = tmp_path / "session.json"
+    first = MainWindow(session_path=str(path))
+    d = first._new_chart_document("ETHUSDT", "4h")
+    d._set_link_group(2)                               # green
+    first._set_watchlist_link(2)
+    first.close()
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["documents"][0]["link_group"] == 2
+    assert saved["watchlist_link"] == 2
+
+    second = MainWindow(session_path=str(path))
+    assert second._doc_widgets[0].link_group == 2
+    assert second._watchlist_link == 2
+    second.close()
+
+
 def test_documents_persist_and_restore(app, _synthetic_load, tmp_path):
     path = tmp_path / "session.json"
     first = MainWindow(session_path=str(path))
