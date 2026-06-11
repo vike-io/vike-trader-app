@@ -12,13 +12,56 @@ pytest.importorskip("PySide6QtAds")
 import PySide6QtAds as QtAds  # noqa: E402
 from PySide6 import QtWidgets  # noqa: E402
 
+import vike_trader_app.ui.chartdoc as chartdoc  # noqa: E402
+from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.ui.app import MainWindow  # noqa: E402
+from vike_trader_app.ui.dataload import LoadResult  # noqa: E402
 from vike_trader_app.ui.dockshell import SpaceDeck  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
+    """AmiBroker-style live layout (regression for the docking core): open 4 chart documents,
+    tile them 2x2 (distinct dock areas, not tabbed), auto-hide Market watch to the LEFT edge and
+    Trades to the BOTTOM edge, then reveal one again."""
+    bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + i)
+            for i in range(30)]
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(list(bars)))
+
+    win = MainWindow(session_path=None)
+    docs = [win._new_chart_document(s, "1h")
+            for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT")]
+    assert win.tabs.document_count() == 4
+
+    # tile 2x2 by splitting off the first doc's area (they start tabbed in the centre)
+    mgr = win.dock_manager
+    d = [win.tabs._documents[i] for i in range(4)]
+    mgr.addDockWidget(QtAds.RightDockWidgetArea, d[1], d[0].dockAreaWidget())
+    mgr.addDockWidget(QtAds.BottomDockWidgetArea, d[2], d[0].dockAreaWidget())
+    mgr.addDockWidget(QtAds.BottomDockWidgetArea, d[3], d[1].dockAreaWidget())
+    app.processEvents()
+    # the four charts now live in distinct dock areas (a real tiling, not one tab stack)
+    areas = {id(dock.dockAreaWidget()) for dock in d}
+    assert len(areas) == 4
+
+    # auto-hide the panels to edges (the AmiBroker side-rail)
+    win._market_dock.setAutoHide(True, QtAds.SideBarLeft)
+    win._trades_dock.setAutoHide(True, QtAds.SideBarBottom)
+    app.processEvents()
+    assert win._market_dock.isAutoHide()
+    assert win._market_dock.autoHideLocation() == QtAds.SideBarLeft
+    assert win._trades_dock.isAutoHide()
+    assert win._trades_dock.autoHideLocation() == QtAds.SideBarBottom
+
+    # reveal the Market watch again (un-pin back into the layout)
+    win._market_dock.setAutoHide(False)
+    app.processEvents()
+    assert not win._market_dock.isAutoHide()
+    win.close()
 
 
 def test_spacedeck_mirrors_qtabwidget_api(app):
