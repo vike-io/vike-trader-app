@@ -119,6 +119,58 @@ def record(event: dict) -> None:
         threading.Thread(target=_post, args=(event, url), daemon=True).start()
 
 
+def _crash_enabled() -> bool:
+    """Crash reporting opt-in. ``VIKE_CRASH_REPORTS`` overrides; otherwise follows telemetry."""
+    raw = os.environ.get("VIKE_CRASH_REPORTS", "").strip().lower()
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    if raw in ("0", "false", "off", "no"):
+        return False
+    return enabled()
+
+
+def _safe_env(app_version: str | None = None) -> dict:
+    """Non-PII environment block for triage (versions/platform only)."""
+    import platform as _platform
+    import sys as _sys
+
+    qt = None
+    try:  # best-effort; PySide6 may be absent in headless installs
+        import PySide6
+
+        qt = getattr(PySide6, "__version__", None)
+    except Exception:  # noqa: BLE001
+        qt = None
+    return {
+        "app_version": app_version,
+        "python": _sys.version.split()[0],
+        "qt": qt,
+        "platform": _sys.platform,
+        "os": _platform.platform(),
+    }
+
+
+def report_crash(event: dict) -> None:
+    """Upload one crash event via the telemetry channel — opt-in, best-effort, never raises.
+
+    ``event`` carries the scrubbed crash payload built by :mod:`vike_trader_app.crash`
+    (``kind``/``exc_type``/``traceback``/``app_version``/``ts_ms``). We stamp the crash
+    ``type``, anonymous client id, and a safe env block, then reuse :func:`record` (local
+    JSONL + background POST). Gated by :func:`_crash_enabled`.
+    """
+    try:
+        if not _crash_enabled():
+            return
+        payload = dict(event)
+        payload["type"] = "crash"
+        payload.setdefault("ts_ms", int(time.time() * 1000))
+        payload["client"] = _client_id()
+        payload["env"] = _safe_env(event.get("app_version"))
+        record(payload)
+    except Exception:  # noqa: BLE001 - crash reporting must never raise
+        pass
+
+
 def instrument(fn):
     """Wrap an MCP tool ``fn`` to record one telemetry event per call (no-op when disabled).
 
