@@ -8,6 +8,7 @@ No per-file edits needed: a test is treated as GUI if its file is ``*_gui.py`` O
 Qt fixtures below (catches ``test_chart_*``/``test_forward_ui`` etc. that drive a real window).
 """
 import os
+import sys
 
 import pytest
 
@@ -36,6 +37,44 @@ _NETWORK_TESTS = {
     "test_datamanager_download_dataset_iterates_symbols",
     "test_datamanager_download_series_routes_through_chain",
 }
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_qt_widgets():
+    """Tear down leaked Qt widget trees deterministically at each test boundary.
+
+    GUI tests create ``MainWindow()``s and ``.close()`` them but never *delete* them, so the C++
+    objects — and their many pyqtgraph chart items — linger. Left to Python's garbage collector,
+    those wrappers are finalized in arbitrary order (at inter-test or interpreter-shutdown
+    collection), and pyqtgraph/PySide6 teardown then frees a parent before its child → an
+    intermittent ``0xC0000005`` access violation (~20% of offscreen ``tests/gui`` runs on
+    Windows/py3.14; never seen on CI Linux/py3.12). ``deleteLater()`` + ``processEvents()`` here
+    makes Qt delete each tree (parent then children, correct order) while it's still intact, at a
+    single-threaded idle moment; Python's GC then only collects empty wrappers.
+
+    Why deleteLater and NOT ``close()``: pyqtgraph's ``PlotWidget.close()`` is not safe to call
+    externally (it nulls ``plotItem`` then a second close AttributeErrors), and the tests already
+    close their own windows — we only need to *delete* the leftovers. Every call is guarded: a
+    widget can be torn down by another's deletion (or by the test's own fixture) between the
+    snapshot and the call, raising ``RuntimeError: C++ object already deleted``.
+
+    Reads ``sys.modules`` instead of importing PySide6, so it is a true no-op for the Qt-free
+    unit run (and the CI unit job, where PySide6 isn't even installed) — never pulling Qt into
+    that interpreter.
+    """
+    yield
+    qtw = sys.modules.get("PySide6.QtWidgets")
+    if qtw is None:
+        return
+    app = qtw.QApplication.instance()
+    if app is None:
+        return
+    for w in list(app.topLevelWidgets()):
+        try:
+            w.deleteLater()
+        except RuntimeError:
+            pass  # C++ object already gone (deleted with another tree / by the test's fixture)
+    app.processEvents()
 
 
 def pytest_collection_modifyitems(config, items):
