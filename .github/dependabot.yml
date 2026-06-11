@@ -1,0 +1,23 @@
+# Dependabot — weekly dependency + GitHub Actions update PRs (security + freshness).
+# Python deps are grouped into one PR to avoid churn; actions are tracked separately so the
+# CI matrix's actions (setup-uv, checkout) stay current. Start small; tune limits as needed.
+version: 2
+updates:
+  - package-ecosystem: "pip"          # reads pyproject.toml dependencies (uv-managed project)
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    groups:
+      python-dependencies:
+        patterns: ["*"]
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "ci"
