@@ -92,7 +92,9 @@ def test_every_style_switches_without_error(app):
     for s in chart_styles.ALL_STYLES:
         pc.set_style(s)
         assert pc._style == s
-        assert pc._style_btn.text() == s
+        # icon-only button (TradingView-style): the tooltip names the style, the glyph shows it
+        assert s in pc._style_btn.toolTip()
+        assert not pc._style_btn.icon().isNull()
     pc.set_style("Candles")
     assert pc._candles.isVisible()
 
