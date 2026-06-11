@@ -25,17 +25,14 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
 
-      - name: Run test suite (non-UI)
+      # The Qt-free unit tree (tests/unit/{core,data,analysis,ai,tester}). Kept as its OWN
+      # process, separate from the gui tree: collecting both in one run imports the PySide6/Qt
+      # test modules into the non-UI interpreter and hard-segfaults on 3.14 — the unit/gui split
+      # is the fix (see CLAUDE.md). `not network` drops the one live-network data test.
+      - name: Run unit suite (no Qt)
         run: >
           uv run pytest -q --timeout=120 --timeout-method=thread
-          --ignore=tests/test_chartdata.py
-          --ignore=tests/test_dashboard_data.py
-          --ignore=tests/test_forward_ui.py
-          --ignore=tests/test_overlays.py
-          --ignore=tests/test_replay.py
-          --ignore=tests/test_tables.py
-          --ignore=tests/test_windowing.py
-          --ignore=tests/test_interactive.py
+          tests/unit -m "not network"
 
   ui-test:
     runs-on: ubuntu-latest
@@ -59,37 +56,10 @@ jobs:
       - name: Sync dependencies (incl. the ui extra)
         run: uv sync --extra ui --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
 
-      # The UI tests the non-UI job can't run: the PySide6-hard-import files it --ignores,
-      # plus the *_gui suites (which importorskip away when PySide6 is absent). Add new UI
-      # tests here so CI actually exercises them.
-      - name: Run UI test suite (offscreen)
+      # The whole offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process —
+      # the counterpart to the unit run above. `not network` drops the live data-manager test.
+      # New GUI tests under tests/gui are picked up automatically (no hard-coded file list).
+      - name: Run GUI test suite (offscreen)
         run: >
           uv run pytest -q --timeout=120 --timeout-method=thread
-          tests/test_chartdata.py
-          tests/test_chart_indicators.py
-          tests/test_chart_markers.py
-          tests/test_chart_space.py
-          tests/test_bots_panel.py
-          tests/test_dashboard_data.py
-          tests/test_forward_ui.py
-          tests/test_overlays.py
-          tests/test_replay.py
-          tests/test_tables.py
-          tests/test_windowing.py
-          tests/test_interactive.py
-          tests/test_alerts_gui.py
-          tests/test_journal_gui.py
-          tests/test_screener_gui.py
-          tests/test_studio_gui.py
-          tests/test_studio_results.py
-          tests/test_tools_gui.py
-          tests/test_options_tab_gui.py
-          tests/test_options_service.py
-          tests/test_datamanager_gui.py
-          tests/test_dataset_tree_gui.py
-          tests/test_dataset_panel_gui.py
-          tests/test_providers_panel_gui.py
-          tests/test_data_studio_wiring_gui.py
-          tests/test_symbol_mappings_gui.py
-          tests/test_event_providers_panel_gui.py
-          tests/test_streaming_providers_panel_gui.py
+          tests/gui -m "not network"
