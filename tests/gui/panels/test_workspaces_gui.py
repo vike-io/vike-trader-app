@@ -52,9 +52,9 @@ def test_apply_research_opens_two_linked_docs(app):
 def test_apply_trading_clears_documents(app):
     win = MainWindow(session_path=None)
     win._apply_workspace("Research")
-    assert win.tabs.document_count() == 2
+    assert len(win._chart_frames) == 2
     win._apply_workspace("Trading")              # Trading has no documents
-    assert win.tabs.document_count() == 0
+    assert len(win._chart_frames) == 0
     win.close()
 
 
@@ -73,7 +73,7 @@ def test_save_and_switch_user_workspace(app):
     assert win._workspaces.is_user("Mine")
 
     win._apply_workspace("Trading")              # wipe to 0 docs
-    assert win.tabs.document_count() == 0
+    assert len(win._chart_frames) == 0
     win._apply_workspace("Mine")                 # restore the 2 saved docs
     assert [d.symbol for d in win._doc_widgets] == ["ADAUSDT", "DOTUSDT"]
     win.close()

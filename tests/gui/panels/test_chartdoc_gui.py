@@ -139,62 +139,67 @@ def test_livehub_register_unregister(app, _synthetic_load):
 # --- MainWindow wiring ----------------------------------------------------------------------
 
 
-def test_new_chart_document_adds_tab(app, _synthetic_load):
+def test_new_chart_document_opens_floating_window(app, _synthetic_load):
+    """S7: charts open as MC-style FLOATING WINDOWS over the workspace, not docked tabs."""
     win = MainWindow(session_path=None)
-    assert win.tabs.document_count() == 0
+    assert win._chart_frames == []
     doc = win._new_chart_document("ETHUSDT", "1h")
-    assert win.tabs.document_count() == 1
+    assert len(win._chart_frames) == 1
+    frame = win._chart_frames[0]
+    assert frame.doc is doc
+    assert frame.parent() is win.dock_manager       # floats OVER the workspace
     assert doc in win._doc_widgets
     assert doc in win._live_hub._docs
-    assert win.tabs.currentWidget() is doc
-    assert win.tabs.currentIndex() == -1            # a document is current, not a space
+    assert win._active_frame is frame
     win.close()
 
 
 def test_open_in_new_chart_signal(app, _synthetic_load):
     win = MainWindow(session_path=None)
     win.watchlist.openInNewChart.emit("SOLUSDT")
-    assert win.tabs.document_count() == 1
+    assert len(win._chart_frames) == 1
     assert win._doc_widgets[0].symbol == "SOLUSDT"
     win.close()
 
 
-def test_current_document_sets_title_and_keeps_rail(app, _synthetic_load):
+def test_chart_window_title_bar(app, _synthetic_load):
+    """Every chart window has its own MC-style title bar: title text + pin/detach/min/max/close."""
     win = MainWindow(session_path=None)
-    win._new_chart_document("ETHUSDT", "2h")
-    win._on_tab_changed(win.tabs.currentIndex())
-    assert win.windowTitle().endswith("ETHUSDT · 2h")
-    # switching back to a space restores the space title + rail
-    win.tabs.setCurrentIndex(0)
-    win._on_tab_changed(0)
-    assert win.windowTitle().endswith("Chart")
-    assert win._rail_group.button(0).isChecked()
+    doc = win._new_chart_document("ETHUSDT", "2h")
+    frame = win._chart_frames[0]
+    assert frame._title.text() == "ETHUSDT · 2h"
+    doc.load("ETHUSDT", "4h")                       # title follows the document
+    assert frame._title.text() == "ETHUSDT · 4h"
     win.close()
 
 
-def test_closing_document_unregisters(app, _synthetic_load):
+def test_closing_window_unregisters(app, _synthetic_load):
     win = MainWindow(session_path=None)
     win._new_chart_document("ETHUSDT", "1h")
-    dock = win.tabs._documents[0]
-    dock.closeDockWidget()
+    win._chart_frames[0].close_window()
     app.processEvents()
-    assert win.tabs.document_count() == 0
+    assert win._chart_frames == []
     assert win._doc_widgets == []
     assert win._live_hub._docs == []
     win.close()
 
 
-def test_interval_change_updates_tab_title(app, _synthetic_load):
-    """The symbolChanged -> tab-title sync works on a live doc (and is crash-safe post-close)."""
+def test_window_verbs_rollup_max_arrange(app, _synthetic_load):
     win = MainWindow(session_path=None)
-    doc = win._new_chart_document("ETHUSDT", "1h")
-    dock = win.tabs._documents[0]
-    doc.load("ETHUSDT", "4h")                 # emits symbolChanged -> _sync_title
-    assert dock.windowTitle() == "ETHUSDT · 4h"
-    # after close the guarded slot must not raise even if a stale emission arrives
-    dock.closeDockWidget()
-    app.processEvents()
-    assert win.tabs.document_count() == 0
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("ETHUSDT", "1h")
+    win._new_chart_document("SOLUSDT", "1h")
+    f1, f2 = win._chart_frames
+    f1.toggle_rollup()
+    assert f1.height() <= 40                        # rolled up to its title bar
+    f1.toggle_rollup()
+    f2.toggle_max()
+    assert f2.size() == win.dock_manager.size()     # maximize fills the workspace
+    f2.toggle_max()
+    win._arrange_chart_windows("grid")
+    geos = [f.geometry() for f in win._chart_frames]
+    assert geos[0] != geos[1] and not geos[0].intersects(geos[1])   # tiled, no overlap
     win.close()
 
 
@@ -402,7 +407,7 @@ def test_documents_persist_and_restore(app, _synthetic_load, tmp_path):
     assert [doc["symbol"] for doc in saved["documents"]] == ["ETHUSDT", "SOLUSDT"]
 
     second = MainWindow(session_path=str(path))
-    assert second.tabs.document_count() == 2
+    assert len(second._chart_frames) == 2
     syms = [doc.symbol for doc in second._doc_widgets]
     assert syms == ["ETHUSDT", "SOLUSDT"]
     # the SOL doc's indicator was restored (cache-only load produced bars, so it re-attached)

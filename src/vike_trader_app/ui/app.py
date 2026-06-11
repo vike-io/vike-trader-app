@@ -264,6 +264,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_hub = LiveHub(self)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
+        self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
+        self._active_frame = None
 
         self._layout_workers: list = []   # in-flight AI-layout agent threads (Phase 5)
 
@@ -395,35 +397,64 @@ class MainWindow(QtWidgets.QMainWindow):
     def _new_chart_document(self, symbol: str, interval: str | None = None, *,
                             state: dict | None = None, network: bool = True,
                             make_current: bool = True) -> ChartDocument:
-        """Open a new chart document (own symbol/interval) as a tab next to the spaces.
+        """Open a chart WINDOW: an MC-style free-floating, overlapping frame over the workspace
+        with its own title bar (drag/resize/roll-up/maximize/detach/close) — NOT a docked tab
+        (the user explicitly rejected dock-tiling for charts).
 
         ``network=False`` loads cache-only (session restore — tops up on focus). ``state``
-        re-attaches saved indicators after the load. Registered with the LiveHub so its live
-        edge ticks while visible.
+        re-attaches saved indicators/links (and geometry). Registered with the LiveHub so its
+        live edge ticks while visible.
         """
+        from .chartwin import ChartWindowFrame
+
         doc = ChartDocument(symbol, interval or self._interval)
-        object_name = f"doc:{self._doc_seq}"
-        self._doc_seq += 1
-        dock = self.tabs.add_document(doc, doc.title(), object_name)
         self._doc_widgets.append(doc)
         self._live_hub.register(doc)
         doc.set_bus(self._link_bus)        # join symbol link groups (colour set via its dot)
 
-        # Keep the tab caption in sync with the document's symbol/interval. The dock is
-        # DeleteOnClose, so a stale emission after close would call setWindowTitle on a freed
-        # C++ object — guard it (the connection is also dropped in SpaceDeck._on_document_closed).
-        def _sync_title(*_a, dk=dock, d=doc):
-            try:
-                dk.setWindowTitle(d.title())
-            except RuntimeError:  # dock already torn down (closed) — nothing to update
-                pass
-        doc.symbolChanged.connect(_sync_title)
+        frame = ChartWindowFrame(doc, self.dock_manager)
+        frame.closed.connect(lambda f: self._on_chart_window_closed(f))
+        frame.activated.connect(self._on_chart_window_activated)
+        self._chart_frames.append(frame)
+        # cascade placement: each new window steps down-right from the last
+        n = len(self._chart_frames) - 1
+        frame.move(36 + (n % 8) * 34, 24 + (n % 8) * 28)
+        if state and isinstance(state.get("geometry"), list) and len(state["geometry"]) == 4:
+            x, y, w, h = (int(v) for v in state["geometry"])
+            frame.setGeometry(x, y, max(320, w), max(160, h))
+        frame.show()
         doc.load(network=network)
         if state:
             doc.apply_state(state)
         if make_current:
-            dock.setAsCurrentTab()
+            frame.raise_()
+            self._on_chart_window_activated(frame)
         return doc
+
+    def _frame_of(self, doc) -> "object | None":
+        for f in self._chart_frames:
+            if f.doc is doc:
+                return f
+        return None
+
+    def _on_chart_window_closed(self, frame) -> None:
+        if frame in self._chart_frames:
+            self._chart_frames.remove(frame)
+        self._on_document_closed(frame.doc)
+
+    def _on_chart_window_activated(self, frame) -> None:
+        self._active_frame = frame
+        for f in self._chart_frames:
+            f.set_active(f is frame)
+
+    def _close_all_chart_windows(self) -> None:
+        for f in list(self._chart_frames):
+            f.close_window()
+
+    def _arrange_chart_windows(self, mode: str) -> None:
+        from . import chartwin
+
+        chartwin.arrange(self._chart_frames, self.dock_manager, mode)
 
     def _open_in_new_chart(self, symbol: str) -> None:
         """Watchlist context menu → open ``symbol`` as a fresh chart document (current TF)."""
@@ -2068,9 +2099,18 @@ class MainWindow(QtWidgets.QMainWindow):
             panels=dict(self._panel_visible),
             chart_indicators=indicator_states(self.price),
             studio_indicators=indicator_states(self.studio_price),
-            documents=[d.state() for d in self._doc_widgets],
+            documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
             watchlist_link=self._watchlist_link,
         )
+
+    def _doc_state_with_geometry(self, doc) -> dict:
+        """A chart window's persisted state incl. its frame geometry (x, y, w, h)."""
+        st = doc.state()
+        frame = self._frame_of(doc)
+        if frame is not None and not frame.is_detached():
+            g = frame.geometry()
+            st["geometry"] = [g.x(), g.y(), g.width(), g.height()]
+        return st
 
     def _save_session(self) -> None:
         """Snapshot the session to disk (no-op when persistence is disabled)."""
@@ -2095,7 +2135,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 btn.setChecked(bool(merged[key]))
                 btn.blockSignals(False)
 
-        self.tabs.close_all_documents()         # DeleteOnClose -> _on_document_closed cleans refs
+        self._close_all_chart_windows()         # each close unregisters hub/bus + drops refs
         self._doc_seq = 0                        # fresh doc:N names that match this state's blob
         for st in (state.documents or []):
             self._new_chart_document(st.get("symbol", "BTCUSDT"), st.get("interval", "1h"),
@@ -2168,13 +2208,13 @@ class MainWindow(QtWidgets.QMainWindow):
         cmds.append((f"New chart: {self._symbol}",
                      lambda: self._open_in_new_chart(self._symbol)))
         cmds.append(("Arrange charts: tile grid",
-                     lambda: self.tabs.arrange_documents("grid")))
+                     lambda: self._arrange_chart_windows("grid")))
         cmds.append(("Arrange charts: side by side",
-                     lambda: self.tabs.arrange_documents("columns")))
+                     lambda: self._arrange_chart_windows("columns")))
         cmds.append(("Arrange charts: stacked",
-                     lambda: self.tabs.arrange_documents("rows")))
-        cmds.append(("Arrange charts: gather as tabs",
-                     lambda: self.tabs.arrange_documents("tabs")))
+                     lambda: self._arrange_chart_windows("rows")))
+        cmds.append(("Arrange charts: cascade",
+                     lambda: self._arrange_chart_windows("cascade")))
         cmds.append(("Save workspace as…", self._prompt_save_workspace))
         cmds.append(("AI: generate a layout…", self._prompt_ai_layout))
         cmds.append(("Copy window", self._copy_active_document))
@@ -2201,28 +2241,25 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --- top-bar routing + window verbs (S2/S4 of the shell-ux plan) -------------------------
     def _on_topbar_symbol(self, symbol: str) -> None:
-        """Symbol typed in the command bar: route to the focused chart document, else the
-        Chart space (which also switches there so the user SEES the result)."""
-        current = self.tabs.currentWidget()
-        if isinstance(current, ChartDocument):
-            current.load(symbol=symbol)
+        """Symbol typed in the command bar: route to the ACTIVE chart window if one is up,
+        else the Chart space (switching there so the user SEES the result)."""
+        if self._active_frame is not None and self._active_frame in self._chart_frames:
+            self._active_frame.doc.load(symbol=symbol)
             return
         self.tabs.setCurrentIndex(0)
         self._load_symbol(symbol)
 
     def _on_topbar_interval(self, interval: str) -> None:
-        current = self.tabs.currentWidget()
-        if isinstance(current, ChartDocument):
-            current.load(interval=interval)
+        if self._active_frame is not None and self._active_frame in self._chart_frames:
+            self._active_frame.doc.load(interval=interval)
             return
         self._on_interval_chosen(interval)
 
     def _copy_active_document(self) -> None:
-        """MC's Copy Window: serialize the focused chart document (or the Chart space's view)
+        """MC's Copy Window: serialize the active chart window (or the Chart space's view)
         to the clipboard as JSON; Paste recreates it — works across app instances too."""
-        current = self.tabs.currentWidget()
-        if isinstance(current, ChartDocument):
-            payload = current.state()
+        if self._active_frame is not None and self._active_frame in self._chart_frames:
+            payload = self._doc_state_with_geometry(self._active_frame.doc)
         else:
             payload = {"symbol": self._symbol, "interval": self._interval,
                        "indicators": indicator_states(self.price)}
@@ -2241,19 +2278,17 @@ class MainWindow(QtWidgets.QMainWindow):
                                  state.get("interval", self._interval), state=state)
 
     def _float_current_document(self) -> None:
-        current = self.tabs.currentWidget()
-        for dock in getattr(self.tabs, "_documents", []):
-            if dock.widget() is current:
-                dock.setFloating()
-                return
-        self.statusBar().showMessage("Focus a chart window to float it.", 3000)
+        """Detach the active chart window to its own OS window (MC's Detach), or re-attach."""
+        if self._active_frame is not None and self._active_frame in self._chart_frames:
+            self._active_frame.toggle_detach()
+            return
+        self.statusBar().showMessage("Focus a chart window to detach it.", 3000)
 
     def _activate_document(self, doc) -> None:
-        for dock in getattr(self.tabs, "_documents", []):
-            if dock.widget() is doc:
-                dock.setAsCurrentTab()
-                dock.raise_()
-                return
+        frame = self._frame_of(doc)
+        if frame is not None:
+            frame.raise_()
+            self._on_chart_window_activated(frame)
 
     def _export_chart_image(self) -> None:
         """Save the active chart (document or Chart space) as a PNG. Interactive path only."""

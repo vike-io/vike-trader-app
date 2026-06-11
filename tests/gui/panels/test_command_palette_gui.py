@@ -92,5 +92,5 @@ def test_command_new_chart_opens_document(app):
     cmds = dict(win._commands())
     new_cmd = next(label for label in cmds if label.startswith("New chart:"))
     cmds[new_cmd]()
-    assert win.tabs.document_count() == 1
+    assert len(win._chart_frames) == 1
     win.close()
