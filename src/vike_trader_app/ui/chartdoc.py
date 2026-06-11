@@ -66,9 +66,26 @@ class ChartDocument(QtWidgets.QWidget):
         card_lay.addWidget(split)
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
+        outer.setSpacing(6)
+
+        # Symbol link group (Phase 3): a colour dot in a thin header. Same colour on >1 chart =
+        # they move together (symbol + interval). 0 = unlinked. The bus is injected via set_bus.
+        from .panels import LinkDot  # local import keeps the panels<->chartdoc edge one-way
+
+        self.link_group = 0
+        self._bus = None
+        header = QtWidgets.QHBoxLayout()
+        header.setContentsMargins(2, 0, 2, 0)
+        header.addStretch(1)
+        self._link_dot = LinkDot(0)
+        self._link_dot.groupChanged.connect(self._set_link_group)
+        header.addWidget(self._link_dot)
+        outer.addLayout(header)
         outer.addWidget(card)
 
         self.chart.intervalChosen.connect(lambda iv: self.load(interval=iv))
+        # any symbol/interval change (user TF pick, link receive, programmatic load) re-broadcasts
+        self.symbolChanged.connect(self._broadcast_link)
 
     # --- identity ---------------------------------------------------------------------------
 
@@ -88,11 +105,16 @@ class ChartDocument(QtWidgets.QWidget):
     def load(self, symbol: str | None = None, interval: str | None = None, *,
              network: bool = True) -> bool:
         """(Re)load this document's series (cache-first, MAIN THREAD). Returns success."""
+        prev_symbol, prev_interval = self._symbol, self._interval
         self._symbol = (symbol or self._symbol).upper()
         self._interval = interval or self._interval
         res = load_symbol_bars(self._symbol, self._interval, int(time.time() * 1000),
                                network=network)
         if not res.ok:
+            # Roll back identity on a failed load so the doc keeps showing its real series —
+            # otherwise a failed apply_link (bad symbol via a link broadcast) would corrupt
+            # _symbol, mislabel the tab, and re-broadcast the bad symbol to linked peers.
+            self._symbol, self._interval = prev_symbol, prev_interval
             return False
         # Mark "loaded" only after a SUCCESSFUL network round-trip — otherwise a failed
         # network "+New chart" (bad symbol / offline) would latch _loaded=True and ensure_loaded
@@ -110,9 +132,17 @@ class ChartDocument(QtWidgets.QWidget):
 
     def ensure_loaded(self) -> None:
         """Top up over the network the first time the document is actually shown — restored
-        background documents load cache-only at startup (no network storm)."""
+        background documents load cache-only at startup (no network storm).
+
+        This is a focus-triggered top-up of THIS doc, not a user symbol change, so it must NOT
+        broadcast to link peers: a restored doc carries the saved link group by now, and without
+        the guard, simply focusing it would overwrite same-group peers with its stale symbol."""
         if not self._loaded:
-            self.load()
+            self._suppress_broadcast = True
+            try:
+                self.load()
+            finally:
+                self._suppress_broadcast = False
 
     def merge_live(self, fetched: list) -> None:
         """Main thread: merge live-edge bars from the hub and repaint if anything changed."""
@@ -124,15 +154,46 @@ class ChartDocument(QtWidgets.QWidget):
             self.chart.apply_live(merged, None, repaint=False)
             self.chart.show_upto(len(merged) - 1)
 
+    # --- symbol link group ------------------------------------------------------------------
+
+    def set_bus(self, bus) -> None:
+        """Join a SymbolLinkBus as a receiver member (called by MainWindow on creation)."""
+        self._bus = bus
+        if bus is not None:
+            bus.add_member(self)
+
+    def _set_link_group(self, gid: int) -> None:
+        self.link_group = gid
+        self._link_dot.set_group(gid)   # keep the dot in sync when set directly (not via menu)
+
+    def _broadcast_link(self, symbol: str, interval: str) -> None:
+        """Push this doc's (symbol, interval) to its link group. The bus re-entrancy guard
+        keeps a received apply_link -> load -> symbolChanged from looping back; _suppress_broadcast
+        additionally blocks focus-triggered ensure_loaded top-ups from broadcasting."""
+        if self._bus is not None and not getattr(self, "_suppress_broadcast", False):
+            self._bus.broadcast(self.link_group, self, symbol, interval)
+
+    def apply_link(self, symbol: str | None, interval: str | None) -> None:
+        """Receive a link broadcast: switch to (symbol, interval), keeping whichever is None."""
+        self.load(symbol=symbol or self._symbol, interval=interval or self._interval)
+
     # --- persistence ------------------------------------------------------------------------
 
     def state(self) -> dict:
         return {"symbol": self._symbol, "interval": self._interval,
+                "link_group": self.link_group,
                 "indicators": indicator_states(self.chart)}
 
     def apply_state(self, state: dict) -> None:
-        """Re-attach saved indicators (call after a successful load put bars on the chart)."""
+        """Re-attach saved indicators + link colour (call after a load put bars on the chart)."""
+        from .linkbus import LINK_COLOR
+
         apply_indicator_states(self.chart, (state or {}).get("indicators") or [])
+        gid = int((state or {}).get("link_group", 0) or 0)
+        if gid not in LINK_COLOR:          # hand-edited / future-removed group -> unlinked
+            gid = 0
+        self.link_group = gid
+        self._link_dot.set_group(gid)
 
 
 class LiveHub(QtCore.QObject):

@@ -38,7 +38,9 @@ from .chartdoc import ChartDocument, LiveHub
 from .datamanager import DataManagerTab
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .dockshell import SpaceDeck, configure_dock_manager_defaults, dock_qss, make_panel_dock
+from .linkbus import LINK_COLOR, SymbolLinkBus
 from .panels import (
+    LinkDot,
     TradesTable,
     WatchlistPanel,
     strategy_params,
@@ -229,6 +231,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history = self.bots.history     # alias: existing code calls self.history.update_runs
         self.store = Store(str(Path(_DB_PATH)))
         self.watchlist.symbolChosen.connect(self._load_symbol)
+        self.watchlist.symbolChosen.connect(self._broadcast_watchlist_symbol)
         self.watchlist.openInNewChart.connect(self._open_in_new_chart)
         self.bots.runChosen.connect(self._open_run)
         self.bots.launchRequested.connect(self._launch_bot)
@@ -239,6 +242,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_hub = LiveHub(self)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
+
+        # symbol link groups (Phase 3): charts + the watchlist sharing a colour move together.
+        self._link_bus = SymbolLinkBus()
+        self._watchlist_link = self._session.watchlist_link if self._session else 0
+        if self._watchlist_link not in LINK_COLOR:   # hand-edited / stale session -> unlinked
+            self._watchlist_link = 0
         # timeframe dropdown on either chart -> reload the current symbol at that interval
         self.price.intervalChosen.connect(self._on_interval_chosen)
         self.studio_price.intervalChosen.connect(self._on_interval_chosen)
@@ -364,6 +373,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dock = self.tabs.add_document(doc, doc.title(), object_name)
         self._doc_widgets.append(doc)
         self._live_hub.register(doc)
+        doc.set_bus(self._link_bus)        # join symbol link groups (colour set via its dot)
 
         # Keep the tab caption in sync with the document's symbol/interval. The dock is
         # DeleteOnClose, so a stale emission after close would call setWindowTitle on a freed
@@ -388,11 +398,21 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_document_closed(self, doc) -> None:
         """A chart-document tab was closed (ADS DeleteOnClose): unregister + drop our ref."""
         self._live_hub.unregister(doc)
+        self._link_bus.remove_member(doc)
         if doc in self._doc_widgets:
             self._doc_widgets.remove(doc)
         # Drop the now-orphaned content widget deterministically (the dock is DeleteOnClose but
         # not DeleteContentOnClose, so the ChartDocument would otherwise linger until GC).
         doc.deleteLater()
+
+    def _broadcast_watchlist_symbol(self, symbol: str) -> None:
+        """A watchlist pick also drives any chart in the watchlist's link colour (symbol only —
+        each linked chart keeps its own interval). The main Chart space is loaded separately
+        by _load_symbol, so it always follows the watchlist regardless of colour."""
+        self._link_bus.broadcast(self._watchlist_link, self.watchlist, symbol=symbol)
+
+    def _set_watchlist_link(self, gid: int) -> None:
+        self._watchlist_link = gid
 
     def _center_on_screen(self) -> None:
         """Clamp the window to the available screen area and center it."""
@@ -985,7 +1005,24 @@ class MainWindow(QtWidgets.QMainWindow):
         # window (multi-monitor), or pin to the edge (auto-hide collapsed tab). The old locked
         # QDockWidget layout (fixed 300px, NoDockWidgetFeatures) is gone with the ADS shell.
         self.watchlist.setMinimumWidth(240)  # was setFixedWidth(300) when the layout was locked
-        market = make_panel_dock(self.dock_manager, "MARKET WATCH", self.watchlist,
+        # Wrap the watchlist with a thin header carrying its symbol-link colour dot: a pick here
+        # also drives every chart in the same colour (see _broadcast_watchlist_symbol).
+        market_body = QtWidgets.QWidget()
+        mb = QtWidgets.QVBoxLayout(market_body)
+        mb.setContentsMargins(0, 0, 0, 0)
+        mb.setSpacing(0)
+        wl_header = QtWidgets.QHBoxLayout()
+        wl_header.setContentsMargins(10, 4, 8, 4)
+        link_lbl = QtWidgets.QLabel("Link")
+        link_lbl.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;border:none;")
+        wl_header.addWidget(link_lbl)
+        wl_header.addStretch(1)
+        self._watchlist_dot = LinkDot(self._watchlist_link)
+        self._watchlist_dot.groupChanged.connect(self._set_watchlist_link)
+        wl_header.addWidget(self._watchlist_dot)
+        mb.addLayout(wl_header)
+        mb.addWidget(self.watchlist)
+        market = make_panel_dock(self.dock_manager, "MARKET WATCH", market_body,
                                  QtAds.RightDockWidgetArea)
         trades = make_panel_dock(self.dock_manager, "TRADES & POSITIONS",
                                  self._build_trades_panel(), QtAds.BottomDockWidgetArea)
@@ -1855,6 +1892,7 @@ class MainWindow(QtWidgets.QMainWindow):
             chart_indicators=indicator_states(self.price),
             studio_indicators=indicator_states(self.studio_price),
             documents=[d.state() for d in self._doc_widgets],
+            watchlist_link=self._watchlist_link,
         ))
 
     def closeEvent(self, event):  # noqa: N802 - Qt override

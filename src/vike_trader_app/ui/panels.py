@@ -8,7 +8,50 @@ from PySide6 import QtCore, QtWidgets
 
 from ..analysis import metrics
 from . import icons, theme
+from .linkbus import LINK_COLOR, LINK_GROUPS
 from .tables import TRADE_HEADERS, trade_rows
+
+
+class LinkDot(QtWidgets.QToolButton):
+    """A small colour-swatch button for picking a symbol link group (MultiCharts style).
+
+    Shows a filled dot in the current group's colour (hollow grey for the unlinked group 0);
+    clicking pops a menu of colours and emits ``groupChanged(int)`` on selection.
+    """
+
+    groupChanged = QtCore.Signal(int)
+
+    def __init__(self, group: int = 0, parent=None):
+        super().__init__(parent)
+        self._group = group
+        self.setCursor(QtCore.Qt.PointingHandCursor)
+        self.setFixedSize(22, 22)
+        self.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        menu = QtWidgets.QMenu(self)
+        for gid, _color, name in LINK_GROUPS:
+            act = menu.addAction(name)
+            act.triggered.connect(lambda _c=False, g=gid: self.set_group(g, emit=True))
+        self.setMenu(menu)
+        self._refresh()
+
+    def group(self) -> int:
+        return self._group
+
+    def set_group(self, gid: int, *, emit: bool = False) -> None:
+        self._group = gid
+        self._refresh()
+        if emit:
+            self.groupChanged.emit(gid)
+
+    def _refresh(self) -> None:
+        color = LINK_COLOR.get(self._group, LINK_COLOR[0])
+        self.setText("○" if self._group == 0 else "●")
+        self.setToolTip("Symbol link: " + next(
+            (n for g, _c, n in LINK_GROUPS if g == self._group), "None"))
+        self.setStyleSheet(
+            f"QToolButton{{border:none;background:transparent;color:{color};font-size:15px;}}"
+            f"QToolButton::menu-indicator{{image:none;width:0;}}"
+        )
 
 
 class TablePlaceholder(QtCore.QObject):
