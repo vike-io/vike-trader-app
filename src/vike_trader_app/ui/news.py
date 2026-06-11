@@ -240,6 +240,8 @@ class _NewsWorker(QtCore.QThread):
 class NewsTab(QtWidgets.QWidget):
     """Filter toolbar + list/reader split over a merged, deduped, time-sorted news feed."""
 
+    itemsUpdated = QtCore.Signal()   # the merged feed changed (dashboard News tile mirrors it)
+
     def __init__(self, providers=None, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self._providers = list(providers) if providers is not None else list(PROVIDERS)
@@ -435,6 +437,7 @@ class NewsTab(QtWidgets.QWidget):
         self._items = merge(self._items, list(items))
         self._last_update = time.strftime("%H:%M:%S")
         self._refresh_list()
+        self.itemsUpdated.emit()
 
     def _on_failed(self, message: str) -> None:
         self._status.setText(f"Feed error: {message}")     # status line, never a modal
