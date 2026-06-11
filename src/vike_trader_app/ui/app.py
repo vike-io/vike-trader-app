@@ -54,6 +54,7 @@ from .session import (
     save_session,
 )
 from .watchlist_data import is_stale, quote_from_bars
+from .workspaces import WorkspaceStore
 from .studio import StudioTab
 from .alerts import AlertsTab
 from .journal import JournalTab
@@ -248,6 +249,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._watchlist_link = self._session.watchlist_link if self._session else 0
         if self._watchlist_link not in LINK_COLOR:   # hand-edited / stale session -> unlinked
             self._watchlist_link = 0
+
+        # named workspaces (Phase 4): persisted next to the session file; in-memory when the
+        # session is disabled (offscreen tests) so a save never touches real storage.
+        self._workspaces = WorkspaceStore(
+            str(Path(self._session_path).with_name("workspaces.json"))
+            if self._session_path else None
+        )
         # timeframe dropdown on either chart -> reload the current symbol at that interval
         self.price.intervalChosen.connect(self._on_interval_chosen)
         self.studio_price.intervalChosen.connect(self._on_interval_chosen)
@@ -725,6 +733,20 @@ class MainWindow(QtWidgets.QMainWindow):
         col.addWidget(new_chart, 0, QtCore.Qt.AlignHCenter)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self,
                         activated=lambda: self._open_in_new_chart(self._symbol))
+
+        # "Layout" — named workspaces menu (open / save / delete), rebuilt on each open so the
+        # saved list is always current. Sits with the action buttons, not the exclusive rail.
+        self._workspaces_btn = QtWidgets.QToolButton()
+        self._workspaces_btn.setText("▤▥")
+        self._workspaces_btn.setToolTip(self._chip_tip("Workspaces / Layout"))
+        self._workspaces_btn.setFixedSize(46, 46)
+        self._workspaces_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._workspaces_btn.setStyleSheet(btn_qss + "QToolButton::menu-indicator{image:none;}")
+        self._workspaces_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        ws_menu = QtWidgets.QMenu(self._workspaces_btn)
+        ws_menu.aboutToShow.connect(lambda m=ws_menu: self._populate_workspaces_menu(m))
+        self._workspaces_btn.setMenu(ws_menu)
+        col.addWidget(self._workspaces_btn, 0, QtCore.Qt.AlignHCenter)
         col.addStretch(1)
 
         # PANELS toggles — independent show/hide for the three docks (TradeLocker-style).
@@ -1876,11 +1898,10 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:  # noqa: BLE001 - older Windows / no DWM -> keep the default caption
             pass
 
-    def _save_session(self) -> None:
-        """Snapshot the session to disk (no-op when persistence is disabled)."""
-        if not self._session_path:
-            return
-        save_session(self._session_path, SessionState(
+    def _capture_state(self) -> SessionState:
+        """Snapshot the live shell into a SessionState — the shared payload for both the
+        launch-restore session file and named workspaces."""
+        return SessionState(
             symbol=self._symbol,
             interval=self._interval,
             # -1 (a chart document was current) falls back to the Chart space on reopen.
@@ -1893,7 +1914,89 @@ class MainWindow(QtWidgets.QMainWindow):
             studio_indicators=indicator_states(self.studio_price),
             documents=[d.state() for d in self._doc_widgets],
             watchlist_link=self._watchlist_link,
-        ))
+        )
+
+    def _save_session(self) -> None:
+        """Snapshot the session to disk (no-op when persistence is disabled)."""
+        if not self._session_path:
+            return
+        save_session(self._session_path, self._capture_state())
+
+    # --- named workspaces (Phase 4) ---------------------------------------------------------
+    def _apply_workspace_state(self, state: SessionState) -> None:
+        """Replace the live shell with a workspace: swap the open documents, then restore its
+        dock layout / panels / active space / watchlist link. Reuses the Phase 2 recreate-docs
+        path; the document set is replaced wholesale (a workspace owns its windows)."""
+        # Apply the panel intent FIRST: close_all_documents() can fire currentChanged ->
+        # _on_tab_changed synchronously, and we want that to already reflect the incoming
+        # workspace's panel visibility (not the outgoing one) to avoid an intermediate flicker.
+        merged = dict(self._panel_visible)
+        merged.update(state.panels or {})        # partial workspace keeps the unspecified panels
+        self._panel_visible = merged
+        for key, btn in self._panel_btns.items():
+            if key in merged:
+                btn.blockSignals(True)           # reflect intent without re-driving _toggle_panel
+                btn.setChecked(bool(merged[key]))
+                btn.blockSignals(False)
+
+        self.tabs.close_all_documents()         # DeleteOnClose -> _on_document_closed cleans refs
+        self._doc_seq = 0                        # fresh doc:N names that match this state's blob
+        for st in (state.documents or []):
+            self._new_chart_document(st.get("symbol", "BTCUSDT"), st.get("interval", "1h"),
+                                     state=st, network=False, make_current=False)
+
+        self._watchlist_link = state.watchlist_link if state.watchlist_link in LINK_COLOR else 0
+        self._watchlist_dot.set_group(self._watchlist_link)
+
+        if state.dock_state_hex:                 # a saved layout; built-ins use default positions
+            self._syncing_docks = True
+            try:
+                self.dock_manager.restoreState(
+                    QtCore.QByteArray.fromHex(state.dock_state_hex.encode("ascii")))
+            except Exception:  # noqa: BLE001 - stale/garbled blob -> keep the rebuilt default
+                pass
+            finally:
+                self._syncing_docks = False
+
+        space = min(max(state.space, 0), self.tabs.count() - 1)
+        self.tabs.setCurrentIndex(space)
+        self._on_tab_changed(self.tabs.currentIndex())   # applies panel visibility per intent
+
+    def _apply_workspace(self, name: str) -> bool:
+        state = self._workspaces.load(name)
+        if state is None:
+            return False
+        self._apply_workspace_state(state)
+        return True
+
+    def _save_workspace_as(self, name: str) -> bool:
+        """Capture the live shell as a named workspace (overwrites an existing user one)."""
+        if not name:
+            return False
+        return self._workspaces.save(name, self._capture_state())
+
+    def _delete_workspace(self, name: str) -> bool:
+        return self._workspaces.delete(name)
+
+    def _populate_workspaces_menu(self, menu: QtWidgets.QMenu) -> None:
+        """Fill the Layout menu fresh each open: open a saved/built-in workspace, or save/delete."""
+        menu.clear()
+        for name in self._workspaces.names():
+            tag = "" if self._workspaces.is_user(name) else "  (built-in)"
+            menu.addAction(name + tag, lambda n=name: self._apply_workspace(n))
+        menu.addSeparator()
+        menu.addAction("Save current as…", self._prompt_save_workspace)
+        user = [n for n in self._workspaces.names() if self._workspaces.is_user(n)]
+        if user:
+            sub = menu.addMenu("Delete")
+            for name in user:
+                sub.addAction(name, lambda n=name: self._delete_workspace(n))
+
+    def _prompt_save_workspace(self) -> None:
+        """Live-app only: ask for a name and save the current layout (no modal in tests)."""
+        name, ok = QtWidgets.QInputDialog.getText(self, "Save workspace", "Workspace name:")
+        if ok and name.strip():
+            self._save_workspace_as(name.strip())
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here

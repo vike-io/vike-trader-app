@@ -119,6 +119,12 @@ class SpaceDeck(QtCore.QObject):
         """Live chart-document widgets, in tab order (for session save)."""
         return [d.widget() for d in self._documents if d.widget() is not None]
 
+    def close_all_documents(self) -> None:
+        """Close every chart document (DeleteOnClose -> each fires documentClosed for cleanup).
+        Used when switching workspaces, which replaces the open-document set wholesale."""
+        for dock in list(self._documents):
+            dock.closeDockWidget()
+
     def document_count(self) -> int:
         return len(self._documents)
 
