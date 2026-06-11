@@ -12,12 +12,6 @@ jobs:
     name: unit (${{ matrix.os }} · py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20  # fail fast instead of hanging to GitHub's 6h ceiling
-    # macOS is NON-BLOCKING for now: the suite had never run on macOS, and the first run found
-    # two pre-existing macOS-only problems to fix as a follow-up — (1) a subprocess/preexec_fn
-    # unit error, (2) a studio AI-worker threading race in tests/gui/studio/test_studio_ai_user_sim.
-    # Windows + Linux gate normally (the high-value coverage that catches the native-segfault
-    # class). Flip this off once the macOS failures are fixed.
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     strategy:
       fail-fast: false   # one OS/py failing must NOT cancel the others — we want to SEE which
       matrix:
@@ -50,8 +44,6 @@ jobs:
     name: gui (${{ matrix.os }} · py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20  # fail fast instead of hanging to GitHub's 6h ceiling
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}  # non-blocking until the macOS studio
-    #                    AI-sim threading race is fixed (see the `test` job note). Win/Linux gate.
     strategy:
       fail-fast: false   # a Windows-only native crash must surface, not cancel macOS/Linux —
       matrix:            # running the GUI suite on windows-latest is the ONLY way to catch the

@@ -24,9 +24,18 @@ def _posix_limits():
         return None
 
     def _set():
+        # Best-effort per limit: a preexec_fn that RAISES aborts the whole spawn
+        # (subprocess.SubprocessError "Exception occurred in preexec_fn"). Not every limit is
+        # enforceable on every POSIX — notably macOS rejects RLIMIT_AS — so skip the ones that
+        # error rather than killing the sandbox. RLIMIT_CPU (the hard CPU cap) works on macOS too;
+        # the wall-clock timeout in run_sandboxed is the cross-platform backstop regardless.
         gb = 1024 ** 3
-        resource.setrlimit(resource.RLIMIT_AS, (gb, gb))    # 1 GB address space
-        resource.setrlimit(resource.RLIMIT_CPU, (10, 10))   # 10 s CPU
+        for limit, soft_hard in ((resource.RLIMIT_AS, (gb, gb)),      # 1 GB address space
+                                 (resource.RLIMIT_CPU, (10, 10))):    # 10 s CPU
+            try:
+                resource.setrlimit(limit, soft_hard)
+            except (ValueError, OSError):
+                pass
 
     return _set
 
