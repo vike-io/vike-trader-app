@@ -9,15 +9,27 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: unit (${{ matrix.os }} · py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20  # fail fast instead of hanging to GitHub's 6h ceiling
+    # macOS is NON-BLOCKING for now: the suite had never run on macOS, and the first run found
+    # two pre-existing macOS-only problems to fix as a follow-up — (1) a subprocess/preexec_fn
+    # unit error, (2) a studio AI-worker threading race in tests/gui/studio/test_studio_ai_user_sim.
+    # Windows + Linux gate normally (the high-value coverage that catches the native-segfault
+    # class). Flip this off once the macOS failures are fixed.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    strategy:
+      fail-fast: false   # one OS/py failing must NOT cancel the others — we want to SEE which
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v6
 
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       # Non-UI extras: enough for the engine / analysis / indicators / ml / ai-tool
       # tests. The `ui` extra (PySide6/pyqtgraph) is omitted here for a fast gate; the
@@ -35,11 +47,19 @@ jobs:
           tests/unit -m "not network"
 
   ui-test:
-    runs-on: ubuntu-latest
+    name: gui (${{ matrix.os }} · py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20  # fail fast instead of hanging to GitHub's 6h ceiling
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}  # non-blocking until the macOS studio
+    #                    AI-sim threading race is fixed (see the `test` job note). Win/Linux gate.
+    strategy:
+      fail-fast: false   # a Windows-only native crash must surface, not cancel macOS/Linux —
+      matrix:            # running the GUI suite on windows-latest is the ONLY way to catch the
+        os: [ubuntu-latest, windows-latest, macos-latest]  # 0xC0000005 class Linux CI never saw.
+        python: ["3.12", "3.13"]
     env:
-      # Headless Qt — no xvfb needed. The UI tests already opt into this platform; we set it
-      # job-wide so every UI test (and PySide6 import) runs without a display.
+      # Headless Qt — no real display on any runner. The UI tests already opt into this platform;
+      # we set it job-wide so every UI test (and PySide6 import) runs without a display, on all OSes.
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v6
@@ -47,10 +67,12 @@ jobs:
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
-      # PySide6 links a handful of system libs even under the offscreen platform.
-      - name: Install Qt runtime libs
+      # PySide6 links a handful of system libs even under the offscreen platform — Linux only.
+      # The Windows/macOS PySide6 wheels are self-contained (Qt bundled), so no system step there.
+      - name: Install Qt runtime libs (Linux)
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
 
       - name: Sync dependencies (incl. the ui extra)
@@ -63,3 +85,8 @@ jobs:
         run: >
           uv run pytest -q --timeout=120 --timeout-method=thread
           tests/gui -m "not network"
+
+# NOTE: Python 3.14 is intentionally NOT in the matrix yet — PySide6/pyqtgraph wheel
+# availability on 3.14 across all three OSes is unconfirmed (would 404 the uv sync and red the
+# run). Add "3.14" to both matrices once wheels are published; the project's local dev already
+# runs 3.14, so the OS axis here (esp. windows-latest) is the high-value part regardless.
