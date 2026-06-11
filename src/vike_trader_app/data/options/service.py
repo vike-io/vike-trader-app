@@ -8,6 +8,7 @@ thread. Never raises into the UI; never shows a modal.
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from PySide6 import QtCore
@@ -108,6 +109,11 @@ class OptionsService(QtCore.QObject):
 
     # --- expiries (off-thread, fire-and-forget) ------------------------------
     def load_expiries(self) -> None:
+        # Same kill-switch as the LiveHub: the offscreen suite must do no real network I/O.
+        # (A transient tab-currency blip — e.g. docks being re-added during an Arrange — can
+        # trip the Options first-show hook; a live worker thread then races GC -> segfault.)
+        if os.environ.get("VIKE_DISABLE_LIVE"):
+            return
         if not (self._provider and self._underlying):
             return
         # latest-wins: drop a prior in-flight worker's signals so it can't deliver
@@ -137,6 +143,8 @@ class OptionsService(QtCore.QObject):
 
     def refresh(self) -> bool:
         """Start an off-thread fetch. Returns False if one is already in flight."""
+        if os.environ.get("VIKE_DISABLE_LIVE"):   # headless kill-switch (see load_expiries)
+            return False
         if self._busy or not (self._provider and self._underlying and self._expiry):
             return False
         # Serialize against the expiry worker: never run two network workers at once.
@@ -158,6 +166,8 @@ class OptionsService(QtCore.QObject):
     # --- grouped (multi-expiry) fetch ----------------------------------------
     def load_chains(self, expiries: list[Expiry]) -> bool:
         """Fetch several expiries' chains off-thread for the grouped view (False if busy)."""
+        if os.environ.get("VIKE_DISABLE_LIVE"):   # headless kill-switch (see load_expiries)
+            return False
         if self._busy or not (self._provider and self._underlying and expiries):
             return False
         if self._exp_worker is not None and self._exp_worker.isRunning():

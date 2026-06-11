@@ -2042,6 +2042,14 @@ class MainWindow(QtWidgets.QMainWindow):
             cmds.append((f"Open workspace: {name}", lambda n=name: self._apply_workspace(n)))
         cmds.append((f"New chart: {self._symbol}",
                      lambda: self._open_in_new_chart(self._symbol)))
+        cmds.append(("Arrange charts: tile grid",
+                     lambda: self.tabs.arrange_documents("grid")))
+        cmds.append(("Arrange charts: side by side",
+                     lambda: self.tabs.arrange_documents("columns")))
+        cmds.append(("Arrange charts: stacked",
+                     lambda: self.tabs.arrange_documents("rows")))
+        cmds.append(("Arrange charts: gather as tabs",
+                     lambda: self.tabs.arrange_documents("tabs")))
         cmds.append(("Save workspace as…", self._prompt_save_workspace))
         cmds.append(("AI: generate a layout…", self._prompt_ai_layout))
         for key, _icon, tip, _sc in self._PANELS:

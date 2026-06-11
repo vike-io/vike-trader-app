@@ -10,8 +10,10 @@ so the area's tab order IS the creation order and rail indices stay stable.
 
 from __future__ import annotations
 
+import math
+
 import PySide6QtAds as QtAds
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
 from . import theme
 
@@ -106,6 +108,10 @@ class SpaceDeck(QtCore.QObject):
         # documentClosed consumer (LiveHub unregister, manifest update) gets a live reference.
         inner = widget
         dock.closed.connect(lambda d=dock, w=inner: self._on_document_closed(d, w))
+        # tear-out notification (duck-typed): lets the document show float-only chrome like
+        # the keep-on-top pin when it becomes a separate window
+        if hasattr(widget, "set_floating"):
+            dock.topLevelChanged.connect(widget.set_floating)
         dock.setAsCurrentTab()
         self._resolve_area()
         return dock
@@ -130,6 +136,77 @@ class SpaceDeck(QtCore.QObject):
 
     def is_document(self, widget) -> bool:
         return any(d.widget() is widget for d in self._documents)
+
+    # --- arrange (MultiCharts Window->Arrange parity, docking-native) ---------------------
+
+    ARRANGE_MODES = ("grid", "columns", "rows", "tabs")
+
+    def arrange_documents(self, mode: str = "grid") -> int:
+        """Tile the open chart documents into the centre. Floating documents are pulled back
+        in first (every doc is re-tabbed into the centre area, which normalises the splitter
+        tree so the splits below are deterministic).
+
+        ``grid``    near-square 2D tiling (the AmiBroker 4-chart wall, for any N)
+        ``columns`` one row of side-by-side charts
+        ``rows``    one column of stacked charts
+        ``tabs``    gather everything back into the centre tab stack (the inverse)
+
+        Cascade is deliberately absent: it is an MDI concept with no meaning in a docking
+        shell. Returns the number of documents arranged."""
+        docks = [d for d in self._documents if d.widget() is not None]
+        if not docks:
+            return 0
+        base = self._resolve_area()
+        for dock in docks:
+            was_floating = dock.isFloating()
+            self._mgr.addDockWidget(QtAds.CenterDockWidgetArea, dock, base)
+            # programmatic re-dock does NOT emit topLevelChanged — sync float-only chrome
+            inner = dock.widget()
+            if was_floating and hasattr(inner, "set_floating"):
+                inner.set_floating(False)
+        n = len(docks)
+        if mode == "tabs" or n == 1:
+            docks[0].setAsCurrentTab()
+            return n
+        cols = 1 if mode == "rows" else (n if mode == "columns" else math.ceil(math.sqrt(n)))
+        # Top row first: split each new column off the previous top cell (Right), then stack
+        # the remaining docs under their column tops (Bottom) — the #103 2x2 pattern, for any N.
+        tops = [docks[0]]
+        for c in range(1, min(cols, n)):
+            self._mgr.addDockWidget(QtAds.RightDockWidgetArea, docks[c],
+                                    tops[-1].dockAreaWidget())
+            tops.append(docks[c])
+        above = list(tops)
+        for i in range(cols, n):
+            c = i % cols
+            self._mgr.addDockWidget(QtAds.BottomDockWidgetArea, docks[i],
+                                    above[c].dockAreaWidget())
+            above[c] = docks[i]
+        self._equalize_splitters([d.dockAreaWidget() for d in docks])
+        docks[0].setAsCurrentTab()
+        return n
+
+    def _equalize_splitters(self, areas: list) -> None:
+        """Best-effort equal cell sizes after a tiling: successive ADS splits halve the
+        remaining space (1/2, 1/4, ...), so walk the splitters above the arranged areas and
+        equalise each one — but ONLY where every child holds an arranged area, which skips
+        the root splitter carrying the side panels (Market watch etc.) untouched."""
+        splitters: dict[int, QtWidgets.QSplitter] = {}
+        for area in areas:
+            p = area.parentWidget()
+            while p is not None:
+                if isinstance(p, QtWidgets.QSplitter):
+                    splitters[id(p)] = p
+                p = p.parentWidget()
+        for s in splitters.values():
+            kids = [s.widget(i) for i in range(s.count())]
+            if len(kids) < 2 or not all(
+                any(k is a or k.isAncestorOf(a) for a in areas) for k in kids
+            ):
+                continue
+            total = s.width() if s.orientation() == QtCore.Qt.Horizontal else s.height()
+            if total > 0:
+                s.setSizes([max(1, total // len(kids))] * len(kids))
 
     # --- construction -------------------------------------------------------------------
 
