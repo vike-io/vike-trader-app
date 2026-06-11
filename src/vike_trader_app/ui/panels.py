@@ -4,7 +4,7 @@ watchlist, strategy params, and run history — styled in the vike.io look.
 
 from datetime import UTC, datetime
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import metrics
 from . import icons, theme
@@ -33,21 +33,58 @@ class LinkDot(QtWidgets.QToolButton):
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFixedSize(22, 22)
         self.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        # MultiCharts-style colour menu: a swatch icon per group, a check on the active one,
+        # "Linked to all" on top, plain colours in the middle, "Not linked" at the bottom.
+        from .linkbus import LINK_ALL  # local import keeps panels<->linkbus edge light
+
         menu = QtWidgets.QMenu(self)
-        if follow:   # interval channel: "-1" mirrors the symbol link (the default, back-compat)
-            act = menu.addAction("Follow symbol")
-            act.triggered.connect(lambda _c=False: self.set_group(-1, emit=True))
-        for gid, _color, name in LINK_GROUPS:
+        menu.setStyleSheet(
+            f"QMenu{{background:{theme.PANEL};border:1px solid {theme.BORDER};padding:4px;}}"
+            f"QMenu::item{{color:{theme.TEXT};padding:4px 18px 4px 6px;border-radius:4px;}}"
+            f"QMenu::item:selected{{background:{theme.HOVER};}}"
+        )
+        self._actions: dict[int, QtGui.QAction] = {}
+
+        def _add(gid: int, name: str, color: str | None) -> None:
             act = menu.addAction(name)
+            act.setCheckable(True)
+            if color is not None:
+                act.setIcon(self._swatch(color))
             act.triggered.connect(lambda _c=False, g=gid: self.set_group(g, emit=True))
+            self._actions[gid] = act
+
+        if follow:   # interval channel: "-1" mirrors the symbol link (the default, back-compat)
+            _add(-1, "Follow symbol", None)
+            menu.addSeparator()
+        ordered = sorted(LINK_GROUPS, key=lambda t: (t[0] != LINK_ALL, t[0] == 0, t[0]))
+        for gid, color, name in ordered:
+            if gid == 0:
+                menu.addSeparator()
+                _add(0, name, None)
+            else:
+                _add(gid, name, color)
         self.setMenu(menu)
-        self._refresh()
+        self.set_group(group)   # paints the dot + sets the initial menu check
+
+    @staticmethod
+    def _swatch(color: str, size: int = 14) -> QtGui.QIcon:
+        """A flat colour square for the menu (the MultiCharts swatch)."""
+        pm = QtGui.QPixmap(size, size)
+        pm.fill(QtCore.Qt.transparent)
+        p = QtGui.QPainter(pm)
+        p.setPen(QtGui.QPen(QtGui.QColor(theme.BORDER), 1))
+        p.setBrush(QtGui.QColor(color))
+        p.drawRoundedRect(1, 1, size - 2, size - 2, 3, 3)
+        p.end()
+        return QtGui.QIcon(pm)
 
     def group(self) -> int:
         return self._group
 
     def set_group(self, gid: int, *, emit: bool = False) -> None:
         self._group = gid
+        for g, act in self._actions.items():   # the MC-style check on the active entry
+            act.setChecked(g == gid)
         self._refresh()
         if emit:
             self.groupChanged.emit(gid)

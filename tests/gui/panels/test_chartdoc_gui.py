@@ -273,6 +273,44 @@ def test_interval_link_dot_follow_color_round_trip(app, _synthetic_load):
     win.close()
 
 
+def test_link_dot_menu_is_multicharts_style(app, _synthetic_load):
+    """The colour menu mirrors MultiCharts: swatch icons, a check on the active entry,
+    'Linked to all' on top and 'Not linked' at the bottom."""
+    from vike_trader_app.ui.linkbus import LINK_ALL
+    from vike_trader_app.ui.panels import LinkDot
+
+    dot = LinkDot(0)
+    actions = [a for a in dot.menu().actions() if not a.isSeparator()]
+    labels = [a.text() for a in actions]
+    assert labels[0] == "Linked to all"
+    assert labels[-1] == "Not linked"
+    assert len(labels) == 17                            # all + 15 colours + not-linked
+    assert "Pink" in labels and "Sky blue" in labels
+    # colour entries carry swatch icons; the active entry is checked
+    assert not next(a for a in actions if a.text() == "Red").icon().isNull()
+    assert next(a for a in actions if a.text() == "Not linked").isChecked()
+    dot.set_group(LINK_ALL)
+    assert next(a for a in actions if a.text() == "Linked to all").isChecked()
+    assert not next(a for a in actions if a.text() == "Not linked").isChecked()
+
+    ivl = LinkDot(-1, follow=True)                      # the interval dot adds Follow symbol
+    ivl_labels = [a.text() for a in ivl.menu().actions() if not a.isSeparator()]
+    assert ivl_labels[0] == "Follow symbol" and len(ivl_labels) == 18
+
+
+def test_linked_to_all_chart_follows_any_colour(app, _synthetic_load):
+    from vike_trader_app.ui.linkbus import LINK_ALL
+
+    win = MainWindow(session_path=None)
+    leader = win._new_chart_document("ETHUSDT", "1h")
+    follower = win._new_chart_document("SOLUSDT", "1h")
+    leader._set_link_group(13)                          # pink (new palette id)
+    follower._set_link_group(LINK_ALL)
+    leader.load("BTCUSDT", "4h")
+    assert (follower.symbol, follower.interval) == ("BTCUSDT", "4h")
+    win.close()
+
+
 def test_interval_link_group_persists_and_restores(app, _synthetic_load, tmp_path):
     path = tmp_path / "session.json"
     first = MainWindow(session_path=str(path))
@@ -315,10 +353,14 @@ def test_failed_link_load_rolls_back_symbol(app, monkeypatch):
 
 
 def test_out_of_range_link_group_clamps_to_unlinked(app, _synthetic_load):
+    from vike_trader_app.ui.linkbus import LINK_ALL
+
     doc = ChartDocument("ETHUSDT", "1h")
     doc.load()
-    doc.apply_state({"link_group": 99, "indicators": []})
+    doc.apply_state({"link_group": 1234, "indicators": []})   # unknown id -> unlinked
     assert doc.link_group == 0
+    doc.apply_state({"link_group": LINK_ALL, "indicators": []})  # 99 is now a REAL group
+    assert doc.link_group == LINK_ALL
 
 
 def test_unlinked_documents_do_not_follow(app, _synthetic_load):

@@ -12,17 +12,44 @@ interval)``. Sources just call ``bus.broadcast(group, source, symbol, interval)`
 
 from __future__ import annotations
 
-# (group id, colour hex, label). id 0 is the unlinked state (hollow grey dot, no broadcast).
+# (group id, colour hex, label). id 0 is the unlinked state (hollow grey dot, no broadcast);
+# LINK_ALL is the MultiCharts "Linked To All" group — it sends to and receives from every
+# linked window regardless of colour. ids 1-6 keep their original colours (saved sessions).
+LINK_ALL = 99
+
 LINK_GROUPS: list[tuple[int, str, str]] = [
-    (0, "#6e7681", "None"),
+    (0, "#6e7681", "Not linked"),
+    (LINK_ALL, "#e6edf3", "Linked to all"),
     (1, "#f85149", "Red"),
     (2, "#3fb950", "Green"),
     (3, "#58a6ff", "Blue"),
     (4, "#f0883e", "Orange"),
     (5, "#d29922", "Yellow"),
     (6, "#a855f7", "Purple"),
+    (7, "#b07d48", "Brown"),
+    (8, "#38bdf8", "Sky blue"),
+    (9, "#2dd4bf", "Teal"),
+    (10, "#22d3ee", "Aqua"),
+    (11, "#e11d48", "Crimson"),
+    (12, "#84cc16", "Lime"),
+    (13, "#f472b6", "Pink"),
+    (14, "#9e7c0c", "Dark yellow"),
+    (15, "#7c3aed", "Violet"),
 ]
 LINK_COLOR = {gid: color for gid, color, _name in LINK_GROUPS}
+
+
+def _on_channel(member_group: int, broadcast_group: int) -> bool:
+    """Does a member's channel group receive a broadcast to ``broadcast_group``?
+
+    Same colour matches; LINK_ALL members hear every linked broadcast; a LINK_ALL source
+    reaches every linked member (MultiCharts "Linked To All" semantics). Group 0 never
+    sends or receives."""
+    if not member_group or not broadcast_group:
+        return False
+    return (member_group == broadcast_group
+            or member_group == LINK_ALL
+            or broadcast_group == LINK_ALL)
 
 
 class SymbolLinkBus:
@@ -73,13 +100,13 @@ class SymbolLinkBus:
             for member in list(self._members):
                 if member is source:
                     continue
-                sym = symbol if (symbol is not None and group
-                                 and getattr(member, "link_group", 0) == group) else None
+                sym = symbol if (symbol is not None and _on_channel(
+                    getattr(member, "link_group", 0), group)) else None
                 m_igroup = getattr(member, "interval_link_group", None)
                 if m_igroup is None:                       # legacy member -> symbol colour
                     m_igroup = getattr(member, "link_group", 0)
-                itv = interval if (interval is not None and igroup
-                                   and m_igroup == igroup) else None
+                itv = interval if (interval is not None
+                                   and _on_channel(m_igroup, igroup)) else None
                 if sym is not None or itv is not None:
                     member.apply_link(sym, itv)
         finally:
