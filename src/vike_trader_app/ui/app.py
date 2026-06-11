@@ -81,6 +81,7 @@ _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
     "live": (theme.UP, "● LIVE · "),
     "stale": (theme.WARN, "● STALE · "),
     "down": (theme.DOWN, "● RECONNECTING · "),
+    "cached": (theme.TEXT3, "● CACHED · "),  # data on screen, but no live poller is running
     "idle": (theme.TEXT3, "● "),
 }
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
@@ -820,9 +821,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.foot_info.setStyleSheet(f"color:{theme.TEXT2};font-size:11px;padding:0 6px;")
         sb.addPermanentWidget(self.foot_info)
         self._feed_badge = QtWidgets.QLabel("● BINANCE")
-        # no pill/border per the user — just the green dot + label, flush on the bottom bar
+        # no pill/border per the user — just the dot + label, flush on the bottom bar.
+        # Starts DIM (idle): green is earned by _update_feed_health once a feed is armed —
+        # a default-green dot is a "connected" claim the app hasn't verified yet.
         self._feed_badge.setStyleSheet(
-            f"color:{theme.UP};font-size:10px;background:transparent;"
+            f"color:{theme.TEXT3};font-size:10px;background:transparent;"
             f"border:none;padding:3px 6px;margin-right:6px;"
         )
         sb.addPermanentWidget(self._feed_badge)
@@ -873,6 +876,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._forward is not None:
             self._set_feed_health("live")  # forward mode runs its own (genuinely live) feed
             return
+        # No poller armed (VIKE_DISABLE_LIVE, or a pure cache load before/without arming) →
+        # the watchdog must not claim LIVE off mere data freshness. _arm_live_updates starts
+        # the timer BEFORE calling here, so a genuinely armed feed still classifies below.
+        if not self._live_timer.isActive():
+            self._set_feed_health("cached" if self._bars else "idle")
+            return
         now = int(time.time() * 1000)
         newest = self._bars[-1].ts if self._bars else None
         self._set_feed_health(
@@ -906,7 +915,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _stop_live_updates(self) -> None:
         self._live_timer.stop()
-        self._set_feed_health("idle")
+        # Recorded-run / hand-loaded views still show data — say CACHED, not a bare dot.
+        self._set_feed_health("cached" if self._bars else "idle")
 
     def _live_tick(self) -> None:
         """Spawn an off-thread fetch of the latest bars for the live symbol (non-blocking).

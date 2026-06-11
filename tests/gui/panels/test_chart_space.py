@@ -50,6 +50,23 @@ def test_first_space_is_chart(app):
     assert win._mode_tag.text() == "CHART"
 
 
+def test_feed_badge_shows_cached_not_live_when_no_feed_armed(app):
+    """The feed badge is a connection watchdog. With VIKE_DISABLE_LIVE set (conftest does),
+    no poller is ever armed — so even perfectly fresh cached bars must NOT paint '● LIVE';
+    the badge reads '● CACHED · <provider>' instead (dim), keeping the watchdog honest."""
+    import time as _time
+
+    win = MainWindow()
+    win.store = Store(":memory:")
+    now = int(_time.time() * 1000)
+    bars = [Bar(ts=now - (11 - i) * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i,
+                close=100.0 + i) for i in range(12)]  # newest bar ≈ now → "fresh" by feed_health
+    win.load_bars(bars, record=False)
+    txt = win._feed_badge.text()
+    assert "LIVE" not in txt, f"badge claims a live feed with no poller armed: {txt!r}"
+    assert txt.startswith("● CACHED"), f"expected CACHED state, got: {txt!r}"
+
+
 def test_launch_bot_records_run_and_populates_price_chart(app):
     """Launch Bot: records a new Historic Run and puts bars on the price chart."""
     win = MainWindow()
