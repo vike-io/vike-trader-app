@@ -10,7 +10,7 @@ columns) with plain geometry math — the user explicitly rejected dock-tiling f
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtGui, QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from . import theme
 from .style_icons import style_icon
@@ -35,16 +35,23 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._normal_geo: QtCore.QRect | None = None
         self._drag_off: QtCore.QPoint | None = None
         self._resize_edge: tuple[bool, bool, bool, bool] | None = None
+        # Live-resize throttle: each mouse-move only STORES the target geometry (O(1)); the
+        # expensive setGeometry → full pyqtgraph relayout (~90ms with 1500 candles) runs at
+        # most once per tick, so the cursor never waits on the chart. Without this the handler
+        # ran the relayout synchronously per move and the mouse "stuck" (measured 57-98ms/move).
+        self._pending_geo: QtCore.QRect | None = None
+        self._resize_timer = QtCore.QTimer(self)
+        self._resize_timer.setInterval(16)        # ~60fps cap for the chart relayout
+        self._resize_timer.timeout.connect(self._flush_resize)
         self.setObjectName("chartWin")
         self.setMouseTracking(True)
         self.setStyleSheet(
             f"#chartWin{{background:{theme.BG};border:1px solid {theme.BORDER};}}"
         )
-        shadow = QtWidgets.QGraphicsDropShadowEffect(self)
-        shadow.setBlurRadius(22)
-        shadow.setOffset(0, 4)
-        shadow.setColor(QtGui.QColor(0, 0, 0, 160))
-        self.setGraphicsEffect(shadow)
+        # NO QGraphicsDropShadowEffect: it forced a full-window re-render on EVERY move (it
+        # made multi-window dragging ~70% slower — measured) for a cosmetic shadow. Detached
+        # frames are real OS windows and get the native drop shadow for free; attached frames
+        # read fine against the workspace with just the 1px border above.
 
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(1, 1, 1, 1)
@@ -233,7 +240,13 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 g.setTop(min(g.top() + d.y(), g.bottom() - _MIN_H))
             if b:
                 g.setBottom(max(g.bottom() + d.y(), g.top() + _MIN_H))
-            self.setGeometry(g)
+            # Throttle: store the target; apply the leading edge immediately, then coalesce
+            # further moves to the 16ms tick so the relayout can't starve the mouse queue.
+            self._pending_geo = g
+            if not self._resize_timer.isActive():
+                self.setGeometry(g)
+                self._pending_geo = None
+                self._resize_timer.start()
             return
         e = self._edge_at(ev.position().toPoint())
         cur = {(1, 0, 0, 0): QtCore.Qt.SizeHorCursor, (0, 0, 1, 0): QtCore.Qt.SizeHorCursor,
@@ -244,7 +257,21 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self.setCursor(cur or QtCore.Qt.ArrowCursor)
         super().mouseMoveEvent(ev)
 
+    def _flush_resize(self) -> None:
+        """Timer tick during a live resize: apply the latest pending geometry, or stop the
+        timer once the user has paused (no pending move since the last tick)."""
+        if self._pending_geo is not None:
+            self.setGeometry(self._pending_geo)
+            self._pending_geo = None
+        else:
+            self._resize_timer.stop()
+
     def mouseReleaseEvent(self, ev):  # noqa: N802
+        # apply the final geometry exactly (don't lose the last sub-tick move) and stop ticking
+        if self._pending_geo is not None:
+            self.setGeometry(self._pending_geo)
+            self._pending_geo = None
+        self._resize_timer.stop()
         self._resize_edge = None
         super().mouseReleaseEvent(ev)
 
@@ -253,10 +280,11 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 p.x() >= self.width() - _EDGE, p.y() >= self.height() - _EDGE)
 
     def set_active(self, on: bool) -> None:
-        """MC colors the ACTIVE window's title bar."""
+        """The ACTIVE window is shown by its bar background alone — no accent underline
+        (the green rule under the header was removed per the user)."""
         self._bar.setStyleSheet(
             f"#chartWinBar{{background:{theme.RAISE if on else theme.SURFACE};"
-            f"border-bottom:2px solid {theme.ACCENT if on else theme.BORDER};}}")
+            f"border-bottom:1px solid {theme.BORDER};}}")
 
 
 def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) -> None:

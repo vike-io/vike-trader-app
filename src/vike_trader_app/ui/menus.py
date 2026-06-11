@@ -1,9 +1,10 @@
-"""Main menu (S3 of the shell-UX plan) — MultiCharts-16-style hamburger cascade.
+"""Main menu (S3 of the shell-UX plan) — VS-Code-style title-bar menu bar.
 
-``build_main_menu(win)`` returns the ≡ menu with File / View / Insert / Format / Window / Help
-submenus, each repopulated on ``aboutToShow`` so dynamic lists (workspaces, recents, open
-windows) are always current. It is a THIN routing layer over actions MainWindow already has —
-no business logic lives here.
+``build_menu_bar(win)`` returns a QMenuBar with File / View / Go / Insert / Format / Window /
+Help menus, each repopulated on ``aboutToShow`` so dynamic lists (workspaces, recents, open
+windows) are always current. It lives IN the custom title bar (replacing the old hamburger ≡
+and the left icon rail) and behaves like VS Code's: click opens, hover then switches menus.
+It is a THIN routing layer over actions MainWindow already has — no business logic lives here.
 """
 
 from __future__ import annotations
@@ -13,30 +14,42 @@ from PySide6 import QtWidgets
 from . import chart_styles, theme
 from .style_icons import style_icon
 
-_QSS = (
-    f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-    f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
-    f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
-    f"color:{theme.TEXT2};}}"
-    f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
-    f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
-)
-
 
 def _menu(parent, title: str) -> QtWidgets.QMenu:
-    m = QtWidgets.QMenu(title, parent)
-    m.setStyleSheet(_QSS)
-    return m
+    # NO local stylesheet and NO custom QStyle: the app-wide theme.stylesheet() QMenu rules
+    # are THE unified dropdown style (same surface/hover/radius/typography as every popup).
+    # A widget-level setStyle() bypasses QStyleSheetStyle and turns the menus black — the
+    # keycap-chip shortcut experiment died of exactly that; shortcuts render natively
+    # (right-aligned dim text, the VS Code look).
+    return QtWidgets.QMenu(title, parent)
 
 
-def build_main_menu(win) -> QtWidgets.QMenu:
-    root = _menu(win, "")
-    for title, fill in (("File", _fill_file), ("View", _fill_view), ("Insert", _fill_insert),
-                        ("Format", _fill_format), ("Window", _fill_window), ("Help", _fill_help)):
-        sub = _menu(root, title)
+_BAR_QSS = (
+    f"QMenuBar{{background:transparent;color:{theme.TEXT2};font-size:13px;font-weight:400;"
+    f"border:none;padding:0 2px;}}"
+    f"QMenuBar::item{{background:transparent;padding:5px 9px;border-radius:{theme.RADIUS_SM}px;}}"
+    f"QMenuBar::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+    f"QMenuBar::item:pressed{{background:{theme.HOVER};color:{theme.TEXT};}}"
+)
+
+# View/Insert/Format dropped from the bar per the user (panel toggles keep their Ctrl
+# shortcuts + palette commands; indicator picker + chart style live on the chart's own
+# toolbar); their _fill_* helpers stay for the command palette / future use.
+_SECTIONS = (("File", "_fill_file"), ("Go", "_fill_go"),
+             ("Window", "_fill_window"), ("Help", "_fill_help"))
+
+
+def build_menu_bar(win) -> QtWidgets.QMenuBar:
+    bar = QtWidgets.QMenuBar()
+    bar.setNativeMenuBar(False)   # must render inside the custom title bar, never the OS one
+    bar.setStyleSheet(_BAR_QSS)
+    bar.setSizePolicy(QtWidgets.QSizePolicy.Maximum, QtWidgets.QSizePolicy.Preferred)
+    for title, fill_name in _SECTIONS:
+        fill = globals()[fill_name]
+        sub = _menu(bar, title)
         sub.aboutToShow.connect(lambda s=sub, f=fill: (s.clear(), f(s, win)))
-        root.addMenu(sub)
-    return root
+        bar.addMenu(sub)
+    return bar
 
 
 def _active_chart(win):
@@ -80,19 +93,38 @@ def _fill_file(m, win):
     m.addSeparator()
     m.addAction("Export chart image…", win._export_chart_image)
     m.addSeparator()
-    m.addAction("Exit", win.close)
+    m.addAction("Exit\tAlt+F4", win.close)
 
 
 # --- View -------------------------------------------------------------------------------------
 
 def _fill_view(m, win):
+    # Only the core panels — the dashboard tiles (movers/pnl/ecal/headlines) are hidden from
+    # the menu per the user (Calendar + News are full spaces, opened as windows from Go or
+    # the title-bar launchers); their Ctrl+Shift shortcuts + palette commands still work.
+    core = {"backtester", "market", "trades"}
     for key, _icon, tip, sc in win._PANELS:
+        if key not in core:
+            continue
         a = m.addAction(f"{tip}\t{sc}")
         a.setCheckable(True)
         a.setChecked(win._panel_visible.get(key, True))
         a.toggled.connect(lambda on, k=key: win._panel_btns[k].setChecked(on))
     m.addSeparator()
     m.addAction("Command palette\tCtrl+K", win._open_command_palette)
+
+
+# --- Go ---------------------------------------------------------------------------------------
+
+def _fill_go(m, win):
+    """Space navigation (the retired left icon rail's job): one entry per space."""
+    current = win.tabs.currentIndex()
+    for i, (_g, name) in enumerate(win._RAIL_ITEMS):
+        a = m.addAction(name, lambda idx=i: win.tabs.setCurrentIndex(idx))
+        a.setCheckable(True)
+        a.setChecked(i == current)
+    m.addSeparator()
+    m.addAction("New chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
 
 
 # --- Insert -----------------------------------------------------------------------------------
@@ -116,29 +148,23 @@ def _fill_format(m, win):
 # --- Window -----------------------------------------------------------------------------------
 
 def _fill_window(m, win):
-    m.addAction("New chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
-    m.addAction("Copy window\tCtrl+Shift+C", win._copy_active_document)
-    m.addAction("Paste window\tCtrl+Shift+V", win._paste_document)
+    """MultiCharts-16 Window menu: arrange verbs, close/detach, numbered open windows."""
+    m.addAction("Arrange All", lambda: win._arrange_chart_windows("grid"))
+    m.addAction("Arrange Horizontally", lambda: win._arrange_chart_windows("rows"))
+    m.addAction("Arrange Vertically", lambda: win._arrange_chart_windows("columns"))
+    m.addAction("Cascade", lambda: win._arrange_chart_windows("cascade"))
     m.addSeparator()
-    m.addAction("Detach current window", win._float_current_document)
-    arrange = _menu(m, "Arrange chart windows")
-    arrange.addAction("Cascade", lambda: win._arrange_chart_windows("cascade"))
-    arrange.addAction("Tile grid", lambda: win._arrange_chart_windows("grid"))
-    arrange.addAction("Side by side", lambda: win._arrange_chart_windows("columns"))
-    arrange.addAction("Stacked", lambda: win._arrange_chart_windows("rows"))
-    m.addMenu(arrange)
+    m.addAction("Close Window\tCtrl+F4", win._close_active_window)
+    m.addAction("Detach Window", win._float_current_document)
     m.addSeparator()
-    docs = list(win._doc_widgets)
-    if docs:
-        for d in docs:
-            m.addAction(d.title(), lambda doc=d: win._activate_document(doc))
-        m.addSeparator()
-    for i, (_g, name) in enumerate(win._RAIL_ITEMS):
-        m.addAction(name, lambda idx=i: win.tabs.setCurrentIndex(idx))
+    active = getattr(win, "_active_frame", None)
+    for n, d in enumerate(win._doc_widgets, 1):
+        a = m.addAction(f"{n} {d.title()}", lambda doc=d: win._activate_document(doc))
+        a.setCheckable(True)
+        a.setChecked(active is not None and getattr(active, "doc", None) is d)
 
 
 # --- Help -------------------------------------------------------------------------------------
 
 def _fill_help(m, win):
-    m.addAction("Keyboard shortcuts", win._show_shortcuts)
     m.addAction("About vike-trader", win._show_about)

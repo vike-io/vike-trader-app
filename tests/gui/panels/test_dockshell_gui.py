@@ -251,6 +251,43 @@ def test_arrange_with_no_windows_is_noop(app):
     win.close()
 
 
+def test_chart_window_resize_is_throttled_and_shadowless(app, _synthetic_load):
+    """Perf: the floating chart frame carries NO drop-shadow effect (it forced a full re-render
+    per move), and a live edge-resize is THROTTLED — moves coalesce onto a timer instead of a
+    synchronous setGeometry+relayout per event — yet the final geometry is applied exactly."""
+    from PySide6 import QtCore, QtGui
+
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    win._new_chart_document("BTCUSDT", "1h")
+    f = win._chart_frames[0]
+    assert f.graphicsEffect() is None              # shadow removed
+    assert f._resize_timer.interval() == 16
+
+    def evt(lx, ly, et, btn, bts):
+        gp = f.mapToGlobal(QtCore.QPoint(int(lx), int(ly)))
+        return QtGui.QMouseEvent(et, QtCore.QPointF(lx, ly), QtCore.QPointF(gp), btn, bts,
+                                 QtCore.Qt.NoModifier)
+
+    w0, h0 = f.width(), f.height()
+    f.mousePressEvent(evt(w0 - 2, h0 - 2, QtCore.QEvent.MouseButtonPress,
+                          QtCore.Qt.LeftButton, QtCore.Qt.LeftButton))
+    assert f._resize_edge is not None
+    for d in (40, 90, 150):                        # a burst of resize moves
+        f.mouseMoveEvent(evt(w0 - 2 + d, h0 - 2 + d, QtCore.QEvent.MouseMove,
+                             QtCore.Qt.NoButton, QtCore.Qt.LeftButton))
+    assert f._resize_timer.isActive()              # coalescing via the timer, not per-move
+    assert f._pending_geo is not None              # latest move stored, not yet applied inline
+    f.mouseReleaseEvent(evt(0, 0, QtCore.QEvent.MouseButtonRelease,
+                            QtCore.Qt.NoButton, QtCore.Qt.NoButton))
+    assert not f._resize_timer.isActive()          # stopped on release
+    assert f._resize_edge is None
+    assert f._pending_geo is None                  # final geometry flushed
+    assert f.width() > w0 and f.height() > h0      # it actually grew to the last move
+    win.close()
+
+
 def test_palette_has_arrange_commands(app):
     win = MainWindow(session_path=None)
     labels = [label for label, _cb in win._commands()]
@@ -282,6 +319,56 @@ def test_pin_appears_on_detach_and_sets_stays_on_top(app, _synthetic_load, monke
     frame.toggle_detach()                                    # re-attach -> pin hides + resets
     app.processEvents()
     assert doc._pin_btn.isHidden() and not doc._pin_btn.isChecked()
+    win.close()
+
+
+# --- launcher-floated spaces stay navigable (regression: review wjs9t80fy) ------------------
+
+
+def test_floating_a_space_does_not_wedge_navigation(app):
+    """A launcher floats a space out of the central area; navigating to OTHER docked spaces
+    must still work. Regression: _resolve_area was keyed on _docks[0], so floating Chart
+    (index 0) stranded every other space (silent setCurrentIndex no-op)."""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    win.tabs.float_space(0)                  # float Chart — the worst case (was index 0)
+    app.processEvents()
+    screener = win.tabs.indexOf(win.screener)
+    win.tabs.setCurrentIndex(screener)       # navigate to a still-docked space
+    app.processEvents()
+    assert win.tabs.currentIndex() == screener
+    assert win.tabs.currentWidget() is win.screener
+    win.close()
+
+
+def test_navigating_to_a_floated_space_raises_its_window(app):
+    """setCurrentIndex on a floated space is float-aware: it raises the window instead of a
+    dead no-op, and the space stays floating (reachable from Go menu / palette)."""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    studio = win.tabs.indexOf(win.studio)
+    win.tabs.float_space(studio)
+    app.processEvents()
+    assert win.tabs.dock(studio).isFloating()
+    win.tabs.setCurrentIndex(studio)         # the Go-menu / palette path
+    app.processEvents()
+    assert win.tabs.dock(studio).isFloating()    # still a window, not a dead tab
+    win.close()
+
+
+def test_floating_a_space_keeps_the_strip_hidden(app):
+    """float_space must re-hide the spaces tab strip (ADS re-shows it on the tab-bar rebuild)."""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    win.tabs.float_space(win.tabs.indexOf(win.screener))
+    app.processEvents()
+    app.processEvents()                       # the singleShot(0) re-hide
+    area = win.tabs._resolve_area()
+    assert area is not None and not area.titleBar().isVisible()
+    assert all(not d.tabWidget().isVisible() for d in win.tabs._docks)
     win.close()
 
 

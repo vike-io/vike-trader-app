@@ -1806,22 +1806,18 @@ class PriceChart(pg.PlotWidget):
             _style_menu.addSection(_sec)
             for _st in _styles:
                 _style_menu.addAction(style_icon(_st), _st, lambda s=_st: self.set_style(s))
-        # TradingView-style favorites: star the ACTIVE style to pin it as a one-click icon
-        # button right of the selector (persisted across runs); star again to unpin.
-        _style_menu.addSeparator()
-        self._fav_action = _style_menu.addAction("★ Favorite this style",
-                                                 self._toggle_style_favorite)
-        _style_menu.aboutToShow.connect(self._refresh_fav_action)
         self._style_btn.setMenu(_style_menu)
         _tb.addWidget(self._style_btn)
-        # favorite-style pin buttons live between the selector and the divider
+        # Favorite-style pins removed per the user (the ○/◆ toolbar buttons). Keep an empty,
+        # hidden _fav_bar + empty _fav_styles so the resize handler / _rebuild_fav_bar
+        # references stay valid; nothing ever populates or shows it now.
         self._fav_bar = QtWidgets.QWidget(self._top_bar)
         _fav_lay = QtWidgets.QHBoxLayout(self._fav_bar)
         _fav_lay.setContentsMargins(0, 0, 0, 0)
         _fav_lay.setSpacing(0)
+        self._fav_bar.hide()
         _tb.addWidget(self._fav_bar)
         self._fav_styles: list[str] = []
-        self._load_style_favorites()
         self._ohlc_divider = _divider()   # toggled with the OHLC legend on narrow charts
         _tb.addWidget(self._ohlc_divider)
 
