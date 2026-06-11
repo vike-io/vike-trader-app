@@ -20,12 +20,15 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
 from .http import http_get_json
+from .store import DB_DEFAULT, open_db as _open_calendar_db
 
 FINNHUB_EARNINGS = "https://finnhub.io/api/v1/calendar/earnings?from={frm}&to={to}&token={key}"
 FINNHUB_IPO = "https://finnhub.io/api/v1/calendar/ipo?from={frm}&to={to}&token={key}"
@@ -36,7 +39,11 @@ FMP_DIVIDENDS = ("https://financialmodelingprep.com/stable/dividends-calendar"
 NASDAQ_IPO = "https://api.nasdaq.com/api/ipo/calendar?date={month}"
 # api.nasdaq.com rejects the default urllib agent; mimic a browser like the dividend feed does not need to.
 _NASDAQ_HEADERS = {"User-Agent": "Mozilla/5.0 (vike-trader-app)", "Accept": "application/json"}
+# LEGACY profile-cache file — read only by the calendar store's one-time sweep into the DB.
 _PROFILE_CACHE = "storage/calendar/profiles.json"
+# Where the cache lives now: the ``calendar_profiles`` table in the app DB (state-in-DB rule).
+# Module-level so tests can repoint it at a tmp file (alongside _PROFILE_CACHE).
+_PROFILE_DB = DB_DEFAULT
 
 
 def _num(v):
@@ -243,23 +250,36 @@ class FmpDividends:
 
 
 # ---- company profiles (name + market cap) for earnings enrichment -------------------
+def _profiles_db() -> sqlite3.Connection:
+    """Per-call connection to ``calendar_profiles`` in the app DB.
+
+    Opening through the calendar store sweeps the legacy ``storage/calendar/`` JSON dir
+    (including ``profiles.json``) into the DB first, so a pre-DB cache is honored on first
+    use. This runs on the equity tab's fetch worker thread — safe because every call opens
+    and closes its own connection (no connection object ever crosses a thread) and the
+    busy timeout covers a concurrent writer.
+    """
+    return _open_calendar_db(_PROFILE_DB, Path(_PROFILE_CACHE).parent)
+
+
 def _load_profiles() -> dict:
-    p = Path(_PROFILE_CACHE)
-    if p.exists():
-        try:
-            return json.loads(p.read_text("utf-8"))
-        except (json.JSONDecodeError, OSError):
-            return {}
-    return {}
+    try:
+        with closing(_profiles_db()) as conn:
+            rows = conn.execute("SELECT symbol, payload FROM calendar_profiles").fetchall()
+        return {sym: json.loads(payload) for sym, payload in rows}
+    except (sqlite3.Error, json.JSONDecodeError, TypeError, OSError):
+        return {}
 
 
 def _save_profiles(data: dict) -> None:
-    p = Path(_PROFILE_CACHE)
     try:
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data), encoding="utf-8")
-    except OSError:
-        pass
+        rows = [(sym, json.dumps(prof)) for sym, prof in data.items()]
+        with closing(_profiles_db()) as conn, conn:
+            conn.executemany(
+                "INSERT OR REPLACE INTO calendar_profiles (symbol, payload) VALUES (?, ?)",
+                rows)
+    except (sqlite3.Error, OSError):
+        pass  # cache write is best-effort, like the JSON store this replaces
 
 
 def profiles(symbols, *, key: str | None = None, http=http_get_json,
