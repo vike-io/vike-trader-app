@@ -55,6 +55,7 @@ htmlcov/
 tmp/*
 !tmp/.gitkeep
 .playwright-mcp/
+.firecrawl/
 _shot_*.png
 _pytest.txt
 _val.txt
