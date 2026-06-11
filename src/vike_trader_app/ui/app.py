@@ -628,13 +628,15 @@ class MainWindow(QtWidgets.QMainWindow):
                                       ("options", "Options", 8), ("studio", "Studio", 1)):
             self.topbar.add_launcher(icon_name, label,
                                      lambda i=idx: self.tabs.setCurrentIndex(i))
-        top_tb = QtWidgets.QToolBar("Command bar")
-        top_tb.setObjectName("commandbar")
-        top_tb.setMovable(False)
-        top_tb.setFloatable(False)
-        top_tb.setStyleSheet(f"QToolBar{{border:none;background:{theme.BG};padding:0;}}")
-        top_tb.addWidget(self.topbar)
-        self.addToolBar(QtCore.Qt.TopToolBarArea, top_tb)
+        # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
+        # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
+        # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
+        # VIKE_NATIVE_TITLEBAR=1 (and non-Windows) falls back to this same bar below the OS one.
+        from .titlebar import TitleBar, install_frameless
+
+        self.titlebar = TitleBar(self, self.topbar)
+        self.setMenuWidget(self.titlebar)   # spans the full width above toolbars/docks
+        self._frameless_filter = install_frameless(self, self.titlebar)
 
         # Full-width separator hairlines (under the title bar + above the status bar), painted
         # in device-pixel space by one overlay so they match exactly at any display scaling.
