@@ -40,3 +40,12 @@ A record would be replaced by the tunnel CNAME.
 ## Files
 - `app.py` — hardened FastAPI receiver (token check, 8 KB cap, JSONL sink).
 - `deploy.sh` — the sudo deploy (same copy staged on prod1).
+
+## Client contract (also: running your own receiver)
+`app.py` doubles as the reference for self-hosting (it replaced the old
+`examples/telemetry_receiver.py` duplicate). The desktop app's LOCAL MCP server POSTs one JSON
+event per tool call to `VIKE_TELEMETRY_URL` (see `ai/telemetry.py`) -- **only when the user
+has opted in** via the Connect dialog. When `VIKE_TELEMETRY_TOKEN` is set on the receiver,
+clients must send the matching `X-Vike-Token` header (the Connect flow injects it). Events are
+anonymous/pseudonymous by construction: the client id is a random per-install UUID and strategy
+source is never sent (only a sha + length).
