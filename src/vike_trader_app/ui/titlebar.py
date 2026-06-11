@@ -1,6 +1,6 @@
 """Custom window title bar (S6 of the shell-UX plan) — the MultiCharts-16 title row.
 
-ONE bar IN the title area (not below it): [brand] [≡ menu] … [symbol-or-command box] …
+ONE bar IN the title area (not below it): [brand] [File/View/Go… menu bar] … [symbol-or-command box] …
 [window-type launchers] [─][□][✕]. The window goes frameless on Windows and this bar becomes
 the caption; a native event filter (``FramelessWindowFilter``) keeps EVERYTHING the OS gives a
 normal window — drag-to-move, Aero Snap, edge resize, double-click maximize — by answering
@@ -24,7 +24,7 @@ from PySide6 import QtCore, QtWidgets
 
 from . import icons, theme
 
-TITLEBAR_H = 40
+TITLEBAR_H = 32   # VS-Code-slim caption row (was 40)
 _RESIZE_BORDER = 8
 
 # Win32 hit-test codes
@@ -46,20 +46,23 @@ class TitleBar(QtWidgets.QWidget):
         super().__init__(parent)
         self._win = win
         self.setFixedHeight(TITLEBAR_H)
-        self.setStyleSheet(f"background:{theme.BG};")
+        # Selector-SCOPED: a bare "background:…" cascades into every descendant — including
+        # the QMenuBar's popup QMenus, which would override the unified dropdown surface.
+        self.setObjectName("titlebar")
+        self.setStyleSheet(f"#titlebar{{background:{theme.BG};}}")
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(8, 0, 0, 0)
         lay.setSpacing(6)
 
         brand = QtWidgets.QLabel()
-        brand.setPixmap(icons.brand_icon(theme.ACCENT, theme.BG).pixmap(22, 22))
-        brand.setFixedSize(26, 26)
+        brand.setPixmap(icons.brand_icon(theme.ACCENT, theme.BG).pixmap(18, 18))
+        brand.setFixedSize(22, 22)
         brand.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         lay.addWidget(brand)
 
-        # the existing CommandBar (≡ + box + launchers) IS the body of the title bar
-        commandbar.setFixedHeight(TITLEBAR_H - 4)
-        commandbar.setStyleSheet("background:transparent;")
+        # the existing CommandBar (menu bar + box + launchers) IS the body of the title bar
+        commandbar.setFixedHeight(TITLEBAR_H - 2)
+        commandbar.setStyleSheet("CommandBar{background:transparent;}")  # scoped — see above
         lay.addWidget(commandbar, 1)
 
         self._win_buttons: list[QtWidgets.QToolButton] = []
@@ -202,7 +205,8 @@ class FramelessWindowFilter(QtCore.QAbstractNativeEventFilter):
             if child is None:
                 return _HTCAPTION
             interactive = isinstance(child, (QtWidgets.QAbstractButton, QtWidgets.QLineEdit,
-                                             QtWidgets.QToolBar, QtWidgets.QMenu))
+                                             QtWidgets.QToolBar, QtWidgets.QMenu,
+                                             QtWidgets.QMenuBar))
             return _HTCLIENT if interactive else _HTCAPTION
         return _HTCLIENT
 

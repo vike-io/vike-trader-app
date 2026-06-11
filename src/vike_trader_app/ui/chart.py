@@ -1806,22 +1806,8 @@ class PriceChart(pg.PlotWidget):
             _style_menu.addSection(_sec)
             for _st in _styles:
                 _style_menu.addAction(style_icon(_st), _st, lambda s=_st: self.set_style(s))
-        # TradingView-style favorites: star the ACTIVE style to pin it as a one-click icon
-        # button right of the selector (persisted across runs); star again to unpin.
-        _style_menu.addSeparator()
-        self._fav_action = _style_menu.addAction("★ Favorite this style",
-                                                 self._toggle_style_favorite)
-        _style_menu.aboutToShow.connect(self._refresh_fav_action)
         self._style_btn.setMenu(_style_menu)
         _tb.addWidget(self._style_btn)
-        # favorite-style pin buttons live between the selector and the divider
-        self._fav_bar = QtWidgets.QWidget(self._top_bar)
-        _fav_lay = QtWidgets.QHBoxLayout(self._fav_bar)
-        _fav_lay.setContentsMargins(0, 0, 0, 0)
-        _fav_lay.setSpacing(0)
-        _tb.addWidget(self._fav_bar)
-        self._fav_styles: list[str] = []
-        self._load_style_favorites()
         self._ohlc_divider = _divider()   # toggled with the OHLC legend on narrow charts
         _tb.addWidget(self._ohlc_divider)
 
@@ -2825,50 +2811,6 @@ class PriceChart(pg.PlotWidget):
         self.show_upto(len(self._bars) - 1 if self._bars else 0)
         self._align_panes()
 
-    # --- style favorites (TradingView's starred chart types) ---------------------------------
-
-    @staticmethod
-    def _settings() -> QtCore.QSettings:
-        return QtCore.QSettings("vike-trader", "vike-trader-app")
-
-    def _load_style_favorites(self) -> None:
-        raw = self._settings().value("chart/style_favorites", []) or []
-        if isinstance(raw, str):           # QSettings may flatten a 1-element list to a string
-            raw = [raw]
-        self._fav_styles = [s for s in raw if s in chart_styles.ALL_STYLES]
-        self._rebuild_fav_bar()
-
-    def _toggle_style_favorite(self) -> None:
-        """Star/unstar the ACTIVE style (menu entry at the bottom of the style dropdown)."""
-        if self._style in self._fav_styles:
-            self._fav_styles.remove(self._style)
-        else:
-            self._fav_styles.append(self._style)
-        self._settings().setValue("chart/style_favorites", self._fav_styles)
-        self._rebuild_fav_bar()
-
-    def _refresh_fav_action(self) -> None:
-        starred = self._style in self._fav_styles
-        self._fav_action.setText(("★ Unfavorite" if starred else "★ Favorite")
-                                 + f" {self._style}")
-
-    def _rebuild_fav_bar(self) -> None:
-        lay = self._fav_bar.layout()
-        while lay.count():
-            item = lay.takeAt(0)
-            if item.widget() is not None:
-                item.widget().deleteLater()
-        for st in self._fav_styles:
-            b = QtWidgets.QPushButton(self._fav_bar)
-            b.setIcon(style_icon(st))
-            b.setIconSize(QtCore.QSize(18, 18))
-            b.setToolTip(st)
-            b.setCursor(QtCore.Qt.PointingHandCursor)
-            b.setStyleSheet(self._style_btn.styleSheet())
-            b.clicked.connect(lambda _c=False, s=st: self.set_style(s))
-            lay.addWidget(b)
-        self._fav_bar.setVisible(bool(self._fav_styles) and self._top_bar.width() >= 620)
-
     def _display_bars(self):
         """The bar list the price pane renders: transformed for HA/Renko/…, raw otherwise."""
         return self._display if self._display is not None else self._bars
@@ -3372,7 +3314,6 @@ class PriceChart(pg.PlotWidget):
         self._ohlc_label.setVisible(show_ohlc)
         self._ohlc_divider.setVisible(show_ohlc)
         self._ind_btn.setText("ƒx Indicators" if w >= 360 else "ƒx")
-        self._fav_bar.setVisible(w >= 620 and bool(self._fav_styles))
 
     def _position_nav_bar(self):
         """Dock the zoom/scroll/reset bar at the bottom-left of the LOWEST chart pane, just above

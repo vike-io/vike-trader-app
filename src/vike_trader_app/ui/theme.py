@@ -205,7 +205,7 @@ def stylesheet() -> str:
     }}
     QTabBar::tab:hover {{ color: {TEXT2}; }}
     QTabBar::tab:selected {{
-        color: {TEXT}; border-bottom: 2px solid {ACCENT};
+        color: {TEXT}; border-bottom: 1px solid {ACCENT};
     }}
 
     /* buttons — SURFACE card separated by its border (GitHub-style).
@@ -261,7 +261,9 @@ def stylesheet() -> str:
         background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_POPUP}px;
         padding: 4px;
     }}
-    QMenu::item {{ padding: {DROPDOWN_ITEM_PAD}; border-radius: {RADIUS_SM}px; color: {TEXT2}; }}
+    /* VS-Code menu typography: Segoe UI 13px regular (measured against VS Code dropdowns) */
+    QMenu::item {{ padding: {DROPDOWN_ITEM_PAD}; border-radius: {RADIUS_SM}px; color: {TEXT2};
+        font-size: 13px; font-weight: 400; }}
     QMenu::item:selected {{ background: {HOVER}; color: {TEXT}; }}
     QMenu::separator {{ height: 1px; background: {BORDER}; margin: 4px 8px; }}
 

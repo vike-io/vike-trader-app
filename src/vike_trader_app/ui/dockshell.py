@@ -13,9 +13,51 @@ from __future__ import annotations
 import math
 
 import PySide6QtAds as QtAds
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
+
+
+def _glyph_icon(glyph: str, color: str, px: int = 14) -> QtGui.QIcon:
+    """A tiny QIcon painted from a unicode glyph — for the MC title-bar min/max buttons that
+    ADS renders from QActions (it uses the action's icon, not its text)."""
+    pm = QtGui.QPixmap(16, 16)
+    pm.fill(QtCore.Qt.transparent)
+    p = QtGui.QPainter(pm)
+    p.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
+    f = p.font()
+    f.setPixelSize(px)
+    p.setFont(f)
+    p.setPen(QtGui.QColor(color))
+    p.drawText(pm.rect(), QtCore.Qt.AlignCenter, glyph)
+    p.end()
+    return QtGui.QIcon(pm)
+
+
+def apply_mc_titlebar(dock: "QtAds.CDockWidget", icon: "QtGui.QIcon | None" = None) -> None:
+    """Give a dock the MultiCharts-style title bar: a window ICON + minimize / maximize buttons
+    sitting alongside ADS's built-in detach (undock) and close buttons.
+
+    minimize → collapse the panel to an auto-hide edge tab (the docked-panel equivalent of MC's
+    minimize); maximize → float the panel and native-maximize it, toggling back to docked. Both
+    are added as title-bar actions, which ADS shows only while this dock is the current tab."""
+    if icon is not None:
+        dock.setIcon(icon)
+
+    mn = QtGui.QAction(_glyph_icon("─", theme.TEXT2), "Minimize (collapse to edge)", dock)
+    mn.triggered.connect(dock.toggleAutoHide)
+
+    mx = QtGui.QAction(_glyph_icon("□", theme.TEXT2, 12), "Maximize / restore", dock)
+
+    def _toggle_max() -> None:
+        if not dock.isFloating():
+            dock.setFloating()
+        c = dock.floatingDockContainer()
+        if c is not None:
+            c.showNormal() if c.isMaximized() else c.showMaximized()
+
+    mx.triggered.connect(_toggle_max)
+    dock.setTitleBarActions([mn, mx])
 
 
 def configure_dock_manager_defaults() -> None:
@@ -36,11 +78,17 @@ def configure_dock_manager_defaults() -> None:
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.EqualSplitOnInsertion, True)
     # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
+    # floating containers are REAL OS windows: native title bar (min/max/close, snap, the
+    # taskbar treats them as windows) instead of ADS's custom strip — unified window chrome
+    QtAds.CDockManager.setConfigFlag(
+        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, True)
 
 
-def make_panel_dock(manager, title: str, widget, area) -> "QtAds.CDockWidget":
+def make_panel_dock(manager, title: str, widget, area,
+                    icon: "QtGui.QIcon | None" = None) -> "QtAds.CDockWidget":
     """An unlockable side-panel dock: closable, draggable, floatable (tear-out to a second
-    monitor) and pinnable (the auto-hide edge tabs — AmiBroker-style collapsed panels)."""
+    monitor) and pinnable (the auto-hide edge tabs — AmiBroker-style collapsed panels), with the
+    MC-style title bar (icon + detach/min/max/close)."""
     dock = QtAds.CDockWidget(manager, title)
     dock.setObjectName(f"panel:{title}")
     dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
@@ -48,6 +96,7 @@ def make_panel_dock(manager, title: str, widget, area) -> "QtAds.CDockWidget":
         QtAds.CDockWidget.DefaultDockWidgetFeatures | QtAds.CDockWidget.DockWidgetPinnable
     )
     manager.addDockWidget(area, dock)
+    apply_mc_titlebar(dock, icon)
     return dock
 
 
@@ -80,12 +129,30 @@ class SpaceDeck(QtCore.QObject):
         self._documents: list[QtAds.CDockWidget] = []
 
     def _resolve_area(self):
-        """The spaces' current CDockAreaWidget. CDockManager.restoreState() can REBUILD the
-        layout into a fresh area object, so the cached reference is re-resolved from the first
-        space dock on every access — and the currentChanged forward re-wired when it moved."""
+        """The spaces' CENTRAL CDockAreaWidget. CDockManager.restoreState() can REBUILD the
+        layout into a fresh area object, so the cached reference is re-resolved on every access
+        — and the currentChanged forward re-wired when it moved.
+
+        Resolve from the first space dock that is NOT floating/closed: a launcher can pull ANY
+        single space (Chart included) into its own floating window, and keying the central area
+        to _docks[0] would then follow Chart into the float and strand every other space's
+        navigation. Skipping floated/closed docks keeps the central area = where the still-
+        docked spaces live; fall back to the cached area only if every space is floating."""
         if not self._docks:
             return self._area
-        area = self._docks[0].dockAreaWidget()
+        area = None
+        for dock in self._docks:
+            try:
+                if dock.isFloating() or dock.isClosed():
+                    continue
+            except RuntimeError:   # dock mid-teardown during restore — skip
+                continue
+            a = dock.dockAreaWidget()
+            if a is not None:
+                area = a
+                break
+        if area is None:
+            return self._area
         if area is not None and area is not self._area:
             if self._area is not None:
                 try:
@@ -271,6 +338,36 @@ class SpaceDeck(QtCore.QObject):
         """The CDockWidget wrapping space ``index`` (Phase 2+ uses this directly)."""
         return self._docks[index]
 
+    # MC16-style "window-type launcher": a space opens as a floating OS window (native title
+    # bar via FloatingContainerForceNativeTitleBar) over the workspace, like chart windows.
+    _FLOAT_FEATURES = (
+        QtAds.CDockWidget.DockWidgetMovable | QtAds.CDockWidget.DockWidgetFloatable
+        | QtAds.CDockWidget.DockWidgetClosable | QtAds.CDockWidget.DockWidgetFocusable
+    )
+
+    def float_space(self, index: int) -> "QtAds.CDockWidget":
+        """Open space ``index`` as a floating window; if it already floats, focus it.
+        Closing the window just hides the dock — the next launch re-shows it floating."""
+        dock = self._docks[index]
+        if dock.isClosed():
+            dock.toggleView(True)     # re-show (ADS restores its last floating container)
+        if not dock.isFloating():
+            # pinned spaces carry NoDockWidgetFeatures; grant float-capable features so the
+            # floating container is movable/closable like a real window
+            dock.setFeatures(self._FLOAT_FEATURES)
+            dock.setFloating()
+        container = dock.floatingDockContainer()
+        if container is not None:
+            if container.size().width() < 700:       # first float: give it a usable size
+                container.resize(1000, 640)
+            container.raise_()
+            container.activateWindow()
+        dock.setAsCurrentTab()
+        # setFloating() rebuilds the central area's tab bar, which ADS re-shows — reclaim the
+        # spaces strip again (every other mutation point does this; float_space must too).
+        self.hide_space_tabs()
+        return dock
+
     # --- QTabWidget vocabulary ------------------------------------------------------------
 
     def count(self) -> int:
@@ -312,9 +409,22 @@ class SpaceDeck(QtCore.QObject):
         # Target the dock WIDGET, not a raw area index — robust if the area's tab order ever
         # diverges from creation order (a stray foreign tab); also re-resolves the area first.
         self._resolve_area()
-        if 0 <= index < len(self._docks):
-            self._docks[index].setAsCurrentTab()
-            self.hide_space_tabs()   # becoming current re-shows the tab; keep spaces rail-only
+        if not (0 <= index < len(self._docks)):
+            return
+        dock = self._docks[index]
+        # Float-aware nav: a space launched as a floating window isn't in the central area, so
+        # a plain setAsCurrentTab() only re-tabs inside its own float and reads as a dead no-op
+        # to the Go menu / palette / Data→Studio handoff. Raise its window instead (and re-show
+        # if its window was closed) so every navigation surface can reach a floated space.
+        try:
+            floated = dock.isFloating() or dock.isClosed()
+        except RuntimeError:
+            floated = False
+        if floated:
+            self.float_space(index)
+            return
+        dock.setAsCurrentTab()
+        self.hide_space_tabs()   # becoming current re-shows the tab; keep spaces rail-only
 
     def setCurrentWidget(self, widget) -> None:  # noqa: N802
         index = self.indexOf(widget)
@@ -355,7 +465,7 @@ def dock_qss() -> str:
     }}
     ads--CDockWidgetTab QLabel {{ color: {theme.TEXT3}; font-size: 12px; font-weight: 600; }}
     ads--CDockWidgetTab:hover QLabel {{ color: {theme.TEXT2}; }}
-    ads--CDockWidgetTab[activeTab="true"] {{ border-bottom: 2px solid {theme.ACCENT}; }}
+    ads--CDockWidgetTab[activeTab="true"] {{ border-bottom: 1px solid {theme.ACCENT}; }}
     ads--CDockWidgetTab[activeTab="true"] QLabel {{ color: {theme.TEXT}; }}
 
     ads--CDockWidget {{ background: {theme.BG}; border: none; }}

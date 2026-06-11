@@ -59,8 +59,8 @@ def test_classify_garbage_is_none():
 
 def test_topbar_exists_with_menu_and_launchers(app):
     win = MainWindow(session_path=None)
-    assert [a.text() for a in win.topbar.menu_btn.menu().actions()] == \
-        ["File", "View", "Insert", "Format", "Window", "Help"]
+    assert [a.text() for a in win.topbar.menubar.actions()] == \
+        ["File", "Go", "Window", "Help"]
     assert len(win.topbar.launchers.actions()) == 7   # new chart + 6 space launchers
     win.close()
 
@@ -93,8 +93,7 @@ def test_topbar_symbol_routes_to_focused_document(app):
 
 def test_menus_populate_on_show(app):
     win = MainWindow(session_path=None)
-    root = win.topbar.menu_btn.menu()
-    for sub in [a.menu() for a in root.actions()]:
+    for sub in [a.menu() for a in win.topbar.menubar.actions()]:
         sub.aboutToShow.emit()                        # triggers the fill
         assert sub.actions(), sub.title()
     win.close()

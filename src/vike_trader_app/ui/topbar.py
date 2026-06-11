@@ -1,9 +1,10 @@
 """Top command/launcher bar (S2 of the shell-UX plan — the MultiCharts-16 row).
 
-A slim strip above the dock area: hamburger ≡ (main menu), a **symbol-or-command box**
-(MC's Command Line / TradingView's search — type ``ETHUSDT`` to load a symbol, ``5m`` to switch
-interval, anything else fuzzy-runs a palette command), and a right cluster of **window-type
-icon launchers** hosted in a QToolBar (whose built-in ``»`` extension gives overflow for free).
+A slim strip above the dock area: a VS-Code-style **menu bar** (File/View/Go/… — installed via
+``set_menu_bar()``), a **symbol-or-command box** (MC's Command Line / TradingView's search —
+type ``ETHUSDT`` to load a symbol, ``5m`` to switch interval, anything else fuzzy-runs a palette
+command), and a right cluster of **window-type icon launchers** hosted in a QToolBar (whose
+built-in ``»`` extension gives overflow for free).
 
 ``classify()`` is the pure, Qt-free resolver (unit-tested without a QApplication).
 """
@@ -45,7 +46,7 @@ def classify(text: str, command_labels=()) -> tuple[str, str]:
 
 
 class CommandBar(QtWidgets.QWidget):
-    """The strip: ≡ | symbol-or-command box | window-type launchers (with » overflow)."""
+    """The strip: menu bar | symbol-or-command box | window-type launchers (with » overflow)."""
 
     symbolSubmitted = QtCore.Signal(str)
     intervalSubmitted = QtCore.Signal(str)
@@ -54,36 +55,26 @@ class CommandBar(QtWidgets.QWidget):
     def __init__(self, commands_provider, parent=None):
         super().__init__(parent)
         self._commands_provider = commands_provider   # () -> [(label, callback)] (the palette's)
-        self.setFixedHeight(40)
-        self.setStyleSheet(f"background:{theme.BG};")
+        self.setFixedHeight(30)
+        # scoped: a bare "background:…" would cascade into child popups (menus etc.)
+        self.setStyleSheet(f"CommandBar{{background:{theme.BG};}}")
         lay = QtWidgets.QHBoxLayout(self)
-        lay.setContentsMargins(8, 4, 8, 4)
+        lay.setContentsMargins(2, 0, 8, 0)
         lay.setSpacing(8)
+        self._lay = lay
 
-        # hamburger — the main menu attaches via set_menu() (built in menus.py)
-        self.menu_btn = QtWidgets.QToolButton()
-        self.menu_btn.setText("≡")
-        self.menu_btn.setToolTip("Menu")
-        self.menu_btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self.menu_btn.setFixedSize(32, 32)
-        self.menu_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self.menu_btn.setStyleSheet(
-            f"QToolButton{{border:none;background:transparent;color:{theme.TEXT2};"
-            f"font-size:20px;border-radius:6px;}}"
-            f"QToolButton:hover{{background:{theme.PANEL};color:{theme.TEXT};}}"
-            f"QToolButton::menu-indicator{{image:none;width:0;}}"
-        )
-        lay.addWidget(self.menu_btn)
+        # the menu bar (File/View/Go/…) docks at index 0 via set_menu_bar() — built in menus.py
+        self.menubar: QtWidgets.QMenuBar | None = None
 
         # the symbol-or-command box (centered, capped width — the MC16/Tradovate look)
         self.box = QtWidgets.QLineEdit()
         self.box.setPlaceholderText("Type symbol or command…   ( / )")
         self.box.setClearButtonEnabled(True)
-        self.box.setFixedHeight(30)
+        self.box.setFixedHeight(24)
         self.box.setMaximumWidth(520)
         self.box.setStyleSheet(
             f"QLineEdit{{background:{theme.RAISE};border:1px solid {theme.BORDER};"
-            f"border-radius:8px;padding:0 10px;color:{theme.TEXT};font-size:13px;}}"
+            f"border-radius:6px;padding:0 10px;color:{theme.TEXT};font-size:12px;}}"
             f"QLineEdit:focus{{border-color:{theme.ACCENT};}}"
         )
         self.box.returnPressed.connect(self._submit)
@@ -97,7 +88,7 @@ class CommandBar(QtWidgets.QWidget):
 
         # window-type launchers — QToolBar gives the » extension (overflow) for free
         self.launchers = QtWidgets.QToolBar()
-        self.launchers.setIconSize(QtCore.QSize(22, 22))
+        self.launchers.setIconSize(QtCore.QSize(18, 18))
         self.launchers.setMovable(False)
         self.launchers.setStyleSheet(
             f"QToolBar{{border:none;background:transparent;spacing:2px;}}"
@@ -111,8 +102,11 @@ class CommandBar(QtWidgets.QWidget):
 
     # --- behaviour ----------------------------------------------------------------------
 
-    def set_menu(self, menu: QtWidgets.QMenu) -> None:
-        self.menu_btn.setMenu(menu)
+    def set_menu_bar(self, bar: QtWidgets.QMenuBar) -> None:
+        """Dock the File/View/Go/… menu bar at the left end of the strip (VS Code layout)."""
+        self.menubar = bar
+        bar.setParent(self)
+        self._lay.insertWidget(0, bar, 0, QtCore.Qt.AlignVCenter)
 
     def add_launcher(self, icon_name: str, tooltip: str, callback) -> QtGui.QAction:
         act = QtGui.QAction(

@@ -620,45 +620,35 @@ class MainWindow(QtWidgets.QMainWindow):
         self._options_started = False
         self._wire_options()
 
-        # The left icon rail stays the PRIMARY navigation (TradeLocker-style); the ADS tab row
-        # above the spaces is the document strip (the Vanguard/VS-Code pattern) and will carry
-        # the multi-instance chart documents in Phase 2. ADS makes the LAST-added dock current,
-        # so snap back to the Chart space before any currentChanged consumers are wired.
+        # ADS makes the LAST-added dock current, so snap back to the Chart space before any
+        # currentChanged consumers are wired.
         self.tabs.setCurrentIndex(0)
-        # The rail lives in the LEFT TOOLBAR AREA so it sits flush against the window's left
-        # edge — *outside* (left of) the Markets/Strategy dock area, like a VS Code / TradeLocker
-        # activity bar. Inside the central widget it rendered to the right of the left docks,
-        # which put Markets at x=0 and the rail at x=146 — the bug we're fixing.
-        rail_tb = QtWidgets.QToolBar("Navigation")
-        rail_tb.setObjectName("railbar")
-        rail_tb.setMovable(False)
-        rail_tb.setFloatable(False)
-        rail_tb.setContentsMargins(0, 0, 0, 0)
-        # No frame line: the default toolbar border drew a stray horizontal rule under the
-        # title bar. Match the rail to the vike canvas so it reads as one flush sidebar.
-        rail_tb.setStyleSheet(f"QToolBar{{border:none;background:{theme.BG};}}")
-        rail_tb.addWidget(self._build_icon_rail())
-        self.addToolBar(QtCore.Qt.LeftToolBarArea, rail_tb)
+        # The left icon rail is RETIRED as visible chrome — the VS-Code-style menu bar in the
+        # title bar (View/Go menus) took over navigation + panel toggles. _build_icon_rail()
+        # still runs because its buttons/groups remain the single source of truth for space
+        # sync (_rail_group), panel-toggle state (_panel_btns: session save/restore, Ctrl
+        # shortcuts, palette commands) — the widget is just never mounted or shown.
+        self._rail_state = self._build_icon_rail()
         self.tabs.currentChanged.connect(self._on_space_changed)
-        self._rail_tb = rail_tb  # anchor for the rail separator line (see _place_rules)
 
-        # --- top command/launcher bar (S2) + hamburger menu (S3) — MC16-style row ----------
-        from .menus import build_main_menu
+        # --- top command/launcher bar (S2) + VS-Code-style menu bar (S3) — MC16-style row ----
+        from .menus import build_menu_bar
         from .topbar import CommandBar
 
         self.topbar = CommandBar(self._commands)
-        self.topbar.set_menu(build_main_menu(self))
+        self.topbar.set_menu_bar(build_menu_bar(self))
         self.topbar.symbolSubmitted.connect(self._on_topbar_symbol)
         self.topbar.intervalSubmitted.connect(self._on_topbar_interval)
         self.topbar.commandSubmitted.connect(self._run_command_label)
-        # window-type launchers (the MC16 top-right cluster): new chart window + each space
+        # window-type launchers (the MC16 top-right cluster): every icon opens a WINDOW —
+        # a new chart window, or the space as a floating native-title-bar window (like charts)
         self.topbar.add_launcher("chart", "New chart window (Ctrl+N)",
                                  lambda: self._open_in_new_chart(self._symbol))
         for icon_name, label, idx in (("screener", "Screener", 2), ("data", "Data", 5),
                                       ("news", "News", 6), ("calendar", "Calendar", 7),
                                       ("options", "Options", 8), ("studio", "Studio", 1)):
-            self.topbar.add_launcher(icon_name, label,
-                                     lambda i=idx: self.tabs.setCurrentIndex(i))
+            self.topbar.add_launcher(icon_name, f"{label} window",
+                                     lambda i=idx: self._float_space(i))
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -829,6 +819,8 @@ class MainWindow(QtWidgets.QMainWindow):
                         activated=self._copy_active_document)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+Shift+V"), self,
                         activated=self._paste_document)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+F4"), self,
+                        activated=self._close_active_window)
 
         # "Layout" — named workspaces menu (open / save / delete), rebuilt on each open so the
         # saved list is always current. Sits with the action buttons, not the exclusive rail.
@@ -874,6 +866,33 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self.tabs.widget(index) is getattr(self, "news", None):
             self.news.start_feed(self._symbol)
+
+    def _float_space(self, index: int) -> None:
+        """Launcher click: open the space as a floating native window over the workspace
+        (the chart-window experience for every space). Lazy services that normally start on
+        a space *switch* must start here too — floating doesn't change the center tab."""
+        self.tabs.float_space(index)
+        widget = self.tabs.widget(index)
+        if widget is getattr(self, "news", None):
+            self.news.start_feed(self._symbol)
+        elif widget is getattr(self, "options", None):
+            self._maybe_start_options()
+        # Stop the lazy service when the floating window is CLOSED — floating never changes the
+        # center tab, so _on_space_changed's stop branch never fires for it (the Options 15s
+        # poller would otherwise leak until the next center-space switch). Wire each dock once.
+        if not hasattr(self, "_floated_close_wired"):
+            self._floated_close_wired: set[int] = set()
+        if index not in self._floated_close_wired:
+            self._floated_close_wired.add(index)
+            self.tabs.dock(index).closed.connect(
+                lambda i=index: self._on_floated_space_closed(i))
+
+    def _on_floated_space_closed(self, index: int) -> None:
+        """A space's floating window was closed — tear down its lazy service (start/stop
+        symmetry the center-tab navigation already provides)."""
+        widget = self.tabs.widget(index)
+        if widget is getattr(self, "options", None) and getattr(self, "_options_started", False):
+            self._options_svc.stop_polling()
 
     def _build_statusbar(self) -> QtWidgets.QStatusBar:
         sb = QtWidgets.QStatusBar()
@@ -1149,10 +1168,12 @@ class MainWindow(QtWidgets.QMainWindow):
         wl_header.addWidget(self._watchlist_dot)
         mb.addLayout(wl_header)
         mb.addWidget(self.watchlist)
+        _ico = lambda n: icons.rail_icon(n, theme.TEXT2, theme.ACCENT, theme.TEXT)
         market = make_panel_dock(self.dock_manager, "MARKET WATCH", market_body,
-                                 QtAds.RightDockWidgetArea)
+                                 QtAds.RightDockWidgetArea, icon=_ico("market"))
         trades = make_panel_dock(self.dock_manager, "TRADES & POSITIONS",
-                                 self._build_trades_panel(), QtAds.BottomDockWidgetArea)
+                                 self._build_trades_panel(), QtAds.BottomDockWidgetArea,
+                                 icon=_ico("trades"))
 
         # Dashboard info tiles (Phase 6): four small render-only docks fed from existing
         # main-thread state (watchlist quotes / current result / calendar cache / news feed).
@@ -1163,13 +1184,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._ecal_tile = CalendarTile()
         self._headlines_tile = NewsTile()
         movers = make_panel_dock(self.dock_manager, "TOP MOVERS", self._movers_tile,
-                                 QtAds.RightDockWidgetArea)
+                                 QtAds.RightDockWidgetArea, icon=_ico("market"))
         pnl = make_panel_dock(self.dock_manager, "P&L", self._pnl_tile,
-                              QtAds.RightDockWidgetArea)
+                              QtAds.RightDockWidgetArea, icon=_ico("scale"))
         ecal = make_panel_dock(self.dock_manager, "TODAY'S CALENDAR", self._ecal_tile,
-                               QtAds.RightDockWidgetArea)
+                               QtAds.RightDockWidgetArea, icon=_ico("calendar"))
         headlines = make_panel_dock(self.dock_manager, "NEWS HEADLINES", self._headlines_tile,
-                                    QtAds.RightDockWidgetArea)
+                                    QtAds.RightDockWidgetArea, icon=_ico("news"))
         # News tile mirrors the News space's merged feed; opening the tile starts the feed
         # (idempotent) unless the headless kill-switch forbids network.
         self.news.itemsUpdated.connect(
@@ -2283,6 +2304,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._active_frame.toggle_detach()
             return
         self.statusBar().showMessage("Focus a chart window to detach it.", 3000)
+
+    def _close_active_window(self) -> None:
+        """MC's Close Window (Ctrl+F4): close the active chart window."""
+        if self._active_frame is not None and self._active_frame in self._chart_frames:
+            self._active_frame.close_window()
+            return
+        self.statusBar().showMessage("Focus a chart window to close it.", 3000)
 
     def _activate_document(self, doc) -> None:
         frame = self._frame_of(doc)
