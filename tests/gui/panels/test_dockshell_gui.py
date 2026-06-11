@@ -24,6 +24,18 @@ def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+def test_window_chrome_config_flags(app):
+    """S1 per-window chrome (MC16 parity): the manager runs with focus highlighting,
+    middle-click tab close, double-click detach, equal splits, and widget-titled floats."""
+    win = MainWindow(session_path=None)  # construction runs configure_dock_manager_defaults
+    M = QtAds.CDockManager
+    for flag in (M.FocusHighlighting, M.MiddleMouseButtonClosesTab,
+                 M.DoubleClickUndocksWidget, M.EqualSplitOnInsertion,
+                 M.FloatingContainerHasWidgetTitle, M.DockAreaHideDisabledButtons):
+        assert M.testConfigFlag(flag), flag
+    win.close()
+
+
 def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
     """AmiBroker-style live layout (regression for the docking core): open 4 chart documents,
     tile them 2x2 (distinct dock areas, not tabbed), auto-hide Market watch to the LEFT edge and

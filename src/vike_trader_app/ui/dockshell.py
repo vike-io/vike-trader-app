@@ -25,6 +25,17 @@ def configure_dock_manager_defaults() -> None:
     # rendering disabled — keeps the spaces tab row clean
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.DockAreaHideDisabledButtons, True)
     QtAds.CDockManager.setAutoHideConfigFlags(QtAds.CDockManager.DefaultAutoHideConfig)
+    # --- per-window chrome (MultiCharts-16 parity; see the shell-ux research note) ---
+    # the focused dock area is visibly highlighted — MC's colored active title bar
+    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FocusHighlighting, True)
+    # middle-click closes a closable tab (chart documents; no-op on the pinned spaces)
+    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.MiddleMouseButtonClosesTab, True)
+    # double-click a tab detaches it to a floating window (MC's "Detach", one gesture)
+    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.DoubleClickUndocksWidget, True)
+    # splitting an area for a new document divides the space evenly (clean 2x2 tiling)
+    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.EqualSplitOnInsertion, True)
+    # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
+    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
 
 
 def make_panel_dock(manager, title: str, widget, area) -> "QtAds.CDockWidget":
