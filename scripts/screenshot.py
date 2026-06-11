@@ -2,11 +2,13 @@
 
 Run:  uv run python scripts/screenshot.py
 Uses the seeded Parquet if present, else fetches from Binance, else synthetic bars.
-Produces tmp/shot_full.png (whole run) and tmp/shot_mid.png (replay paused mid-way).
+Produces shot_full.png (whole run) and shot_mid.png (replay paused mid-way) in the OS
+temp dir under vike-shots/ — scratch screenshots never live in the repo.
 """
 
 import math
 import os
+import tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -17,7 +19,7 @@ from vike_trader_app.ui.app import MainWindow  # noqa: E402
 from vike_trader_app.ui.dialogs import default_strategy_factory  # noqa: E402
 
 SEED = "storage/parquet/BTCUSDT/1m.parquet"
-OUT_DIR = "tmp"
+OUT_DIR = os.path.join(tempfile.gettempdir(), "vike-shots")
 
 
 def _load_bars():
@@ -61,15 +63,17 @@ def main():
     for _ in range(5):
         app.processEvents()
 
-    win.grab().save(os.path.join(OUT_DIR, "shot_full.png"))
-    print(f"wrote {OUT_DIR}/shot_full.png")
+    out_full = os.path.join(OUT_DIR, "shot_full.png")
+    win.grab().save(out_full)
+    print(f"wrote {out_full}")
 
     win._replay.seek(win._replay.last_index // 2)
     win._render_frame()
     for _ in range(5):
         app.processEvents()
-    win.grab().save(os.path.join(OUT_DIR, "shot_mid.png"))
-    print(f"wrote {OUT_DIR}/shot_mid.png")
+    out_mid = os.path.join(OUT_DIR, "shot_mid.png")
+    win.grab().save(out_mid)
+    print(f"wrote {out_mid}")
 
 
 if __name__ == "__main__":

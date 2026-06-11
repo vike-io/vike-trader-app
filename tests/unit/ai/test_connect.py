@@ -12,12 +12,16 @@ def test_mcp_server_entry_shape(tmp_path):
     assert e["args"] == ["-m", "vike_trader_app.ai.mcp_server"]
     assert e["env"]["VIKE_DATA_ROOT"] == str(tmp_path.resolve())
     assert "VIKE_TELEMETRY" not in e["env"]
+    assert "VIKE_TELEMETRY_DB" not in e["env"]  # nothing telemetry-ish leaks when off
 
 
 def test_mcp_server_entry_telemetry(tmp_path):
     e = connect.mcp_server_entry(str(tmp_path), telemetry=True, telemetry_url="https://x/y")
     assert e["env"]["VIKE_TELEMETRY"] == "1"
     assert e["env"]["VIKE_TELEMETRY_URL"] == "https://x/y"
+    # the MCP server runs with Claude's cwd -> it must get an ABSOLUTE path to this
+    # install's app DB so its usage rows land where the GUI's do
+    assert Path(e["env"]["VIKE_TELEMETRY_DB"]).is_absolute()
 
 
 def test_install_preserves_existing_config(tmp_path):

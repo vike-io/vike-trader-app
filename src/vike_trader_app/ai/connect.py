@@ -66,6 +66,12 @@ def server_env(data_root: str, *, telemetry: bool = False, telemetry_url: str | 
     env = {"VIKE_DATA_ROOT": str(Path(data_root).resolve())}
     if telemetry:
         env["VIKE_TELEMETRY"] = "1"
+        # Absolute DB path: the MCP server runs with Claude's cwd, not this install's root, and
+        # its usage rows must land in THIS install's app DB (telemetry_meta/telemetry_usage —
+        # see ai/telemetry.py), the same file the GUI writes.
+        from .telemetry import db_path
+
+        env["VIKE_TELEMETRY_DB"] = str(db_path().resolve())
         tok = telemetry_token()
         if tok:
             env["VIKE_TELEMETRY_TOKEN"] = tok
