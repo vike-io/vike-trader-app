@@ -359,7 +359,9 @@ def test_navigating_to_a_floated_space_raises_its_window(app):
 
 
 def test_floating_a_space_keeps_the_strip_hidden(app):
-    """float_space must re-hide the spaces tab strip (ADS re-shows it on the tab-bar rebuild)."""
+    """float_space must keep the native space TAB strip hidden (ADS re-shows it on the tab-bar
+    rebuild). The central area's title bar is now the unified chart HEADER — intentionally
+    visible (it replaces the strip), so we assert the tabs stay hidden + the header is present."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
@@ -367,8 +369,10 @@ def test_floating_a_space_keeps_the_strip_hidden(app):
     app.processEvents()
     app.processEvents()                       # the singleShot(0) re-hide
     area = win.tabs._resolve_area()
-    assert area is not None and not area.titleBar().isVisible()
+    assert area is not None
     assert all(not d.tabWidget().isVisible() for d in win.tabs._docks)
+    tb = area.titleBar()
+    assert getattr(tb, "is_chart_header", lambda: False)()   # header, not the raw tab strip
     win.close()
 
 

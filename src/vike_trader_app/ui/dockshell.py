@@ -39,7 +39,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         self._area_w = area
         # Panels self-detect (covers creation AND restoreState recreations); the central
         # spaces area is marked explicitly by SpaceDeck.mark_as_chart_header before this fires.
-        QtCore.QTimer.singleShot(0, self._auto_detect_panel)
+        # Tie the one-shot to `self`: if ADS destroys this title bar before it fires, the timer
+        # is cancelled instead of calling into a dead C++ object (segfault on teardown/fast-close).
+        QtCore.QTimer.singleShot(0, self, self._auto_detect_panel)
 
     def is_chart_header(self) -> bool:
         return self._header is not None
@@ -176,7 +178,8 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             pass
         self.refresh_native_hidden()
         # ADS re-shows the native tab/buttons after its deferred relayout — re-hide next turn
-        QtCore.QTimer.singleShot(0, self.refresh_native_hidden)
+        # (tied to self so a destroyed title bar cancels it rather than crashing)
+        QtCore.QTimer.singleShot(0, self, self.refresh_native_hidden)
         self._sync_panel_title()
         try:
             self._area_w.currentChanged.connect(self._sync_panel_title)
@@ -433,7 +436,7 @@ class SpaceDeck(QtCore.QObject):
         """Ask the MainWindow to re-cap the header width once the layout settles (the header
         was just (re)created by ADS; geometry isn't final until the next event-loop turn)."""
         if self._fit_cb is not None:
-            QtCore.QTimer.singleShot(0, self._fit_cb)
+            QtCore.QTimer.singleShot(0, self, self._fit_cb)   # tied to the deck's lifetime
 
     def set_header_title(self, text: str) -> None:
         self._header_title = text   # remembered so a recreated header re-shows it

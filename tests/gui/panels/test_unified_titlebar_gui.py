@@ -1,7 +1,9 @@
 """Unified title bar (stage 1): the CDockComponentsFactory renders a single-title chart
 header on the central spaces area and the SAME UnifiedTitleBar on side panels.
 
-GUI suite (offscreen Qt) — runs on CI. Per project rule the GUI suite is not run locally.
+GUI suite (offscreen Qt). Uses the full MainWindow (matching the other dock GUI tests) so
+ADS sets up + tears down safely — a bare CDockManager built/destroyed without an event loop
+segfaults on Python 3.14.
 """
 
 import os
@@ -13,29 +15,16 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("PySide6QtAds")
 
-import PySide6QtAds as QtAds  # noqa: E402
 from PySide6 import QtWidgets  # noqa: E402
 
-from vike_trader_app.ui.dockshell import (  # noqa: E402
-    SpaceDeck,
-    VikeComponentsFactory,
-    VikeDockTitleBar,
-    configure_dock_manager_defaults,
-    make_panel_dock,
-)
+from vike_trader_app.ui.app import MainWindow  # noqa: E402
+from vike_trader_app.ui.dockshell import VikeDockTitleBar  # noqa: E402
 from vike_trader_app.ui.unifiedbar import BAR_H, UnifiedTitleBar, bar_button  # noqa: E402
 
 
 @pytest.fixture(scope="module")
 def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-
-
-def _manager(host):
-    configure_dock_manager_defaults()
-    mgr = QtAds.CDockManager(host)
-    mgr.setComponentsFactory(VikeComponentsFactory())  # per-manager install
-    return mgr
 
 
 def test_bar_button_and_unified_bar(app):
@@ -57,36 +46,29 @@ def test_bar_button_and_unified_bar(app):
 
 
 def test_central_area_gets_single_title_chart_header(app):
-    host = QtWidgets.QMainWindow()
-    mgr = _manager(host)
-    deck = SpaceDeck(mgr)
-    for name in ("Chart", "Studio", "Screener"):
-        deck.addTab(QtWidgets.QLabel(name), name)
-    area = deck._resolve_area()
-    tb = area.titleBar()
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    tb = win.tabs._resolve_area().titleBar()
     assert isinstance(tb, VikeDockTitleBar)
-    assert tb.is_chart_header()           # single-title header, NOT a tab strip
+    assert tb.is_chart_header()          # single-title header, NOT a 9-tab strip
     assert not tb._is_panel
-    # live-ticker title flows through the persistent model + the header widget
-    deck.set_header_title("Chart · BTCUSDT · 1m")
-    assert deck._header_title == "Chart · BTCUSDT · 1m"
     assert tb._header is not None
-    # every MC button is present on the header
     assert {"detach", "min", "max", "close"} <= set(tb._header._buttons)
-    host.deleteLater()
+    # the live-ticker title flows through the persistent model + header widget
+    win.tabs.set_header_title("Chart · BTCUSDT · 1m")
+    assert win.tabs._header_title == "Chart · BTCUSDT · 1m"
+    win.close()
 
 
 def test_panel_area_gets_unified_bar(app):
-    host = QtWidgets.QMainWindow()
-    mgr = _manager(host)
-    deck = SpaceDeck(mgr)
-    deck.addTab(QtWidgets.QLabel("Chart"), "Chart")   # central area first
-    dock = make_panel_dock(mgr, "MARKET WATCH", QtWidgets.QLabel("mw"),
-                           QtAds.RightDockWidgetArea)
-    app.processEvents()                                # let the singleShot(0) auto-detect run
-    tb = dock.dockAreaWidget().titleBar()
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()                  # let the panels' singleShot(0) auto-detect run
+    app.processEvents()
+    tb = win._market_dock.dockAreaWidget().titleBar()
     assert isinstance(tb, VikeDockTitleBar)
-    assert tb._is_panel                                # detected the 'panel:' dock
+    assert tb._is_panel                  # detected the 'panel:' dock
     assert tb._header is not None
     assert {"detach", "min", "max", "close"} <= set(tb._header._buttons)
-    host.deleteLater()
+    win.close()
