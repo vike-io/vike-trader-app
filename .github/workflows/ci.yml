@@ -15,7 +15,7 @@ jobs:
     strategy:
       fail-fast: false   # one OS/py failing must NOT cancel the others — we want to SEE which
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [windows-latest]   # macOS/Linux paused per user directive (2026-06-11) — re-add to re-enable
         python: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v6
@@ -47,7 +47,7 @@ jobs:
     strategy:
       fail-fast: false   # a Windows-only native crash must surface, not cancel macOS/Linux —
       matrix:            # running the GUI suite on windows-latest is the ONLY way to catch the
-        os: [ubuntu-latest, windows-latest, macos-latest]  # 0xC0000005 class Linux CI never saw.
+        os: [windows-latest]   # macOS/Linux paused per user directive (2026-06-11) — re-add to re-enable  # 0xC0000005 class Linux CI never saw.
         python: ["3.12", "3.13"]
     env:
       # Headless Qt — no real display on any runner. The UI tests already opt into this platform;
@@ -82,9 +82,9 @@ jobs:
     name: benchmarks (ubuntu · py3.12)
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Records hot-path timings (tests/bench, outside the unit/gui gate) — a baseline for spotting
-    # regressions. Non-gating: a slow run shouldn't block a PR. Trend-alerting (e.g.
-    # benchmark-action/github-action-benchmark) is a documented follow-up that needs a store.
+    # PAUSED per user directive (2026-06-11): don't run benchmarks on every push — flip the
+    # `if:` below back to re-enable. (Records hot-path timings from tests/bench, non-gating.)
+    if: false
     steps:
       - uses: actions/checkout@v6
       - name: Install uv + Python
