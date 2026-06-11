@@ -26,7 +26,7 @@ mcp = ["mcp>=1.2"]
 ai = ["fastembed>=0.3", "rank-bm25>=0.2", "anthropic>=0.40"]
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-timeout>=2", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-timeout>=2", "ruff>=0.6", "pytest-benchmark>=5"]
 
 [project.scripts]
 vike-trader-app = "vike_trader_app.cli.main:app"      # CLI — implemented in Phase 2
