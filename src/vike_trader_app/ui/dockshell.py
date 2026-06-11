@@ -125,12 +125,14 @@ class SpaceDeck(QtCore.QObject):
             dock.topLevelChanged.connect(widget.set_floating)
         dock.setAsCurrentTab()
         self._resolve_area()
+        self.hide_space_tabs()   # adding a document rebuilds the tab bar -> re-shows space tabs
         return dock
 
     def _on_document_closed(self, dock, widget) -> None:
         if dock in self._documents:
             self._documents.remove(dock)
         self.documentClosed.emit(widget)
+        self.hide_space_tabs()   # closing one rebuilds the tab bar too
 
     def documents(self) -> list:
         """Live chart-document widgets, in tab order (for session save)."""
@@ -237,7 +239,25 @@ class SpaceDeck(QtCore.QObject):
         self._mgr.addDockWidget(QtAds.CenterDockWidgetArea, dock, target)
         self._docks.append(dock)
         self._resolve_area()
+        # The left rail is the space switcher — center tabs for SPACES would just duplicate it,
+        # so they're hidden: the strip shows ONLY chart documents (their drag handle for
+        # tiling/tear-out). MC-style separation: window tabs ≠ workspace switching.
+        dock.tabWidget().setVisible(False)
         return dock
+
+    def hide_space_tabs(self) -> None:
+        """Re-hide the space tabs. ADS re-shows them whenever the area's tab bar is rebuilt
+        (restoreState, document add/close, current-tab changes), so this runs at every mutation
+        point — immediately AND once more on the next event-loop turn to catch ADS's deferred
+        relayouts."""
+        def _hide():
+            for dock in self._docks:
+                try:
+                    dock.tabWidget().setVisible(False)
+                except RuntimeError:   # a tab widget mid-rebuild during restore — skip
+                    pass
+        _hide()
+        QtCore.QTimer.singleShot(0, _hide)
 
     def dock(self, index: int) -> "QtAds.CDockWidget":
         """The CDockWidget wrapping space ``index`` (Phase 2+ uses this directly)."""
@@ -286,6 +306,7 @@ class SpaceDeck(QtCore.QObject):
         self._resolve_area()
         if 0 <= index < len(self._docks):
             self._docks[index].setAsCurrentTab()
+            self.hide_space_tabs()   # becoming current re-shows the tab; keep spaces rail-only
 
     def setCurrentWidget(self, widget) -> None:  # noqa: N802
         index = self.indexOf(widget)

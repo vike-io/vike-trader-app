@@ -96,21 +96,28 @@ def workspace_from_agent_spec(spec: dict, *, default_interval: str = "1h") -> Se
 class WorkspaceStore:
     """User workspaces persisted to a JSON file, layered over the built-in defaults."""
 
+    _MAX_RECENTS = 8
+
     def __init__(self, path: str | os.PathLike | None):
         # path=None -> in-memory only (no persistence): used when the session file is disabled
         # (the offscreen test suite) so a workspace save never touches real storage.
         self._path = Path(path) if path else None
-        self._user: dict[str, dict] = self._read()
+        self._user: dict[str, dict] = {}
+        self._recents: list[str] = []
+        self._read()
 
-    def _read(self) -> dict:
+    def _read(self) -> None:
         if self._path is None:
-            return {}
+            return
         try:
             raw = json.loads(self._path.read_text(encoding="utf-8"))
             ws = raw.get("workspaces", {})
-            return {k: v for k, v in ws.items() if isinstance(k, str) and isinstance(v, dict)}
+            self._user = {k: v for k, v in ws.items()
+                          if isinstance(k, str) and isinstance(v, dict)}
+            rec = raw.get("recents", [])
+            self._recents = [n for n in rec if isinstance(n, str)][: self._MAX_RECENTS]
         except Exception:  # noqa: BLE001 - missing / corrupt -> just the built-ins
-            return {}
+            self._user, self._recents = {}, []
 
     def _write(self) -> bool:
         if self._path is None:
@@ -118,12 +125,27 @@ class WorkspaceStore:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._path.with_name(self._path.name + ".tmp")   # matches session.save_session
-            tmp.write_text(json.dumps({"version": _WS_VERSION, "workspaces": self._user},
+            tmp.write_text(json.dumps({"version": _WS_VERSION, "workspaces": self._user,
+                                       "recents": self._recents},
                                       indent=2), encoding="utf-8")
             os.replace(tmp, self._path)
             return True
         except Exception:  # noqa: BLE001 - a failed write must never crash the shell
             return False
+
+    # --- recents (S4: the File > Recent Workspaces MRU) --------------------------------------
+
+    def recents(self) -> list[str]:
+        """Most-recently-opened workspace names (existing ones only, newest first)."""
+        known = set(self.names())
+        return [n for n in self._recents if n in known]
+
+    def record_recent(self, name: str) -> None:
+        if name in self._recents:
+            self._recents.remove(name)
+        self._recents.insert(0, name)
+        del self._recents[self._MAX_RECENTS:]
+        self._write()
 
     def names(self) -> list[str]:
         """Built-ins first (in fixed order), then any extra user workspaces in insertion order."""
