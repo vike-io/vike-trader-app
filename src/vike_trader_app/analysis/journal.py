@@ -1,17 +1,24 @@
-"""A lightweight, file-backed trading journal — diary entries persisted as JSON.
+"""A lightweight trading journal — diary entries persisted in the app DB.
 
-Self-contained on purpose (NOT ``data/store.py``): a list of ``JournalEntry`` saved to a JSON
-file. The Journal tab records notes against strategies/symbols + their headline metrics. All I/O
-goes through ``path`` so it's trivially testable with a temp file.
+The Journal tab records notes against strategies/symbols + their headline metrics. Why a
+database: per the project rule, runtime state lives in the app's SQLite store, never in loose
+JSON files. The entry list is one ``journal`` row — the whole list as a single JSON payload,
+read and written whole exactly like the legacy file (the single-row-blob judgment; see
+:mod:`vike_trader_app.data.state_db`). The legacy ``storage/journal.json`` is swept in once,
+then deleted; an unreadable legacy file is left in place — journal entries are user-authored.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from ..data import state_db
+
+#: Where the legacy JSON store lived — read only by the one-time sweep.
 DEFAULT_PATH = "storage/journal.json"
+
+_TABLE = "journal"
 
 
 @dataclass
@@ -28,26 +35,31 @@ class JournalEntry:
 
 
 class Journal:
-    """A JSON-file-backed list of ``JournalEntry``; every mutation persists immediately."""
+    """The journal-entry list in the app DB (table ``journal``); every mutation persists
+    immediately.
 
-    def __init__(self, path: str = DEFAULT_PATH):
+    ``path`` is the *legacy* JSON file — read only by the one-time sweep (kept as the first
+    positional argument so existing callers don't change); the DB lives beside it
+    (``<dir>/db/vike_trader_app.sqlite`` — the shared app DB for the default path). ``db_path``
+    is the explicit test seam. Public API is unchanged from the JSON-file store.
+    """
+
+    def __init__(self, path: str = DEFAULT_PATH, *, db_path: str | Path | None = None):
         self.path = Path(path)
+        self.db = Path(db_path) if db_path is not None else state_db.db_for_file(path)
         self._entries: list[JournalEntry] = []
         self.load()
 
     def load(self) -> None:
-        self._entries = []
-        if self.path.exists():
-            try:
-                data = json.loads(self.path.read_text(encoding="utf-8"))
-                self._entries = [JournalEntry(**d) for d in data]
-            except (json.JSONDecodeError, TypeError, OSError):
-                self._entries = []  # corrupt/old file -> start clean rather than crash
+        payload = state_db.load_blob(_TABLE, self.path, db_path=self.db)
+        try:
+            self._entries = [JournalEntry(**d) for d in payload or []]
+        except TypeError:
+            self._entries = []  # malformed legacy payload -> start clean rather than crash
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps([asdict(e) for e in self._entries], indent=2),
-                             encoding="utf-8")
+        state_db.save_blob(_TABLE, self.path, [asdict(e) for e in self._entries],
+                           db_path=self.db)
 
     def add(self, entry: JournalEntry) -> None:
         self._entries.append(entry)

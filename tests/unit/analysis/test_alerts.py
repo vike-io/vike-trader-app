@@ -18,6 +18,23 @@ def test_corrupt_file_starts_clean(tmp_path):
     p = tmp_path / "alerts.json"
     p.write_text("garbage", encoding="utf-8")
     assert AlertStore(str(p)).rules() == []
+    assert p.exists()   # user-authored: an unreadable legacy file is left in place
+
+
+def test_legacy_json_migrates_into_db_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy alerts.json is imported into the app DB, then removed."""
+    import json
+
+    legacy = tmp_path / "alerts.json"
+    legacy.write_text(json.dumps([
+        {"symbol": "EURUSD", "rule": "RSI(14) 30/70", "direction": "long", "note": "n"},
+    ]), encoding="utf-8")
+    s = AlertStore(str(legacy))
+    assert [r.symbol for r in s.rules()] == ["EURUSD"]   # data survived the migration
+    assert not legacy.exists()                           # legacy file deleted
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()   # ... into the app DB
+    # the DB is the source of truth from now on: a fresh store still sees the rule
+    assert [r.note for r in AlertStore(str(legacy)).rules()] == ["n"]
 
 
 def test_evaluate_matches_direction():

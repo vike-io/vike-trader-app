@@ -74,3 +74,20 @@ def test_settings_with_base_url_roundtrip(tmp_path):
     okx = next(p for p in back.providers if p.name == "okx")
     assert okx.settings["base_url"] == "https://proxy.example.com"
     assert okx.settings["pause"] == 0.2
+
+
+# --- state-in-DB migration ---
+
+def test_legacy_providers_json_migrates_into_db_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy providers.json is imported into the app DB, then removed."""
+    import json
+
+    legacy = tmp_path / "providers.json"
+    legacy.write_text(json.dumps([
+        {"name": "kraken", "enabled": True, "settings": {"pause": 0.5}},
+    ]), encoding="utf-8")
+    back = pc.load_providers_config(str(tmp_path))
+    assert back.providers[0].name == "kraken"                 # order survived
+    assert back.providers[0].settings == {"pause": 0.5}       # settings survived
+    assert not legacy.exists()                                # legacy file deleted
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()   # ... into the app DB

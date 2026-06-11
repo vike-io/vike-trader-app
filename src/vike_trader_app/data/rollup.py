@@ -18,10 +18,16 @@ a pinned interval shares the ``<symbol>/<interval>/`` series with any native fet
 """
 
 import json
+import logging
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from ..core.timeframe import parse_timeframe, resample
+from . import state_db
 from .parquet_source import append_series, read_series, read_series_since
+
+log = logging.getLogger(__name__)
 
 
 def rollup_refresh_start(watermark_ts: int | None, target_ms: int) -> int:
@@ -55,20 +61,76 @@ def refresh_rollup(root: str, symbol: str, interval: str, base: str = "1m") -> i
 
 
 # --- pin registry: which (symbol, interval) series to keep precomputed ---------------------
+#
+# Pins live in the app DB (table ``rollup_pins``, one row per pinned pair — the natural key),
+# per the state-in-DB rule (see ``state_db``). ``path`` everywhere below is the *legacy* JSON
+# file (``storage/pins.json``) — read only by the one-time sweep, and kept as the first
+# positional argument so existing callers (``ui.app``, ``ui.datamanager``) don't change. The DB
+# lives beside it (``<dir>/db/vike_trader_app.sqlite``); ``db_path`` is the explicit test seam.
 
-def load_pins(path: str) -> list[list[str]]:
-    """Load pinned ``[symbol, interval]`` pairs from ``path`` (``[]`` if the file is absent)."""
-    p = Path(path)
-    if not p.exists():
+_PINS_TABLE = "rollup_pins"
+_PINS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS rollup_pins (
+    symbol   TEXT NOT NULL,
+    interval TEXT NOT NULL,
+    PRIMARY KEY (symbol, interval)
+);
+"""
+
+
+def _open_pins(path: str, db_path=None) -> sqlite3.Connection:
+    """Open the app DB with the pin table ensured, sweeping the legacy JSON file in once."""
+    db = Path(db_path) if db_path is not None else state_db.db_for_file(path)
+    conn = state_db.connect(db, _PINS_SCHEMA)
+    state_db.sweep_once(conn, db, _PINS_TABLE, path,
+                        lambda c: _sweep_legacy_pins(c, Path(path)))
+    return conn
+
+
+def _sweep_legacy_pins(conn: sqlite3.Connection, legacy: Path) -> None:
+    """Import legacy pin pairs (DB wins via INSERT OR IGNORE), then delete the file.
+
+    An unreadable file is left in place (and logged) — pins are user state, not a cache.
+    """
+    if not legacy.is_file():
+        return
+    try:
+        pairs = [(str(s), str(i))
+                 for s, i in json.loads(legacy.read_text(encoding="utf-8"))]
+    except (json.JSONDecodeError, TypeError, ValueError, OSError):
+        log.warning("rollup-pins migration: leaving unreadable %s in place", legacy)
+        return
+    if pairs:
+        with conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO rollup_pins (symbol, interval) VALUES (?, ?)", pairs)
+    try:
+        legacy.unlink()
+    except OSError as exc:
+        log.warning("rollup-pins migration: could not delete %s (%s)", legacy, exc)
+        return
+    log.info("rollup-pins migration: moved %d pin(s) from %s into the app DB",
+             len(pairs), legacy)
+
+
+def load_pins(path: str, *, db_path=None) -> list[list[str]]:
+    """Pinned ``[symbol, interval]`` pairs from the app DB (``[]`` when none are stored)."""
+    try:
+        with closing(_open_pins(path, db_path)) as conn:
+            rows = conn.execute(
+                "SELECT symbol, interval FROM rollup_pins ORDER BY symbol, interval"
+            ).fetchall()
+        return [[s, i] for s, i in rows]
+    except sqlite3.Error:
         return []
-    return [list(pair) for pair in json.loads(p.read_text())]
 
 
-def save_pins(path: str, pins: list) -> None:
-    """Persist pinned ``(symbol, interval)`` pairs to ``path`` (deduped, sorted)."""
+def save_pins(path: str, pins: list, *, db_path=None) -> None:
+    """Persist pinned ``(symbol, interval)`` pairs to the app DB (deduped, sorted)."""
     uniq = sorted({(s, i) for s, i in pins})
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps([[s, i] for s, i in uniq]))
+    with closing(_open_pins(path, db_path)) as conn, conn:  # one tx: rewrite the (tiny) set
+        conn.execute("DELETE FROM rollup_pins")
+        conn.executemany("INSERT INTO rollup_pins (symbol, interval) VALUES (?, ?)", uniq)
 
 
 def refresh_pinned(root: str, pins: list) -> dict:

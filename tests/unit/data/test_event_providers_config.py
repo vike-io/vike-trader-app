@@ -120,3 +120,24 @@ def test_enabled_event_providers_returns_set_matching_enabled_in_order(tmp_path)
     result = enabled_event_providers(root)
     expected = set(cfg.enabled_in_order())
     assert result == expected
+
+
+# --- state-in-DB migration ---
+
+def test_legacy_event_providers_json_migrates_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy event_providers.json is imported into the app DB, then removed."""
+    root = str(tmp_path)
+    legacy = event_providers_path(root)
+    legacy.write_text(json.dumps([{"name": "FRED", "enabled": False}]), encoding="utf-8")
+    enabled = enabled_event_providers(root)
+    assert enabled is not None and "FRED" not in enabled   # the saved flag survived
+    assert not legacy.exists()                             # legacy file deleted
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()   # ... into the app DB
+
+
+def test_save_persists_to_app_db_not_json(tmp_path):
+    """State-in-DB rule: save writes the app DB under <root>/db, never a loose JSON file."""
+    root = str(tmp_path)
+    save_event_providers_config(EventProvidersConfig.default(), root)
+    assert not event_providers_path(root).exists()
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()

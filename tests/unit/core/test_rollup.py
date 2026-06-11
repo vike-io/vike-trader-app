@@ -107,6 +107,28 @@ def test_load_pins_missing_file_is_empty(tmp_path):
     assert load_pins(str(tmp_path / "nope.json")) == []
 
 
+def test_pins_save_does_not_write_json_file(tmp_path):
+    """State-in-DB rule: pins persist in the app DB beside the legacy path, not as JSON."""
+    from vike_trader_app.data.rollup import save_pins
+
+    path = tmp_path / "pins.json"
+    save_pins(str(path), [("X", "1h")])
+    assert not path.exists()
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()
+
+
+def test_legacy_pins_json_migrates_into_db_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy pins.json is imported into the app DB, then removed."""
+    import json
+
+    from vike_trader_app.data.rollup import load_pins
+
+    legacy = tmp_path / "pins.json"
+    legacy.write_text(json.dumps([["Y", "1d"], ["X", "1h"]]), encoding="utf-8")
+    assert load_pins(str(legacy)) == [["X", "1h"], ["Y", "1d"]]   # data survived (sorted)
+    assert not legacy.exists()                                    # legacy file deleted
+
+
 def test_refresh_pinned_materialises_each_pin(tmp_path):
     from vike_trader_app.data.rollup import refresh_pinned
 

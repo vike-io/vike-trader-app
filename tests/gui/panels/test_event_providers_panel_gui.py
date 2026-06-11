@@ -40,7 +40,7 @@ def test_panel_all_checked_by_default(app, tmp_path):
 
 
 def test_panel_unchecking_persists_to_file(app, tmp_path):
-    """Unchecking a provider immediately persists to event_providers.json."""
+    """Unchecking a provider immediately persists — to the app DB, never a loose JSON file."""
     root = str(tmp_path)
     panel = EventProvidersPanel(root=root, parent=None)
 
@@ -48,9 +48,9 @@ def test_panel_unchecking_persists_to_file(app, tmp_path):
     target = "FRED"
     panel.set_enabled(target, False)
 
-    # File should now exist and contain FRED as disabled
-    path = event_providers_path(root)
-    assert path.exists(), "event_providers.json was not created"
+    # State lands in <root>/db/vike_trader_app.sqlite (state-in-DB rule); no legacy JSON
+    assert not event_providers_path(root).exists()
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()
 
     cfg = load_event_providers_config(root)
     entry = next((p for p in cfg.providers if p.name == target), None)

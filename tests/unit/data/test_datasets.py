@@ -147,3 +147,40 @@ def test_benchmark_empty_string_roundtrips(tmp_path):
     ds.save_dataset(d, str(tmp_path))
     back = ds.load_dataset("NoBench", str(tmp_path))
     assert back is not None and back.benchmark == ""
+
+
+# --- state-in-DB migration ---
+
+def test_save_persists_to_app_db_not_json(tmp_path):
+    """State-in-DB rule: save writes the app DB under <root>/db, never a legacy JSON file."""
+    ds.save_dataset(DataSet("DbOnly", ["X"]), str(tmp_path))
+    assert not ds.dataset_path(str(tmp_path), "DbOnly").exists()
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()
+
+
+def test_legacy_dataset_files_migrate_into_db_then_dir_removed(tmp_path):
+    """One-time sweep: <root>/datasets/*.json are imported into the app DB, then deleted."""
+    import json
+
+    legacy_dir = ds.datasets_dir(str(tmp_path))
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "my-crypto.json").write_text(json.dumps(
+        {"name": "My Crypto", "symbols": ["BTCUSDT"], "provider": "bybit", "interval": "5m"}),
+        encoding="utf-8")
+    (legacy_dir / "fx.json").write_text(json.dumps(
+        {"name": "FX", "symbols": ["EURUSD"], "provider": "dukascopy", "interval": "1h"}),
+        encoding="utf-8")
+    assert ds.list_datasets(str(tmp_path)) == ["FX", "My Crypto"]   # data survived
+    back = ds.load_dataset("My Crypto", str(tmp_path))
+    assert back is not None and back.provider == "bybit" and back.symbols == ["BTCUSDT"]
+    assert not legacy_dir.exists()                                  # files AND empty dir gone
+
+
+def test_legacy_unreadable_dataset_file_left_in_place(tmp_path):
+    """A corrupt user-authored DataSet file is skipped (kept for hand recovery), not dropped."""
+    legacy_dir = ds.datasets_dir(str(tmp_path))
+    legacy_dir.mkdir(parents=True)
+    bad = legacy_dir / "broken.json"
+    bad.write_text("not json {{{", encoding="utf-8")
+    assert ds.list_datasets(str(tmp_path)) == []
+    assert bad.exists()   # left in place; the dir survives because it isn't empty

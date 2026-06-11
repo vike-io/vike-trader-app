@@ -30,6 +30,21 @@ def test_corrupt_file_starts_clean(tmp_path):
     path = tmp_path / "journal.json"
     path.write_text("not json {{{", encoding="utf-8")
     assert Journal(str(path)).entries() == []
+    assert path.exists()   # user-authored: an unreadable legacy file is left in place
+
+
+def test_legacy_json_migrates_into_db_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy journal.json is imported into the app DB, then removed."""
+    import json
+
+    legacy = tmp_path / "journal.json"
+    legacy.write_text(json.dumps([
+        {"ts": 1000, "title": "Old note", "symbol": "EURUSD"},
+    ]), encoding="utf-8")
+    j = Journal(str(legacy))
+    assert [e.title for e in j.entries()] == ["Old note"]   # data survived the migration
+    assert not legacy.exists()                              # legacy file deleted
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()   # ... into the app DB
 
 
 def test_remove_disambiguates_same_ts_title(tmp_path):

@@ -8,10 +8,11 @@ the top. No look-ahead — rules read only the trailing window.
 
 from __future__ import annotations
 
-import json
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
+
+from ..data import state_db
 
 _ORDER = {"long": 0, "short": 1, "neutral": 2}
 
@@ -203,32 +204,40 @@ def composite_from_dict(d: dict) -> CompositeRule:
     )
 
 
-class CompositeStore:
-    """JSON-file-backed list of CompositeRules; loading registers each into the live registry."""
+_COMPOSITES_TABLE = "composites"
 
-    def __init__(self, path: str = "storage/composites.json"):
+
+class CompositeStore:
+    """The CompositeRule list in the app DB (table ``composites``); loading registers each into
+    the live registry.
+
+    The list is one row — the whole list as a single JSON payload, read and written whole
+    exactly like the legacy file (see :mod:`vike_trader_app.data.state_db`). ``path`` is the
+    *legacy* JSON file — read only by the one-time sweep (kept as the first positional argument
+    so existing callers don't change); the DB lives beside it. ``db_path`` is the explicit test
+    seam. Public API is unchanged from the JSON-file store.
+    """
+
+    def __init__(self, path: str = "storage/composites.json", *,
+                 db_path: str | Path | None = None):
         self.path = Path(path)
+        self.db = Path(db_path) if db_path is not None else state_db.db_for_file(path)
         self._rules: list[CompositeRule] = []
         self.load()
 
     def load(self) -> list[CompositeRule]:
-        self._rules = []
-        if self.path.exists():
-            try:
-                self._rules = [composite_from_dict(d)
-                               for d in json.loads(self.path.read_text(encoding="utf-8"))]
-            except (json.JSONDecodeError, TypeError, KeyError, OSError):
-                self._rules = []
+        payload = state_db.load_blob(_COMPOSITES_TABLE, self.path, db_path=self.db)
+        try:
+            self._rules = [composite_from_dict(d) for d in payload or []]
+        except (TypeError, KeyError):
+            self._rules = []  # malformed legacy payload -> start clean (as before)
         for r in self._rules:
             register_composite(r)
         return list(self._rules)
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(
-            json.dumps([composite_to_dict(r) for r in self._rules], indent=2),
-            encoding="utf-8",
-        )
+        state_db.save_blob(_COMPOSITES_TABLE, self.path,
+                           [composite_to_dict(r) for r in self._rules], db_path=self.db)
 
     def add(self, rule: CompositeRule) -> None:
         self._rules.append(rule)
