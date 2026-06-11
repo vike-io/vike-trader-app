@@ -2137,27 +2137,32 @@ class MainWindow(QtWidgets.QMainWindow):
 
 def _install_qt_log_filter():
     """Silence known-benign Qt warnings (missing bundled fonts dir, platform size-hint
-    notice, and the font-fallback point-size notice it triggers) while letting every other
-    Qt message through to stderr.
+    notice, and the font-fallback point-size notice it triggers) while routing every other
+    Qt message through the ``vike.qt`` logger (so it lands in the rotating file log too).
 
     'QFont::setPointSize: Point size <= 0 (-1)' is a downstream symptom of the same missing-font
     fallback ('Cannot find font directory'): when a requested family isn't installed, Qt resolves
     a substitute whose point size is unset (-1) and warns while keeping the valid size. No
     functional impact — text still renders via the fallback family."""
-    import sys
+    import logging
 
     _benign = ("Cannot find font directory", "propagateSizeHints",
                "QFont::setPointSize: Point size", "QFont::setPixelSize: Pixel size")
+    qt_log = logging.getLogger("vike.qt")
+    # QtMsgType: Debug=0, Warning=1, Critical=2, Fatal=3, Info=4
+    _levels = {0: logging.DEBUG, 1: logging.WARNING, 2: logging.ERROR,
+               3: logging.CRITICAL, 4: logging.INFO}
 
     def handler(mode, ctx, msg):  # noqa: ANN001
         if any(s in msg for s in _benign):
             return
-        sys.stderr.write(msg + "\n")
+        qt_log.log(_levels.get(int(mode), logging.WARNING), "%s", msg)
 
     QtCore.qInstallMessageHandler(handler)
 
 
 def main():
+    import logging
     import sys
 
     try:  # honor .env so API keys / options-backend config are picked up (python-dotenv is a core dep)
@@ -2167,6 +2172,10 @@ def main():
     except Exception:  # noqa: BLE001 - missing .env / dotenv must never block launch
         pass
 
+    from ..logging_setup import configure_logging
+
+    log_path = configure_logging()  # rotating file (logs/) + console; Qt filter feeds it below
+    logging.getLogger("vike.app").info("starting vike-trader-app (log file: %s)", log_path)
     _install_qt_log_filter()
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(theme.stylesheet())
