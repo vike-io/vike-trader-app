@@ -256,6 +256,14 @@ class SpaceDeck(QtCore.QObject):
                     dock.tabWidget().setVisible(False)
                 except RuntimeError:   # a tab widget mid-rebuild during restore — skip
                     pass
+            # S7: chart windows FLOAT over the workspace (chartwin.py) instead of tabbing
+            # here, so the spaces area's title-bar strip is empty chrome — reclaim the row.
+            area = self._resolve_area()
+            if area is not None:
+                try:
+                    area.titleBar().setVisible(False)
+                except (RuntimeError, AttributeError):
+                    pass
         _hide()
         QtCore.QTimer.singleShot(0, _hide)
 

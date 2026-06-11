@@ -102,18 +102,16 @@ class ChartDocument(QtWidgets.QWidget):
         self.link_group = 0
         self.interval_link_group = None      # None = follow the symbol link (back-compat default)
         self._bus = None
-        header = QtWidgets.QHBoxLayout()
-        header.setContentsMargins(2, 0, 2, 0)
-        header.addStretch(1)
+        # The dots live IN the chart's top toolbar (MultiCharts puts link colours in the chart's
+        # status line) — NOT a separate header row (user-rejected: "why another row").
         self._link_dot = LinkDot(0, label="Symbol")
         self._link_dot.groupChanged.connect(self._set_link_group)
-        header.addWidget(self._link_dot)
+        self.chart.add_toolbar_widget(self._link_dot)
         self._ivl_dot = LinkDot(-1, label="Interval", glyph=("◇", "◆"), follow=True)
         self._ivl_dot.groupChanged.connect(self._set_interval_link_group)
-        header.addWidget(self._ivl_dot)
-        # Keep-on-top pin (MultiCharts "stick window"): float-only chrome — appears when the
-        # document is torn out to its own window (SpaceDeck forwards dock.topLevelChanged to
-        # set_floating) and pins that window above all others.
+        self.chart.add_toolbar_widget(self._ivl_dot)
+        # Keep-on-top pin (MultiCharts "stick window"): float-only chrome. NOT in a layout here —
+        # the chart-window TITLE BAR adopts it (chartwin.ChartWindowFrame), MC's placement.
         self._pin_btn = QtWidgets.QToolButton()
         self._pin_btn.setCheckable(True)
         self._pin_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -127,8 +125,6 @@ class ChartDocument(QtWidgets.QWidget):
         )
         self._pin_btn.setVisible(False)
         self._pin_btn.toggled.connect(self._toggle_on_top)
-        header.addWidget(self._pin_btn)
-        outer.addLayout(header)
         outer.addWidget(card)
 
         self.chart.intervalChosen.connect(lambda iv: self.load(interval=iv))
@@ -229,13 +225,13 @@ class ChartDocument(QtWidgets.QWidget):
             self._pin_btn.setChecked(False)   # the floating container is gone; reset the state
 
     def _toggle_on_top(self, on: bool) -> None:
-        """Pin/unpin this document's floating window above all others (MultiCharts 'stick').
-        Native z-order only — see ``_set_topmost`` for why Qt window flags are off-limits."""
-        import PySide6QtAds as QtAds  # local: chartdoc stays importable without ADS at test time
-
+        """Pin/unpin this document's DETACHED window above all others (MultiCharts 'stick').
+        Native z-order only — see ``_set_topmost`` for why Qt window flags are off-limits.
+        The window must be a real top-level (an S7 detached ChartWindowFrame — or any future
+        float), not the main window itself."""
         w = self.window()
-        if not isinstance(w, QtAds.CFloatingDockContainer):
-            if on:                            # not floating (or already re-docked) -> no-op
+        if w is None or not w.isWindow() or isinstance(w, QtWidgets.QMainWindow):
+            if on:                            # attached (or already re-attached) -> refuse
                 self._pin_btn.setChecked(False)
             return
         _set_topmost(int(w.winId()), on)

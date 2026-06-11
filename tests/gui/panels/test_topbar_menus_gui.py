@@ -100,7 +100,9 @@ def test_menus_populate_on_show(app):
     win.close()
 
 
-def test_space_tabs_hidden_documents_visible(app):
+def test_space_tabs_and_strip_hidden_windows_float(app):
+    """S7: no tab strip at all — space tabs hidden AND the area title bar reclaimed; charts
+    float as windows over the workspace instead of tabbing."""
     win = MainWindow(session_path=None)
     win.show()
     QtWidgets.QApplication.processEvents()
@@ -108,7 +110,10 @@ def test_space_tabs_hidden_documents_visible(app):
     QtWidgets.QApplication.processEvents()
     QtWidgets.QApplication.processEvents()            # the singleShot(0) re-hide
     assert all(not d.tabWidget().isVisible() for d in win.tabs._docks)
-    assert win.tabs._documents[0].tabWidget().isVisible()
+    area = win.tabs._resolve_area()
+    assert not area.titleBar().isVisible()            # the whole strip row is gone
+    assert len(win._chart_frames) == 1
+    assert win._chart_frames[0].isVisible()
     win.close()
 
 
@@ -134,8 +139,8 @@ def test_copy_paste_window_roundtrip(app):
     payload = json.loads(QtWidgets.QApplication.clipboard().text())["vike_window"]
     assert payload["symbol"] == "SOLUSDT" and payload["interval"] == "4h"
     win._paste_document()
-    assert win.tabs.document_count() == 2
-    pasted = win.tabs.documents()[-1]
+    assert len(win._chart_frames) == 2
+    pasted = win._doc_widgets[-1]
     assert (pasted.symbol, pasted.interval, pasted.link_group) == ("SOLUSDT", "4h", 2)
     win.close()
 
@@ -144,5 +149,5 @@ def test_paste_ignores_foreign_clipboard(app):
     win = MainWindow(session_path=None)
     QtWidgets.QApplication.clipboard().setText("not a window")
     win._paste_document()
-    assert win.tabs.document_count() == 0
+    assert win._chart_frames == []
     win.close()

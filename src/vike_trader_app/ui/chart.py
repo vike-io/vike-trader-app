@@ -3355,6 +3355,12 @@ class PriceChart(pg.PlotWidget):
         self._position_nav_bar()
         self._position_price_legend()
 
+    def add_toolbar_widget(self, widget) -> None:
+        """Insert an app-supplied control into the top toolbar just before the OHLC divider —
+        the MultiCharts status-line slot (link dots etc.), NOT a separate row."""
+        lay = self._top_bar.layout()
+        lay.insertWidget(lay.indexOf(self._ohlc_divider), widget, 0, QtCore.Qt.AlignVCenter)
+
     def _relayout_toolbar(self):
         """Collapse the top toolbar as the chart narrows (multi-chart tiling) so labels never
         clip mid-word ('Indicators'->'dic'). Progressive by toolbar width: drop the range

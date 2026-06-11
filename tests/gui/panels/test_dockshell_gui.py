@@ -37,28 +37,28 @@ def test_window_chrome_config_flags(app):
 
 
 def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
-    """AmiBroker-style live layout (regression for the docking core): open 4 chart documents,
-    tile them 2x2 (distinct dock areas, not tabbed), auto-hide Market watch to the LEFT edge and
-    Trades to the BOTTOM edge, then reveal one again."""
+    """MC-style live layout: open 4 floating chart WINDOWS, tile them 2x2 with the arrange
+    verb (geometry math, no docking — the user rejected dock-tiling), auto-hide Market watch
+    to the LEFT edge and Trades to the BOTTOM edge, then reveal one again."""
     bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + i)
             for i in range(30)]
     monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(list(bars)))
 
     win = MainWindow(session_path=None)
-    docs = [win._new_chart_document(s, "1h")
-            for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT")]
-    assert win.tabs.document_count() == 4
-
-    # tile 2x2 by splitting off the first doc's area (they start tabbed in the centre)
-    mgr = win.dock_manager
-    d = [win.tabs._documents[i] for i in range(4)]
-    mgr.addDockWidget(QtAds.RightDockWidgetArea, d[1], d[0].dockAreaWidget())
-    mgr.addDockWidget(QtAds.BottomDockWidgetArea, d[2], d[0].dockAreaWidget())
-    mgr.addDockWidget(QtAds.BottomDockWidgetArea, d[3], d[1].dockAreaWidget())
+    win.show()
     app.processEvents()
-    # the four charts now live in distinct dock areas (a real tiling, not one tab stack)
-    areas = {id(dock.dockAreaWidget()) for dock in d}
-    assert len(areas) == 4
+    for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"):
+        win._new_chart_document(s, "1h")
+    assert len(win._chart_frames) == 4
+
+    win._arrange_chart_windows("grid")
+    app.processEvents()
+    geos = [f.geometry() for f in win._chart_frames]
+    # a real 2x2 tiling: four distinct, pairwise non-overlapping rectangles
+    assert len({(g.x(), g.y(), g.width(), g.height()) for g in geos}) == 4
+    for i in range(4):
+        for j in range(i + 1, 4):
+            assert not geos[i].intersects(geos[j])
 
     # auto-hide the panels to edges (the AmiBroker side-rail)
     win._market_dock.setAutoHide(True, QtAds.SideBarLeft)
@@ -200,67 +200,54 @@ def _open_docs(win, n):
     return [win._new_chart_document(s, "1h") for s in syms[:n]]
 
 
-def test_arrange_grid_tiles_into_distinct_areas(app, _synthetic_load):
-    win = MainWindow(session_path=None)
-    _open_docs(win, 4)
-    assert win.tabs.arrange_documents("grid") == 4
-    app.processEvents()
-    docks = win.tabs._documents
-    areas = {id(d.dockAreaWidget()) for d in docks}
-    assert len(areas) == 4                                   # a real 2x2, not one tab stack
-    # the first doc stays tabbed with the spaces (the shipped #103 layout)
-    assert docks[0].dockAreaWidget() is win.tabs.dock(0).dockAreaWidget()
-    win.close()
-
-
-def test_arrange_tabs_gathers_back_into_one_stack(app, _synthetic_load):
-    win = MainWindow(session_path=None)
-    _open_docs(win, 4)
-    win.tabs.arrange_documents("grid")
-    app.processEvents()
-    assert win.tabs.arrange_documents("tabs") == 4
-    app.processEvents()
-    areas = {id(d.dockAreaWidget()) for d in win.tabs._documents}
-    assert len(areas) == 1                                   # all back in the centre stack
-    assert win.tabs._documents[0].dockAreaWidget() is win.tabs.dock(0).dockAreaWidget()
-    win.close()
-
-
 @pytest.mark.parametrize(("n", "mode"), [(3, "grid"), (3, "columns"), (3, "rows"),
-                                         (5, "grid"), (6, "grid")])
-def test_arrange_modes_split_every_document_apart(app, _synthetic_load, n, mode):
+                                         (4, "grid"), (5, "grid"), (6, "grid")])
+def test_arrange_modes_tile_frames_without_overlap(app, _synthetic_load, n, mode):
+    """S7 arrange = geometry math over the floating frames: every window gets a distinct,
+    pairwise non-overlapping rectangle."""
     win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
     _open_docs(win, n)
-    assert win.tabs.arrange_documents(mode) == n
+    win._arrange_chart_windows(mode)
     app.processEvents()
-    areas = {id(d.dockAreaWidget()) for d in win.tabs._documents}
-    assert len(areas) == n
+    geos = [f.geometry() for f in win._chart_frames]
+    assert len({(g.x(), g.y(), g.width(), g.height()) for g in geos}) == n
+    for i in range(n):
+        for j in range(i + 1, n):
+            assert not geos[i].intersects(geos[j]), (mode, i, j)
     win.close()
 
 
-def test_arrange_pulls_floating_documents_back_in(app, _synthetic_load):
+def test_arrange_cascade_staggers(app, _synthetic_load):
     win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    _open_docs(win, 3)
+    win._arrange_chart_windows("cascade")
+    pos = [(f.x(), f.y()) for f in win._chart_frames]
+    assert pos == sorted(pos)               # marching down-right
+    assert len(set(pos)) == 3
+    win.close()
+
+
+def test_arrange_skips_detached_frames(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
     _open_docs(win, 2)
-    win.tabs._documents[1].setFloating()
+    win._chart_frames[1].toggle_detach()     # now its own OS window
+    assert win._chart_frames[1].is_detached()
+    win._arrange_chart_windows("grid")       # must not touch the detached one, must not raise
     app.processEvents()
-    assert win.tabs._documents[1].isFloating()
-    win.tabs.arrange_documents("grid")
-    app.processEvents()
-    assert not win.tabs._documents[1].isFloating()           # gathered before tiling
+    assert win._chart_frames[1].is_detached()
+    win._chart_frames[1].toggle_detach()     # re-attach for clean teardown
     win.close()
 
 
-def test_arrange_with_no_documents_is_noop(app):
+def test_arrange_with_no_windows_is_noop(app):
     win = MainWindow(session_path=None)
-    assert win.tabs.arrange_documents("grid") == 0
-    win.close()
-
-
-def test_arrange_single_document_keeps_tab(app, _synthetic_load):
-    win = MainWindow(session_path=None)
-    _open_docs(win, 1)
-    assert win.tabs.arrange_documents("grid") == 1
-    assert win.tabs._documents[0].dockAreaWidget() is win.tabs.dock(0).dockAreaWidget()
+    win._arrange_chart_windows("grid")       # no frames — must not raise
     win.close()
 
 
@@ -268,50 +255,31 @@ def test_palette_has_arrange_commands(app):
     win = MainWindow(session_path=None)
     labels = [label for label, _cb in win._commands()]
     for want in ("Arrange charts: tile grid", "Arrange charts: side by side",
-                 "Arrange charts: stacked", "Arrange charts: gather as tabs"):
+                 "Arrange charts: stacked", "Arrange charts: cascade"):
         assert want in labels
     win.close()
 
 
-def test_pin_appears_on_tearout_and_sets_stays_on_top(app, _synthetic_load, monkeypatch):
-    """Pin chrome + native z-order seam. The actual TOPMOST call is Win32 (SetWindowPos) —
-    Qt window flags are off-limits (flag changes re-create the native window, which corrupts
-    the ADS floating container and can close a DeleteOnClose document) — so the offscreen
-    test asserts through the recorded ``_set_topmost`` seam."""
+def test_pin_appears_on_detach_and_sets_stays_on_top(app, _synthetic_load, monkeypatch):
+    """Pin chrome (in the chart window's TITLE BAR now) + native z-order seam: pin shows when
+    the frame is detached to its own OS window, drives ``_set_topmost``, and resets on attach."""
     calls = []
     monkeypatch.setattr(chartdoc, "_set_topmost",
                         lambda wid, on: calls.append((int(wid), on)) or True)
     win = MainWindow(session_path=None)
     doc = _open_docs(win, 1)[0]
-    assert doc._pin_btn.isHidden()                           # docked: no pin
-    win.tabs._documents[0].setFloating()
+    frame = win._chart_frames[0]
+    assert doc._pin_btn.isHidden()                           # attached: no pin
+    frame.toggle_detach()
     app.processEvents()
-    assert not doc._pin_btn.isHidden()                       # torn out: pin shown
-    doc._pin_btn.setChecked(True)                            # pin it
-    assert [on for _w, on in calls] == [True]
-    doc._pin_btn.setChecked(False)                           # unpin
-    assert [on for _w, on in calls] == [True, False]
-    # the document survived the pin round-trip (regression: flag-based pinning killed it)
-    app.processEvents()
-    assert win.tabs.document_count() == 1 and doc.symbol == "BTCUSDT"
-    win.close()
-
-
-def test_pin_noops_while_docked_and_resets_on_redock(app, _synthetic_load, monkeypatch):
-    calls = []
-    monkeypatch.setattr(chartdoc, "_set_topmost",
-                        lambda wid, on: calls.append((int(wid), on)) or True)
-    win = MainWindow(session_path=None)
-    doc = _open_docs(win, 1)[0]
-    doc._pin_btn.setChecked(True)                            # docked: must refuse + uncheck
-    assert not doc._pin_btn.isChecked()
-    assert calls == []                                       # no native call while docked
-    # tear out, pin, then gather back in -> pin hides and resets
-    win.tabs._documents[0].setFloating()
-    app.processEvents()
+    assert not doc._pin_btn.isHidden()                       # detached: pin shown
     doc._pin_btn.setChecked(True)
     assert [on for _w, on in calls] == [True]
-    win.tabs.arrange_documents("tabs")
+    doc._pin_btn.setChecked(False)
+    assert [on for _w, on in calls] == [True, False]
+    app.processEvents()
+    assert len(win._chart_frames) == 1 and doc.symbol == "BTCUSDT"
+    frame.toggle_detach()                                    # re-attach -> pin hides + resets
     app.processEvents()
     assert doc._pin_btn.isHidden() and not doc._pin_btn.isChecked()
     win.close()
