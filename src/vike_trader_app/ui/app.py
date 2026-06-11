@@ -34,6 +34,7 @@ import PySide6QtAds as QtAds
 from . import icons, theme
 from .bots_panel import BotsPanel
 from .chart import PriceChart
+from .chartdoc import ChartDocument, LiveHub
 from .datamanager import DataManagerTab
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .dockshell import SpaceDeck, configure_dock_manager_defaults, dock_qss, make_panel_dock
@@ -228,8 +229,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history = self.bots.history     # alias: existing code calls self.history.update_runs
         self.store = Store(str(Path(_DB_PATH)))
         self.watchlist.symbolChosen.connect(self._load_symbol)
+        self.watchlist.openInNewChart.connect(self._open_in_new_chart)
         self.bots.runChosen.connect(self._open_run)
         self.bots.launchRequested.connect(self._launch_bot)
+
+        # multi-instance chart documents (Phase 2): each is a standalone chart with its OWN
+        # symbol/interval, tab-able next to the spaces and tear-out-able to a floating window.
+        # LiveHub keeps the visible ones' live edges ticking with one round-robin fetch worker.
+        self._live_hub = LiveHub(self)
+        self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
+        self._doc_widgets: list[ChartDocument] = []
         # timeframe dropdown on either chart -> reload the current symbol at that interval
         self.price.intervalChosen.connect(self._on_interval_chosen)
         self.studio_price.intervalChosen.connect(self._on_interval_chosen)
@@ -247,6 +256,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_docks()
         self.setStatusBar(self._build_statusbar())
         self.tabs.currentChanged.connect(self._on_tab_changed)
+        self.tabs.documentClosed.connect(self._on_document_closed)
         self._wire_panels_toggle()
 
         self.strategy.show_strategy(self._strategy_factory)
@@ -285,6 +295,16 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._restored_geometry = False
         if not self._restored_geometry:
             self._center_on_screen()
+
+        # Recreate the last session's chart documents BEFORE restoreState, so their dock
+        # objectNames (doc:0, doc:1, …) exist and the layout blob can position/float them 1:1.
+        # They load cache-only here (no startup network storm) and top up when focused.
+        if self._session and self._session.documents:
+            for state in self._session.documents:
+                self._new_chart_document(
+                    state.get("symbol", "BTCUSDT"), state.get("interval", "1h"),
+                    state=state, network=False, make_current=False,
+                )
 
         # Restore the dock layout (panel positions/sizes/pins, splitters). All dock widgets
         # exist by objectName at this point, so restoreState maps 1:1. Guarded as a
@@ -327,6 +347,52 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._session and self._bars:
             apply_indicator_states(self.price, self._session.chart_indicators)
             apply_indicator_states(self.studio_price, self._session.studio_indicators)
+
+    # --- chart documents (multi-instance, tear-out) -----------------------------------------
+    def _new_chart_document(self, symbol: str, interval: str | None = None, *,
+                            state: dict | None = None, network: bool = True,
+                            make_current: bool = True) -> ChartDocument:
+        """Open a new chart document (own symbol/interval) as a tab next to the spaces.
+
+        ``network=False`` loads cache-only (session restore — tops up on focus). ``state``
+        re-attaches saved indicators after the load. Registered with the LiveHub so its live
+        edge ticks while visible.
+        """
+        doc = ChartDocument(symbol, interval or self._interval)
+        object_name = f"doc:{self._doc_seq}"
+        self._doc_seq += 1
+        dock = self.tabs.add_document(doc, doc.title(), object_name)
+        self._doc_widgets.append(doc)
+        self._live_hub.register(doc)
+
+        # Keep the tab caption in sync with the document's symbol/interval. The dock is
+        # DeleteOnClose, so a stale emission after close would call setWindowTitle on a freed
+        # C++ object — guard it (the connection is also dropped in SpaceDeck._on_document_closed).
+        def _sync_title(*_a, dk=dock, d=doc):
+            try:
+                dk.setWindowTitle(d.title())
+            except RuntimeError:  # dock already torn down (closed) — nothing to update
+                pass
+        doc.symbolChanged.connect(_sync_title)
+        doc.load(network=network)
+        if state:
+            doc.apply_state(state)
+        if make_current:
+            dock.setAsCurrentTab()
+        return doc
+
+    def _open_in_new_chart(self, symbol: str) -> None:
+        """Watchlist context menu → open ``symbol`` as a fresh chart document (current TF)."""
+        self._new_chart_document(symbol)
+
+    def _on_document_closed(self, doc) -> None:
+        """A chart-document tab was closed (ADS DeleteOnClose): unregister + drop our ref."""
+        self._live_hub.unregister(doc)
+        if doc in self._doc_widgets:
+            self._doc_widgets.remove(doc)
+        # Drop the now-orphaned content widget deterministically (the dock is DeleteOnClose but
+        # not DeleteContentOnClose, so the ChartDocument would otherwise linger until GC).
+        doc.deleteLater()
 
     def _center_on_screen(self) -> None:
         """Clamp the window to the available screen area and center it."""
@@ -626,6 +692,19 @@ class MainWindow(QtWidgets.QMainWindow):
             b.clicked.connect(lambda _c, idx=i: self.tabs.setCurrentIndex(idx))
             self._rail_group.addButton(b, i)
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
+
+        # "+ New chart" — opens the current symbol as a fresh tear-out chart document (not a
+        # space, so it's an action button, not part of the exclusive rail group). Ctrl+N too.
+        new_chart = QtWidgets.QToolButton()
+        new_chart.setText("＋")
+        new_chart.setToolTip(self._chip_tip("New chart", "Ctrl+N"))
+        new_chart.setFixedSize(46, 46)
+        new_chart.setCursor(QtCore.Qt.PointingHandCursor)
+        new_chart.setStyleSheet(btn_qss)
+        new_chart.clicked.connect(lambda: self._open_in_new_chart(self._symbol))
+        col.addWidget(new_chart, 0, QtCore.Qt.AlignHCenter)
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self,
+                        activated=lambda: self._open_in_new_chart(self._symbol))
         col.addStretch(1)
 
         # PANELS toggles — independent show/hide for the three docks (TradeLocker-style).
@@ -653,6 +732,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_space_changed(self, index: int) -> None:
         """Lazy-start the news feed the first time the News space is opened."""
+        if index < 0:        # a chart document (not a space) became current — nothing to do
+            return
         if self.tabs.widget(index) is getattr(self, "news", None):
             self.news.start_feed(self._symbol)
 
@@ -1069,16 +1150,21 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
     def _on_tab_changed(self, index: int) -> None:
-        """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width."""
-        # Re-entrancy guard: toggling a panel dock here can, in pathological layouts, drive ADS
-        # to re-emit the center area's currentChanged synchronously and re-enter this slot —
-        # an unbounded close/reopen loop (stack overflow). The spaces being a central-widget
-        # area already blocks the known trigger (foreign drops); this is the belt-and-suspenders.
+        """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width.
+
+        ``index`` is -1 when a chart DOCUMENT (not a space) is current — panels hide (a clean
+        chart context, like a non-Chart space) and the title shows the document's symbol.
+        """
+        # Re-entrancy guard: toggling a panel dock here can drive ADS to re-emit the center
+        # area's currentChanged synchronously and re-enter this slot — an unbounded close/reopen
+        # loop (a verified stack overflow when a panel is dropped onto the spaces tab strip).
         if getattr(self, "_in_tab_change", False):
             return
         self._in_tab_change = True
         try:
-            on_backtester = self.tabs.currentWidget() is self._backtester
+            current = self.tabs.currentWidget()
+            on_backtester = current is self._backtester
+            on_document = isinstance(current, ChartDocument)
             # The centre must be visible to show any non-Backtester space; on the Backtester
             # space itself, honor the "backtester" hide toggle.
             self.tabs.setVisible(
@@ -1091,11 +1177,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if btn is not None:
                 btn.setChecked(True)
             # the OS title bar is the active-space indicator (tab strip + header chip are gone)
-            if 0 <= index < len(self._RAIL_ITEMS):
+            if on_document:
+                current.ensure_loaded()  # restored docs are cache-only until first focused
+                self.setWindowTitle(f"vike-trader-app   {current.title()}")
+            elif 0 <= index < len(self._RAIL_ITEMS):
                 self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
             # Options space: start fetching on first open; pause polling when navigating away.
             if getattr(self, "options", None) is not None:
-                if self.tabs.currentWidget() is self.options:
+                if current is self.options:
                     self._maybe_start_options()
                 elif getattr(self, "_options_started", False):
                     self._options_svc.stop_polling()
@@ -1757,13 +1846,15 @@ class MainWindow(QtWidgets.QMainWindow):
         save_session(self._session_path, SessionState(
             symbol=self._symbol,
             interval=self._interval,
-            space=self.tabs.currentIndex(),
+            # -1 (a chart document was current) falls back to the Chart space on reopen.
+            space=max(self.tabs.currentIndex(), 0),
             geometry_hex=bytes(self.saveGeometry().toHex()).decode("ascii"),
             dock_state_hex=bytes(self.dock_manager.saveState().toHex()).decode("ascii"),
             maximized=self.isMaximized(),
             panels=dict(self._panel_visible),
             chart_indicators=indicator_states(self.price),
             studio_indicators=indicator_states(self.studio_price),
+            documents=[d.state() for d in self._doc_widgets],
         ))
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
@@ -1775,6 +1866,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # work bleeds into later, unrelated tests (e.g. a bare NewsTab test pumping
         # processEvents), stalling the suite. The other long-lived timers/threads below were
         # already stopped here — _live_timer/_live_worker were simply missed.
+        if getattr(self, "_live_hub", None) is not None:
+            self._live_hub.shutdown()  # stop the chart-document live round-robin + its worker
         self._stop_live_updates()
         if getattr(self, "_live_worker", None) is not None:
             self._live_worker.wait(2000)

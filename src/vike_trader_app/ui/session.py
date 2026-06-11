@@ -40,6 +40,7 @@ class SessionState:
     panels: dict = field(default_factory=dict)              # panel key -> shown
     chart_indicators: list = field(default_factory=list)    # Chart space (price)
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
+    documents: list = field(default_factory=list)           # open chart documents (Phase 2)
 
     def to_dict(self) -> dict:
         return {"version": _VERSION, **asdict(self)}

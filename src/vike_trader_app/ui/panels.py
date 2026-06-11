@@ -200,6 +200,7 @@ class WatchlistPanel(QtWidgets.QListWidget):
     """
 
     symbolChosen = QtCore.Signal(str)
+    openInNewChart = QtCore.Signal(str)   # right-click → open the symbol as a new chart document
 
     _DEMO = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
 
@@ -222,6 +223,8 @@ class WatchlistPanel(QtWidgets.QListWidget):
         self._chg_labels: dict[str, QtWidgets.QLabel] = {}    # symbol -> change% label
         self.itemActivated.connect(self._chosen)
         self.itemClicked.connect(self._chosen)
+        self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
         for sym in self._DEMO:
             self._add_row(sym)
         if self.count():
@@ -363,6 +366,20 @@ class WatchlistPanel(QtWidgets.QListWidget):
         sym = item.data(QtCore.Qt.UserRole)
         if sym:                                    # ignore clicks on group-header rows
             self.symbolChosen.emit(sym)
+
+    def _show_context_menu(self, pos) -> None:
+        item = self.itemAt(pos)
+        sym = item.data(QtCore.Qt.UserRole) if item is not None else None
+        if not sym:                                # header row or empty space
+            return
+        menu = QtWidgets.QMenu(self)
+        act_open = menu.addAction("Open")
+        act_new = menu.addAction("Open in new chart")
+        chosen = menu.exec(self.viewport().mapToGlobal(pos))
+        if chosen is act_open:
+            self.symbolChosen.emit(sym)
+        elif chosen is act_new:
+            self.openInNewChart.emit(sym)
 
 
 class StrategyPanel(QtWidgets.QWidget):
