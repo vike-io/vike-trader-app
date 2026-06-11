@@ -171,9 +171,9 @@ def test_user_walks_every_tab_and_each_table_populates(app):
     # date-group headers for Tue + Wed are present
     eco_roots = [eco._tree.topLevelItem(i).text(0) for i in range(eco._tree.topLevelItemCount())]
     assert any("June 2" in r for r in eco_roots) and any("June 3" in r for r in eco_roots)
-    # Economic header columns are the TradingView 7-col layout
+    # Economic header columns are the TradingView layout (7 data cols + a trailing right-padding spacer)
     eco_hdr = [eco._tree.headerItem().text(c) for c in range(eco._tree.columnCount())]
-    assert eco_hdr == ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
+    assert eco_hdr == ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior", ""]
 
     # --- Earnings page ---------------------------------------------------------------------
     space.set_page(1)

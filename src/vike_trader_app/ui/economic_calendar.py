@@ -26,7 +26,9 @@ _TZ_CHOICES = [
 ]
 
 _FLAG_DIR = os.path.join(os.path.dirname(__file__), "resources", "flags")
-_COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior"]
+_COLS = ["Time", "Country", "", "Event", "Actual", "Forecast", "Prior", ""]
+_NUM_COL_W = 210   # px width for Actual/Forecast/Prior numeric columns (≈15.6% pitch ~ TradingView's 15.8%)
+_RIGHT_PAD = 40    # trailing spacer column = right breathing room after Prior (TradingView leaves ~48px)
 
 
 class _EmptyOverlay(QtCore.QObject):
@@ -233,9 +235,19 @@ class EconomicCalendarTab(QtWidgets.QWidget):
         # flag+name fits instead of cropping to "United Ki…"; Event stays the one Stretch column.
         hdr = self._tree.header()
         hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)
-        for col in (4, 5, 6):   # Actual/Forecast/Prior headers right-aligned to sit over their numbers
+        hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.Stretch)   # Event absorbs the left slack
+        hdr.setStretchLastSection(False)
+        # Actual/Forecast/Prior: equal fixed-width numeric columns anchored on the right, right-aligned
+        # — the TradingView economic-calendar layout (evenly spaced, comfortable gaps) rather than
+        # cramped content-width columns or a single ballooned last column.
+        for col in (4, 5, 6):
+            hdr.setSectionResizeMode(col, QtWidgets.QHeaderView.Fixed)
+            self._tree.setColumnWidth(col, _NUM_COL_W)
             self._tree.headerItem().setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        # Trailing spacer column: keeps Prior's right-aligned values off the scrollbar edge
+        # (measured: TradingView leaves ~48px; without this Prior sat flush at 0px padding).
+        hdr.setSectionResizeMode(7, QtWidgets.QHeaderView.Fixed)
+        self._tree.setColumnWidth(7, _RIGHT_PAD)
         self._tree.itemClicked.connect(lambda it, _c: self._toggle_detail(it))
         self._overlay = _EmptyOverlay(self._tree)   # centred "Loading…" / empty message over the table
         self._toolbar = self._build_toolbar()
