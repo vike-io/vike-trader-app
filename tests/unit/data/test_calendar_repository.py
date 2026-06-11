@@ -9,6 +9,11 @@ TS = iso_to_ts_utc("2026-06-05T12:30:00+00:00")
 WK = week_start_utc(TS)
 
 
+def _store(tmp_path):
+    """A store pointed entirely inside tmp_path: legacy dir + DB (never the real app DB)."""
+    return CalendarStore(str(tmp_path / "calendar"), db_path=str(tmp_path / "app.sqlite"))
+
+
 def _sched_ev(title, actual=None):
     return CalendarEvent(
         id=CalendarEvent.make_id(TS, "USD", title), ts_utc=TS, all_day=False,
@@ -31,7 +36,7 @@ class _Actuals:
 
 
 def test_fetches_and_caches(tmp_path):
-    store = CalendarStore(str(tmp_path))
+    store = _store(tmp_path)
     repo = CalendarRepository(_Sched([_sched_ev("Non-Farm Payrolls")]), [], store,
                               now_ms=lambda: TS + 60_000)
     evs = repo.get_week(WK)
@@ -42,7 +47,7 @@ def test_fetches_and_caches(tmp_path):
 
 
 def test_backfills_actual_for_past_events(tmp_path):
-    store = CalendarStore(str(tmp_path))
+    store = _store(tmp_path)
     actuals = _Actuals({"Non-Farm Payrolls": ActualValue(272.4, "K", "FAKE")})
     repo = CalendarRepository(_Sched([_sched_ev("Non-Farm Payrolls")]), [actuals], store,
                               now_ms=lambda: TS + 60_000)   # event is in the past
@@ -51,7 +56,7 @@ def test_backfills_actual_for_past_events(tmp_path):
 
 
 def test_does_not_backfill_future_events(tmp_path):
-    store = CalendarStore(str(tmp_path))
+    store = _store(tmp_path)
     actuals = _Actuals({"Non-Farm Payrolls": ActualValue(272.4, "K", "FAKE")})
     repo = CalendarRepository(_Sched([_sched_ev("Non-Farm Payrolls")]), [actuals], store,
                               now_ms=lambda: TS - 60_000)   # event still in the future
@@ -59,7 +64,7 @@ def test_does_not_backfill_future_events(tmp_path):
 
 
 def test_rate_limit_skips_refetch_when_fresh(tmp_path):
-    store = CalendarStore(str(tmp_path))
+    store = _store(tmp_path)
     calls = {"n": 0}
     class Counting(_Sched):
         def fetch_week(self, ws):
@@ -74,7 +79,7 @@ def test_rate_limit_skips_refetch_when_fresh(tmp_path):
 
 
 def test_force_refetches_within_window(tmp_path):
-    store = CalendarStore(str(tmp_path))
+    store = _store(tmp_path)
     calls = {"n": 0}
     class Counting(_Sched):
         def fetch_week(self, ws):

@@ -1,3 +1,5 @@
+import json
+
 from vike_trader_app.data.calendar.equity import (
     FinnhubEarnings, FinnhubIpo, NasdaqIpo, Ipo, FmpDividends,
     EarningsEvent, DividendEvent, IpoEvent,
@@ -113,9 +115,16 @@ def test_providers_swallow_errors():
     assert FmpDividends(key="k", http=boom).fetch("a", "b") == []
 
 
-def test_fetch_earnings_enriched_adds_name_and_cap(monkeypatch, tmp_path):
+def _isolate_profiles(monkeypatch, tmp_path):
+    """Point the profile cache's BOTH seams (DB + legacy JSON) inside tmp_path."""
     import vike_trader_app.data.calendar.equity as eq
-    monkeypatch.setattr(eq, "_PROFILE_CACHE", str(tmp_path / "profiles.json"))   # isolate cache
+    monkeypatch.setattr(eq, "_PROFILE_CACHE", str(tmp_path / "calendar" / "profiles.json"))
+    monkeypatch.setattr(eq, "_PROFILE_DB", str(tmp_path / "app.sqlite"))
+    return eq
+
+
+def test_fetch_earnings_enriched_adds_name_and_cap(monkeypatch, tmp_path):
+    eq = _isolate_profiles(monkeypatch, tmp_path)
 
     def fake(url, **kw):
         if "calendar/earnings" in url:
@@ -134,3 +143,30 @@ def test_fetch_earnings_enriched_adds_name_and_cap(monkeypatch, tmp_path):
     assert byid["AAPL"].name == "Apple Inc" and byid["AAPL"].market_cap == 3_500_000.0
     assert byid["AAPL"].surprise is not None
     assert byid["ZZZZ"].name == "" and byid["ZZZZ"].market_cap is None
+
+
+def test_profiles_cached_in_db_and_not_refetched(monkeypatch, tmp_path):
+    eq = _isolate_profiles(monkeypatch, tmp_path)
+    calls = {"n": 0}
+
+    def fake(url, **kw):
+        calls["n"] += 1
+        return {"name": "Apple Inc", "marketCapitalization": 3_500_000.0}
+
+    assert eq.profiles(["AAPL"], key="k", http=fake)["AAPL"]["name"] == "Apple Inc"
+    assert eq.profiles(["AAPL"], key="k", http=fake)["AAPL"]["cap"] == 3_500_000.0
+    assert calls["n"] == 1   # second call served from the calendar_profiles table
+
+
+def test_profiles_migrates_legacy_json_blob(monkeypatch, tmp_path):
+    eq = _isolate_profiles(monkeypatch, tmp_path)
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+    legacy = tmp_path / "calendar" / "profiles.json"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        json.dumps({"AAPL": {"name": "Apple Inc", "cap": 3.5e6}}), encoding="utf-8")
+
+    profs = eq.profiles(["AAPL"])    # no key -> served purely from the migrated cache
+    assert profs["AAPL"] == {"name": "Apple Inc", "cap": 3.5e6}
+    assert not legacy.exists()           # swept into the DB, file deleted
+    assert not legacy.parent.exists()    # emptied legacy dir removed too
