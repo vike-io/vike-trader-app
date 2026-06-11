@@ -7,7 +7,40 @@ from vike_trader_app.ui.workspaces import (
     BUILTIN_NAMES,
     WorkspaceStore,
     builtin_workspaces,
+    workspace_from_agent_spec,
 )
+
+
+def test_agent_spec_builds_session():
+    spec = {"space": "chart", "watchlist_link": 2, "panels": {"market": True},
+            "documents": [
+                {"symbol": "btcusdt", "interval": "4h", "link_group": 2, "indicators": ["rsi"]},
+                {"symbol": "ETHUSDT"}]}
+    st = workspace_from_agent_spec(spec)
+    assert st.space == 0
+    assert [d["symbol"] for d in st.documents] == ["BTCUSDT", "ETHUSDT"]   # uppercased
+    assert st.documents[0]["interval"] == "4h" and st.documents[0]["link_group"] == 2
+    assert st.documents[0]["indicators"] == [{"name": "rsi"}]
+    assert st.documents[1]["interval"] == "1h"                            # default applied
+    assert st.panels["market"] is True and st.panels["backtester"] is True
+    assert st.watchlist_link == 2
+
+
+def test_agent_spec_is_defensive_about_llm_garbage():
+    spec = {"space": "bogus", "watchlist_link": -5,
+            "documents": [{"interval": "1h"},                              # no symbol -> skip
+                          {"symbol": "ADAUSDT", "interval": "nope", "link_group": 99}]}
+    st = workspace_from_agent_spec(spec)
+    assert st.space == 0                                                   # unknown space -> Chart
+    assert [d["symbol"] for d in st.documents] == ["ADAUSDT"]              # symbol-less dropped
+    assert st.documents[0]["interval"] == "1h"                            # bad interval -> default
+    assert st.documents[0]["link_group"] == 0                             # 99 clamped
+    assert st.watchlist_link == 0                                         # -5 clamped
+
+
+def test_agent_spec_empty_is_safe():
+    st = workspace_from_agent_spec({})
+    assert st.documents == [] and st.space == 0
 
 
 def test_builtins_available_without_a_file(tmp_path):
