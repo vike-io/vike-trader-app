@@ -4,7 +4,7 @@ watchlist, strategy params, and run history — styled in the vike.io look.
 
 from datetime import UTC, datetime
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import metrics
 from . import icons, theme
@@ -13,41 +13,91 @@ from .tables import TRADE_HEADERS, trade_rows
 
 
 class LinkDot(QtWidgets.QToolButton):
-    """A small colour-swatch button for picking a symbol link group (MultiCharts style).
+    """A small colour-swatch button for picking a link group (MultiCharts style).
 
-    Shows a filled dot in the current group's colour (hollow grey for the unlinked group 0);
-    clicking pops a menu of colours and emits ``groupChanged(int)`` on selection.
+    Shows a filled glyph in the current group's colour (hollow for the unlinked group 0); clicking
+    pops a menu of colours and emits ``groupChanged(int)`` on selection. ``label``/``glyph`` let the
+    same control serve two independent channels: the SYMBOL link (circle ``●``) and the INTERVAL/
+    timeframe link (diamond ``◆``), so a chart can follow another's symbol and timeframe on
+    *different* colours.
     """
 
     groupChanged = QtCore.Signal(int)
 
-    def __init__(self, group: int = 0, parent=None):
+    def __init__(self, group: int = 0, parent=None, *, label: str = "Symbol",
+                 glyph: tuple[str, str] = ("○", "●"), follow: bool = False):
         super().__init__(parent)
         self._group = group
+        self._label = label
+        self._glyph = glyph
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setFixedSize(22, 22)
         self.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        # MultiCharts-style colour menu: a swatch icon per group, a check on the active one,
+        # "Linked to all" on top, plain colours in the middle, "Not linked" at the bottom.
+        from .linkbus import LINK_ALL  # local import keeps panels<->linkbus edge light
+
         menu = QtWidgets.QMenu(self)
-        for gid, _color, name in LINK_GROUPS:
+        menu.setStyleSheet(
+            f"QMenu{{background:{theme.PANEL};border:1px solid {theme.BORDER};padding:4px;}}"
+            f"QMenu::item{{color:{theme.TEXT};padding:4px 18px 4px 6px;border-radius:4px;}}"
+            f"QMenu::item:selected{{background:{theme.HOVER};}}"
+        )
+        self._actions: dict[int, QtGui.QAction] = {}
+
+        def _add(gid: int, name: str, color: str | None) -> None:
             act = menu.addAction(name)
+            act.setCheckable(True)
+            if color is not None:
+                act.setIcon(self._swatch(color))
             act.triggered.connect(lambda _c=False, g=gid: self.set_group(g, emit=True))
+            self._actions[gid] = act
+
+        if follow:   # interval channel: "-1" mirrors the symbol link (the default, back-compat)
+            _add(-1, "Follow symbol", None)
+            menu.addSeparator()
+        ordered = sorted(LINK_GROUPS, key=lambda t: (t[0] != LINK_ALL, t[0] == 0, t[0]))
+        for gid, color, name in ordered:
+            if gid == 0:
+                menu.addSeparator()
+                _add(0, name, None)
+            else:
+                _add(gid, name, color)
         self.setMenu(menu)
-        self._refresh()
+        self.set_group(group)   # paints the dot + sets the initial menu check
+
+    @staticmethod
+    def _swatch(color: str, size: int = 14) -> QtGui.QIcon:
+        """A flat colour square for the menu (the MultiCharts swatch)."""
+        pm = QtGui.QPixmap(size, size)
+        pm.fill(QtCore.Qt.transparent)
+        p = QtGui.QPainter(pm)
+        p.setPen(QtGui.QPen(QtGui.QColor(theme.BORDER), 1))
+        p.setBrush(QtGui.QColor(color))
+        p.drawRoundedRect(1, 1, size - 2, size - 2, 3, 3)
+        p.end()
+        return QtGui.QIcon(pm)
 
     def group(self) -> int:
         return self._group
 
     def set_group(self, gid: int, *, emit: bool = False) -> None:
         self._group = gid
+        for g, act in self._actions.items():   # the MC-style check on the active entry
+            act.setChecked(g == gid)
         self._refresh()
         if emit:
             self.groupChanged.emit(gid)
 
     def _refresh(self) -> None:
         color = LINK_COLOR.get(self._group, LINK_COLOR[0])
-        self.setText("○" if self._group == 0 else "●")
-        self.setToolTip("Symbol link: " + next(
-            (n for g, _c, n in LINK_GROUPS if g == self._group), "None"))
+        # hollow glyph only for the explicit "unlinked" (0); -1 "follow symbol" and 1-6 are filled
+        self.setText(self._glyph[0] if self._group == 0 else self._glyph[1])
+        if self._group == -1:
+            name = "follows symbol"
+        else:
+            name = next((n for g, _c, n in LINK_GROUPS if g == self._group), "None")
+        self.setToolTip(f"{self._label} link: {name}")
         self.setStyleSheet(
             f"QToolButton{{border:none;background:transparent;color:{color};font-size:15px;}}"
             f"QToolButton::menu-indicator{{image:none;width:0;}}"

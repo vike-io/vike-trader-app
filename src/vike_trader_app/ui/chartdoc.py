@@ -29,6 +29,30 @@ _LIVE_LOOKBACK = 5          # bars (incl. forming candle) pulled per live tick
 _HUB_TICK_MS = 5_000        # round-robin cadence: each tick serves ONE visible document
 
 
+def _set_topmost(window_id: int, on: bool) -> bool:
+    """Pin/unpin a native window above all others (Win32 SetWindowPos TOPMOST; False where
+    unsupported). Deliberately NOT Qt window flags: changing WindowStaysOnTopHint at either
+    the QWidget or the QWindow level re-creates the native window, which corrupts the ADS
+    floating container's state (it can close a DeleteOnClose chart document) and the new
+    native window comes back with default flags anyway — verified empirically."""
+    import ctypes
+    import sys
+
+    if sys.platform != "win32":
+        return False
+    from ctypes import wintypes
+
+    # argtypes are REQUIRED: without them ctypes marshals the -1/-2 sentinel as a 32-bit
+    # c_int where a 64-bit HWND is expected and SetWindowPos fails (returns 0) — verified.
+    set_window_pos = ctypes.windll.user32.SetWindowPos
+    set_window_pos.argtypes = [wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                               ctypes.c_int, ctypes.c_int, wintypes.UINT]
+    set_window_pos.restype = wintypes.BOOL
+    hwnd_topmost = wintypes.HWND(-1 if on else -2)   # HWND_TOPMOST / HWND_NOTOPMOST
+    swp = 0x0001 | 0x0002 | 0x0010                   # SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+    return bool(set_window_pos(wintypes.HWND(int(window_id)), hwnd_topmost, 0, 0, 0, 0, swp))
+
+
 class ChartDocument(QtWidgets.QWidget):
     """A clean, standalone chart viewer document (PriceChart + oscillator pane host)."""
 
@@ -68,18 +92,42 @@ class ChartDocument(QtWidgets.QWidget):
         outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(6)
 
-        # Symbol link group (Phase 3): a colour dot in a thin header. Same colour on >1 chart =
-        # they move together (symbol + interval). 0 = unlinked. The bus is injected via set_bus.
+        # Link groups (Phase 3): two colour dots in a thin header — an independent SYMBOL channel
+        # (●) and INTERVAL/timeframe channel (◆), MultiCharts-style. Same symbol colour on >1 chart
+        # syncs their symbol; same interval colour syncs their timeframe; the two are independent
+        # (a chart can follow another's timeframe without following its symbol). 0 = unlinked. The
+        # bus is injected via set_bus.
         from .panels import LinkDot  # local import keeps the panels<->chartdoc edge one-way
 
         self.link_group = 0
+        self.interval_link_group = None      # None = follow the symbol link (back-compat default)
         self._bus = None
         header = QtWidgets.QHBoxLayout()
         header.setContentsMargins(2, 0, 2, 0)
         header.addStretch(1)
-        self._link_dot = LinkDot(0)
+        self._link_dot = LinkDot(0, label="Symbol")
         self._link_dot.groupChanged.connect(self._set_link_group)
         header.addWidget(self._link_dot)
+        self._ivl_dot = LinkDot(-1, label="Interval", glyph=("◇", "◆"), follow=True)
+        self._ivl_dot.groupChanged.connect(self._set_interval_link_group)
+        header.addWidget(self._ivl_dot)
+        # Keep-on-top pin (MultiCharts "stick window"): float-only chrome — appears when the
+        # document is torn out to its own window (SpaceDeck forwards dock.topLevelChanged to
+        # set_floating) and pins that window above all others.
+        self._pin_btn = QtWidgets.QToolButton()
+        self._pin_btn.setCheckable(True)
+        self._pin_btn.setCursor(QtCore.Qt.PointingHandCursor)
+        self._pin_btn.setFixedSize(22, 22)
+        self._pin_btn.setText("⊼")
+        self._pin_btn.setToolTip("Keep this floating window on top")
+        self._pin_btn.setStyleSheet(
+            f"QToolButton{{border:none;background:transparent;color:{theme.TEXT3};"
+            f"font-size:14px;}}"
+            f"QToolButton:checked{{color:{theme.ACCENT};}}"
+        )
+        self._pin_btn.setVisible(False)
+        self._pin_btn.toggled.connect(self._toggle_on_top)
+        header.addWidget(self._pin_btn)
         outer.addLayout(header)
         outer.addWidget(card)
 
@@ -166,12 +214,40 @@ class ChartDocument(QtWidgets.QWidget):
         self.link_group = gid
         self._link_dot.set_group(gid)   # keep the dot in sync when set directly (not via menu)
 
+    def _set_interval_link_group(self, gid: int) -> None:
+        # dot sentinel -1 ("follow symbol") maps to None on the bus; 0 = unlinked; 1-6 = own colour
+        self.interval_link_group = None if gid < 0 else gid
+        self._ivl_dot.set_group(gid)
+
+    # --- floating-window chrome (keep-on-top pin) ---------------------------------------------
+
+    def set_floating(self, floating: bool) -> None:
+        """Dock tear-out notification (SpaceDeck forwards ``topLevelChanged``): the keep-on-top
+        pin is float-only chrome — a docked tab can't sit above other windows."""
+        self._pin_btn.setVisible(floating)
+        if not floating:
+            self._pin_btn.setChecked(False)   # the floating container is gone; reset the state
+
+    def _toggle_on_top(self, on: bool) -> None:
+        """Pin/unpin this document's floating window above all others (MultiCharts 'stick').
+        Native z-order only — see ``_set_topmost`` for why Qt window flags are off-limits."""
+        import PySide6QtAds as QtAds  # local: chartdoc stays importable without ADS at test time
+
+        w = self.window()
+        if not isinstance(w, QtAds.CFloatingDockContainer):
+            if on:                            # not floating (or already re-docked) -> no-op
+                self._pin_btn.setChecked(False)
+            return
+        _set_topmost(int(w.winId()), on)
+
     def _broadcast_link(self, symbol: str, interval: str) -> None:
-        """Push this doc's (symbol, interval) to its link group. The bus re-entrancy guard
-        keeps a received apply_link -> load -> symbolChanged from looping back; _suppress_broadcast
-        additionally blocks focus-triggered ensure_loaded top-ups from broadcasting."""
+        """Push this doc's symbol to its symbol-link group and interval to its (independent)
+        interval-link group. The bus re-entrancy guard keeps a received apply_link -> load ->
+        symbolChanged from looping back; _suppress_broadcast additionally blocks focus-triggered
+        ensure_loaded top-ups from broadcasting."""
         if self._bus is not None and not getattr(self, "_suppress_broadcast", False):
-            self._bus.broadcast(self.link_group, self, symbol, interval)
+            self._bus.broadcast(self.link_group, self, symbol, interval,
+                                interval_group=self.interval_link_group)
 
     def apply_link(self, symbol: str | None, interval: str | None) -> None:
         """Receive a link broadcast: switch to (symbol, interval), keeping whichever is None."""
@@ -182,10 +258,11 @@ class ChartDocument(QtWidgets.QWidget):
     def state(self) -> dict:
         return {"symbol": self._symbol, "interval": self._interval,
                 "link_group": self.link_group,
+                "interval_link_group": self.interval_link_group,
                 "indicators": indicator_states(self.chart)}
 
     def apply_state(self, state: dict) -> None:
-        """Re-attach saved indicators + link colour (call after a load put bars on the chart)."""
+        """Re-attach saved indicators + link colours (call after a load put bars on the chart)."""
         from .linkbus import LINK_COLOR
 
         apply_indicator_states(self.chart, (state or {}).get("indicators") or [])
@@ -194,6 +271,16 @@ class ChartDocument(QtWidgets.QWidget):
             gid = 0
         self.link_group = gid
         self._link_dot.set_group(gid)
+        raw_ivl = (state or {}).get("interval_link_group", None)
+        if raw_ivl is None:                 # legacy/older session -> follow symbol link
+            self.interval_link_group = None
+            self._ivl_dot.set_group(-1)
+        else:
+            igid = int(raw_ivl)
+            if igid not in LINK_COLOR:       # hand-edited / removed group -> unlinked
+                igid = 0
+            self.interval_link_group = igid
+            self._ivl_dot.set_group(igid)
 
 
 class LiveHub(QtCore.QObject):

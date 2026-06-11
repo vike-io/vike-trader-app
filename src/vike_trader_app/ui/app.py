@@ -687,6 +687,12 @@ class MainWindow(QtWidgets.QMainWindow):
         ("backtester", "chart", "Chart", "Ctrl+G"),
         ("market", "market", "Market watch", "Ctrl+M"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
+        # Dashboard info tiles (Phase 6): small dockable widgets — arrange + pin + save a named
+        # workspace to compose a personal dashboard. All default CLOSED on a fresh run.
+        ("movers", "market", "Top movers", "Ctrl+Shift+M"),
+        ("pnl", "scale", "P&L snapshot", "Ctrl+Shift+P"),
+        ("ecal", "calendar", "Today's calendar", "Ctrl+Shift+E"),
+        ("headlines", "news", "News headlines", "Ctrl+Shift+N"),
     ]
 
     def _rail_section(self, text: str) -> QtWidgets.QLabel:
@@ -1082,11 +1088,37 @@ class MainWindow(QtWidgets.QMainWindow):
         trades = make_panel_dock(self.dock_manager, "TRADES & POSITIONS",
                                  self._build_trades_panel(), QtAds.BottomDockWidgetArea)
 
+        # Dashboard info tiles (Phase 6): four small render-only docks fed from existing
+        # main-thread state (watchlist quotes / current result / calendar cache / news feed).
+        from .dashtiles import CalendarTile, MoversTile, NewsTile, PnLTile
+
+        self._movers_tile = MoversTile()
+        self._pnl_tile = PnLTile()
+        self._ecal_tile = CalendarTile()
+        self._headlines_tile = NewsTile()
+        movers = make_panel_dock(self.dock_manager, "TOP MOVERS", self._movers_tile,
+                                 QtAds.RightDockWidgetArea)
+        pnl = make_panel_dock(self.dock_manager, "P&L", self._pnl_tile,
+                              QtAds.RightDockWidgetArea)
+        ecal = make_panel_dock(self.dock_manager, "TODAY'S CALENDAR", self._ecal_tile,
+                               QtAds.RightDockWidgetArea)
+        headlines = make_panel_dock(self.dock_manager, "NEWS HEADLINES", self._headlines_tile,
+                                    QtAds.RightDockWidgetArea)
+        # News tile mirrors the News space's merged feed; opening the tile starts the feed
+        # (idempotent) unless the headless kill-switch forbids network.
+        self.news.itemsUpdated.connect(
+            lambda: self._headlines_tile.set_items(self.news._items))
+        headlines.viewToggled.connect(self._on_headlines_toggled)
+        # Calendar tile reads the local week cache only (never network) — refill on open.
+        ecal.viewToggled.connect(lambda on: on and self._refresh_calendar_tile())
+        self._refresh_calendar_tile()
+
         # rail PANELS toggle targets (key must match _PANELS)
         self._market_dock = market
         self._trades_dock = trades
-        self._panel_dock_map = {"market": market, "trades": trades}
-        self._docks = [market, trades]
+        self._panel_dock_map = {"market": market, "trades": trades, "movers": movers,
+                                "pnl": pnl, "ecal": ecal, "headlines": headlines}
+        self._docks = [market, trades, movers, pnl, ecal, headlines]
         # Programmatic open/close (space switches, rail toggles) is guarded so the user-driven
         # viewToggled (title-bar X / drag-close) is the only thing that updates the rail state.
         self._syncing_docks = False
@@ -1098,6 +1130,28 @@ class MainWindow(QtWidgets.QMainWindow):
             self.dock_manager.setSplitterSizes(trades.dockAreaWidget(), [620, 190])
         except Exception:  # noqa: BLE001 - sizing is cosmetic; never block construction
             pass
+
+    def _on_headlines_toggled(self, on: bool) -> None:
+        """Opening the News-headlines tile seeds it from the already-merged feed and lazily
+        starts the news poller (idempotent) — never under the headless kill-switch."""
+        if not on:
+            return
+        self._headlines_tile.set_items(self.news._items)
+        if not os.environ.get("VIKE_DISABLE_LIVE"):
+            self.news.start_feed(self._symbol)
+
+    def _refresh_calendar_tile(self) -> None:
+        """Fill the Today's-calendar tile from the LOCAL week cache only — the Calendar space
+        owns fetching; the tile never touches the network."""
+        from ..data.calendar.store import CalendarStore
+        from .dashtiles_data import today_events
+
+        try:
+            now_ms = int(time.time() * 1000)
+            events = CalendarStore().load_week(CalendarStore.iso_week_key(now_ms))
+            self._ecal_tile.set_events(today_events(events or [], now_ms))
+        except Exception:  # noqa: BLE001 - the tile is cosmetic; never block or modal
+            self._ecal_tile.set_events([])
 
     def _scroll(self, widget):
         sc = QtWidgets.QScrollArea()
@@ -1150,7 +1204,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if res is None or not res.equity_curve:
             for v in self._acct.values():
                 v.setText("—")
+            self._pnl_tile.set_result([])
             return
+        self._pnl_tile.set_result(res.equity_curve, res.final_equity)
         eq = res.equity_curve
         initial, final = eq[0], res.final_equity
         pnl = final - initial
@@ -1190,7 +1246,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Ctrl shortcut) re-opens it. A saved session restores whatever the user last had open.
         saved = self._session.panels if self._session else {}
         for key, btn in self._panel_btns.items():
-            fresh_default = key not in ("market", "trades")  # chart on; side panels closed
+            # chart on; side panels + dashboard tiles closed on a fresh run
+            fresh_default = key not in ("market", "trades", "movers", "pnl", "ecal",
+                                        "headlines")
             btn.setChecked(bool(saved.get(key, fresh_default)))
 
     def _set_dock_open(self, dock, on: bool) -> None:
@@ -1203,6 +1261,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._syncing_docks = True
         try:
             dock.toggleView(on)
+            if on:
+                self._ensure_dock_usable_width(dock)
         finally:
             self._syncing_docks = prev
 
@@ -1227,6 +1287,32 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tabs.setVisible(on)
         else:
             self._set_dock_open(self._panel_dock_map[key], on)
+
+    def _ensure_dock_usable_width(self, dock) -> None:
+        """A dock restored from a session saved BEFORE it existed (e.g. the dashboard tiles
+        on an older session) can land in a zero-width splitter slot — open but invisible.
+        If its area is degenerate, hand it a usable share of its parent splitter."""
+        area = dock.dockAreaWidget()
+        if area is None or area.width() >= 40:
+            return
+        p = area.parentWidget()
+        while p is not None and not isinstance(p, QtWidgets.QSplitter):
+            p = p.parentWidget()
+        if p is None or p.count() < 2:
+            return
+        want = 300
+        sizes = p.sizes()
+        total = sum(sizes) or max(self.width(), 800)
+        idx = next((i for i in range(p.count())
+                    if p.widget(i) is area or p.widget(i).isAncestorOf(area)), None)
+        if idx is None:
+            return
+        remainder = max(total - want, p.count() - 1)
+        others = [i for i in range(p.count()) if i != idx]
+        share = remainder // max(len(others), 1)
+        new_sizes = [share] * p.count()
+        new_sizes[idx] = want
+        p.setSizes(new_sizes)
 
     def _refresh_pinned_tick(self) -> None:
         """Backstop timer: keep pinned rollups current (main thread — reads/writes Parquet).
@@ -1489,6 +1575,7 @@ class MainWindow(QtWidgets.QMainWindow):
         quote = quote_from_bars(bars)
         if quote is not None:
             self.watchlist.set_prices({symbol: quote})
+            self._movers_tile.merge_prices({symbol: quote})
 
     def _fill_price_chunk(self) -> None:
         now = int(time.time() * 1000)
@@ -1508,6 +1595,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
         if chunk:
             self.watchlist.set_prices(chunk)
+            self._movers_tile.merge_prices(chunk)
 
     def _start_quote_refresh(self) -> None:
         """Keep crypto Market Watch quotes live by topping up one symbol per tick from Binance.
@@ -2042,6 +2130,14 @@ class MainWindow(QtWidgets.QMainWindow):
             cmds.append((f"Open workspace: {name}", lambda n=name: self._apply_workspace(n)))
         cmds.append((f"New chart: {self._symbol}",
                      lambda: self._open_in_new_chart(self._symbol)))
+        cmds.append(("Arrange charts: tile grid",
+                     lambda: self.tabs.arrange_documents("grid")))
+        cmds.append(("Arrange charts: side by side",
+                     lambda: self.tabs.arrange_documents("columns")))
+        cmds.append(("Arrange charts: stacked",
+                     lambda: self.tabs.arrange_documents("rows")))
+        cmds.append(("Arrange charts: gather as tabs",
+                     lambda: self.tabs.arrange_documents("tabs")))
         cmds.append(("Save workspace as…", self._prompt_save_workspace))
         cmds.append(("AI: generate a layout…", self._prompt_ai_layout))
         for key, _icon, tip, _sc in self._PANELS:

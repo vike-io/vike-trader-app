@@ -1,6 +1,6 @@
 """Unit tests for the Qt-free SymbolLinkBus (Phase 3 symbol link groups)."""
 
-from vike_trader_app.ui.linkbus import LINK_COLOR, LINK_GROUPS, SymbolLinkBus
+from vike_trader_app.ui.linkbus import LINK_ALL, LINK_COLOR, LINK_GROUPS, SymbolLinkBus
 
 
 class FakeMember:
@@ -96,3 +96,105 @@ def test_remove_member_stops_delivery():
 def test_link_color_table_covers_all_groups():
     assert set(LINK_COLOR) == {gid for gid, _c, _n in LINK_GROUPS}
     assert LINK_COLOR[0] == "#6e7681"          # unlinked = grey
+
+
+# --- independent interval link channel (MultiCharts-parity: symbol vs timeframe colours) ---
+
+class FakeDualMember:
+    """A member carrying BOTH a symbol channel (link_group) and an interval channel."""
+
+    def __init__(self, group=0, interval_group=0):
+        self.link_group = group
+        self.interval_link_group = interval_group
+        self.applied: list[tuple] = []
+
+    def apply_link(self, symbol, interval):
+        self.applied.append((symbol, interval))
+
+
+def test_interval_channel_independent_of_symbol():
+    """A window can share the interval colour without sharing the symbol colour, and vice-versa."""
+    bus = SymbolLinkBus()
+    src = FakeDualMember(group=1, interval_group=2)
+    both = FakeDualMember(group=1, interval_group=2)    # shares symbol AND interval
+    ivl_only = FakeDualMember(group=3, interval_group=2)  # shares only interval
+    sym_only = FakeDualMember(group=1, interval_group=5)  # shares only symbol
+    for m in (src, both, ivl_only, sym_only):
+        bus.add_member(m)
+
+    bus.broadcast(1, src, "ETHUSDT", "4h", interval_group=2)
+    assert both.applied == [("ETHUSDT", "4h")]
+    assert ivl_only.applied == [(None, "4h")]            # interval follows, symbol does not
+    assert sym_only.applied == [("ETHUSDT", None)]       # symbol follows, interval does not
+    assert src.applied == []
+
+
+def test_interval_unlinked_source_does_not_push_interval():
+    bus = SymbolLinkBus()
+    src = FakeDualMember(group=1, interval_group=0)      # interval channel = unlinked
+    a = FakeDualMember(group=1, interval_group=0)
+    bus.add_member(src)
+    bus.add_member(a)
+    bus.broadcast(1, src, "ETHUSDT", "4h", interval_group=0)
+    assert a.applied == [("ETHUSDT", None)]              # symbol synced, interval suppressed
+
+
+def test_legacy_member_without_interval_attr_follows_symbol_colour_for_interval():
+    """Back-compat: a member with only link_group still gets interval on that same colour."""
+    bus = SymbolLinkBus()
+    a = FakeMember(group=1)                              # no interval_link_group attribute
+    bus.add_member(a)
+    bus.broadcast(1, object(), "ETHUSDT", "4h")         # legacy call (no interval_group kwarg)
+    assert a.applied == [("ETHUSDT", "4h")]
+
+
+def test_symbol_unlinked_but_interval_linked_routes_interval_only():
+    bus = SymbolLinkBus()
+    a = FakeDualMember(group=0, interval_group=2)
+    bus.add_member(a)
+    bus.broadcast(0, object(), "ETHUSDT", "4h", interval_group=2)
+    assert a.applied == [(None, "4h")]                  # symbol channel off, interval on
+
+
+# --- "Linked to all" (MultiCharts Linked-To-All semantics) ---------------------------------
+
+def test_linked_to_all_member_receives_every_coloured_broadcast():
+    bus = SymbolLinkBus()
+    everything = FakeMember(group=LINK_ALL)
+    unlinked = FakeMember(group=0)
+    bus.add_member(everything)
+    bus.add_member(unlinked)
+    bus.broadcast(1, object(), "BTCUSDT", "1h")         # red
+    bus.broadcast(13, object(), "ETHUSDT", "4h")        # pink (new palette id)
+    assert everything.applied == [("BTCUSDT", "1h"), ("ETHUSDT", "4h")]
+    assert unlinked.applied == []                       # group 0 still hears nothing
+
+
+def test_linked_to_all_source_reaches_every_linked_member():
+    bus = SymbolLinkBus()
+    red = FakeMember(group=1)
+    pink = FakeMember(group=13)
+    unlinked = FakeMember(group=0)
+    for m in (red, pink, unlinked):
+        bus.add_member(m)
+    bus.broadcast(LINK_ALL, object(), "SOLUSDT", "1d")
+    assert red.applied == [("SOLUSDT", "1d")]
+    assert pink.applied == [("SOLUSDT", "1d")]
+    assert unlinked.applied == []
+
+
+def test_linked_to_all_works_on_the_interval_channel():
+    bus = SymbolLinkBus()
+    m = FakeDualMember(group=0, interval_group=LINK_ALL)   # interval follows everything
+    bus.add_member(m)
+    bus.broadcast(2, object(), "ETHUSDT", "4h", interval_group=5)
+    assert m.applied == [(None, "4h")]                  # interval only; symbol unlinked
+
+
+def test_palette_keeps_legacy_ids_and_includes_all_group():
+    colors = dict(LINK_COLOR)
+    # ids 1-6 keep their original colours (saved sessions must restore identically)
+    assert colors[1] == "#f85149" and colors[2] == "#3fb950" and colors[3] == "#58a6ff"
+    assert colors[4] == "#f0883e" and colors[5] == "#d29922" and colors[6] == "#a855f7"
+    assert LINK_ALL in colors
+    assert len(LINK_GROUPS) == 17                       # none + all + 15 colours

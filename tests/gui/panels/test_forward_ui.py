@@ -151,5 +151,7 @@ def test_studio_tab_hides_backtester_docks(app):
     win.tabs.setCurrentIndex(studio_idx)
     assert all(d.isClosed() for d in win._docks)      # clean Studio workspace
     win.tabs.setCurrentIndex(0)                        # back to Backtester
-    assert all(not d.isClosed() for d in win._docks)  # restored per the (now-on) toggles
+    # restored PER TOGGLE: the two we opened come back; dashboard tiles (toggles off) stay closed
+    for key, dock in win._panel_dock_map.items():
+        assert dock.isClosed() != (key in ("market", "trades"))
     win.close()

@@ -173,6 +173,138 @@ def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
     second.close()
 
 
+# --- Arrange (MultiCharts Window->Arrange parity) + keep-on-top pin -------------------------
+
+
+@pytest.fixture
+def _synthetic_load(monkeypatch):
+    bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + i)
+            for i in range(30)]
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(list(bars)))
+
+
+def _open_docs(win, n):
+    syms = ("BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "DOGEUSDT")
+    return [win._new_chart_document(s, "1h") for s in syms[:n]]
+
+
+def test_arrange_grid_tiles_into_distinct_areas(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    _open_docs(win, 4)
+    assert win.tabs.arrange_documents("grid") == 4
+    app.processEvents()
+    docks = win.tabs._documents
+    areas = {id(d.dockAreaWidget()) for d in docks}
+    assert len(areas) == 4                                   # a real 2x2, not one tab stack
+    # the first doc stays tabbed with the spaces (the shipped #103 layout)
+    assert docks[0].dockAreaWidget() is win.tabs.dock(0).dockAreaWidget()
+    win.close()
+
+
+def test_arrange_tabs_gathers_back_into_one_stack(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    _open_docs(win, 4)
+    win.tabs.arrange_documents("grid")
+    app.processEvents()
+    assert win.tabs.arrange_documents("tabs") == 4
+    app.processEvents()
+    areas = {id(d.dockAreaWidget()) for d in win.tabs._documents}
+    assert len(areas) == 1                                   # all back in the centre stack
+    assert win.tabs._documents[0].dockAreaWidget() is win.tabs.dock(0).dockAreaWidget()
+    win.close()
+
+
+@pytest.mark.parametrize(("n", "mode"), [(3, "grid"), (3, "columns"), (3, "rows"),
+                                         (5, "grid"), (6, "grid")])
+def test_arrange_modes_split_every_document_apart(app, _synthetic_load, n, mode):
+    win = MainWindow(session_path=None)
+    _open_docs(win, n)
+    assert win.tabs.arrange_documents(mode) == n
+    app.processEvents()
+    areas = {id(d.dockAreaWidget()) for d in win.tabs._documents}
+    assert len(areas) == n
+    win.close()
+
+
+def test_arrange_pulls_floating_documents_back_in(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    _open_docs(win, 2)
+    win.tabs._documents[1].setFloating()
+    app.processEvents()
+    assert win.tabs._documents[1].isFloating()
+    win.tabs.arrange_documents("grid")
+    app.processEvents()
+    assert not win.tabs._documents[1].isFloating()           # gathered before tiling
+    win.close()
+
+
+def test_arrange_with_no_documents_is_noop(app):
+    win = MainWindow(session_path=None)
+    assert win.tabs.arrange_documents("grid") == 0
+    win.close()
+
+
+def test_arrange_single_document_keeps_tab(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    _open_docs(win, 1)
+    assert win.tabs.arrange_documents("grid") == 1
+    assert win.tabs._documents[0].dockAreaWidget() is win.tabs.dock(0).dockAreaWidget()
+    win.close()
+
+
+def test_palette_has_arrange_commands(app):
+    win = MainWindow(session_path=None)
+    labels = [label for label, _cb in win._commands()]
+    for want in ("Arrange charts: tile grid", "Arrange charts: side by side",
+                 "Arrange charts: stacked", "Arrange charts: gather as tabs"):
+        assert want in labels
+    win.close()
+
+
+def test_pin_appears_on_tearout_and_sets_stays_on_top(app, _synthetic_load, monkeypatch):
+    """Pin chrome + native z-order seam. The actual TOPMOST call is Win32 (SetWindowPos) —
+    Qt window flags are off-limits (flag changes re-create the native window, which corrupts
+    the ADS floating container and can close a DeleteOnClose document) — so the offscreen
+    test asserts through the recorded ``_set_topmost`` seam."""
+    calls = []
+    monkeypatch.setattr(chartdoc, "_set_topmost",
+                        lambda wid, on: calls.append((int(wid), on)) or True)
+    win = MainWindow(session_path=None)
+    doc = _open_docs(win, 1)[0]
+    assert doc._pin_btn.isHidden()                           # docked: no pin
+    win.tabs._documents[0].setFloating()
+    app.processEvents()
+    assert not doc._pin_btn.isHidden()                       # torn out: pin shown
+    doc._pin_btn.setChecked(True)                            # pin it
+    assert [on for _w, on in calls] == [True]
+    doc._pin_btn.setChecked(False)                           # unpin
+    assert [on for _w, on in calls] == [True, False]
+    # the document survived the pin round-trip (regression: flag-based pinning killed it)
+    app.processEvents()
+    assert win.tabs.document_count() == 1 and doc.symbol == "BTCUSDT"
+    win.close()
+
+
+def test_pin_noops_while_docked_and_resets_on_redock(app, _synthetic_load, monkeypatch):
+    calls = []
+    monkeypatch.setattr(chartdoc, "_set_topmost",
+                        lambda wid, on: calls.append((int(wid), on)) or True)
+    win = MainWindow(session_path=None)
+    doc = _open_docs(win, 1)[0]
+    doc._pin_btn.setChecked(True)                            # docked: must refuse + uncheck
+    assert not doc._pin_btn.isChecked()
+    assert calls == []                                       # no native call while docked
+    # tear out, pin, then gather back in -> pin hides and resets
+    win.tabs._documents[0].setFloating()
+    app.processEvents()
+    doc._pin_btn.setChecked(True)
+    assert [on for _w, on in calls] == [True]
+    win.tabs.arrange_documents("tabs")
+    app.processEvents()
+    assert doc._pin_btn.isHidden() and not doc._pin_btn.isChecked()
+    win.close()
+
+
 def test_dock_layout_round_trips_through_session(app, tmp_path):
     path = tmp_path / "session.json"
     first = MainWindow(session_path=str(path))

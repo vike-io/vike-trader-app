@@ -226,6 +226,106 @@ def test_link_group_set_via_dot_signal_syncs_attr_and_dot(app, _synthetic_load):
     win.close()
 
 
+def test_interval_link_defaults_to_follow_symbol(app, _synthetic_load):
+    """A fresh doc's interval channel follows the symbol link (back-compat: one colour = both)."""
+    win = MainWindow(session_path=None)
+    d = win._new_chart_document("ETHUSDT", "1h")
+    assert d.interval_link_group is None          # None == follow symbol
+    assert d._ivl_dot.group() == -1               # dot shows the "follow symbol" sentinel
+    win.close()
+
+
+def test_interval_channel_links_timeframe_without_symbol(app, _synthetic_load):
+    """MultiCharts parity: charts can share an INTERVAL colour without sharing a symbol colour —
+    changing one's timeframe syncs the other's timeframe but NOT its symbol."""
+    win = MainWindow(session_path=None)
+    a = win._new_chart_document("ETHUSDT", "1h")
+    b = win._new_chart_document("SOLUSDT", "1h")
+    a._set_interval_link_group(2); b._set_interval_link_group(2)   # interval=green, symbols unlinked
+
+    a.load(interval="4h")
+    assert b.interval == "4h"                      # timeframe followed
+    assert b.symbol == "SOLUSDT"                   # symbol did NOT follow (channels independent)
+    win.close()
+
+
+def test_interval_unlinked_frees_timeframe_under_symbol_link(app, _synthetic_load):
+    """Symbol-linked charts can hold INDEPENDENT timeframes when interval is set to unlinked (0)."""
+    win = MainWindow(session_path=None)
+    a = win._new_chart_document("ETHUSDT", "1h")
+    b = win._new_chart_document("SOLUSDT", "1h")
+    a._set_link_group(3); b._set_link_group(3)                    # both symbol-linked (blue)
+    a._set_interval_link_group(0); b._set_interval_link_group(0)  # interval explicitly unlinked
+
+    a.load("ETHUSDT", "4h")
+    assert b.symbol == "ETHUSDT"                   # symbol still synced
+    assert b.interval == "1h"                      # but timeframe stays independent
+    win.close()
+
+
+def test_interval_link_dot_follow_color_round_trip(app, _synthetic_load):
+    win = MainWindow(session_path=None)
+    d = win._new_chart_document("ETHUSDT", "1h")
+    d._ivl_dot.set_group(4, emit=True)            # pick a colour -> decoupled
+    assert d.interval_link_group == 4
+    d._ivl_dot.set_group(-1, emit=True)           # back to "follow symbol"
+    assert d.interval_link_group is None
+    win.close()
+
+
+def test_link_dot_menu_is_multicharts_style(app, _synthetic_load):
+    """The colour menu mirrors MultiCharts: swatch icons, a check on the active entry,
+    'Linked to all' on top and 'Not linked' at the bottom."""
+    from vike_trader_app.ui.linkbus import LINK_ALL
+    from vike_trader_app.ui.panels import LinkDot
+
+    dot = LinkDot(0)
+    actions = [a for a in dot.menu().actions() if not a.isSeparator()]
+    labels = [a.text() for a in actions]
+    assert labels[0] == "Linked to all"
+    assert labels[-1] == "Not linked"
+    assert len(labels) == 17                            # all + 15 colours + not-linked
+    assert "Pink" in labels and "Sky blue" in labels
+    # colour entries carry swatch icons; the active entry is checked
+    assert not next(a for a in actions if a.text() == "Red").icon().isNull()
+    assert next(a for a in actions if a.text() == "Not linked").isChecked()
+    dot.set_group(LINK_ALL)
+    assert next(a for a in actions if a.text() == "Linked to all").isChecked()
+    assert not next(a for a in actions if a.text() == "Not linked").isChecked()
+
+    ivl = LinkDot(-1, follow=True)                      # the interval dot adds Follow symbol
+    ivl_labels = [a.text() for a in ivl.menu().actions() if not a.isSeparator()]
+    assert ivl_labels[0] == "Follow symbol" and len(ivl_labels) == 18
+
+
+def test_linked_to_all_chart_follows_any_colour(app, _synthetic_load):
+    from vike_trader_app.ui.linkbus import LINK_ALL
+
+    win = MainWindow(session_path=None)
+    leader = win._new_chart_document("ETHUSDT", "1h")
+    follower = win._new_chart_document("SOLUSDT", "1h")
+    leader._set_link_group(13)                          # pink (new palette id)
+    follower._set_link_group(LINK_ALL)
+    leader.load("BTCUSDT", "4h")
+    assert (follower.symbol, follower.interval) == ("BTCUSDT", "4h")
+    win.close()
+
+
+def test_interval_link_group_persists_and_restores(app, _synthetic_load, tmp_path):
+    path = tmp_path / "session.json"
+    first = MainWindow(session_path=str(path))
+    d = first._new_chart_document("ETHUSDT", "4h")
+    d._set_interval_link_group(2)                  # green interval channel
+    first.close()
+
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    assert saved["documents"][0]["interval_link_group"] == 2
+
+    second = MainWindow(session_path=str(path))
+    assert second._doc_widgets[0].interval_link_group == 2
+    second.close()
+
+
 def test_focusing_restored_linked_doc_does_not_broadcast(app, monkeypatch):
     """ensure_loaded (focus top-up of a restored doc) must NOT overwrite same-group peers."""
     monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
@@ -253,10 +353,14 @@ def test_failed_link_load_rolls_back_symbol(app, monkeypatch):
 
 
 def test_out_of_range_link_group_clamps_to_unlinked(app, _synthetic_load):
+    from vike_trader_app.ui.linkbus import LINK_ALL
+
     doc = ChartDocument("ETHUSDT", "1h")
     doc.load()
-    doc.apply_state({"link_group": 99, "indicators": []})
+    doc.apply_state({"link_group": 1234, "indicators": []})   # unknown id -> unlinked
     assert doc.link_group == 0
+    doc.apply_state({"link_group": LINK_ALL, "indicators": []})  # 99 is now a REAL group
+    assert doc.link_group == LINK_ALL
 
 
 def test_unlinked_documents_do_not_follow(app, _synthetic_load):
