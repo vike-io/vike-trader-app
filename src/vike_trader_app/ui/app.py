@@ -138,6 +138,25 @@ class _LiveFetchWorker(QtCore.QThread):
             self.failed.emit(str(exc))
 
 
+class _WorkspaceAgentWorker(QtCore.QThread):
+    """Off-thread run of the layout agent (a Claude API call). Emits the captured spec dict (or
+    None) back to the main thread, where the shell converts + applies it."""
+
+    done = QtCore.Signal(object)  # spec dict | None
+
+    def __init__(self, client, prompt, parent=None):
+        super().__init__(parent)
+        self._client, self._prompt = client, prompt
+
+    def run(self):
+        try:
+            from ..ai.workspace import develop_workspace
+            spec = develop_workspace(self._prompt, client=self._client)
+        except Exception:  # noqa: BLE001 - network/SDK failure -> no layout (reported by caller)
+            spec = None
+        self.done.emit(spec)
+
+
 class _RuleOverlay(QtWidgets.QWidget):
     """Transparent, click-through overlay that paints the two separator hairlines (under the
     title bar + above the status bar) in **device-pixel space**.
@@ -243,6 +262,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_hub = LiveHub(self)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
+
+        self._layout_workers: list = []   # in-flight AI-layout agent threads (Phase 5)
 
         # symbol link groups (Phase 3): charts + the watchlist sharing a colour move together.
         self._link_bus = SymbolLinkBus()
@@ -733,6 +754,8 @@ class MainWindow(QtWidgets.QMainWindow):
         col.addWidget(new_chart, 0, QtCore.Qt.AlignHCenter)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self,
                         activated=lambda: self._open_in_new_chart(self._symbol))
+        QtGui.QShortcut(QtGui.QKeySequence("Ctrl+K"), self,
+                        activated=self._open_command_palette)
 
         # "Layout" — named workspaces menu (open / save / delete), rebuilt on each open so the
         # saved list is always current. Sits with the action buttons, not the exclusive rail.
@@ -1986,6 +2009,7 @@ class MainWindow(QtWidgets.QMainWindow):
             menu.addAction(name + tag, lambda n=name: self._apply_workspace(n))
         menu.addSeparator()
         menu.addAction("Save current as…", self._prompt_save_workspace)
+        menu.addAction("AI: generate a layout…", self._prompt_ai_layout)
         user = [n for n in self._workspaces.names() if self._workspaces.is_user(n)]
         if user:
             sub = menu.addMenu("Delete")
@@ -1997,6 +2021,86 @@ class MainWindow(QtWidgets.QMainWindow):
         name, ok = QtWidgets.QInputDialog.getText(self, "Save workspace", "Workspace name:")
         if ok and name.strip():
             self._save_workspace_as(name.strip())
+
+    # --- command palette (Ctrl+K, Phase 5) --------------------------------------------------
+    def _commands(self) -> list:
+        """The flat (label, callback) command list the Ctrl+K palette fuzzy-searches."""
+        cmds: list = []
+        for i, (_glyph, name) in enumerate(self._RAIL_ITEMS):
+            cmds.append((f"Go to {name}", lambda idx=i: self.tabs.setCurrentIndex(idx)))
+        for name in self._workspaces.names():
+            cmds.append((f"Open workspace: {name}", lambda n=name: self._apply_workspace(n)))
+        cmds.append((f"New chart: {self._symbol}",
+                     lambda: self._open_in_new_chart(self._symbol)))
+        cmds.append(("Save workspace as…", self._prompt_save_workspace))
+        cmds.append(("AI: generate a layout…", self._prompt_ai_layout))
+        for key, _icon, tip, _sc in self._PANELS:
+            cmds.append((f"Toggle panel: {tip}", lambda k=key: self._panel_btns[k].toggle()))
+        return cmds
+
+    def _open_command_palette(self) -> None:
+        from .command_palette import CommandPalette
+
+        pal = CommandPalette(self._commands(), self)
+        center = self.geometry().center()
+        pal.move(center.x() - 280, center.y() - 160)
+        pal.exec()
+
+    # --- agent-emitted workspaces (Phase 5) -------------------------------------------------
+    def _apply_agent_spec(self, spec: dict) -> None:
+        """Convert an agent ``create_workspace`` spec into a SessionState and apply it — same
+        path as opening a saved workspace, so an AI layout and a hand-saved one are identical."""
+        from .workspaces import workspace_from_agent_spec
+
+        self._apply_workspace_state(workspace_from_agent_spec(spec))
+
+    def _build_layout_client(self):
+        """A Claude client for the layout agent, or None if no API key / the [ai] extra."""
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            return None
+        try:
+            from ..ai.llm import ClaudeClient
+            return ClaudeClient()
+        except Exception:  # noqa: BLE001 - extra missing / SDK import failure
+            return None
+
+    def _ai_generate_layout(self, prompt: str, client=None) -> None:
+        """Run the layout agent off-thread and apply its spec when it returns. ``client`` is
+        injectable for tests; in the app it's built from ANTHROPIC_API_KEY."""
+        if not prompt.strip():
+            return
+        client = client or self._build_layout_client()
+        if client is None:
+            self.statusBar().showMessage(
+                "AI layout needs ANTHROPIC_API_KEY (and the [ai] extra).", 5000)
+            return
+        self.statusBar().showMessage("Generating layout…", 3000)
+        # Supersede any in-flight request: an API call can't be cancelled, but disconnecting its
+        # done signal stops a slow earlier worker from clobbering this newer layout when it lands.
+        for w in self._layout_workers:
+            try:
+                w.done.disconnect(self._on_ai_layout)
+            except (RuntimeError, TypeError):
+                pass
+        worker = _WorkspaceAgentWorker(client, prompt, self)
+        self._layout_workers.append(worker)   # tracked so closeEvent waits every in-flight thread
+        worker.done.connect(self._on_ai_layout)
+        worker.finished.connect(lambda w=worker: w in self._layout_workers
+                                and self._layout_workers.remove(w))
+        worker.start()
+
+    def _on_ai_layout(self, spec) -> None:
+        if spec:
+            self._apply_agent_spec(spec)
+        else:
+            self.statusBar().showMessage("The layout agent returned nothing.", 4000)
+
+    def _prompt_ai_layout(self) -> None:
+        """Live-app only: ask for a description and generate a layout (no modal in tests)."""
+        text, ok = QtWidgets.QInputDialog.getText(
+            self, "AI layout", "Describe the layout you want:")
+        if ok and text.strip():
+            self._ai_generate_layout(text.strip())
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here
@@ -2013,6 +2117,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_live_worker", None) is not None:
             self._live_worker.wait(2000)
             self._live_worker = None
+        for w in list(getattr(self, "_layout_workers", [])):
+            w.wait(5000)  # wait out any in-flight layout-agent API call (no QThread-destroyed)
+        self._layout_workers = []
         if hasattr(self, "news"):
             self.news.stop_feed()  # halt the news poller thread
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)

@@ -49,6 +49,50 @@ def builtin_workspaces() -> dict[str, SessionState]:
     }
 
 
+_SPACE_INDEX = {"chart": 0, "studio": 1, "screener": 2, "journal": 3, "alerts": 4,
+                "data": 5, "news": 6, "calendar": 7, "options": 8}
+_INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"}
+
+
+def workspace_from_agent_spec(spec: dict, *, default_interval: str = "1h") -> SessionState:
+    """Build a SessionState from the agent's ``create_workspace`` tool args — DEFENSIVELY, since
+    the spec is LLM-produced: unknown space -> Chart, bad interval -> default, link group clamped
+    to 0-6, missing symbol skipped. The result feeds the same ``_apply_workspace_state`` path as
+    a saved workspace, so an agent layout and a hand-saved one are indistinguishable downstream."""
+    spec = spec or {}
+
+    def _grp(v) -> int:
+        try:
+            g = int(v)
+        except (TypeError, ValueError):
+            return 0
+        return g if 0 <= g <= 6 else 0
+
+    documents = []
+    for d in (spec.get("documents") or []):
+        if not isinstance(d, dict):
+            continue
+        symbol = str(d.get("symbol") or "").strip().upper()
+        if not symbol:
+            continue
+        interval = d.get("interval")
+        interval = interval if interval in _INTERVALS else default_interval
+        inds = [{"name": str(n)} for n in (d.get("indicators") or []) if str(n).strip()]
+        documents.append({"symbol": symbol, "interval": interval,
+                          "link_group": _grp(d.get("link_group")), "indicators": inds})
+
+    panels_in = spec.get("panels") if isinstance(spec.get("panels"), dict) else {}
+    panels = {k: bool(panels_in[k]) for k in ("market", "trades") if k in panels_in}
+    panels.setdefault("backtester", True)
+
+    return SessionState(
+        space=_SPACE_INDEX.get(str(spec.get("space", "")).lower(), 0),
+        panels=panels,
+        watchlist_link=_grp(spec.get("watchlist_link")),
+        documents=documents,
+    )
+
+
 class WorkspaceStore:
     """User workspaces persisted to a JSON file, layered over the built-in defaults."""
 
