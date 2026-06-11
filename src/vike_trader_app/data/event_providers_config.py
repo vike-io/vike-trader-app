@@ -1,14 +1,21 @@
 """Persisted Event-Providers list: which event data sources (news + calendar) are enabled and
 in what order.
 
-Mirrors the 'Event Providers' tab concept from Wealth-Lab. Stored as human-editable JSON beside
-the other config files. Non-breaking: when no config file exists, enabled_event_providers()
-returns None, which callers interpret as "everything on" — identical to today's behavior.
+Mirrors the 'Event Providers' tab concept from Wealth-Lab. Per the state-in-DB rule the config
+lives in the app DB (table ``event_providers``) as a single-row JSON payload — the document is
+read and written whole exactly like the legacy ``<root>/event_providers.json``, which is swept
+in once, then deleted (an unreadable file is left in place; see :mod:`.state_db`). The DB is
+derived from ``root`` (``<root>/db/vike_trader_app.sqlite``), so ``root`` stays the only seam
+callers/tests need. Non-breaking: when no config row exists, ``enabled_event_providers()``
+returns None, which callers interpret as "everything on" — identical to the no-file behavior.
 """
 
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+from . import state_db
+
+_TABLE = "event_providers"
 
 
 @dataclass
@@ -59,37 +66,39 @@ def default_event_providers() -> list[str]:
 
 
 def event_providers_path(root: str) -> Path:
+    """Where the legacy JSON config lived — read only by the one-time sweep."""
     return Path(root) / "event_providers.json"
 
 
 def save_event_providers_config(cfg: EventProvidersConfig, root: str) -> None:
-    path = event_providers_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [asdict(p) for p in cfg.providers]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    state_db.save_blob(_TABLE, event_providers_path(root),
+                       [asdict(p) for p in cfg.providers])
 
 
-def load_event_providers_config(root: str) -> EventProvidersConfig:
-    path = event_providers_path(root)
-    if not path.exists():
-        return EventProvidersConfig.default()
-    saved = [EventProviderEntry(d["name"], bool(d.get("enabled", True)))
-             for d in json.loads(path.read_text(encoding="utf-8"))]
+def _config_from_payload(payload: list) -> EventProvidersConfig:
+    saved = [EventProviderEntry(d["name"], bool(d.get("enabled", True))) for d in payload]
     seen = {p.name for p in saved}
-    # Back-compat: append any newly-registered provider as enabled when missing from the saved file.
+    # Back-compat: append any newly-registered provider as enabled when missing from the
+    # saved config.
     for name in default_event_providers():
         if name not in seen:
             saved.append(EventProviderEntry(name, True))
     return EventProvidersConfig(saved)
 
 
+def load_event_providers_config(root: str) -> EventProvidersConfig:
+    payload = state_db.load_blob(_TABLE, event_providers_path(root))
+    if payload is None:
+        return EventProvidersConfig.default()
+    return _config_from_payload(payload)
+
+
 def enabled_event_providers(root: str) -> set[str] | None:
-    """Return the enabled provider names if a config file exists, else None.
+    """Return the enabled provider names if a config was ever saved, else None.
 
     None means "no override — everything on", preserving pre-config behavior.
     """
-    path = event_providers_path(root)
-    if not path.exists():
+    payload = state_db.load_blob(_TABLE, event_providers_path(root))
+    if payload is None:
         return None
-    cfg = load_event_providers_config(root)
-    return set(cfg.enabled_in_order())
+    return set(_config_from_payload(payload).enabled_in_order())

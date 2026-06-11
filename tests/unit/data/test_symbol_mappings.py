@@ -149,3 +149,29 @@ def test_mappings_file_path(tmp_path):
     p = symbol_mappings_path(str(tmp_path))
     assert p.name == "symbol_mappings.json"
     assert p.parent == tmp_path
+
+
+# --- state-in-DB migration ---
+
+def test_save_persists_to_app_db_not_json(tmp_path):
+    """State-in-DB rule: save writes the app DB under <root>/db, never a loose JSON file."""
+    from vike_trader_app.data.symbol_mappings import symbol_mappings_path
+
+    save_mappings(SymbolMappings([MappingRule("yahoo", "BRK.B", "BRK-B")]), str(tmp_path))
+    assert not symbol_mappings_path(str(tmp_path)).exists()
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()
+
+
+def test_legacy_mappings_json_migrates_into_db_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy symbol_mappings.json is imported, then removed."""
+    import json
+
+    from vike_trader_app.data.symbol_mappings import symbol_mappings_path
+
+    legacy = symbol_mappings_path(str(tmp_path))
+    legacy.write_text(json.dumps([
+        {"provider": "yahoo", "pattern": "BRK.B", "replacement": "BRK-B", "is_regex": False},
+    ]), encoding="utf-8")
+    loaded = load_mappings(str(tmp_path))
+    assert apply_mapping("BRK.B", "yahoo", loaded) == "BRK-B"   # rule survived the migration
+    assert not legacy.exists()                                  # legacy file deleted

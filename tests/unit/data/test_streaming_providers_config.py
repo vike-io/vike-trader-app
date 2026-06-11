@@ -80,14 +80,23 @@ def test_save_load_round_trip(tmp_path):
     ]
 
 
-def test_save_creates_json_file(tmp_path):
+def test_save_persists_to_app_db_not_json(tmp_path):
+    """State-in-DB rule: save writes the app DB under <root>/db, never a loose JSON file."""
     cfg = StreamingProvidersConfig.default()
     save_streaming_providers_config(cfg, str(tmp_path))
-    path = streaming_providers_path(str(tmp_path))
-    assert path.exists()
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert isinstance(data, list)
-    assert data[0]["name"] == DEFAULT_ORDER[0]
+    assert not streaming_providers_path(str(tmp_path)).exists()
+    assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()
+    assert load_streaming_providers_config(str(tmp_path)).providers[0].name == DEFAULT_ORDER[0]
+
+
+def test_legacy_json_migrates_into_db_then_file_deleted(tmp_path):
+    """One-time sweep: a legacy streaming_providers.json is imported, then removed."""
+    legacy = streaming_providers_path(str(tmp_path))
+    legacy.write_text(json.dumps([{"name": "kraken", "enabled": False}]), encoding="utf-8")
+    loaded = load_streaming_providers_config(str(tmp_path))
+    by_name = {p.name: p.enabled for p in loaded.providers}
+    assert by_name["kraken"] is False            # the saved flag survived the migration
+    assert not legacy.exists()                   # and the legacy file is gone
 
 
 def test_load_no_file_returns_default(tmp_path):

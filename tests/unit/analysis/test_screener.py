@@ -222,6 +222,29 @@ def test_composite_store_roundtrip_and_reregister(tmp_path):
         S._COMPOSITES.pop("store-composite", None)
 
 
+def test_composite_store_migrates_legacy_json_then_deletes_file(tmp_path):
+    """One-time sweep: a legacy composites.json is imported into the app DB, then removed."""
+    import json
+
+    legacy = tmp_path / "composites.json"
+    legacy.write_text(json.dumps([{
+        "name": "legacy-composite",
+        "description": "",
+        "conditions": [{"rule": "ROC(30) momentum", "direction": "long"}],
+        "combine": "AND",
+        "direction": "long",
+        "long_low": False,
+    }]), encoding="utf-8")
+    try:
+        store = S.CompositeStore(str(legacy))
+        assert "legacy-composite" in store.names()       # data survived the migration
+        assert S.rule_by_name("legacy-composite") is not None   # ... and re-registered
+        assert not legacy.exists()                       # legacy file deleted
+        assert (tmp_path / "db" / "vike_trader_app.sqlite").exists()   # ... into the app DB
+    finally:
+        S._COMPOSITES.pop("legacy-composite", None)
+
+
 # --- volume filter --------------------------------------------------------------------
 
 def test_volume_filter_drops_low_keeps_high():

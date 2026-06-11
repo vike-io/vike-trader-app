@@ -1,15 +1,22 @@
 """Persisted Streaming-Providers list: which data sources offer push WebSocket vs poll-only.
 
-Mirrors Wealth-Lab's 'Streaming Providers' tab — informational push/poll classification plus
-a per-source enable toggle. Stored as human-editable JSON beside the other config files.
-Non-breaking: no config file = nothing changes (live routing remains owned by select_source).
+Mirrors Wealth-Lab's 'Streaming Providers' tab — informational push/poll classification plus a
+per-source enable toggle. Per the state-in-DB rule the config lives in the app DB (table
+``streaming_providers``) as a single-row JSON payload — the document is read and written whole
+exactly like the legacy ``<root>/streaming_providers.json``, which is swept in once, then
+deleted (an unreadable file is left in place; see :mod:`.state_db`). The DB is derived from
+``root`` (``<root>/db/vike_trader_app.sqlite``), so ``root`` stays the only seam callers/tests
+need. Non-breaking: no config row = nothing changes (live routing remains owned by
+select_source).
 """
 
-import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from . import state_db
 from .providers_config import DEFAULT_ORDER
+
+_TABLE = "streaming_providers"
 
 
 @dataclass
@@ -49,24 +56,23 @@ def streaming_kind(name: str) -> str:
 
 
 def streaming_providers_path(root: str) -> Path:
+    """Where the legacy JSON config lived — read only by the one-time sweep."""
     return Path(root) / "streaming_providers.json"
 
 
 def save_streaming_providers_config(cfg: StreamingProvidersConfig, root: str) -> None:
-    path = streaming_providers_path(root)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = [asdict(p) for p in cfg.providers]
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    state_db.save_blob(_TABLE, streaming_providers_path(root),
+                       [asdict(p) for p in cfg.providers])
 
 
 def load_streaming_providers_config(root: str) -> StreamingProvidersConfig:
-    path = streaming_providers_path(root)
-    if not path.exists():
+    payload = state_db.load_blob(_TABLE, streaming_providers_path(root))
+    if payload is None:
         return StreamingProvidersConfig.default()
     saved = [StreamingProviderEntry(d["name"], bool(d.get("enabled", True)))
-             for d in json.loads(path.read_text(encoding="utf-8"))]
+             for d in payload]
     seen = {p.name for p in saved}
-    # Back-compat: append any provider present today but absent from the saved file (disabled).
+    # Back-compat: append any provider present today but absent from the saved config (disabled).
     for name in default_streaming_providers():
         if name not in seen:
             saved.append(StreamingProviderEntry(name, False))
