@@ -39,15 +39,32 @@ def make_panel_dock(manager, title: str, widget, area) -> "QtAds.CDockWidget":
 
 
 class SpaceDeck(QtCore.QObject):
-    """QTabWidget-compatible facade over the ADS center dock area hosting the spaces."""
+    """QTabWidget-compatible facade over the ADS center dock area hosting the spaces.
 
-    currentChanged = QtCore.Signal(int)
+    Two kinds of tab live in the center area: the fixed SPACES (``_docks``, pinned, rail-driven,
+    creation-order == rail index) and runtime chart DOCUMENTS (``_documents``, closable / movable
+    / floatable / tear-out — Phase 2). The facade's index/space API is keyed to ``_docks`` only,
+    so a document being current reports index -1 (no rail space active); documents have their own
+    add/close/list API and the ``documentClosed`` signal.
+    """
+
+    currentChanged = QtCore.Signal(int)        # SPACE index (>=0), or -1 when a document/none
+    documentClosed = QtCore.Signal(object)     # the ChartDocument widget that was closed
+
+    # Tear-out-capable chart documents: closable, draggable, floatable to a separate window,
+    # pinnable to an edge, and destroyed (with their content) when closed.
+    _DOC_FEATURES = (
+        QtAds.CDockWidget.DockWidgetClosable | QtAds.CDockWidget.DockWidgetMovable
+        | QtAds.CDockWidget.DockWidgetFloatable | QtAds.CDockWidget.DockWidgetPinnable
+        | QtAds.CDockWidget.DockWidgetFocusable | QtAds.CDockWidget.DockWidgetDeleteOnClose
+    )
 
     def __init__(self, manager: "QtAds.CDockManager"):
         super().__init__(manager)
         self._mgr = manager
         self._area = None              # the one center CDockAreaWidget (created on first add)
         self._docks: list[QtAds.CDockWidget] = []
+        self._documents: list[QtAds.CDockWidget] = []
 
     def _resolve_area(self):
         """The spaces' current CDockAreaWidget. CDockManager.restoreState() can REBUILD the
@@ -67,13 +84,46 @@ class SpaceDeck(QtCore.QObject):
         return self._area
 
     def _emit_current(self, *_):
-        """Forward the area's current-tab change as a SPACE index. We map through ``_docks``
-        rather than trusting the raw area index: if a foreign dock were ever tabbed into the
-        spaces area, the raw index would no longer line up with the rail / _RAIL_ITEMS — this
-        keeps the shell driven only by real space indices (and never by a stray panel tab)."""
-        idx = self.currentIndex()
-        if idx >= 0:
-            self.currentChanged.emit(idx)
+        """Forward the area's current-tab change. We map through ``_docks`` rather than trusting
+        the raw area index: a document (or any non-space dock) tabbed into the area reports -1,
+        so the shell is driven only by real space indices and never by a stray tab. -1 is still
+        emitted (unlike before) so the shell can react to a document becoming current (title,
+        panel visibility) — consumers must tolerate index -1."""
+        self.currentChanged.emit(self.currentIndex())
+
+    # --- chart documents (runtime, tear-out) ---------------------------------------------
+
+    def add_document(self, widget, title: str, object_name: str) -> "QtAds.CDockWidget":
+        """Add a runtime chart document tab (closable / floatable / pinnable). ``object_name``
+        must be stable for CDockManager.saveState()/restoreState() to map it across a session."""
+        dock = QtAds.CDockWidget(self._mgr, title)
+        dock.setObjectName(object_name)
+        dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
+        dock.setFeatures(self._DOC_FEATURES)
+        self._mgr.addDockWidget(QtAds.CenterDockWidgetArea, dock, self._resolve_area())
+        self._documents.append(dock)
+        # DeleteOnClose -> the dock is torn down on close; capture the inner widget now so the
+        # documentClosed consumer (LiveHub unregister, manifest update) gets a live reference.
+        inner = widget
+        dock.closed.connect(lambda d=dock, w=inner: self._on_document_closed(d, w))
+        dock.setAsCurrentTab()
+        self._resolve_area()
+        return dock
+
+    def _on_document_closed(self, dock, widget) -> None:
+        if dock in self._documents:
+            self._documents.remove(dock)
+        self.documentClosed.emit(widget)
+
+    def documents(self) -> list:
+        """Live chart-document widgets, in tab order (for session save)."""
+        return [d.widget() for d in self._documents if d.widget() is not None]
+
+    def document_count(self) -> int:
+        return len(self._documents)
+
+    def is_document(self, widget) -> bool:
+        return any(d.widget() is widget for d in self._documents)
 
     # --- construction -------------------------------------------------------------------
 
@@ -128,7 +178,13 @@ class SpaceDeck(QtCore.QObject):
         if area is None:
             return None
         dock = area.currentDockWidget()
-        return dock.widget() if dock is not None and dock in self._docks else None
+        if dock is None:
+            return None
+        # spaces AND documents share the center area; return either's widget so the shell can
+        # tell which is current (currentIndex still reports -1 for a document).
+        if dock in self._docks or dock in self._documents:
+            return dock.widget()
+        return None
 
     def setCurrentIndex(self, index: int) -> None:  # noqa: N802
         # Target the dock WIDGET, not a raw area index — robust if the area's tab order ever
