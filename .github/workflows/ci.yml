@@ -37,7 +37,7 @@ jobs:
       # is the fix (see CLAUDE.md). `not network` drops the one live-network data test.
       - name: Run unit suite (no Qt)
         run: >
-          uv run pytest -q --timeout=120 --timeout-method=thread
+          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
           tests/unit -m "not network"
 
   ui-test:
@@ -73,9 +73,11 @@ jobs:
       # The whole offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process —
       # the counterpart to the unit run above. `not network` drops the live data-manager test.
       # New GUI tests under tests/gui are picked up automatically (no hard-coded file list).
+      # `-n auto` (pytest-xdist) runs it across all runner cores in SEPARATE processes — full
+      # isolation preserved (the suite is parallel-safe), cutting ~10 min serial to a few.
       - name: Run GUI test suite (offscreen)
         run: >
-          uv run pytest -q --timeout=120 --timeout-method=thread
+          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
           tests/gui -m "not network"
 
   bench:
