@@ -38,6 +38,8 @@ ENV/
 storage/**/*.json
 # cached source favicons for the News space (fetched on demand, per-user)
 storage/news_logos/
+# opt-in telemetry runtime output (anonymous client_id + mcp-usage.jsonl) — per-user, never source
+storage/telemetry/
 
 # ---- Test / coverage ----
 .pytest_cache/
