@@ -13,9 +13,15 @@ A :class:`BrokerProfile` is a named bundle of specs plus a *display-only* ``time
 Per the project decision, **all bars are stored and queried in UTC** — the timezone is metadata
 you can read (e.g. "Dukascopy = EST+7"), never a second physical copy of the data.
 
-Storage mirrors the rollup-pins convention (see :mod:`.rollup`): plain JSON under
-``<root>/profiles/<slug>.json``, so profiles are human-editable, git-friendly, and safe for
-multiple processes to read.
+Storage is the SQLite instrument DB (see :mod:`.instrument_db`): profiles live in
+``<root>/db/instruments.sqlite`` beside the app DB — per the project rule, runtime state lives
+in SQLite, never in loose JSON files. The legacy ``<root>/profiles/<slug>.json`` store is
+migrated in once on first open (user edits preserved, files deleted). JSON remains only as the
+explicit Export/Import interchange (:func:`export_profile_json` / :func:`import_profile_json`).
+
+Resolution consults three layers, in order: the per-exchange ``symbol_catalog`` (refreshed from
+the venue, e.g. Binance ``/exchangeInfo``) → the profile's manual per-symbol override → the
+asset-class default (the original fallback, preserved).
 """
 
 import json
@@ -107,8 +113,21 @@ class BrokerProfile:
     instruments: dict[str, InstrumentSpec] = field(default_factory=dict)
     default_spec: InstrumentSpec | None = None
 
-    def resolve(self, symbol: str) -> InstrumentSpec:
+    def resolve(self, symbol: str, catalog=None) -> InstrumentSpec:
+        """Spec for ``symbol``: catalog hit → manual override → class default.
+
+        ``catalog`` is an optional injectable lookup (postfix-stripped symbol →
+        ``InstrumentSpec | None``) bound to this broker's exchange row in the symbol catalog —
+        see :func:`resolve_spec`. The catalog outranks the profile's manual entries by design:
+        a venue-refreshed spec is authoritative, while the manual table covers symbols the
+        venue doesn't publish. Kept as a parameter (not a field) so the dataclass stays a pure,
+        equality-comparable value with no storage coupling.
+        """
         key = strip_postfix(symbol, self.postfix)
+        if catalog is not None:
+            hit = catalog(key)
+            if hit is not None:
+                return hit
         if key in self.instruments:
             return self.instruments[key]
         if self.default_spec is not None:
@@ -163,17 +182,26 @@ def preset_profiles() -> dict[str, BrokerProfile]:
     }
 
 
-# --- JSON storage (mirrors rollup load_pins/save_pins) -------------------------------------
+# --- storage (SQLite via .instrument_db; JSON only as export/import interchange) -----------
+#
+# The .instrument_db import stays *inside* the functions: instrument_db imports the model +
+# codecs from this module at top level, so the storage seam loads lazily to avoid the cycle
+# (same pattern as infer_asset_class's local .sources import).
 
 def profiles_dir(root: str) -> Path:
+    """Where the *legacy* JSON profile store lived — read only by the one-time migration."""
     return Path(root) / "profiles"
 
 
 def _slug(name: str) -> str:
+    """Lower-kebab key for a profile name — doubles as its exchange key in the symbol catalog
+    (e.g. ``"Binance"`` → ``"binance"``, the row :func:`~.instrument_db.refresh_binance_catalog`
+    writes)."""
     return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-") or "profile"
 
 
 def profile_path(root: str, name: str) -> Path:
+    """Where the legacy JSON for ``name`` lived (kept for the migration sweep + tooling)."""
     return profiles_dir(root) / f"{_slug(name)}.json"
 
 
@@ -205,39 +233,64 @@ def profile_from_dict(d: dict) -> BrokerProfile:
 
 
 def save_profile(profile: BrokerProfile, root: str) -> None:
-    """Write one profile to ``<root>/profiles/<slug>.json`` (creating the dir)."""
-    path = profile_path(root, profile.name)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(profile_to_dict(profile), indent=2))
+    """Insert-or-replace one profile in ``<root>/db/instruments.sqlite`` (keyed by name)."""
+    from . import instrument_db
+
+    instrument_db.put_profile(root, profile)
 
 
 def load_profile(name: str, root: str) -> BrokerProfile | None:
-    """Load a profile by name, or ``None`` if its file is absent."""
-    path = profile_path(root, name)
-    if not path.exists():
-        return None
-    return profile_from_dict(json.loads(path.read_text()))
+    """Load a profile by name from the instrument DB, or ``None`` if not stored."""
+    from . import instrument_db
+
+    return instrument_db.get_profile(root, name)
 
 
 def list_profiles(root: str) -> list[str]:
     """Names of all stored profiles (sorted), ``[]`` if none."""
-    d = profiles_dir(root)
-    if not d.is_dir():
-        return []
-    return sorted(json.loads(f.read_text())["name"] for f in d.glob("*.json"))
+    from . import instrument_db
+
+    return instrument_db.profile_names(root)
 
 
 def ensure_presets(root: str) -> list[str]:
-    """Write any preset profile that isn't already on disk; return the names written (sorted).
+    """Store any preset profile that isn't already in the DB; return the names written (sorted).
 
-    Idempotent: existing files are never clobbered, so user edits to a preset survive.
+    Idempotent: existing rows are never clobbered, so user edits to a preset survive. (And the
+    DB open behind this sweeps the legacy JSON store first, so a migrated user-edited preset is
+    already present — see :func:`~.instrument_db.migrate_json_profiles`.)
     """
-    written = []
-    for name, profile in preset_profiles().items():
-        if not profile_path(root, name).exists():
-            save_profile(profile, root)
-            written.append(name)
+    from . import instrument_db
+
+    written = [name for name, profile in preset_profiles().items()
+               if instrument_db.add_profile_if_absent(root, profile)]
     return sorted(written)
+
+
+def export_profile_json(name: str, root: str, dest: str | Path) -> Path:
+    """Write profile ``name`` to ``dest`` as interchange JSON; returns the path written.
+
+    This (with :func:`import_profile_json`) is the *only* sanctioned JSON I/O for profiles —
+    an explicit, user-triggered export for sharing/backup. Runtime state stays in the DB.
+    """
+    profile = load_profile(name, root)
+    if profile is None:
+        raise ValueError(f"unknown profile: {name!r}")
+    dest = Path(dest)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(json.dumps(profile_to_dict(profile), indent=2))
+    return dest
+
+
+def import_profile_json(src: str | Path, root: str) -> BrokerProfile:
+    """Read an interchange JSON and store it (replacing any same-name profile); returns it.
+
+    The source file is the user's — it is read, never moved or deleted (unlike the one-time
+    legacy migration, which owns and removes the files it sweeps).
+    """
+    profile = profile_from_dict(json.loads(Path(src).read_text()))
+    save_profile(profile, root)
+    return profile
 
 
 def with_instrument(profile: BrokerProfile, spec: InstrumentSpec) -> BrokerProfile:
@@ -270,12 +323,20 @@ def mass_edit_specs(specs: list[InstrumentSpec], changes: dict) -> list[Instrume
 def resolve_spec(symbol: str, profile_name: str, root: str) -> InstrumentSpec:
     """Resolve ``symbol`` to its spec under the stored profile ``profile_name``.
 
-    Falls back to the in-memory preset (then a class default) if the profile isn't on disk yet.
+    Resolution order: the profile's exchange row in the ``symbol_catalog`` (keyed by the
+    profile's slug, e.g. ``Binance`` → ``binance``) → the profile's manual override → the
+    asset-class default (the original behavior, preserved as the final fallback). Falls back
+    to the in-memory preset (then a class default) if the profile isn't stored yet.
     """
+    from . import instrument_db
+
     profile = load_profile(profile_name, root) or preset_profiles().get(profile_name)
     if profile is None:
         return default_spec_for(strip_postfix(symbol, ""), ASSET_CRYPTO)
-    return profile.resolve(symbol)
+    exchange = _slug(profile.name)
+    return profile.resolve(
+        symbol, catalog=lambda sym: instrument_db.catalog_lookup(root, exchange, sym)
+    )
 
 
 # --- symbol → asset class / spec (used to make a cached series self-describing) -------------

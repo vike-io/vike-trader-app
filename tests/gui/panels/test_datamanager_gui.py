@@ -190,9 +190,10 @@ def test_datamanager_profiles_live_beside_parquet_not_inside(app, tmp_path):
     data_root = tmp_path / "parquet"
     data_root.mkdir()
     tab = DataManagerTab(root=str(data_root), pins_path=str(tmp_path / "pins.json"))
-    tab.refresh()  # seeds presets at the config root
-    assert (tmp_path / "profiles").is_dir()          # storage/profiles — beside the cache
-    assert not (data_root / "profiles").exists()     # not storage/parquet/profiles
+    tab.refresh()  # seeds presets (into the instrument DB) at the config root
+    assert (tmp_path / "db" / "instruments.sqlite").is_file()  # storage/db — beside the cache
+    assert not (data_root / "db").exists()                     # not storage/parquet/db
+    assert not (tmp_path / "profiles").exists()                # and no legacy JSON store
 
 
 # --- Task 12: tree + sub-tabs structural tests ---

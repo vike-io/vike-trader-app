@@ -6,6 +6,7 @@ Modules (created during implementation, test-first):
     binance_source.py    seed test data from Binance public REST klines (no API key)
     websocket_source.py  vike.io live feed for forward-test (Phase 3)
     store.py             SQLite metadata (strategies, runs, results) in ./storage/db/
+    instrument_db.py     SQLite instrument store (broker profiles + symbol catalog), same dir
 
 NOTE: this is the data *code* layer. Actual data files live under ./storage/
 (git-ignored by extension), never inside this package.

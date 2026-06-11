@@ -3,10 +3,9 @@
 Pure, Qt-free: an ``InstrumentSpec`` makes a downloaded series self-describing (tick / pip /
 step / contract-size → correct price decimals, resampling, symbol mapping); a ``BrokerProfile``
 bundles specs + a *display-only* timezone label (all bars stay UTC — no broker-TZ storage).
-Storage mirrors the rollup-pins convention (JSON under ``<root>/profiles``).
+Storage is the SQLite instrument DB (``<root>/db/instruments.sqlite``) — state lives in the DB,
+JSON only as export/import interchange; see ``test_instrument_db.py`` for those semantics.
 """
-
-import json
 
 from vike_trader_app.data import instruments as inst
 from vike_trader_app.data.instruments import BrokerProfile, InstrumentSpec
@@ -89,7 +88,7 @@ def test_resolve_unknown_symbol_falls_back_to_class_default():
     assert spec.tick_size > 0
 
 
-# --- JSON storage (mirrors rollup load_pins/save_pins) -----------------------------------
+# --- profile storage (SQLite instrument DB) ----------------------------------------------
 
 def test_save_then_load_profile_roundtrips(tmp_path):
     p = BrokerProfile(
@@ -115,11 +114,12 @@ def test_ensure_presets_writes_five_and_is_idempotent(tmp_path):
     assert set(inst.list_profiles(str(tmp_path))) == set(written)
 
 
-def test_ensure_presets_files_are_valid_json(tmp_path):
+def test_ensure_presets_persists_to_sqlite_not_json_files(tmp_path):
     inst.ensure_presets(str(tmp_path))
+    assert (tmp_path / "db" / "instruments.sqlite").is_file()  # state lives in the DB...
+    assert not list(tmp_path.glob("profiles/*.json"))          # ...never in loose JSON files
     for name in inst.list_profiles(str(tmp_path)):
-        d = json.loads(inst.profile_path(str(tmp_path), name).read_text())
-        assert d["name"] == name
+        assert inst.load_profile(name, str(tmp_path)).name == name
 
 
 def test_resolve_spec_via_storage(tmp_path):
