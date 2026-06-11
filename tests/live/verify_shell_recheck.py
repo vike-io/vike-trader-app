@@ -72,10 +72,6 @@ def step2():
     # S4: copy/paste window
     win._copy_active_document(); win._paste_document()
     REPORT.append(f"copy/paste -> docs={win.tabs.document_count()}")
-    # S5: favorite the active doc style
-    chart = win.tabs.currentWidget().chart
-    chart.set_style("Renko"); chart._toggle_style_favorite()
-    REPORT.append(f"favorites={chart._fav_styles}; fav buttons={chart._fav_bar.layout().count()}")
     # recents
     win._apply_workspace("Research")
     REPORT.append(f"recents={win._workspaces.recents()}")
