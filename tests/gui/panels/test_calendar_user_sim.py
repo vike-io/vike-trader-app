@@ -182,7 +182,8 @@ def test_user_walks_every_tab_and_each_table_populates(app):
     # "Covered only" is on by default -> the uncovered ZZZZ row is hidden (3 of 4 shown)
     assert earn.visible_event_count() == 3
     earn_hdr = [earn._tree.headerItem().text(c) for c in range(earn._tree.columnCount())]
-    assert earn_hdr == ["Time", "Symbol", "Company", "EPS est.", "EPS act.", "Surprise", "Mkt cap"]
+    # trailing "" = right-padding spacer (last data column is right-aligned numeric Mkt cap)
+    assert earn_hdr == ["Time", "Symbol", "Company", "EPS est.", "EPS act.", "Surprise", "Mkt cap", ""]
     # biggest market cap first within the date
     first_day = earn._tree.topLevelItem(0)
     assert first_day.child(0).text(1) == "AAPL"   # 3.5T cap sorts above MSFT (3.1T)

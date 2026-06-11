@@ -234,8 +234,13 @@ class EquityCalendarTab(QtWidgets.QWidget):
         self._status.setVisible(False)        # take no vertical space until it actually has text
         root.addWidget(self._status)
         self._tree = QtWidgets.QTreeWidget()
-        self._tree.setColumnCount(len(columns))
-        self._tree.setHeaderLabels(columns)
+        # Trailing spacer column when the LAST data column is right-aligned numeric (Earnings'
+        # "Mkt cap"): keeps its values off the scrollbar edge, mirroring the Economic tab's
+        # right-padding treatment (TradingView leaves ~48px there).
+        self._pad_col = len(columns) if (len(columns) - 1) in tuple(right_cols) else None
+        labels = [*columns, ""] if self._pad_col else list(columns)
+        self._tree.setColumnCount(len(labels))
+        self._tree.setHeaderLabels(labels)
         # Match the Economic tree exactly (TV-polished): no decoration/indent, no alt rows, and a
         # single wide Stretch column (its free-text column, like Economic's Event) with the rest
         # left at Qt's default Interactive sizing. Header styling, row padding and the mono cell
@@ -251,6 +256,13 @@ class EquityCalendarTab(QtWidgets.QWidget):
         hdr = self._tree.header()
         hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(stretch_col, QtWidgets.QHeaderView.Stretch)
+        # Company/Event is the ONLY stretch column — QHeaderView's stretchLastSection default
+        # would balloon the last column instead (Earnings' right-aligned "Mkt cap" measured
+        # 480px for 88px of content), same bug class fixed in economic_calendar.
+        hdr.setStretchLastSection(False)
+        if self._pad_col is not None:
+            hdr.setSectionResizeMode(self._pad_col, QtWidgets.QHeaderView.Fixed)
+            self._tree.setColumnWidth(self._pad_col, 40)
         for col in self._right_cols:   # numeric headers right-aligned to sit over their numbers
             self._tree.headerItem().setTextAlignment(col, QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         root.addWidget(self._tree, 1)

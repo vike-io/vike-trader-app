@@ -179,17 +179,19 @@ class ScreenerTab(QtWidgets.QWidget):
         self._desc.setStyleSheet(f"color:{theme.TEXT3};font-size:10px;")
         root.addWidget(self._desc)
 
-        self._table = QtWidgets.QTableWidget(0, len(_COLS))
-        self._table.setHorizontalHeaderLabels(_COLS)
+        self._table = QtWidgets.QTableWidget(0, len(_COLS) + 1)  # +1: trailing spacer column
+        self._table.setHorizontalHeaderLabels([*_COLS, ""])
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.setAlternatingRowColors(True)
         # Compact columns sized to their content (a 4-char ticker shouldn't get a 500px column on a
-        # wide screen) with the last column absorbing the slack so the grid still reaches the edge.
+        # wide screen). The slack goes to an EMPTY trailing spacer column — stretching the last
+        # DATA column ("Avg Vol") ballooned it across half the grid (the calendar bug class).
         hdr = self._table.horizontalHeader()
         hdr.setSectionResizeMode(QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setStretchLastSection(True)
+        hdr.setStretchLastSection(False)
+        hdr.setSectionResizeMode(len(_COLS), QtWidgets.QHeaderView.Stretch)
         hdr.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         root.addWidget(self._table, 1)
         self._placeholder = TablePlaceholder(self._table, "No results — click Scan universe")
