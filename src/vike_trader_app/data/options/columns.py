@@ -13,8 +13,11 @@ from .model import OptionQuote
 
 # Per-side field order, CENTRE -> OUTER (i.e. the order on the puts side, left to right).
 # The calls side uses the reverse so the table mirrors around the central Strike/IV.
+# NB: "annbid"/"annask" (annualized yield) and "ltp" (last traded price) are intentionally
+# omitted from the displayed chain — their value/format logic is kept below (still unit-tested)
+# so the columns can be re-enabled by adding them back here.
 CHAIN_FIELDS = ["volume", "distance", "reldist", "bid", "ask", "spread",
-                "theor", "ltp", "bidpct", "askpct", "annbid", "annask"]
+                "theor", "bidpct", "askpct"]
 GREEKS_FIELDS = ["volume", "oi", "bid", "ask", "mark", "delta", "gamma", "theta", "vega"]
 
 HEADERS = {

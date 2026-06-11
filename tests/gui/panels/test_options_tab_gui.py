@@ -43,9 +43,12 @@ def test_chain_view_columns_and_atm_marker_row():
     tab.set_chain(_chain())
     # calls + [Strike, IV] + puts
     assert tab.table.columnCount() == 2 * len(C.CHAIN_FIELDS) + 2
-    for label in ("Theor", "Spread", "Distance", "Rel dist", "Bid %", "Ann bid %", "Ann ask %",
-                  "LTP", "Strike", "IV"):
+    for label in ("Theor", "Spread", "Distance", "Rel dist", "Bid %", "Strike", "IV"):
         assert _cols(tab.table, label), f"missing column {label}"
+    # the annualized-yield and LTP columns are intentionally hidden from the chain view
+    assert not _cols(tab.table, "Ann bid %")
+    assert not _cols(tab.table, "Ann ask %")
+    assert not _cols(tab.table, "LTP")
     # 2 strikes + 1 spanned ATM marker row, inserted at the first strike >= spot (7605)
     assert tab.table.rowCount() == 3
     atm = next(r for r in range(tab.table.rowCount())
