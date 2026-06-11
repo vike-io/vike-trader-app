@@ -565,8 +565,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._backtester = container
         configure_dock_manager_defaults()  # static config — must precede CDockManager()
         self.dock_manager = QtAds.CDockManager(self)  # installs itself as the central widget
+        # Unified title bar (stage 1): our factory renders every dock-area title bar — the
+        # central spaces area carries the single-title MC chart header; panels keep MC chrome.
+        # Per-manager install (not the global setFactory) so offscreen tests + any future
+        # manager keep ADS defaults. Keep a python ref so the factory isn't GC'd.
+        from .dockshell import VikeComponentsFactory
+        self._dock_factory = VikeComponentsFactory()
+        self.dock_manager.setComponentsFactory(self._dock_factory)
         self.dock_manager.setStyleSheet(dock_qss())
         self.tabs = SpaceDeck(self.dock_manager)
+        # The factory recreates the chart-space header on relayout; each time it asks us to
+        # re-cap its width to the panel edge (forced far-right ⧉ ─ □ ✕).
+        self.tabs.set_fit_callback(self._fit_chart_header)
         self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
@@ -664,6 +674,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # The top one also replaces the rail's old vertical border.
         self._rules = _RuleOverlay(self)
         self._rules.raise_()
+        self._update_chart_header()   # initial chart-space header title (CHART · SYM · iv)
 
     def _wire_options(self) -> None:
         """Connect the Options tab <-> service. Fetching only starts when the tab is first
@@ -862,10 +873,89 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_space_changed(self, index: int) -> None:
         """Lazy-start the news feed the first time the News space is opened."""
+        self._update_chart_header()
         if index < 0:        # a chart document (not a space) became current — nothing to do
             return
         if self.tabs.widget(index) is getattr(self, "news", None):
             self.news.start_feed(self._symbol)
+
+    def _update_chart_header(self) -> None:
+        """Drive the chart-space header title (the single MC-style line). For chart-bearing
+        spaces it reads SPACE · SYMBOL · INTERVAL; other spaces show just their name. The live
+        price (· 62,403 ▲0.18%) is appended by _refresh_header_price — the overcome-MC win."""
+        if not hasattr(self, "tabs"):
+            return
+        idx = self.tabs.currentIndex()
+        if idx < 0:                      # a chart document is current — leave the header as-is
+            return
+        name = (self._RAIL_ITEMS[idx][1] if idx < len(self._RAIL_ITEMS)
+                else self.tabs.tabText(idx))
+        icon_name = name.lower()
+        if name in ("Chart", "Studio"):
+            base = f"{name} · {self._symbol} · {self._interval}"
+            html = self._header_price_html(base)
+            if html is not None:
+                self.tabs.set_header_title_rich(html)
+            else:
+                self.tabs.set_header_title(base)
+        else:
+            self.tabs.set_header_title(name)
+        try:
+            self.tabs.set_header_icon(
+                icons.rail_icon(icon_name, theme.ACCENT, theme.ACCENT, theme.ACCENT)
+                .pixmap(16, 16))
+        except Exception:  # noqa: BLE001 - icon is cosmetic; never block the header on it
+            pass
+        self._fit_chart_header()
+
+    def _header_price_html(self, base: str) -> "str | None":
+        """The overcome-MC ticker: append the live last price + change% to the chart-space
+        header (MC's title is static text). Reuses self._bars — no new data path, main-thread.
+        Change is last close vs the prior bar's close, coloured green/red (theme UP/DOWN)."""
+        bars = getattr(self, "_bars", None)
+        if not bars:
+            return None
+        try:
+            last = bars[-1].close
+            prev = bars[-2].close if len(bars) >= 2 else bars[-1].open
+        except (AttributeError, IndexError):
+            return None
+        chg = last - prev
+        pct = (chg / prev * 100.0) if prev else 0.0
+        col = theme.UP if chg >= 0 else theme.DOWN
+        arrow = "▲" if chg >= 0 else "▼"
+        return (f"<span style='color:{theme.TEXT};'>{base} · {last:,.2f} </span>"
+                f"<span style='color:{col};'>{arrow}{abs(pct):.2f}%</span>")
+
+    def _fit_chart_header(self) -> None:
+        """Cap the chart-space header to the VISIBLE chart width so its ⧉ ─ □ ✕ sit at the
+        chart's right edge. The central dock area extends BEHIND the side panels (ADS), so the
+        title bar's own width is useless here — instead measure where the right-hand panels
+        actually start (their global left edge) and cap to that. Re-run on resize / panel
+        toggle / space change / header recreation."""
+        h = self.tabs.header_widget()
+        if h is None:
+            return
+        try:
+            hl = h.mapToGlobal(QtCore.QPoint(0, 0)).x()
+            limit = self.mapToGlobal(QtCore.QPoint(self.width(), 0)).x()
+            for dock in getattr(self, "_panel_dock_map", {}).values():
+                try:
+                    if dock.isClosed() or dock.isFloating():
+                        continue
+                    area = dock.dockAreaWidget()
+                    if area is None or not area.isVisible():
+                        continue
+                    dl = area.mapToGlobal(QtCore.QPoint(0, 0)).x()
+                    if dl > hl + 80:        # a panel docked to the RIGHT of the header
+                        limit = min(limit, dl)
+                except RuntimeError:        # dock torn down mid-relayout — skip
+                    continue
+            w = limit - hl
+            if w > 120:
+                h.setMaximumWidth(w)
+        except RuntimeError:
+            pass
 
     def _float_space(self, index: int) -> None:
         """Launcher click: open the space as a floating native window over the workspace
@@ -1062,6 +1152,7 @@ class MainWindow(QtWidgets.QMainWindow):
             overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
             for ch in (self.price, self.studio_price):  # Chart space stays clean (no auto overlays)
                 ch.apply_live(merged, overlays if ch is self.studio_price else None, repaint=False)
+            self._update_chart_header()   # live ticker: header last price + change% (overcome MC)
             if was_at_end:  # following the live edge -> advance the cursor and repaint
                 self._replay.seek(self._replay.last_index)
                 self._render_frame()
@@ -1352,6 +1443,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._ensure_dock_usable_width(dock)
         finally:
             self._syncing_docks = prev
+        # a right-hand panel opening/closing changes the visible chart width -> re-pin header
+        QtCore.QTimer.singleShot(0, self._fit_chart_header)
 
     def _on_dock_view_toggled(self, key: str, on: bool) -> None:
         """The user closed/opened a panel via its own chrome (title-bar X, pin, tab) —
@@ -1771,6 +1864,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_bars(bars)
         self._push_watch_quote(symbol, bars)
         self._arm_live_updates()
+        self._update_chart_header()
 
     def _on_interval_chosen(self, interval: str):
         """Timeframe dropdown -> reload the current symbol at the chosen interval."""
@@ -2062,6 +2156,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def resizeEvent(self, event):  # noqa: N802 - Qt override
         super().resizeEvent(event)
         self._place_rules()
+        self._fit_chart_header()   # chart width changed -> re-pin the header's ⧉ ─ □ ✕
 
     def _place_rules(self) -> None:
         """Size the separator overlay to the whole window and tell it where the bottom rule

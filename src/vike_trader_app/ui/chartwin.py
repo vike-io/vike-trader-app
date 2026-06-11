@@ -14,8 +14,9 @@ from PySide6 import QtCore, QtWidgets
 
 from . import theme
 from .style_icons import style_icon
+from .unifiedbar import BAR_H, UnifiedTitleBar
 
-TITLE_H = 30
+TITLE_H = BAR_H   # one shared title-bar height across every surface (chart header / panels)
 _EDGE = 6          # resize-border thickness (frame edges)
 _MIN_W, _MIN_H = 320, 160
 
@@ -57,52 +58,23 @@ class ChartWindowFrame(QtWidgets.QFrame):
         lay.setContentsMargins(1, 1, 1, 1)
         lay.setSpacing(0)
 
-        # --- title bar -----------------------------------------------------------------
-        self._bar = QtWidgets.QWidget()
-        self._bar.setFixedHeight(TITLE_H)
-        self._bar.setObjectName("chartWinBar")
-        self._bar.setStyleSheet(f"#chartWinBar{{background:{theme.SURFACE};}}")
-        bar = QtWidgets.QHBoxLayout(self._bar)
-        bar.setContentsMargins(8, 0, 0, 0)
-        bar.setSpacing(6)
-        ic = QtWidgets.QLabel()
-        ic.setPixmap(style_icon("Candles", theme.ACCENT).pixmap(16, 16))
-        ic.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        bar.addWidget(ic)
-        self._title = QtWidgets.QLabel(doc.title())
-        self._title.setStyleSheet(
-            f"color:{theme.TEXT};font-size:12px;font-weight:600;background:transparent;")
-        self._title.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        bar.addWidget(self._title)
-        bar.addStretch(1)
+        # --- title bar (shared chrome — unifiedbar) --------------------------------------
+        self._bar = UnifiedTitleBar(
+            title=doc.title(),
+            icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16))
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
-            bar.addWidget(doc._pin_btn)
-
-        def _btn(glyph, tip, slot, danger=False):
-            b = QtWidgets.QToolButton()
-            b.setText(glyph)
-            b.setToolTip(tip)
-            b.setFixedSize(36, TITLE_H)
-            b.setCursor(QtCore.Qt.PointingHandCursor)
-            hover = "#c42b1c" if danger else theme.PANEL
-            b.setStyleSheet(
-                f"QToolButton{{border:none;background:transparent;color:{theme.TEXT2};"
-                f"font-size:12px;}}"
-                f"QToolButton:hover{{background:{hover};color:{theme.TEXT};}}")
-            b.clicked.connect(slot)
-            bar.addWidget(b)
-            return b
-
-        self._detach_btn = _btn("⧉", "Detach to its own window", self.toggle_detach)
-        _btn("─", "Minimize (roll up)", self.toggle_rollup)
-        self._max_btn = _btn("□", "Maximize", self.toggle_max)
-        _btn("✕", "Close", self.close_window, danger=True)
+            self._bar.add_widget(doc._pin_btn)
+        self._detach_btn = self._bar.add_button(
+            "detach", "⧉", "Detach to its own window", self.toggle_detach)
+        self._bar.add_button("min", "─", "Minimize (roll up)", self.toggle_rollup)
+        self._max_btn = self._bar.add_button("max", "□", "Maximize", self.toggle_max)
+        self._bar.add_button("close", "✕", "Close", self.close_window, danger=True)
         lay.addWidget(self._bar)
         lay.addWidget(doc, 1)
 
         if hasattr(doc, "symbolChanged"):
-            doc.symbolChanged.connect(lambda *_: self._title.setText(doc.title()))
+            doc.symbolChanged.connect(lambda *_: self._bar.set_title(doc.title()))
 
         self._bar.installEventFilter(self)
         self.resize(720, 460)
@@ -282,9 +254,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
     def set_active(self, on: bool) -> None:
         """The ACTIVE window is shown by its bar background alone — no accent underline
         (the green rule under the header was removed per the user)."""
-        self._bar.setStyleSheet(
-            f"#chartWinBar{{background:{theme.RAISE if on else theme.SURFACE};"
-            f"border-bottom:1px solid {theme.BORDER};}}")
+        self._bar.set_active(on)
 
 
 def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) -> None:
