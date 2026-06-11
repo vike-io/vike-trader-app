@@ -100,8 +100,9 @@ def test_menus_populate_on_show(app):
 
 
 def test_space_tabs_and_strip_hidden_windows_float(app):
-    """S7: no tab strip at all — space tabs hidden AND the area title bar reclaimed; charts
-    float as windows over the workspace instead of tabbing."""
+    """S7 + unified title bar: no space TAB strip — space tabs stay hidden, and the area title
+    bar is now the single-title chart HEADER (not the raw tabs). Charts float as windows over
+    the workspace instead of tabbing."""
     win = MainWindow(session_path=None)
     win.show()
     QtWidgets.QApplication.processEvents()
@@ -110,7 +111,8 @@ def test_space_tabs_and_strip_hidden_windows_float(app):
     QtWidgets.QApplication.processEvents()            # the singleShot(0) re-hide
     assert all(not d.tabWidget().isVisible() for d in win.tabs._docks)
     area = win.tabs._resolve_area()
-    assert not area.titleBar().isVisible()            # the whole strip row is gone
+    tb = area.titleBar()
+    assert getattr(tb, "is_chart_header", lambda: False)()   # header replaces the tab strip
     assert len(win._chart_frames) == 1
     assert win._chart_frames[0].isVisible()
     win.close()

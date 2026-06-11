@@ -18,46 +18,227 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import theme
 
 
-def _glyph_icon(glyph: str, color: str, px: int = 14) -> QtGui.QIcon:
-    """A tiny QIcon painted from a unicode glyph — for the MC title-bar min/max buttons that
-    ADS renders from QActions (it uses the action's icon, not its text)."""
-    pm = QtGui.QPixmap(16, 16)
-    pm.fill(QtCore.Qt.transparent)
-    p = QtGui.QPainter(pm)
-    p.setRenderHint(QtGui.QPainter.TextAntialiasing, True)
-    f = p.font()
-    f.setPixelSize(px)
-    p.setFont(f)
-    p.setPen(QtGui.QColor(color))
-    p.drawText(pm.rect(), QtCore.Qt.AlignCenter, glyph)
-    p.end()
-    return QtGui.QIcon(pm)
+class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
+    """Custom ADS dock-area title bar (unified title bar, stage 1).
 
+    ALWAYS calls super().__init__(area) so ADS's built-in dock-area behaviour keeps its C++
+    wiring — we render our own UnifiedTitleBar over the row and hide the native chrome.
 
-def apply_mc_titlebar(dock: "QtAds.CDockWidget", icon: "QtGui.QIcon | None" = None) -> None:
-    """Give a dock the MultiCharts-style title bar: a window ICON + minimize / maximize buttons
-    sitting alongside ADS's built-in detach (undock) and close buttons.
+    Two flavours, both pixel-identical UnifiedTitleBar chrome ([icon] NAME … ⧉ ─ □ ✕):
+      * the central SPACES area -> mark_as_chart_header(deck): a single live MC-style title
+        (CHART · BTCUSDT · 5m), buttons wired to float-space / win-min / win-max / close-doc.
+      * a side PANEL area (objectName 'panel:…') -> mark_as_panel(): title from the dock,
+        buttons wired to ADS undock / auto-hide / float-max / close.
+    NOT a tab strip (rejected design)."""
 
-    minimize → collapse the panel to an auto-hide edge tab (the docked-panel equivalent of MC's
-    minimize); maximize → float the panel and native-maximize it, toggling back to docked. Both
-    are added as title-bar actions, which ADS shows only while this dock is the current tab."""
-    if icon is not None:
-        dock.setIcon(icon)
+    def __init__(self, area):
+        super().__init__(area)
+        self._deck = None
+        self._header = None   # UnifiedTitleBar (chart-space header OR a unified panel bar)
+        self._is_panel = False
+        self._area_w = area
+        # Panels self-detect (covers creation AND restoreState recreations); the central
+        # spaces area is marked explicitly by SpaceDeck.mark_as_chart_header before this fires.
+        # Tie the one-shot to `self`: if ADS destroys this title bar before it fires, the timer
+        # is cancelled instead of calling into a dead C++ object (segfault on teardown/fast-close).
+        QtCore.QTimer.singleShot(0, self, self._auto_detect_panel)
 
-    mn = QtGui.QAction(_glyph_icon("─", theme.TEXT2), "Minimize (collapse to edge)", dock)
-    mn.triggered.connect(dock.toggleAutoHide)
+    def is_chart_header(self) -> bool:
+        return self._header is not None
 
-    mx = QtGui.QAction(_glyph_icon("□", theme.TEXT2, 12), "Maximize / restore", dock)
+    def mark_as_chart_header(self, deck) -> None:
+        """Render the single-title chart-space header into this bar (idempotent — the title
+        text is refreshed separately via set_header_title)."""
+        from .unifiedbar import UnifiedTitleBar
+        from .style_icons import style_icon
 
-    def _toggle_max() -> None:
-        if not dock.isFloating():
-            dock.setFloating()
-        c = dock.floatingDockContainer()
+        if self._header is not None:
+            self.refresh_native_hidden()
+            return
+        self._deck = deck
+        win = None
+        try:
+            win = self.dockManager().window()
+        except (RuntimeError, AttributeError):
+            pass
+
+        def _win_min():
+            if win is not None:
+                win.showMinimized()
+
+        def _win_max():
+            tb = getattr(win, "titlebar", None)
+            if tb is not None and hasattr(tb, "_toggle_max"):
+                tb._toggle_max()
+            elif win is not None:
+                win.showNormal() if win.isMaximized() else win.showMaximized()
+
+        bar = UnifiedTitleBar(title=getattr(deck, "_header_title", "Chart"),
+                              icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
+                              parent=self)
+        bar.add_button("detach", "⧉", "Open this space as a window",
+                       lambda: deck.float_space(max(0, deck.currentIndex())))
+        bar.add_button("min", "─", "Minimize", _win_min)
+        bar.add_button("max", "□", "Maximize / restore", _win_max)
+        bar.add_button("close", "✕", "Close the current chart",
+                       deck.close_current_document, danger=True)
+        bar.set_active(True)
+        self._header = bar
+        # Grow the header to fill the row; the MainWindow then caps its max width to the
+        # right-panel's left edge (the dock area itself extends BEHIND the panels), so the
+        # ⧉ ─ □ ✕ land at the visible chart's right edge — never under the watchlist.
+        self._install_header_widget(bar)
+        self.refresh_native_hidden()
+        deck._request_fit()
+
+    def set_header_title(self, text: str) -> None:
+        if self._header is not None:
+            self._header.set_title(text)
+
+    def set_header_title_rich(self, html: str) -> None:
+        if self._header is not None:
+            self._header.set_title_rich(html)
+
+    def set_header_icon(self, pixmap) -> None:
+        if self._header is not None:
+            self._header.set_icon(pixmap)
+
+    def _install_header_widget(self, bar) -> None:
+        """Insert the UnifiedTitleBar into this title bar's row, expanded to fill it. Shared by
+        the chart-space header and the unified panel bars (the chart header is then capped to
+        the panel edge by the MainWindow; panel bars fill their own narrow area)."""
+        bar.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        try:
+            self.insertWidget(0, bar)
+        except (RuntimeError, TypeError):
+            self.layout().insertWidget(0, bar)
+        try:
+            self.layout().setStretchFactor(bar, 1)
+        except (RuntimeError, TypeError, AttributeError):
+            pass
+
+    def refresh_native_hidden(self) -> None:
+        """Hide every native child of the dock-area title bar except our inserted header. ADS
+        renders the dock title as a tab OR (single-dock areas) an eliding label, plus assorted
+        buttons, and re-shows them on relayout — chasing each kind proved unreliable, so we
+        suppress them wholesale. Re-called from hide_space_tabs / resizeEvent / currentChanged."""
+        if self._header is None:
+            return
+        try:
+            for child in self.findChildren(QtWidgets.QWidget):
+                if child is self._header or self._header.isAncestorOf(child):
+                    continue
+                child.hide()
+        except (RuntimeError, AttributeError):
+            pass
+
+    def resizeEvent(self, ev):  # noqa: N802 - Qt override
+        super().resizeEvent(ev)
+        if self._header is not None:        # keep native chrome suppressed across relayouts
+            self.refresh_native_hidden()
+
+    # --- unified PANEL bar (Market watch / Trades / …) ------------------------------------
+
+    def _auto_detect_panel(self) -> None:
+        """A panel area (objectName 'panel:…') gets the SAME UnifiedTitleBar as the chart
+        header, for pixel-identical chrome. The central spaces area is excluded (it carries
+        'space:'/document docks and is marked as the chart header by SpaceDeck)."""
+        if self._header is not None or self._is_panel:
+            return
+        area = self._area_w
+        try:
+            n = area.dockWidgetsCount()
+        except (RuntimeError, AttributeError):
+            return
+        for i in range(n):
+            try:
+                dw = area.dockWidget(i)
+            except (RuntimeError, AttributeError):
+                continue
+            if dw is not None and dw.objectName().startswith("panel:"):
+                self.mark_as_panel()
+                return
+
+    def mark_as_panel(self) -> None:
+        """[icon] NAME … ⧉ ─ □ ✕ wired to ADS undock / auto-hide / float-max / close —
+        replacing the native tab + buttons (incl. the odd green auto-hide pin)."""
+        if self._header is not None:
+            return
+        from .unifiedbar import UnifiedTitleBar
+
+        self._is_panel = True
+        bar = UnifiedTitleBar(parent=self)
+        bar.add_button("detach", "⧉", "Detach panel to a window", self._panel_detach)
+        bar.add_button("min", "─", "Minimize (collapse to edge)", self._panel_min)
+        bar.add_button("max", "□", "Maximize / restore", self._panel_max)
+        bar.add_button("close", "✕", "Close", self._panel_close, danger=True)
+        self._header = bar
+        self._install_header_widget(bar)
+        self.refresh_native_hidden()
+        # ADS re-shows the native tab/buttons after its deferred relayout — re-hide next turn
+        # (tied to self so a destroyed title bar cancels it rather than crashing)
+        QtCore.QTimer.singleShot(0, self, self.refresh_native_hidden)
+        self._sync_panel_title()
+        # Connect THIS instance's slot once (mark_as_panel is guarded by `if self._header`).
+        # ADS recreates the area's title bar on relayout; the OLD instance is destroyed, which
+        # auto-removes its connection — so no disconnect bookkeeping is needed (and a manual
+        # disconnect of this fresh instance's slot just spams "Failed to disconnect" warnings).
+        try:
+            self._area_w.currentChanged.connect(self._sync_panel_title)
+        except (RuntimeError, AttributeError):
+            pass
+
+    def _cur_dock(self):
+        try:
+            return self._area_w.currentDockWidget()
+        except (RuntimeError, AttributeError):
+            return None
+
+    def _sync_panel_title(self, *_) -> None:
+        if self._header is None:
+            return
+        d = self._cur_dock()
+        if d is None:
+            return
+        self._header.set_title(d.windowTitle())
+        try:
+            self._header.set_icon(d.icon().pixmap(16, 16))
+        except (RuntimeError, AttributeError):
+            pass
+        self.refresh_native_hidden()
+
+    def _panel_detach(self) -> None:
+        d = self._cur_dock()
+        if d is not None and not d.isFloating():
+            d.setFloating()
+
+    def _panel_min(self) -> None:
+        d = self._cur_dock()
+        if d is not None:
+            d.toggleAutoHide()
+
+    def _panel_max(self) -> None:
+        d = self._cur_dock()
+        if d is None:
+            return
+        if not d.isFloating():
+            d.setFloating()
+        c = d.floatingDockContainer()
         if c is not None:
             c.showNormal() if c.isMaximized() else c.showMaximized()
 
-    mx.triggered.connect(_toggle_max)
-    dock.setTitleBarActions([mn, mx])
+    def _panel_close(self) -> None:
+        d = self._cur_dock()
+        if d is not None:
+            d.closeDockWidget()
+
+
+class VikeComponentsFactory(QtAds.CDockComponentsFactory):
+    """Installed per-manager (mgr.setComponentsFactory) so offscreen tests / any future
+    manager keep ADS defaults. Verified working on PySide6-QtAds 4.5.0.5."""
+
+    def createDockAreaTitleBar(self, area):  # noqa: N802 - ADS naming
+        return VikeDockTitleBar(area)
 
 
 def configure_dock_manager_defaults() -> None:
@@ -96,7 +277,11 @@ def make_panel_dock(manager, title: str, widget, area,
         QtAds.CDockWidget.DefaultDockWidgetFeatures | QtAds.CDockWidget.DockWidgetPinnable
     )
     manager.addDockWidget(area, dock)
-    apply_mc_titlebar(dock, icon)
+    # The unified panel title bar (VikeDockTitleBar.mark_as_panel) renders [icon] NAME ⧉ ─ □ ✕;
+    # just give the dock its icon — NOT apply_mc_titlebar's min/max title-actions, which would
+    # render alongside ours as duplicate buttons.
+    if icon is not None:
+        dock.setIcon(icon)
     return dock
 
 
@@ -127,6 +312,10 @@ class SpaceDeck(QtCore.QObject):
         self._area = None              # the one center CDockAreaWidget (created on first add)
         self._docks: list[QtAds.CDockWidget] = []
         self._documents: list[QtAds.CDockWidget] = []
+        # ADS recreates the dock-area title bar on relayout, so the chart-space header is
+        # STATELESS (state lives here in the model): a freshly-created header re-reads this.
+        self._header_title = "Chart"
+        self._fit_cb = None   # MainWindow-supplied: cap the header to the panel's left edge
 
     def _resolve_area(self):
         """The spaces' CENTRAL CDockAreaWidget. CDockManager.restoreState() can REBUILD the
@@ -157,10 +346,13 @@ class SpaceDeck(QtCore.QObject):
             if self._area is not None:
                 try:
                     self._area.currentChanged.disconnect(self._emit_current)
-                except Exception:  # noqa: BLE001 - old area may already be torn down
+                except (RuntimeError, TypeError):  # old area torn down / not connected
                     pass
             area.currentChanged.connect(self._emit_current)
             self._area = area
+            tb = area.titleBar()
+            if hasattr(tb, "mark_as_chart_header"):   # VikeDockTitleBar (factory installed)
+                tb.mark_as_chart_header(self)
         return self._area
 
     def _emit_current(self, *_):
@@ -216,6 +408,53 @@ class SpaceDeck(QtCore.QObject):
 
     def is_document(self, widget) -> bool:
         return any(d.widget() is widget for d in self._documents)
+
+    def close_current_document(self) -> None:
+        """Close the current chart document (the ✕ on the chart-space header). A pinned
+        SPACE is never closable, so this is a no-op unless a tear-out document is current."""
+        area = self._resolve_area()
+        cur = area.currentDockWidget() if area is not None else None
+        if cur in self._documents:
+            cur.closeDockWidget()
+
+    # --- chart-space header (forwarded to the central area's VikeDockTitleBar) ------------
+
+    def _header_bar(self):
+        area = self._resolve_area()
+        if area is None:
+            return None
+        tb = area.titleBar()
+        return tb if hasattr(tb, "set_header_title") else None
+
+    def header_widget(self):
+        """The current chart-space header (UnifiedTitleBar) the MainWindow caps to fit."""
+        tb = self._header_bar()
+        return getattr(tb, "_header", None) if tb is not None else None
+
+    def set_fit_callback(self, fn) -> None:
+        self._fit_cb = fn
+
+    def _request_fit(self) -> None:
+        """Ask the MainWindow to re-cap the header width once the layout settles (the header
+        was just (re)created by ADS; geometry isn't final until the next event-loop turn)."""
+        if self._fit_cb is not None:
+            QtCore.QTimer.singleShot(0, self, self._fit_cb)   # tied to the deck's lifetime
+
+    def set_header_title(self, text: str) -> None:
+        self._header_title = text   # remembered so a recreated header re-shows it
+        tb = self._header_bar()
+        if tb is not None:
+            tb.set_header_title(text)
+
+    def set_header_title_rich(self, html: str) -> None:
+        tb = self._header_bar()
+        if tb is not None:
+            tb.set_header_title_rich(html)
+
+    def set_header_icon(self, pixmap) -> None:
+        tb = self._header_bar()
+        if tb is not None:
+            tb.set_header_icon(pixmap)
 
     # --- arrange (MultiCharts Window->Arrange parity, docking-native) ---------------------
 
@@ -317,22 +556,25 @@ class SpaceDeck(QtCore.QObject):
         (restoreState, document add/close, current-tab changes), so this runs at every mutation
         point — immediately AND once more on the next event-loop turn to catch ADS's deferred
         relayouts."""
-        def _hide():
-            for dock in self._docks:
-                try:
-                    dock.tabWidget().setVisible(False)
-                except RuntimeError:   # a tab widget mid-rebuild during restore — skip
-                    pass
-            # S7: chart windows FLOAT over the workspace (chartwin.py) instead of tabbing
-            # here, so the spaces area's title-bar strip is empty chrome — reclaim the row.
-            area = self._resolve_area()
-            if area is not None:
-                try:
-                    area.titleBar().setVisible(False)
-                except (RuntimeError, AttributeError):
-                    pass
-        _hide()
-        QtCore.QTimer.singleShot(0, _hide)
+        self._hide_space_tabs_now()
+        # tied to self: a destroyed SpaceDeck cancels the deferred call instead of running it
+        # on a torn-down object (the segfault class fixed across the title-bar timers)
+        QtCore.QTimer.singleShot(0, self, self._hide_space_tabs_now)
+
+    def _hide_space_tabs_now(self) -> None:
+        for dock in self._docks:
+            try:
+                dock.tabWidget().setVisible(False)
+            except RuntimeError:   # a tab widget mid-rebuild during restore — skip
+                pass
+        # Unified title bar: the central area's title bar is now WANTED chrome (it hosts the
+        # single-title chart header). Keep it VISIBLE; only re-hide the native tab strip +
+        # native buttons the header replaces, which ADS re-shows on relayout.
+        area = self._resolve_area()
+        if area is not None:
+            tb = area.titleBar()
+            if hasattr(tb, "refresh_native_hidden"):
+                tb.refresh_native_hidden()
 
     def dock(self, index: int) -> "QtAds.CDockWidget":
         """The CDockWidget wrapping space ``index`` (Phase 2+ uses this directly)."""
