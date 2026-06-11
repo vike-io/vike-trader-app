@@ -2,11 +2,14 @@
 
 import os
 import sys
+import tempfile
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtGui import QImage  # noqa: E402
 
-src = sys.argv[1] if len(sys.argv) > 1 else "tmp/shot_full.png"
+# Scratch screenshots live in the OS temp dir (never the repo) — see scripts/screenshot.py.
+_DEFAULT_SRC = os.path.join(tempfile.gettempdir(), "vike-shots", "shot_full.png")
+src = sys.argv[1] if len(sys.argv) > 1 else _DEFAULT_SRC
 img = QImage(src)
 if img.isNull():
     print(f"FAILED to read {src}")

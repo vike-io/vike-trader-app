@@ -53,9 +53,8 @@ htmlcov/
 *.key
 
 # ---- Dev artifacts (offscreen screenshots, scratch) ----
-# All scratch PNGs/outputs go under tmp/ (kept as a dir via .gitkeep)
-tmp/*
-!tmp/.gitkeep
+# Scratch screenshots/renders go to the OS temp dir (<tmpdir>/vike-shots), never the repo;
+# tmp/ itself stays ignored below so a stray one can never get tracked again.
 .playwright-mcp/
 .firecrawl/
 _shot_*.png
