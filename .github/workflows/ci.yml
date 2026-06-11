@@ -78,6 +78,29 @@ jobs:
           uv run pytest -q --timeout=120 --timeout-method=thread
           tests/gui -m "not network"
 
+  bench:
+    name: benchmarks (ubuntu · py3.12)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Records hot-path timings (tests/bench, outside the unit/gui gate) — a baseline for spotting
+    # regressions. Non-gating: a slow run shouldn't block a PR. Trend-alerting (e.g.
+    # benchmark-action/github-action-benchmark) is a documented follow-up that needs a store.
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv + Python
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Sync dependencies
+        run: uv sync --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
+      - name: Run benchmarks
+        run: uv run pytest tests/bench -q --benchmark-json=bench.json
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: bench.json
+
 # NOTE: Python 3.14 is intentionally NOT in the matrix yet — PySide6/pyqtgraph wheel
 # availability on 3.14 across all three OSes is unconfirmed (would 404 the uv sync and red the
 # run). Add "3.14" to both matrices once wheels are published; the project's local dev already
