@@ -1802,7 +1802,8 @@ class PriceChart(pg.PlotWidget):
                 _style_menu.addAction(_st, lambda s=_st: self.set_style(s))
         self._style_btn.setMenu(_style_menu)
         _tb.addWidget(self._style_btn)
-        _tb.addWidget(_divider())
+        self._ohlc_divider = _divider()   # toggled with the OHLC legend on narrow charts
+        _tb.addWidget(self._ohlc_divider)
 
         # OHLC legend
         self._ohlc_label = QtWidgets.QLabel(self._top_bar)
@@ -1820,7 +1821,7 @@ class PriceChart(pg.PlotWidget):
         _tb.addStretch(1)  # push the range selector to the FAR right
 
         # range selector (tight) -> far top-right
-        _range_w = QtWidgets.QWidget(self._top_bar)
+        _range_w = self._range_w = QtWidgets.QWidget(self._top_bar)
         _rb = QtWidgets.QHBoxLayout(_range_w)
         _rb.setContentsMargins(0, 0, 0, 0)
         _rb.setSpacing(0)
@@ -3279,6 +3280,7 @@ class PriceChart(pg.PlotWidget):
             # far-right range selector clears them.
             axis_w = self.getAxis("right").width() if self.getAxis("right").isVisible() else 0
             self._top_bar.setGeometry(0, 4, max(0, self.width() - int(axis_w) - 6), 28)
+            self._relayout_toolbar()
         if hasattr(self, "_auto_btn"):
             self._auto_btn.adjustSize()
             self._auto_btn.move(
@@ -3287,6 +3289,18 @@ class PriceChart(pg.PlotWidget):
             )
         self._position_nav_bar()
         self._position_price_legend()
+
+    def _relayout_toolbar(self):
+        """Collapse the top toolbar as the chart narrows (multi-chart tiling) so labels never
+        clip mid-word ('Indicators'->'dic'). Progressive by toolbar width: drop the range
+        selector first, then the OHLC legend (+ its divider), then shorten 'ƒx Indicators' to
+        'ƒx'. Symbol / timeframe / indicators / style always remain."""
+        w = self._top_bar.width()
+        self._range_w.setVisible(w >= 620)
+        show_ohlc = w >= 470
+        self._ohlc_label.setVisible(show_ohlc)
+        self._ohlc_divider.setVisible(show_ohlc)
+        self._ind_btn.setText("ƒx Indicators" if w >= 360 else "ƒx")
 
     def _position_nav_bar(self):
         """Dock the zoom/scroll/reset bar at the bottom-left of the LOWEST chart pane, just above
