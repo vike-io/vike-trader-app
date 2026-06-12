@@ -299,12 +299,10 @@ def configure_dock_manager_defaults() -> None:
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.EqualSplitOnInsertion, True)
     # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
-    # floating containers are REAL OS windows: native title bar (min/max/close, snap, the
-    # taskbar treats them as windows) instead of ADS's custom strip — unified window chrome.
-    # NOTE: flipping this off makes ADS show its OWN floating title bar, which carries a tabs-menu
-    # ▼ after the close button — true frameless-unified floating needs a custom frame (follow-up).
+    # Floated docks are FRAMELESS (no native OS frame) so MainWindow can show our unified title bar
+    # on them via the floatingWidgetCreated hook — same chrome as docked + the chart windows.
     QtAds.CDockManager.setConfigFlag(
-        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, True)
+        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, False)
 
 
 def make_panel_dock(manager, title: str, widget, area,
