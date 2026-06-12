@@ -62,6 +62,11 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._bar = UnifiedTitleBar(
             title=doc.title(),
             icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16))
+        # adopt the doc's symbol-link (●) + interval-link (◆) dots into the title bar's status
+        # cluster (MC link colours live on the window chrome, not buried in the chart toolbar)
+        for _dot in (getattr(doc, "_link_dot", None), getattr(doc, "_ivl_dot", None)):
+            if _dot is not None:
+                self._bar.add_status(_dot)
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
             self._bar.add_widget(doc._pin_btn)
