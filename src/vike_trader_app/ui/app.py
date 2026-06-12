@@ -266,6 +266,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
         self._active_frame = None
+        # empty-workspace re-arch: open non-chart tools (screener/journal/… ) lazily as docks,
+        # keyed by tool key for singleton open-or-focus (Plan 1). See ui/toolreg.py.
+        self._tool_docks: dict = {}
 
         self._layout_workers: list = []   # in-flight AI-layout agent threads (Phase 5)
 
@@ -487,6 +490,33 @@ class MainWindow(QtWidgets.QMainWindow):
         from . import chartwin
 
         chartwin.arrange(self._chart_frames, self.dock_manager, mode)
+
+    def open_tool(self, key: str):
+        """Open the tool dock for ``key``, or focus it if already open.
+
+        SINGLETON (Plan 1): re-opening the same key raises and selects the existing dock
+        instead of creating a second one. A later plan flips this to multi-instance — the
+        open-or-focus shortcut is isolated in the leading branch so that flip is one edit.
+        """
+        from .toolreg import ToolRegistry, make_tool_dock
+
+        existing = self._tool_docks.get(key)
+        if existing is not None and not existing.isClosed():
+            existing.toggleView(True)
+            area = existing.dockAreaWidget()
+            if area is not None:
+                area.setCurrentDockWidget(existing)
+            existing.raise_()
+            return existing
+        widget = ToolRegistry.create(key, self)
+        dock = make_tool_dock(
+            self.dock_manager, key, widget,
+            icon=icons.rail_icon(key, theme.TEXT3, theme.ACCENT, theme.TEXT2),
+        )
+        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
+        self._tool_docks[key] = dock
+        dock.closed.connect(lambda k=key: self._tool_docks.pop(k, None))
+        return dock
 
     def _open_in_new_chart(self, symbol: str) -> None:
         """Watchlist context menu → open ``symbol`` as a fresh chart document (current TF)."""
