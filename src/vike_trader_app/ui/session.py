@@ -55,13 +55,9 @@ class SessionState:
     @classmethod
     def from_dict(cls, raw) -> "SessionState | None":
         """Tolerant parse: unknown keys ignored, wrong-typed values fall back to defaults.
-
-        MIGRATION: a pre-v2 session saved a dock layout from the old space-based model (Chart,
-        Studio and the 7 tools were pinned SPACES). That blob references space docks that no
-        longer exist, so restoring it on the empty-workspace model resurrects ghost/stray docks
-        (or crashes on a stale C++ area). On a version downgrade we DROP the dock layout + active
-        space so the app starts from the clean default workspace (Chart only). Lightweight prefs
-        (symbol/interval/indicators/geometry) are kept."""
+        NOTE: this is shared by named workspaces (WorkspaceStore), which are stored WITHOUT a
+        per-entry version, so the v2 dock-layout migration lives in load_session (the launch
+        path that keeps the version) — NOT here, or every named workspace would lose its layout."""
         if not isinstance(raw, dict):
             return None
         state = cls()
@@ -71,24 +67,34 @@ class SessionState:
             value = raw[f.name]
             if isinstance(value, type(getattr(state, f.name))):
                 setattr(state, f.name, value)
-        try:
-            stored_version = int(raw.get("version", 1))
-        except (TypeError, ValueError):
-            stored_version = 1
-        if stored_version < _VERSION:
-            state.dock_state_hex = ""   # incompatible old layout -> clean default workspace
-            state.space = 0
-            state.open_tools = []
         return state
 
 
 def load_session(path) -> SessionState | None:
-    """Read a saved session; ``None`` (fresh start) on any missing/corrupt/unreadable file."""
+    """Read a saved session; ``None`` (fresh start) on any missing/corrupt/unreadable file.
+
+    MIGRATION: a pre-v2 session saved a dock layout from the old space-based model (Chart, Studio
+    and the 7 tools were pinned SPACES). That blob references space docks that no longer exist, so
+    restoring it on the empty-workspace model resurrects ghost/stray docks (the user saw a
+    "permanent Studio") or crashes on a stale C++ area. On a version downgrade we DROP the dock
+    layout + active space + open_tools so the launch is a clean default workspace; lightweight
+    prefs (symbol/interval/indicators/geometry) are kept."""
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - no file / bad JSON / locked -> fresh start
         return None
-    return SessionState.from_dict(raw)
+    state = SessionState.from_dict(raw)
+    if state is None:
+        return None
+    try:
+        stored_version = int(raw.get("version", 1))
+    except (TypeError, ValueError):
+        stored_version = 1
+    if stored_version < _VERSION:
+        state.dock_state_hex = ""
+        state.space = 0
+        state.open_tools = []
+    return state
 
 
 def save_session(path, state: SessionState) -> bool:
