@@ -409,6 +409,18 @@ class MainWindow(QtWidgets.QMainWindow):
         # rail is the space switcher; the center strip carries only chart documents).
         self.tabs.hide_space_tabs()
 
+        # Stage A3: reopen the last session's torn-out TOOL windows. They're chartwin frames (not
+        # ADS docks), so they live OUTSIDE the dock_state blob — recreate them AFTER restoreState
+        # at their saved attached geometry (or cascaded when none was saved / it was an OS window).
+        if self._session and getattr(self._session, "tool_windows", None):
+            for spec in self._session.tool_windows:
+                if not isinstance(spec, dict):
+                    continue
+                try:
+                    self._open_tool_window(spec.get("key"), spec.get("geometry"))
+                except Exception:  # noqa: BLE001 - one bad/stale tool key must not break launch
+                    pass
+
         # Reopen the last session's space. restoreState above can REBUILD the center dock area,
         # so SpaceDeck's currentChanged forward must be re-resolved and the shell re-synced
         # regardless of which space we land on — hence setCurrentIndex (which re-resolves) plus
@@ -552,18 +564,38 @@ class MainWindow(QtWidgets.QMainWindow):
                 area.setCurrentDockWidget(existing)
             existing.raise_()
             return existing
-        widget = ToolRegistry.create(key, self)
+        widget = self._build_tool_widget(key)
         dock = make_tool_dock(self.dock_manager, key, widget, icon=self._tool_icon(key))
         self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
         self._tool_docks[key] = dock
-        # Mirror the live instance onto its legacy attribute so existing readers (signals,
-        # set_symbol, dashboard-tile seeding, …) keep working while the tool is open.
+        dock.closed.connect(self._make_tool_close_handler(key, widget))
+        return dock
+
+    def _build_tool_widget(self, key: str):
+        """Create a fresh tool widget from the registry, mirror it onto its legacy alias (so
+        existing readers — signals, set_symbol, dashboard-tile seeding — keep working while it's
+        open), and run its one-time signal wiring. Shared by open_tool + _open_tool_window."""
+        from .toolreg import ToolRegistry
+
+        widget = ToolRegistry.create(key, self)
         attr = _TOOL_ATTR.get(key)
         if attr:
             setattr(self, attr, widget)
         self._wire_tool(key, widget)
-        dock.closed.connect(self._make_tool_close_handler(key, widget))
-        return dock
+        return widget
+
+    def _make_tool_window(self, key: str, widget):
+        """Wrap a LIVE tool widget in a clean ToolWindowFrame + wire its close/redock signals,
+        and register it in _tool_frames. Shared by _detach_tool + _open_tool_window (restore)."""
+        from .chartwin import ToolWindowFrame
+
+        frame = ToolWindowFrame(widget, self.dock_manager,
+                                title=toolreg.TOOL_LABELS.get(key, key),
+                                icon=self._tool_icon(key).pixmap(16, 16))
+        frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
+        frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
+        self._tool_frames[key] = frame
+        return frame
 
     def _tool_icon(self, key: str):
         """The colourful per-tool launcher icon (rail + dock + tool window), one place."""
@@ -626,8 +658,6 @@ class MainWindow(QtWidgets.QMainWindow):
         """⧉ on a tool dock — tear the LIVE tool widget out of its ADS dock into a clean
         chartwin-style ``ToolWindowFrame`` (no rebuild, no state loss). The dock is closed with
         _tool_detaching set so its close handler skips teardown (the widget lives on)."""
-        from .chartwin import ToolWindowFrame
-
         if key in self._tool_frames:                  # already a window — focus it
             self._tool_frames[key].raise_()
             return self._tool_frames[key]
@@ -639,18 +669,48 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         self._tool_detaching.add(key)
         dock.closeDockWidget()                        # remove the empty dock (handler skips teardown)
-        frame = ToolWindowFrame(widget, self.dock_manager,
-                                title=toolreg.TOOL_LABELS.get(key, key),
-                                icon=self._tool_icon(key).pixmap(16, 16))
-        frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
-        frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
-        self._tool_frames[key] = frame
+        frame = self._make_tool_window(key, widget)
         n = len(self._tool_frames) - 1               # cascade like chart windows
         frame.move(80 + (n % 6) * 32, 64 + (n % 6) * 28)
         frame.show()
         frame.raise_()
         frame.activated.emit(frame)
         return frame
+
+    def _open_tool_window(self, key: str, geometry=None):
+        """Open a tool DIRECTLY as a clean floating window (session restore of a torn-out tool).
+        Builds a fresh widget (state isn't persisted across restart — same as a restored dock)
+        and places it at the saved attached geometry, or cascades when none was saved."""
+        if key in self._tool_frames:
+            return self._tool_frames[key]
+        if key in self._tool_docks:            # already a dock this session — leave it docked
+            return self._tool_docks[key]
+        widget = self._build_tool_widget(key)
+        frame = self._make_tool_window(key, widget)
+        if geometry and len(geometry) == 4:
+            x, y, w, h = (int(v) for v in geometry)
+            frame.setGeometry(x, y, max(320, w), max(160, h))
+        else:
+            n = len(self._tool_frames) - 1
+            frame.move(80 + (n % 6) * 32, 64 + (n % 6) * 28)
+        frame.show()
+        return frame
+
+    def _tool_window_states(self) -> list:
+        """Persist each torn-out tool window: its key + (for an attached frame) its host-relative
+        geometry. A detached OS window's geometry is screen coords — omit it so it cascades on
+        restore (mirrors _doc_state_with_geometry for chart windows)."""
+        out = []
+        for key, frame in self._tool_frames.items():
+            spec = {"key": key}
+            try:
+                if not frame.is_detached():
+                    g = frame.geometry()
+                    spec["geometry"] = [g.x(), g.y(), g.width(), g.height()]
+            except RuntimeError:   # frame mid-teardown — persist the key alone
+                pass
+            out.append(spec)
+        return out
 
     def _redock_tool(self, key: str):
         """'Dock into workspace' on a tool window — reparent the LIVE widget back into a fresh
@@ -2656,9 +2716,8 @@ class MainWindow(QtWidgets.QMainWindow):
             studio_indicators=(indicator_states(self.studio_price)
                                if self.studio_price is not None else []),
             documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
-            # Stage A2: a torn-out tool window persists too — it reopens as a dock next launch
-            # (window-vs-dock placement isn't persisted yet; the tool + its key come back).
-            open_tools=list(dict.fromkeys([*self._tool_docks.keys(), *self._tool_frames.keys()])),
+            open_tools=list(self._tool_docks.keys()),          # tools open as docks
+            tool_windows=self._tool_window_states(),           # Stage A3: tools open as windows
             watchlist_link=self._watchlist_link,
             central_link=self.link_group,
             central_interval_link=(-1 if self.interval_link_group is None
@@ -2738,6 +2797,16 @@ class MainWindow(QtWidgets.QMainWindow):
             finally:
                 self._syncing_docks = False
         self.tabs.hide_space_tabs()   # restoreState re-shows space tabs; the rail switches spaces
+
+        # Stage A3: recreate the workspace's torn-out tool windows (chartwin frames live outside
+        # the dock blob, so after restoreState — same as the launch path).
+        for spec in (getattr(state, "tool_windows", None) or []):
+            if not isinstance(spec, dict):
+                continue
+            try:
+                self._open_tool_window(spec.get("key"), spec.get("geometry"))
+            except Exception:  # noqa: BLE001 - one bad/stale tool key must not break the load
+                pass
 
         space = min(max(state.space, 0), self.tabs.count() - 1)
         self.tabs.setCurrentIndex(space)
