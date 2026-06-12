@@ -134,17 +134,29 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             pass
 
     def refresh_native_hidden(self) -> None:
-        """Hide every native child of the dock-area title bar except our inserted header. ADS
-        renders the dock title as a tab OR (single-dock areas) an eliding label, plus assorted
-        buttons, and re-shows them on relayout — chasing each kind proved unreliable, so we
-        suppress them wholesale. Re-called from hide_space_tabs / resizeEvent / currentChanged."""
+        """Suppress the native ADS title-bar chrome that fights our unified bar.
+
+        SINGLE-dock area: hide everything native (the eliding label + all buttons) and show the
+        unified bar — one clean custom title. MULTI-dock (tabbed) area: a single custom title can't
+        represent N tabs, so HIDE the unified bar and instead show the native (themed) TAB STRIP so
+        the user can switch tabs — but still kill the ▼ tabs-menu button (the one the user disliked).
+        Re-called from resizeEvent / event(LayoutRequest) so it survives tab add/remove + relayouts."""
         if self._header is None:
             return
         try:
+            multi = self._area_w.dockWidgetsCount() > 1
+        except (RuntimeError, AttributeError):
+            multi = False
+        try:
+            self._header.setVisible(not multi)
             for child in self.findChildren(QtWidgets.QWidget):
                 if child is self._header or self._header.isAncestorOf(child):
                     continue
-                child.hide()
+                if multi:
+                    # keep the switchable tab strip + themed action buttons; drop only the ▼ menu
+                    child.setVisible(child.objectName() != "tabsMenuButton")
+                else:
+                    child.hide()
         except (RuntimeError, AttributeError):
             pass
 
