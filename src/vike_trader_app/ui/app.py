@@ -363,6 +363,16 @@ class MainWindow(QtWidgets.QMainWindow):
                     state=state, network=False, make_current=False,
                 )
 
+        # Recreate the last session's tool docks BEFORE restoreState, so their objectNames
+        # (tool:<key>) exist and the layout blob positions them 1:1 — mirrors the chart-document
+        # recreation above. Old sessions (no open_tools) recreate nothing → a clean start.
+        if self._session and getattr(self._session, "open_tools", None):
+            for key in self._session.open_tools:
+                try:
+                    self.open_tool(key)
+                except Exception:  # noqa: BLE001 - one bad/stale tool key must not break launch
+                    pass
+
         # Restore the dock layout (panel positions/sizes/pins, splitters). All dock widgets
         # exist by objectName at this point, so restoreState maps 1:1. Guarded as a
         # PROGRAMMATIC change: the layout blob reflects the close-time dock state (e.g. docks
@@ -390,7 +400,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # Tools space) could leave space >= count, which previously skipped the whole re-sync
         # and left the visible space disconnected from the rail until the first click.
         if self._session:
-            space = min(max(self._session.space, 0), self.tabs.count() - 1)
+            space = self._session.space
+            if not (0 <= space < self.tabs.count()):
+                space = 0   # old sessions saved on a now-removed tool space -> Chart
             self.tabs.setCurrentIndex(space)
         self._on_tab_changed(self.tabs.currentIndex())
 
@@ -2445,6 +2457,7 @@ class MainWindow(QtWidgets.QMainWindow):
             chart_indicators=indicator_states(self.price),
             studio_indicators=indicator_states(self.studio_price),
             documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
+            open_tools=list(self._tool_docks.keys()),
             watchlist_link=self._watchlist_link,
             central_link=self.link_group,
             central_interval_link=(-1 if self.interval_link_group is None

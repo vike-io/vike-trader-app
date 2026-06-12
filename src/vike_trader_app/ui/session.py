@@ -3,6 +3,7 @@
 The shell saves a small JSON snapshot on close (window geometry, active space, symbol +
 interval, panel toggles, and each chart's user indicators) and restores it on the next
 launch, so the app reopens where the user left off (AmiBroker/MultiCharts table stakes).
+On-demand tool docks (screener/news/… opened via the rail) persist via ``open_tools``.
 
 Qt-free by design so it unit-tests without a QApplication: geometry travels as an opaque
 hex string (``QWidget.saveGeometry().toHex()``), and indicator (de)hydration is duck-typed
@@ -41,6 +42,7 @@ class SessionState:
     chart_indicators: list = field(default_factory=list)    # Chart space (price)
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
     documents: list = field(default_factory=list)           # open chart documents (Phase 2)
+    open_tools: list = field(default_factory=list)   # tool keys open as docks (empty-workspace re-arch)
     watchlist_link: int = 0                                  # watchlist symbol-link group (Phase 3)
     central_link: int = 0                                    # central chart symbol-link group
     central_interval_link: int = -1                          # central chart interval-link (-1=follow)

@@ -30,6 +30,16 @@ def test_to_dict_carries_version():
     assert SessionState().to_dict()["version"] == 1
 
 
+def test_open_tools_round_trips_and_old_sessions_default_empty():
+    s = SessionState(open_tools=["screener", "news"])
+    assert SessionState.from_dict(s.to_dict()).open_tools == ["screener", "news"]
+    # an old file without the key -> empty list (no crash)
+    old = {"version": 1, "symbol": "BTCUSDT", "space": 3}   # space=3 = a removed tool space
+    parsed = SessionState.from_dict(old)
+    assert parsed.open_tools == []
+    assert parsed.space == 3                                 # value preserved; clamped at restore-time
+
+
 def test_from_dict_rejects_non_dict():
     assert SessionState.from_dict(None) is None
     assert SessionState.from_dict("[]") is None

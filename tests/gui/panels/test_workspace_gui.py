@@ -82,3 +82,27 @@ def test_options_close_reopen_no_stale_signals(app):
     d2 = win.open_tool("options"); app.processEvents()  # must not warn/crash
     assert d2.objectName() == "tool:options"
     win.close()
+
+
+def test_open_tools_persist_across_restart(app, tmp_path):
+    p = str(tmp_path / "s.json")
+    w1 = MainWindow(session_path=p); w1.show(); app.processEvents()
+    w1.open_tool("screener"); w1.open_tool("news"); app.processEvents()
+    w1.close(); app.processEvents()                       # closeEvent saves the session
+    w2 = MainWindow(session_path=p); w2.show(); app.processEvents()
+    names = [d.objectName() for d in w2.dock_manager.dockWidgetsMap().values()]
+    assert "tool:screener" in names and "tool:news" in names
+    # legacy aliases re-bound on restore
+    assert getattr(w2, "screener", None) is not None
+    assert getattr(w2, "news", None) is not None
+    w2.close()
+
+
+def test_empty_session_restores_no_tool_docks(app, tmp_path):
+    p = str(tmp_path / "s.json")
+    w1 = MainWindow(session_path=p); w1.show(); app.processEvents()
+    w1.close(); app.processEvents()
+    w2 = MainWindow(session_path=p); w2.show(); app.processEvents()
+    names = [d.objectName() for d in w2.dock_manager.dockWidgetsMap().values()]
+    assert not any(n.startswith("tool:") for n in names)
+    w2.close()
