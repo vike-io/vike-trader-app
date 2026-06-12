@@ -262,22 +262,28 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             except (RuntimeError, AttributeError):
                 continue
             if dw is not None and dw.objectName().startswith(("panel:", "tool:")):
-                self.mark_as_panel()    # tool docks get the SAME unified bar as panels — no native
-                return                  # ADS chrome (the stray ▼ tabs-menu + duplicate close icon)
+                # tool docks get the SAME unified bar as panels (no native ADS chrome — the stray
+                # ▼ tabs-menu + duplicate close icon) PLUS a ⧉ "open as window" verb (Stage A2);
+                # side panels stay dock-only (no ⧉ — they're chart companions, not tear-outs).
+                self.mark_as_panel(is_tool=dw.objectName().startswith("tool:"))
+                return
 
-    def mark_as_panel(self) -> None:
-        """[icon] NAME … ─ ✕ wired to auto-hide (pin to edge) / close — replacing the native tab
-        + buttons (incl. the odd green auto-hide pin).
+    def mark_as_panel(self, is_tool: bool = False) -> None:
+        """[icon] NAME … [⧉] ─ ✕ wired to detach-to-window (tools only) / auto-hide (pin to edge)
+        / close — replacing the native tab + buttons (incl. the odd green auto-hide pin).
 
-        Stage A1: dock-only — no ⧉ (detach) or □ (maximize), both of which depended on ADS
-        floating, which is now disabled. Tiling/tabbing/pinning/closing still work. Stage A2
-        re-adds a detach-to-clean-window button."""
+        Stage A2: a TOOL dock (``is_tool``) carries a ⧉ that opens the tool as a clean
+        chartwin-style window (MainWindow._detach_tool); side panels stay dock-only
+        (tile/tab/pin/close). The □ maximize stays gone here — maximize is a window verb, handled
+        on the floated tool window itself, not on the docked panel."""
         if self._header is not None:
             return
         from .unifiedbar import UnifiedTitleBar
 
         self._is_panel = True
         bar = UnifiedTitleBar(parent=self)
+        if is_tool:
+            bar.add_button("detach", "⧉", "Open this tool as a window", self._panel_detach)
         bar.add_button("min", "─", "Minimize (collapse to edge)", self._panel_min)
         bar.add_button("close", "✕", "Close", self._panel_close, danger=True)
         self._header = bar
@@ -314,6 +320,36 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         except (RuntimeError, AttributeError):
             pass
         self.refresh_native_hidden()
+
+    def _resolve_main_window(self):
+        """The MainWindow hosting this title bar (mirrors the chart header's resolver). The bar
+        is NOT a CDockWidget, so walk up via the area's manager, falling back to the Qt top-level
+        (self.window()). Returns None when the host can't be reached or isn't a MainWindow."""
+        try:
+            a = self.dockAreaWidget()
+            m = a.dockManager() if a is not None else None
+            w = m.window() if m is not None else None
+        except (RuntimeError, AttributeError):
+            w = None
+        if w is None or not hasattr(w, "_detach_tool"):
+            try:
+                w = self.window()
+            except (RuntimeError, AttributeError):
+                w = None
+        return w if (w is not None and hasattr(w, "_detach_tool")) else None
+
+    def _panel_detach(self) -> None:
+        """⧉ on a TOOL dock — open it as a clean floating window (MainWindow._detach_tool). A
+        no-op for side panels (which never get this button) and when the host can't be resolved."""
+        d = self._cur_dock()
+        if d is None:
+            return
+        name = d.objectName()
+        if not name.startswith("tool:"):
+            return
+        win = self._resolve_main_window()
+        if win is not None:
+            win._detach_tool(name.split(":", 1)[1])
 
     def _panel_min(self) -> None:
         """─ — the docked "minimize": collapse the panel to its edge (auto-hide pin). Stage A1:

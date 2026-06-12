@@ -277,6 +277,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # empty-workspace re-arch: open non-chart tools (screener/journal/… ) lazily as docks,
         # keyed by tool key for singleton open-or-focus (Plan 1). See ui/toolreg.py.
         self._tool_docks: dict[str, "QtAds.CDockWidget"] = {}
+        # Stage A2: a tool torn out to a clean chartwin-style window lives here (keyed by tool key)
+        # instead of in _tool_docks — the SAME live widget, just re-homed. _tool_detaching marks a
+        # dock close that is really a detach (the widget lives on), so its close handler skips the
+        # teardown (stop_feed / alias-nil / studio-shutdown) that a real close runs.
+        self._tool_frames: dict[str, "ToolWindowFrame"] = {}
+        self._tool_detaching: set[str] = set()
 
         self._layout_workers: list = []   # in-flight AI-layout agent threads (Phase 5)
 
@@ -531,6 +537,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         from .toolreg import ToolRegistry, make_tool_dock
 
+        # Stage A2: the tool may already be open as a floating WINDOW (torn out) — focus it
+        # instead of creating a second docked instance.
+        frame = self._tool_frames.get(key)
+        if frame is not None:
+            frame.raise_()
+            frame.activated.emit(frame)
+            return frame
         existing = self._tool_docks.get(key)
         if existing is not None and not existing.isClosed():
             existing.toggleView(True)
@@ -540,13 +553,7 @@ class MainWindow(QtWidgets.QMainWindow):
             existing.raise_()
             return existing
         widget = ToolRegistry.create(key, self)
-        dock = make_tool_dock(
-            self.dock_manager, key, widget,
-            icon=icons.rail_icon(
-                key, toolreg.tool_color(key, theme.TEXT3),
-                toolreg.tool_color(key, theme.ACCENT),
-                toolreg.tool_hover_color(key, theme.TEXT2)),
-        )
+        dock = make_tool_dock(self.dock_manager, key, widget, icon=self._tool_icon(key))
         self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
         self._tool_docks[key] = dock
         # Mirror the live instance onto its legacy attribute so existing readers (signals,
@@ -555,46 +562,134 @@ class MainWindow(QtWidgets.QMainWindow):
         if attr:
             setattr(self, attr, widget)
         self._wire_tool(key, widget)
+        dock.closed.connect(self._make_tool_close_handler(key, widget))
+        return dock
 
-        def _on_tool_closed(k=key, a=attr, w=widget):
+    def _tool_icon(self, key: str):
+        """The colourful per-tool launcher icon (rail + dock + tool window), one place."""
+        return icons.rail_icon(
+            key, toolreg.tool_color(key, theme.TEXT3),
+            toolreg.tool_color(key, theme.ACCENT),
+            toolreg.tool_hover_color(key, theme.TEXT2))
+
+    def _make_tool_close_handler(self, key: str, widget):
+        """The dock ``closed`` slot for a tool. A close that is really a DETACH (the widget is
+        being re-homed into a window — key in _tool_detaching) only drops the dock ref and skips
+        teardown; a real close runs _teardown_tool. Shared by open_tool + _redock_tool."""
+        def _on_tool_closed(k=key, w=widget):
             self._tool_docks.pop(k, None)
-            # Studio (the 8th tool) carries an AI worker + a lockstep chart fused to the pipeline:
-            # wait the worker out (no destroyed-while-running) and rescue the eager replay controls
-            # out of the DeleteOnClose dock tree BEFORE it is torn down, then nil studio_price so
-            # _pipeline_charts() drops it. (studio_price itself lives in the dock tree -> destroyed.)
-            if k == "studio":
-                if hasattr(w, "shutdown"):
-                    try:
-                        w.shutdown()
-                    except Exception:  # noqa: BLE001 - teardown best-effort; never block the close
-                        pass
-                self._rescue_studio_controls()
-                self.studio_price = None
-            if a and getattr(self, a, None) is w:
-                setattr(self, a, None)   # clear the legacy alias (no dangling ref to a dead widget)
-            # Stop any per-tool background work on dock close so no poller thread leaks.
-            if hasattr(w, "stop_feed"):
+            if k in self._tool_detaching:        # detach in progress — widget lives on in a window
+                self._tool_detaching.discard(k)
+                return
+            self._teardown_tool(k, w)
+        return _on_tool_closed
+
+    def _teardown_tool(self, key: str, widget) -> None:
+        """Stop a tool's background work + drop its refs when it is truly closed (dock ✕ or its
+        window ✕). Idempotent-ish best-effort; never blocks the close."""
+        # Studio (the 8th tool) carries an AI worker + a lockstep chart fused to the pipeline:
+        # wait the worker out (no destroyed-while-running) and rescue the eager replay controls
+        # out of the DeleteOnClose dock tree BEFORE it is torn down, then nil studio_price so
+        # _pipeline_charts() drops it. (studio_price itself lives in the dock tree -> destroyed.)
+        if key == "studio":
+            if hasattr(widget, "shutdown"):
                 try:
-                    w.stop_feed()       # News poller thread
+                    widget.shutdown()
                 except Exception:  # noqa: BLE001 - teardown best-effort; never block the close
                     pass
-            if k == "options" and getattr(self, "_options_svc", None) is not None:
-                self._options_svc.stop_polling()   # the poller lives on the app-level service,
-                self._options_started = False      # not the tab, so stop it here (re-arm next open)
-                # The tab is about to be destroyed (DeleteOnClose); an in-flight _FetchWorker
-                # QThread could still emit into it (→ "C++ object already deleted" / 0xC0000409).
-                # Drop the svc->tab connections NOW, not on the next open (too late). Re-armed by
-                # _wire_options on the next open via the _options_wired guard below.
-                for _sig in (self._options_svc.chainReady, self._options_svc.failed,
-                             self._options_svc.expiriesReady):
-                    try:
-                        _sig.disconnect()
-                    except (RuntimeError, TypeError):   # already gone — fine
-                        pass
-                self._options_wired = False
+            self._rescue_studio_controls()
+            self.studio_price = None
+        attr = _TOOL_ATTR.get(key)
+        if attr and getattr(self, attr, None) is widget:
+            setattr(self, attr, None)   # clear the legacy alias (no dangling ref to a dead widget)
+        # Stop any per-tool background work so no poller thread leaks.
+        if hasattr(widget, "stop_feed"):
+            try:
+                widget.stop_feed()       # News poller thread
+            except Exception:  # noqa: BLE001 - teardown best-effort; never block the close
+                pass
+        if key == "options" and getattr(self, "_options_svc", None) is not None:
+            self._options_svc.stop_polling()   # the poller lives on the app-level service,
+            self._options_started = False      # not the tab, so stop it here (re-arm next open)
+            # The tab is about to be destroyed; an in-flight _FetchWorker QThread could still emit
+            # into it (→ "C++ object already deleted" / 0xC0000409). Drop the svc->tab connections
+            # NOW; re-armed by _wire_options on the next open via the _options_wired guard.
+            for _sig in (self._options_svc.chainReady, self._options_svc.failed,
+                         self._options_svc.expiriesReady):
+                try:
+                    _sig.disconnect()
+                except (RuntimeError, TypeError):   # already gone — fine
+                    pass
+            self._options_wired = False
 
-        dock.closed.connect(_on_tool_closed)
+    def _detach_tool(self, key: str):
+        """⧉ on a tool dock — tear the LIVE tool widget out of its ADS dock into a clean
+        chartwin-style ``ToolWindowFrame`` (no rebuild, no state loss). The dock is closed with
+        _tool_detaching set so its close handler skips teardown (the widget lives on)."""
+        from .chartwin import ToolWindowFrame
+
+        if key in self._tool_frames:                  # already a window — focus it
+            self._tool_frames[key].raise_()
+            return self._tool_frames[key]
+        dock = self._tool_docks.get(key)
+        if dock is None or dock.isClosed():
+            return None
+        widget = dock.takeWidget()                    # reparents the widget out; dock now empty
+        if widget is None:
+            return None
+        self._tool_detaching.add(key)
+        dock.closeDockWidget()                        # remove the empty dock (handler skips teardown)
+        frame = ToolWindowFrame(widget, self.dock_manager,
+                                title=toolreg.TOOL_LABELS.get(key, key),
+                                icon=self._tool_icon(key).pixmap(16, 16))
+        frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
+        frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
+        self._tool_frames[key] = frame
+        n = len(self._tool_frames) - 1               # cascade like chart windows
+        frame.move(80 + (n % 6) * 32, 64 + (n % 6) * 28)
+        frame.show()
+        frame.raise_()
+        frame.activated.emit(frame)
+        return frame
+
+    def _redock_tool(self, key: str):
+        """'Dock into workspace' on a tool window — reparent the LIVE widget back into a fresh
+        ADS dock (state preserved; signals stay connected, so no re-wire). The frame is disposed
+        WITHOUT its close handler (the widget has been re-homed)."""
+        from .toolreg import make_tool_dock
+
+        frame = self._tool_frames.pop(key, None)
+        if frame is None:
+            return None
+        widget = frame.take_body()
+        frame.dispose()                              # drop the frame; no close-driven teardown
+        if widget is None:
+            return None
+        dock = make_tool_dock(self.dock_manager, key, widget, icon=self._tool_icon(key))
+        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
+        self._tool_docks[key] = dock
+        # Re-arm the close handler for the new dock (signals/alias from the first open still hold,
+        # so _wire_tool is NOT re-run — that would double-connect).
+        dock.closed.connect(self._make_tool_close_handler(key, widget))
+        dock.toggleView(True)
+        dock.raise_()
         return dock
+
+    def _on_tool_window_closed(self, key: str) -> None:
+        """A tool WINDOW was closed (✕) — run the same teardown a docked close would, then let
+        the frame's dispose() drop the widget with it."""
+        frame = self._tool_frames.pop(key, None)
+        if frame is None:
+            return
+        widget = getattr(frame, "doc", None)         # body still child of the frame here
+        if widget is not None:
+            self._teardown_tool(key, widget)
+
+    def _close_all_tool_windows(self) -> None:
+        """Dispose every torn-out tool window (used on app close / workspace swap). Teardown runs
+        via _on_tool_window_closed (wired to each frame's closed signal)."""
+        for frame in list(self._tool_frames.values()):
+            frame.close_window()
 
     def _wire_tool(self, key: str, widget) -> None:
         """Per-tool signal wiring that used to live inline in _build_central, run once when a
@@ -2561,7 +2656,9 @@ class MainWindow(QtWidgets.QMainWindow):
             studio_indicators=(indicator_states(self.studio_price)
                                if self.studio_price is not None else []),
             documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
-            open_tools=list(self._tool_docks.keys()),
+            # Stage A2: a torn-out tool window persists too — it reopens as a dock next launch
+            # (window-vs-dock placement isn't persisted yet; the tool + its key come back).
+            open_tools=list(dict.fromkeys([*self._tool_docks.keys(), *self._tool_frames.keys()])),
             watchlist_link=self._watchlist_link,
             central_link=self.link_group,
             central_interval_link=(-1 if self.interval_link_group is None
@@ -2601,6 +2698,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 btn.blockSignals(False)
 
         self._close_all_chart_windows()         # each close unregisters hub/bus + drops refs
+        self._close_all_tool_windows()          # dispose torn-out tool windows (with teardown)
 
         # Close any open tool docks first — the incoming workspace fully defines which tools
         # are open (via its open_tools); leaving stale docks open collides with the layout blob.
@@ -2865,6 +2963,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here
+        # Dispose any torn-out tool windows first — runs each tool's teardown (stop_feed /
+        # studio.shutdown / options disconnect) and nils its alias, so the guarded alias-based
+        # teardown further down skips it instead of double-stopping. Also stops a detached OS
+        # window lingering as a stray top-level after the main window closes.
+        self._close_all_tool_windows()
         if getattr(self, "_link_bus", None) is not None:
             self._link_bus.remove_member(self)   # leave the bus: no apply_link after teardown
         self._stop_forward()  # never leave a feed thread running
