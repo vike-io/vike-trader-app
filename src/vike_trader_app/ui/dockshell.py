@@ -437,10 +437,13 @@ class SpaceDeck(QtCore.QObject):
     # --- chart-space header (forwarded to the central area's VikeDockTitleBar) ------------
 
     def _header_bar(self):
-        area = self._resolve_area()
-        if area is None:
+        try:
+            area = self._resolve_area()
+            if area is None:
+                return None
+            tb = area.titleBar()
+        except RuntimeError:   # restoreState can leave a stale (C++-deleted) CDockAreaWidget ref
             return None
-        tb = area.titleBar()
         return tb if hasattr(tb, "set_header_title") else None
 
     def header_widget(self):

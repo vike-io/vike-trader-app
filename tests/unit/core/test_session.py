@@ -27,7 +27,7 @@ def test_state_roundtrip():
 
 
 def test_to_dict_carries_version():
-    assert SessionState().to_dict()["version"] == 1
+    assert SessionState().to_dict()["version"] == 2
 
 
 def test_open_tools_round_trips_and_old_sessions_default_empty():
@@ -37,9 +37,21 @@ def test_open_tools_round_trips_and_old_sessions_default_empty():
     old = {"version": 1, "symbol": "BTCUSDT", "space": 3}   # space=3 = a removed tool space
     parsed = SessionState.from_dict(old)
     assert parsed.open_tools == []
-    assert parsed.space == 3                                 # value preserved; clamped at restore-time
+    # v2 MIGRATION: a pre-v2 session's incompatible dock layout + active space are dropped so the
+    # app starts from the clean default empty workspace (space->0, dock_state_hex->"").
+    assert parsed.space == 0
+    assert parsed.dock_state_hex == ""
+    assert parsed.symbol == "BTCUSDT"                        # lightweight prefs are still kept
     # a hand-corrupted file with a string instead of a list -> default []
     assert SessionState.from_dict({"open_tools": "screener"}).open_tools == []
+
+
+def test_v2_session_dock_layout_is_preserved():
+    # a CURRENT (v2) session keeps its dock layout + space (no migration drop)
+    s = SessionState(space=0, dock_state_hex="deadbeef", open_tools=["studio"])
+    parsed = SessionState.from_dict(s.to_dict())
+    assert parsed.dock_state_hex == "deadbeef"
+    assert parsed.open_tools == ["studio"]
 
 
 def test_from_dict_rejects_non_dict():

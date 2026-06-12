@@ -20,7 +20,9 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-_VERSION = 1
+_VERSION = 2  # v2: empty-workspace re-arch moved Studio + the tools from pinned SPACES to
+              # on-demand docks, so a pre-v2 dock_state_hex (old space layout) is incompatible
+              # and is dropped on load (see from_dict migration) -> clean default workspace.
 
 # Pairs indicators need a 2nd symbol's closes aligned to the loaded bars — that benchmark
 # isn't ours to persist (it's re-fetched per load), so they're dropped across sessions,
@@ -52,7 +54,14 @@ class SessionState:
 
     @classmethod
     def from_dict(cls, raw) -> "SessionState | None":
-        """Tolerant parse: unknown keys ignored, wrong-typed values fall back to defaults."""
+        """Tolerant parse: unknown keys ignored, wrong-typed values fall back to defaults.
+
+        MIGRATION: a pre-v2 session saved a dock layout from the old space-based model (Chart,
+        Studio and the 7 tools were pinned SPACES). That blob references space docks that no
+        longer exist, so restoring it on the empty-workspace model resurrects ghost/stray docks
+        (or crashes on a stale C++ area). On a version downgrade we DROP the dock layout + active
+        space so the app starts from the clean default workspace (Chart only). Lightweight prefs
+        (symbol/interval/indicators/geometry) are kept."""
         if not isinstance(raw, dict):
             return None
         state = cls()
@@ -62,6 +71,14 @@ class SessionState:
             value = raw[f.name]
             if isinstance(value, type(getattr(state, f.name))):
                 setattr(state, f.name, value)
+        try:
+            stored_version = int(raw.get("version", 1))
+        except (TypeError, ValueError):
+            stored_version = 1
+        if stored_version < _VERSION:
+            state.dock_state_hex = ""   # incompatible old layout -> clean default workspace
+            state.space = 0
+            state.open_tools = []
         return state
 
 
