@@ -274,6 +274,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._watchlist_link = self._session.watchlist_link if self._session else 0
         if self._watchlist_link not in LINK_COLOR:   # hand-edited / stale session -> unlinked
             self._watchlist_link = 0
+        # The CENTRAL chart space is itself a link-group member (symbol ● + interval ◆ channels,
+        # set via the dots on its header). The MainWindow proxies it: apply_link loads a received
+        # symbol/interval; _broadcast_central_link pushes its own changes. Restored from session.
+        self.link_group = getattr(self._session, "central_link", 0) if self._session else 0
+        if self.link_group not in LINK_COLOR:
+            self.link_group = 0
+        _ivl = getattr(self._session, "central_interval_link", -1) if self._session else -1
+        self.interval_link_group = None if _ivl < 0 else _ivl   # -1 sentinel = follow symbol
+        self._link_bus.add_member(self)
+        self._feed_state = "idle"        # current feed-health state; the header badge reads it
+        self._header_feed = None         # the header's FeedBadge (recreated with the header)
 
         # named workspaces (Phase 4): persisted next to the session file; in-memory when the
         # session is disabled (offscreen tests) so a save never touches real storage.
@@ -415,6 +426,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame = ChartWindowFrame(doc, self.dock_manager)
         frame.closed.connect(lambda f: self._on_chart_window_closed(f))
         frame.activated.connect(self._on_chart_window_activated)
+        frame.cloneRequested.connect(self._clone_window)
         self._chart_frames.append(frame)
         # cascade placement: each new window steps down-right from the last
         n = len(self._chart_frames) - 1
@@ -424,12 +436,32 @@ class MainWindow(QtWidgets.QMainWindow):
             frame.setGeometry(x, y, max(320, w), max(160, h))
         frame.show()
         doc.load(network=network)
+        _fcolor, _fprefix = _FEED_STATES["live" if self._live_hub.is_live() else "cached"]
+        frame.set_feed(_fcolor, _fprefix.replace(" · ", "").strip())
         if state:
             doc.apply_state(state)
         if make_current:
             frame.raise_()
             self._on_chart_window_activated(frame)
         return doc
+
+    def _clone_window(self, frame) -> None:
+        """Duplicate a chart window — same symbol / interval / indicators / link groups, cascaded
+        to a fresh window. Reuses the copy/paste state capture (no clipboard round-trip)."""
+        st = self._doc_state_with_geometry(frame.doc)
+        st.pop("geometry", None)   # let the new window cascade instead of stacking exactly
+        self._new_chart_document(st.get("symbol", frame.doc.symbol),
+                                 st.get("interval", frame.doc.interval), state=st)
+
+    def _open_central_as_window(self) -> None:
+        """The chart-space header's ＋ : open the central chart's current view as a floating
+        window (same symbol / interval / indicators / link group)."""
+        self._new_chart_document(self._symbol, self._interval, state={
+            "symbol": self._symbol, "interval": self._interval,
+            "indicators": indicator_states(self.price),
+            "link_group": self.link_group,
+            "interval_link_group": self.interval_link_group,
+        })
 
     def _frame_of(self, doc) -> "object | None":
         for f in self._chart_frames:
@@ -577,6 +609,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # The factory recreates the chart-space header on relayout; each time it asks us to
         # re-cap its width to the panel edge (forced far-right ⧉ ─ □ ✕).
         self.tabs.set_fit_callback(self._fit_chart_header)
+        # the header is recreated on relayout; each time, repopulate its ● symbol + ◆ interval
+        # link dots (state lives on the MainWindow, the dot WIDGETS are recreated with the header)
+        self.tabs.set_header_status_provider(self._populate_header_status)
         self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
@@ -927,6 +962,58 @@ class MainWindow(QtWidgets.QMainWindow):
         return (f"<span style='color:{theme.TEXT};'>{base} · {last:,.2f} </span>"
                 f"<span style='color:{col};'>{arrow}{abs(pct):.2f}%</span>")
 
+    # --- central-chart symbol link (the header's ● / ◆ dots) --------------------------------
+
+    def _populate_header_status(self, bar) -> None:
+        """Add the chart-space header's ● symbol + ◆ interval link dots (called by the factory
+        each time the header is (re)created — state lives on the MainWindow, dots are fresh)."""
+        from .panels import LinkDot
+
+        sym = LinkDot(self.link_group, label="Symbol")
+        sym.groupChanged.connect(self._set_central_link_group)
+        bar.add_status(sym)
+        ivl = LinkDot(-1 if self.interval_link_group is None else self.interval_link_group,
+                      label="Interval", glyph=("◇", "◆"), follow=True)
+        ivl.groupChanged.connect(self._set_central_interval_link_group)
+        bar.add_status(ivl)
+        from .unifiedbar import FeedBadge
+
+        self._header_feed = FeedBadge()
+        bar.add_status(self._header_feed)
+        self._render_header_feed()
+
+    def _render_header_feed(self) -> None:
+        """Paint the header's feed badge from the current feed state (compact: '● LIVE')."""
+        badge = getattr(self, "_header_feed", None)
+        if badge is None:
+            return
+        color, prefix = _FEED_STATES.get(self._feed_state, _FEED_STATES["idle"])
+        try:
+            badge.set_state(color, prefix.replace(" · ", "").strip() or "●")
+        except RuntimeError:        # header was recreated — the old badge is gone
+            self._header_feed = None
+
+    def _set_central_link_group(self, gid: int) -> None:
+        self.link_group = gid
+        self._broadcast_central_link()
+
+    def _set_central_interval_link_group(self, gid: int) -> None:
+        self.interval_link_group = None if gid < 0 else gid
+        self._broadcast_central_link()
+
+    def _broadcast_central_link(self) -> None:
+        """Push the central chart's (symbol, interval) to linked members. The bus re-entrancy
+        guard makes this a no-op while we're applying a received broadcast (no ping-pong)."""
+        bus = getattr(self, "_link_bus", None)
+        if bus is not None:
+            bus.broadcast(self.link_group, self, self._symbol, self._interval,
+                          interval_group=self.interval_link_group)
+
+    def apply_link(self, symbol: "str | None", interval: "str | None") -> None:
+        """Bus receiver: a linked member changed — load it into the central chart. _load_symbol's
+        own broadcast is suppressed by the bus guard, so this can't echo back."""
+        self._load_symbol(symbol or self._symbol, interval or self._interval)
+
     def _fit_chart_header(self) -> None:
         """Cap the chart-space header to the VISIBLE chart width so its ⧉ ─ □ ✕ sit at the
         chart's right edge. The central dock area extends BEHIND the side panels (ADS), so the
@@ -1043,6 +1130,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"color:{color};font-size:10px;background:transparent;border:none;"
             f"padding:3px 6px;margin-right:6px;"
         )
+        self._feed_state = state            # mirror onto the chart-space header badge
+        self._render_header_feed()
         if not self._live_timer.isActive():
             return
         if state == "live":
@@ -1865,6 +1954,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._push_watch_quote(symbol, bars)
         self._arm_live_updates()
         self._update_chart_header()
+        self._broadcast_central_link()   # propagate to linked charts/watchlist (bus-guarded)
 
     def _on_interval_chosen(self, interval: str):
         """Timeframe dropdown -> reload the current symbol at the chosen interval."""
@@ -2217,6 +2307,9 @@ class MainWindow(QtWidgets.QMainWindow):
             studio_indicators=indicator_states(self.studio_price),
             documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
             watchlist_link=self._watchlist_link,
+            central_link=self.link_group,
+            central_interval_link=(-1 if self.interval_link_group is None
+                                   else self.interval_link_group),
         )
 
     def _doc_state_with_geometry(self, doc) -> dict:
@@ -2493,6 +2586,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here
+        if getattr(self, "_link_bus", None) is not None:
+            self._link_bus.remove_member(self)   # leave the bus: no apply_link after teardown
         self._stop_forward()  # never leave a feed thread running
         # Halt the live chart auto-updater AND wait out any in-flight fetch worker. Without
         # this a closed window keeps its _live_timer firing _live_tick -> _LiveFetchWorker

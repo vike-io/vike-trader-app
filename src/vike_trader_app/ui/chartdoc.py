@@ -102,14 +102,13 @@ class ChartDocument(QtWidgets.QWidget):
         self.link_group = 0
         self.interval_link_group = None      # None = follow the symbol link (back-compat default)
         self._bus = None
-        # The dots live IN the chart's top toolbar (MultiCharts puts link colours in the chart's
-        # status line) — NOT a separate header row (user-rejected: "why another row").
+        # The link dots are created here but ADOPTED into the floating window's title bar by
+        # chartwin.ChartWindowFrame (MC puts link colours on the window chrome). Chart documents
+        # currently only ever live in a floating window, so they're not added to the chart toolbar.
         self._link_dot = LinkDot(0, label="Symbol")
         self._link_dot.groupChanged.connect(self._set_link_group)
-        self.chart.add_toolbar_widget(self._link_dot)
         self._ivl_dot = LinkDot(-1, label="Interval", glyph=("◇", "◆"), follow=True)
         self._ivl_dot.groupChanged.connect(self._set_interval_link_group)
-        self.chart.add_toolbar_widget(self._ivl_dot)
         # Keep-on-top pin (MultiCharts "stick window"): float-only chrome. NOT in a layout here —
         # the chart-window TITLE BAR adopts it (chartwin.ChartWindowFrame), MC's placement.
         self._pin_btn = QtWidgets.QToolButton()
@@ -304,6 +303,11 @@ class LiveHub(QtCore.QObject):
             self._docs.remove(doc)
         if not self._docs:
             self._timer.stop()
+
+    def is_live(self) -> bool:
+        """The round-robin poller is running — windows are being live-topped-up (honest LIVE
+        vs CACHED gate, matching the main feed badge)."""
+        return self._timer.isActive()
 
     def _tick(self) -> None:
         """Serve the next VISIBLE document. The fetch is network-only (off-thread safe);

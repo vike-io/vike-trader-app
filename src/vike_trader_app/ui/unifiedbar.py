@@ -1,15 +1,15 @@
-"""Shared title-bar chrome (unified title bar, stage 1).
+"""Shared title-bar chrome (unified title bar).
 
 ONE glyph-button factory + ONE bar widget, used by every title-bar surface so they render
 identical MultiCharts-style chrome:
   * the chart-space header (dockshell.VikeDockTitleBar, central area)
+  * the side panels (Market watch / Trades / …)
   * the floating chart windows (chartwin.ChartWindowFrame)
-Side panels keep the real ADS title bar (restyled to the same MC button set) — they don't
-use UnifiedTitleBar, but they share bar_button's look via QSS.
 
-The MC title is a single clean line ([icon] NAME … ⧉ ─ □ ✕), NOT a tab strip. We OVERCOME
-MC by making that line LIVE (e.g. "CHART · BTCUSDT · 1m · 62,403 ▲0.18%") — set_title() is
-called on space / symbol / price change.
+Layout: ``[icon] [title] [status box] [stretch] [button box]``. The status box (link dots,
+feed badge) keeps small gaps; the button box is CONTIGUOUS (0 gap, Windows-style) so the
+window controls read as one cluster, not scattered. The MC title is a single clean line — we
+OVERCOME MC by making it LIVE (e.g. "CHART · BTCUSDT · 1m · 62,403 ▲0.18%") via set_title*.
 """
 
 from __future__ import annotations
@@ -18,13 +18,15 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
 
-BAR_H = 30   # one height for every title-bar surface (matches ads--CDockAreaTitleBar QSS)
+BAR_H = 30          # one height for every title-bar surface (matches ads--CDockAreaTitleBar QSS)
+_BTN_W = 40         # window-button width (contiguous, no gaps) — design "B"
+_BTN_PX = 15        # window-button glyph size
 
 
 def bar_button(glyph: str, tip: str, slot=None, danger: bool = False,
-               width: int = 36, parent=None) -> QtWidgets.QToolButton:
-    """The one glyph-button factory for title bars (was duplicated in chartwin._btn and the
-    main caption's window buttons). danger=True gives the Windows-red close hover."""
+               width: int = _BTN_W, parent=None) -> QtWidgets.QToolButton:
+    """The one glyph-button factory for title bars. danger=True gives the Windows-red close
+    hover. Default 40×30 with a 15px glyph; buttons are placed contiguously (0 gap)."""
     b = QtWidgets.QToolButton(parent)
     b.setText(glyph)
     b.setToolTip(tip)
@@ -33,26 +35,41 @@ def bar_button(glyph: str, tip: str, slot=None, danger: bool = False,
     hover = "#c42b1c" if danger else theme.PANEL
     b.setStyleSheet(
         f"QToolButton{{border:none;background:transparent;color:{theme.TEXT2};"
-        f"font-size:12px;}}"
+        f"font-size:{_BTN_PX}px;}}"
         f"QToolButton:hover{{background:{hover};color:{theme.TEXT};}}")
     if slot is not None:
         b.clicked.connect(slot)
     return b
 
 
-class UnifiedTitleBar(QtWidgets.QWidget):
-    """The shared 30px bar: [icon][title][...adopted widgets...][buttons].
+class FeedBadge(QtWidgets.QLabel):
+    """Compact data-feed badge (● LIVE / ● CACHED / …) for a title bar. The host maps a feed
+    state to (colour, text) and calls set_state — keeps this widget app-agnostic."""
 
-    Labels are mouse-transparent so a host's drag eventFilter on the bar keeps working;
-    buttons are registered by key for later glyph/tooltip swaps (max<->restore, detach)."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("feedBadge")
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.set_state(theme.TEXT3, "●")
+
+    def set_state(self, color: str, text: str) -> None:
+        self.setText(text)
+        self.setStyleSheet(
+            f"#feedBadge{{color:{color};font-size:11px;font-weight:600;background:transparent;}}")
+
+
+class UnifiedTitleBar(QtWidgets.QWidget):
+    """The shared 30px bar. Labels are mouse-transparent so a host's drag eventFilter on the
+    bar keeps working; status widgets and buttons are interactive."""
 
     def __init__(self, title: str = "", icon: "QtGui.QPixmap | None" = None, parent=None):
         super().__init__(parent)
         self.setObjectName("unifiedBar")
         self.setFixedHeight(BAR_H)
         self._buttons: dict[str, QtWidgets.QToolButton] = {}
+        self._menu_cb = None
         lay = QtWidgets.QHBoxLayout(self)
-        lay.setContentsMargins(8, 0, 0, 0)
+        lay.setContentsMargins(8, 0, 0, 0)   # right margin 0 → close button touches the edge
         lay.setSpacing(6)
         self._icon = QtWidgets.QLabel()
         self._icon.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
@@ -68,7 +85,21 @@ class UnifiedTitleBar(QtWidgets.QWidget):
             f"background:transparent;}}")
         self._title.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         lay.addWidget(self._title)
+        # status box: link dots + feed badge, just right of the title (small gaps)
+        self._statusbox = QtWidgets.QWidget()
+        self._statusbox.setObjectName("unifiedStatus")
+        self._statuslay = QtWidgets.QHBoxLayout(self._statusbox)
+        self._statuslay.setContentsMargins(2, 0, 2, 0)
+        self._statuslay.setSpacing(8)
+        lay.addWidget(self._statusbox)
         lay.addStretch(1)
+        # button box: the window controls, CONTIGUOUS (0 gap), hard against the right edge
+        self._btnbox = QtWidgets.QWidget()
+        self._btnbox.setObjectName("unifiedBtns")
+        self._btnlay = QtWidgets.QHBoxLayout(self._btnbox)
+        self._btnlay.setContentsMargins(0, 0, 0, 0)
+        self._btnlay.setSpacing(0)
+        lay.addWidget(self._btnbox)
         self._lay = lay
         self.set_active(False)
 
@@ -80,6 +111,7 @@ class UnifiedTitleBar(QtWidgets.QWidget):
             self._icon.show()
 
     def set_title(self, text: str) -> None:
+        self._title.setTextFormat(QtCore.Qt.PlainText)
         self._title.setText(text)
 
     def set_title_rich(self, html: str) -> None:
@@ -87,17 +119,20 @@ class UnifiedTitleBar(QtWidgets.QWidget):
         self._title.setTextFormat(QtCore.Qt.RichText)
         self._title.setText(html)
 
+    def add_status(self, w: QtWidgets.QWidget) -> None:
+        """Add a status widget (link dot / feed badge) to the left cluster, after the title."""
+        self._statuslay.addWidget(w)
+
     def add_widget(self, w: QtWidgets.QWidget) -> None:
-        """Adopt an external widget (e.g. the doc's keep-on-top pin) just before the buttons."""
-        # insert before the trailing stretch is unnecessary — buttons are added after; keep it
-        # simple: widgets/buttons append in call order, all sit right of the stretch.
-        self._lay.addWidget(w)
+        """Adopt an external widget (e.g. the doc's keep-on-top pin) into the button cluster,
+        just left of the window controls."""
+        self._btnlay.addWidget(w)
 
     def add_button(self, key: str, glyph: str, tip: str, slot,
                    danger: bool = False) -> QtWidgets.QToolButton:
         b = bar_button(glyph, tip, slot, danger, parent=self)
         self._buttons[key] = b
-        self._lay.addWidget(b)
+        self._btnlay.addWidget(b)
         return b
 
     def button(self, key: str) -> "QtWidgets.QToolButton | None":
@@ -108,3 +143,14 @@ class UnifiedTitleBar(QtWidgets.QWidget):
         self.setStyleSheet(
             f"#unifiedBar{{background:{theme.RAISE if on else theme.SURFACE};"
             f"border-bottom:1px solid {theme.BORDER};}}")
+
+    def set_menu(self, cb) -> None:
+        """cb(global_pos) builds + shows the title-bar right-click menu. Host-supplied so this
+        widget stays app-agnostic (the menu's actions live with the host)."""
+        self._menu_cb = cb
+
+    def contextMenuEvent(self, ev):  # noqa: N802 - Qt override
+        if self._menu_cb is not None:
+            self._menu_cb(ev.globalPos())
+        else:
+            super().contextMenuEvent(ev)
