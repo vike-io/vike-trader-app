@@ -2956,7 +2956,15 @@ def main():
         win.show()
     else:
         win.showMaximized()
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    # PySide6 + PySide6-QtAds tear down a large C++ object graph (dock manager, floating + auto-hide
+    # containers, charts) during the interpreter's final garbage collection — which intermittently
+    # faults ("Fatal Python error: Aborted" while garbage-collecting / 0xC0000409). Everything
+    # durable is already flushed in closeEvent (session) and by the logging handlers, so flush the
+    # log and hand the OS the exit code directly, skipping the crash-prone final GC.
+    import os as _os
+    logging.shutdown()
+    _os._exit(exit_code)
 
 
 if __name__ == "__main__":
