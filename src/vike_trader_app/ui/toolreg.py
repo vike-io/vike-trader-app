@@ -43,7 +43,8 @@ class ToolRegistry:
         from .news import NewsTab
         from .options_tab import OptionsTab
         from .screener import ScreenerTab
-        from .studio import StudioTab
+        # Studio's factory delegates to MainWindow._build_studio_widget (it needs the window's
+        # pipeline wiring), so StudioTab is NOT imported here.
 
         def _data(win):
             # DataManagerTab defaults pins_path internally (datamanager._PINS_PATH); pass through
@@ -62,9 +63,10 @@ class ToolRegistry:
             "news": lambda win: NewsTab(),
             "calendar": _calendar,
             "options": lambda win: OptionsTab(),
-            # Bare StudioTab(): app.py also mounts a chart block via studio.mount_chart(...)
-            # after construction — that integration is handled later by open_tool, not here.
-            "studio": lambda win: StudioTab(),
+            # Studio is the 8th on-demand tool. Its widget is the full StudioTab WITH its lockstep
+            # chart block (studio_price + replay controls) mounted; MainWindow._build_studio_widget
+            # builds that and sets win.studio / win.studio_price (the close handler nils them).
+            "studio": lambda win: win._build_studio_widget(),
         }
 
     @staticmethod

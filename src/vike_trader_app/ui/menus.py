@@ -64,7 +64,8 @@ def _fill_file(m, win):
     new = _menu(m, "New")
     new.addAction("Chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
     new.addSeparator()
-    # Spaces (Chart/Studio) switch the current SpaceDeck tab; the 7 tools open as on-demand docks.
+    # The Chart space switches the current SpaceDeck tab; the 8 tools (Studio + the 7) open as
+    # on-demand docks.
     for _g, name, space_index in win._SPACE_ITEMS:
         new.addAction(f"Go to {name}", lambda idx=space_index: win.tabs.setCurrentIndex(idx))
     new.addSeparator()
@@ -121,8 +122,8 @@ def _fill_view(m, win):
 # --- Go ---------------------------------------------------------------------------------------
 
 def _fill_go(m, win):
-    """Navigation (the retired left icon rail's job): one entry per SPACE (Chart/Studio, which
-    switch the current tab) plus one per on-demand TOOL (which opens its dock via open_tool)."""
+    """Navigation (the retired left icon rail's job): one entry per SPACE (just Chart now, which
+    switches the current tab) plus one per on-demand TOOL (Studio + the 7, opened via open_tool)."""
     current = win.tabs.currentIndex()
     for _g, name, space_index in win._SPACE_ITEMS:
         a = m.addAction(name, lambda idx=space_index: win.tabs.setCurrentIndex(idx))

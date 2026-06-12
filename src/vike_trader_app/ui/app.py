@@ -84,10 +84,11 @@ _PINS_PATH = "storage/pins.json"  # pinned (symbol, interval) series kept precom
 # tool dock is open, open_tool mirrors the live instance onto the legacy MainWindow attribute below
 # (and the calendar tool's CalendarSpace onto self.calendar_space) so existing readers keep working;
 # the dock-close handler clears it back to None. The tool *key* differs from the attr only for
-# data->datamanager and calendar->calendar_space. NOTE: "studio" is NOT here — it stays an eager space.
+# data->datamanager and calendar->calendar_space. "studio" is the 8th on-demand tool now (its attr
+# is self.studio; the close handler ALSO nils self.studio_price and runs studio.shutdown()).
 _TOOL_ATTR = {"screener": "screener", "journal": "journal", "alerts": "alerts",
               "data": "datamanager", "news": "news", "calendar": "calendar_space",
-              "options": "options"}
+              "options": "options", "studio": "studio"}
 _SESSION_PATH = "storage/session.json"  # last-session snapshot (geometry/space/symbol/indicators)
 _ROLLUP_REFRESH_MS = 60_000       # backstop: keep pinned rollups current (incremental, cheap)
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
@@ -246,7 +247,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # widgets
         self.price = PriceChart()         # Chart space — clean standalone viewer
-        self.studio_price = PriceChart()  # Studio workspace chart — same data, driven in lockstep
+        # Studio is now a closable/hideable on-demand DOCK (the 8th tool), not an eager space:
+        # self.studio (StudioTab) + self.studio_price (its lockstep PriceChart) are built lazily by
+        # _build_studio_widget when the Studio dock opens, and re-nilled when it closes. Every
+        # backtest/replay/live pipeline site reads them through guards (_pipeline_charts() for the
+        # chart, getattr-None checks for the tab), so the pipeline is safe while Studio is closed.
+        self.studio = None
+        self.studio_price = None
         self.trades = TradesTable()
         self.watchlist = WatchlistPanel()
         self.bots = BotsPanel()
@@ -296,12 +303,12 @@ class MainWindow(QtWidgets.QMainWindow):
             str(Path(self._session_path).with_name("workspaces.json"))
             if self._session_path else None
         )
-        # timeframe dropdown on either chart -> reload the current symbol at that interval
+        # timeframe dropdown on the Chart chart -> reload the current symbol at that interval.
+        # (The Studio chart's intervalChosen/pairsRequested are wired in _build_studio_widget when
+        # the Studio dock is built, since self.studio_price doesn't exist until then.)
         self.price.intervalChosen.connect(self._on_interval_chosen)
-        self.studio_price.intervalChosen.connect(self._on_interval_chosen)
         # pairs indicators need a 2nd symbol the app fetches (the chart can't reach the data layer)
         self.price.pairsRequested.connect(lambda n: self._add_pairs(self.price, n))
-        self.studio_price.pairsRequested.connect(lambda n: self._add_pairs(self.studio_price, n))
 
         # Header crumb removed — it duplicated the chart's OHLC legend + the status bar.
         # Keep the labels as hidden status sinks so existing setText() calls (and tests) work.
@@ -422,7 +429,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._load_symbol(self._symbol, self._interval)
         if self._session and self._bars:
             apply_indicator_states(self.price, self._session.chart_indicators)
-            apply_indicator_states(self.studio_price, self._session.studio_indicators)
+            # Studio chart only exists while its dock is open: a restored "studio" tool recreates
+            # it (open_tools restore runs before this), otherwise studio_price is None — skip it.
+            if self.studio_price is not None:
+                apply_indicator_states(self.studio_price, self._session.studio_indicators)
 
     # --- chart documents (multi-instance, tear-out) -----------------------------------------
     def _new_chart_document(self, symbol: str, interval: str | None = None, *,
@@ -514,12 +524,11 @@ class MainWindow(QtWidgets.QMainWindow):
         SINGLETON (Plan 1): re-opening the same key raises and selects the existing dock
         instead of creating a second one. A later plan flips this to multi-instance — the
         open-or-focus shortcut is isolated in the leading branch so that flip is one edit.
+
+        Studio is the 8th tool here: ToolRegistry's "studio" factory calls _build_studio_widget,
+        which builds the StudioTab + its lockstep chart (self.studio / self.studio_price) on
+        demand; the close handler below tears both down (shutdown + nil).
         """
-        if key == "studio":
-            # Studio remains a SpaceDeck space in Plan 1 (its chart/backtest pipeline is fused
-            # to the central chart — deferred sub-project). Treat "open studio" as: show the space.
-            self.tabs.setCurrentIndex(1)
-            return None
         from .toolreg import ToolRegistry, make_tool_dock
 
         existing = self._tool_docks.get(key)
@@ -546,6 +555,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         def _on_tool_closed(k=key, a=attr, w=widget):
             self._tool_docks.pop(k, None)
+            # Studio (the 8th tool) carries an AI worker + a lockstep chart fused to the pipeline:
+            # wait the worker out (no destroyed-while-running) and rescue the eager replay controls
+            # out of the DeleteOnClose dock tree BEFORE it is torn down, then nil studio_price so
+            # _pipeline_charts() drops it. (studio_price itself lives in the dock tree -> destroyed.)
+            if k == "studio":
+                if hasattr(w, "shutdown"):
+                    try:
+                        w.shutdown()
+                    except Exception:  # noqa: BLE001 - teardown best-effort; never block the close
+                        pass
+                self._rescue_studio_controls()
+                self.studio_price = None
             if a and getattr(self, a, None) is w:
                 setattr(self, a, None)   # clear the legacy alias (no dangling ref to a dead widget)
             # Stop any per-tool background work on dock close so no poller thread leaks.
@@ -717,34 +738,19 @@ class MainWindow(QtWidgets.QMainWindow):
         # link dots (state lives on the MainWindow, the dot WIDGETS are recreated with the header)
         self.tabs.set_header_status_provider(self._populate_header_status)
         self.tabs.addTab(container, "Chart")
-        self.studio = StudioTab()
-        self._wire_studio_agent()
+        # Studio is the 8th on-demand DOCK now (not an eager space): its StudioTab + lockstep chart
+        # are built by _build_studio_widget the first time the Studio dock opens. Only the Chart
+        # space is added here, so SpaceDeck holds exactly ONE space and the app opens on Chart.
         # Bots panel (Active Bots / Historic Runs / Launch Bot) intentionally NOT mounted in
         # Studio for now — pending a refactor. self.bots stays alive so self.strategy /
         # self.history (its sub-widgets) keep serving show_strategy()/update_runs() calls.
         #
-        # Replay/data controls: a 2-column button strip docked to the chart's RIGHT (fitted to
-        # its height), with the scrubber on a full-width row BELOW the chart.
-        _controls, _scrubber = self._build_controls()
-        _chart_block = QtWidgets.QWidget()
-        _cb = QtWidgets.QVBoxLayout(_chart_block)
-        _cb.setContentsMargins(0, 0, 0, 0)
-        _cb.setSpacing(4)
-        _row = QtWidgets.QHBoxLayout()
-        _row.setContentsMargins(0, 0, 0, 0)
-        _row.setSpacing(6)
-        # studio chart + its own stacked oscillator sub-panes
-        _studio_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        _studio_split.setHandleWidth(6)
-        _studio_split.addWidget(self.studio_price)
-        _studio_split.setStretchFactor(0, 1)
-        self.studio_price.set_pane_host(_studio_split)
-        _row.addWidget(_studio_split, 1)
-        _row.addWidget(_controls, 0)
-        _cb.addLayout(_row, 1)
-        _cb.addWidget(_scrubber)
-        self.studio.mount_chart(_chart_block)
-        self.tabs.addTab(self.studio, "Studio")
+        # Replay/data controls (slider/speed/btn_*) are built EAGERLY and held un-parented here:
+        # the backtest/replay/live pipeline (load_bars, _render_frame, _on_tick, forward) drives
+        # them whether or not Studio is open, so they must always exist. _build_studio_widget
+        # re-parents them into the Studio chart block; closing the Studio dock rescues them back
+        # out (see _rescue_studio_controls) before the DeleteOnClose dock tree is destroyed.
+        self._studio_controls, self._studio_scrubber = self._build_controls()
         # Tools tab hidden per user request (see import note above).
         # self.tools = ToolsTab()
         # self.tabs.addTab(self.tools, "Tools")
@@ -753,9 +759,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # LONGER eager SpaceDeck spaces — they open on-demand as dock widgets via open_tool(key)
         # (empty-workspace re-arch). Their legacy attributes (self.screener/.datamanager/.news/…)
         # are set by open_tool ONLY while the tool dock is open, and cleared on close, so code that
-        # reads them keeps working when the tool is live and stays guarded otherwise. SpaceDeck now
-        # holds exactly two spaces: Chart (index 0) and Studio (index 1). Per-tool signal wiring
-        # that used to live here moved to _wire_tool(); the OptionsService stays app-level (eager).
+        # reads them keeps working when the tool is live and stays guarded otherwise. With Studio
+        # now an on-demand dock too, SpaceDeck holds exactly ONE space: Chart (index 0). Per-tool
+        # signal wiring that used to live here moved to _wire_tool(); the OptionsService stays
+        # app-level (eager).
         self._options_svc = OptionsService(parent=self)
         self._options_started = False
         # Eagerly nil the legacy tool attrs so any reader site fails the getattr(...) guard until
@@ -783,12 +790,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.topbar.symbolSubmitted.connect(self._on_topbar_symbol)
         self.topbar.intervalSubmitted.connect(self._on_topbar_interval)
         self.topbar.commandSubmitted.connect(self._run_command_label)
-        # window-type launchers (the MC16 top-right cluster): a new chart window, the Studio space
-        # as a floating native-title-bar window, and the on-demand tools (open as docks). The 7
-        # tools are no longer spaces, so their launchers call open_tool(key) instead of float_space.
+        # window-type launchers (the MC16 top-right cluster): a new chart window, the Studio dock,
+        # and the on-demand tools (open as docks). Studio + the 7 tools are no longer spaces, so
+        # their launchers call open_tool(key) (open-or-focus the dock).
         self.topbar.add_launcher("chart", "New chart window (Ctrl+N)",
                                  lambda: self._open_in_new_chart(self._symbol))
-        self.topbar.add_launcher("studio", "Studio window", lambda: self._float_space(1))
+        self.topbar.add_launcher("studio", "Studio window", lambda: self.open_tool("studio"))
         # Topbar shows the 5 most-used tool launchers (width-limited); journal + alerts are
         # reachable via the rail + Go/File menus + Ctrl+K palette.
         for icon_name, label, key in (("screener", "Screener", "screener"), ("data", "Data", "data"),
@@ -812,6 +819,57 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rules = _RuleOverlay(self)
         self._rules.raise_()
         self._update_chart_header()   # initial chart-space header title (CHART · SYM · iv)
+
+    def _build_studio_widget(self) -> "StudioTab":
+        """Build the Studio tab + its lockstep chart block on demand (Studio is the 8th closable
+        dock now). Sets self.studio + self.studio_price; returns the StudioTab to host in the dock.
+
+        Mirrors the eager construction that used to live in _build_central: a StudioTab whose
+        'Chart' results tab hosts the studio PriceChart + the (eagerly-built) replay controls +
+        the scrubber. The replay controls are re-parented IN here and rescued OUT on close
+        (_rescue_studio_controls) so the always-on backtest/replay pipeline never loses them."""
+        self.studio_price = PriceChart()
+        # Match the eager wiring the Chart chart got in __init__ (timeframe reload + pairs fetch).
+        self.studio_price.intervalChosen.connect(self._on_interval_chosen)
+        self.studio_price.pairsRequested.connect(lambda n: self._add_pairs(self.studio_price, n))
+        self.studio = StudioTab()
+        self._wire_studio_agent()
+        # Replay/data controls: a vertical button strip docked to the chart's RIGHT (fitted to its
+        # height), with the scrubber on a full-width row BELOW the chart. Both are built eagerly and
+        # held on self; re-parent them into this freshly-built block.
+        _controls, _scrubber = self._studio_controls, self._studio_scrubber
+        _chart_block = QtWidgets.QWidget()
+        _cb = QtWidgets.QVBoxLayout(_chart_block)
+        _cb.setContentsMargins(0, 0, 0, 0)
+        _cb.setSpacing(4)
+        _row = QtWidgets.QHBoxLayout()
+        _row.setContentsMargins(0, 0, 0, 0)
+        _row.setSpacing(6)
+        # studio chart + its own stacked oscillator sub-panes
+        _studio_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        _studio_split.setHandleWidth(6)
+        _studio_split.addWidget(self.studio_price)
+        _studio_split.setStretchFactor(0, 1)
+        self.studio_price.set_pane_host(_studio_split)
+        _row.addWidget(_studio_split, 1)
+        _row.addWidget(_controls, 0)
+        _cb.addLayout(_row, 1)
+        _cb.addWidget(_scrubber)
+        self.studio.mount_chart(_chart_block)
+        return self.studio
+
+    def _rescue_studio_controls(self) -> None:
+        """Re-parent the eager replay controls + scrubber OUT of the Studio dock's widget tree
+        before it is destroyed (DeleteOnClose), so self.slider/.speed/.btn_* survive the close and
+        the always-on backtest/replay pipeline keeps working. Best-effort: a torn-down C++ child is
+        simply skipped."""
+        for w in (getattr(self, "_studio_controls", None), getattr(self, "_studio_scrubber", None)):
+            if w is None:
+                continue
+            try:
+                w.setParent(None)
+            except RuntimeError:   # already torn down with the dock — nothing to rescue
+                pass
 
     def _wire_options(self, tab) -> None:
         """Connect an Options tab <-> the app-level service, then lazy-start its fetch.
@@ -898,12 +956,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self._options_svc.start_polling()  # resume the selected expiry's poll on re-open
 
     # Navigation splits into two kinds after the empty-workspace re-arch:
-    #  * SPACES — the eager SpaceDeck tabs (Chart, Studio). Selected via tabs.setCurrentIndex.
+    #  * SPACES — the eager SpaceDeck tabs (just Chart now). Selected via tabs.setCurrentIndex.
     #    The space_index MUST match the addTab() order in _build_central.
-    #  * TOOLS — the 7 on-demand docks (screener/…/options). Opened via open_tool(tool_key).
+    #  * TOOLS — the 8 on-demand docks (studio/screener/…/options). Opened via open_tool(tool_key).
     # Keep both in sync with _build_central (spaces) and ToolRegistry (tool keys).
-    _SPACE_ITEMS = [("▤", "Chart", 0), ("✦", "Studio", 1)]          # (glyph, name, space_index)
-    _TOOL_ITEMS = [("⊞", "Screener", "screener"), ("☰", "Journal", "journal"),
+    _SPACE_ITEMS = [("▤", "Chart", 0)]                              # (glyph, name, space_index)
+    _TOOL_ITEMS = [("✦", "Studio", "studio"),
+                   ("⊞", "Screener", "screener"), ("☰", "Journal", "journal"),
                    ("◉", "Alerts", "alerts"), ("◈", "Data", "data"),
                    ("📰", "News", "news"), ("▦", "Calendar", "calendar"),
                    ("⊗", "Options", "options")]                      # (glyph, name, tool_key)
@@ -1392,7 +1451,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._replay.n_bars = len(merged)
             self.slider.setMaximum(self._replay.last_index)
             overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
-            for ch in (self.price, self.studio_price):  # Chart space stays clean (no auto overlays)
+            for ch in self._pipeline_charts():  # Chart space stays clean (no auto overlays)
                 ch.apply_live(merged, overlays if ch is self.studio_price else None, repaint=False)
             self._update_chart_header()   # live ticker: header last price + change% (overcome MC)
             if was_at_end:  # following the live edge -> advance the cursor and repaint
@@ -1811,14 +1870,15 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --- Data tab → Studio ---
     def _on_test_symbol(self, symbol, bars) -> None:
-        """Data tab → Studio: load one symbol's bars and switch to the Studio space."""
+        """Data tab → Studio: load one symbol's bars and open/focus the Studio dock."""
         if not bars:
             return
+        self.open_tool("studio")   # open-or-focus: guarantees self.studio + raises the dock
         self.studio.set_bars(bars)
-        self.tabs.setCurrentWidget(self.studio)
 
     def _on_test_dataset(self, dataset, bars_by_symbol) -> None:
         """Data tab → Studio: run the editor's strategy across the whole DataSet (portfolio backtest)."""
+        self.open_tool("studio")   # open-or-focus: guarantees self.studio + raises the dock
         cls = self.studio.current_strategy_cls()
         if cls is None or not bars_by_symbol:
             return
@@ -1852,11 +1912,17 @@ class MainWindow(QtWidgets.QMainWindow):
             ).report()
         except Exception as exc:  # noqa: BLE001 - missing module / resting orders unsupported in portfolio mode
             self.studio.results.show_error(f"Portfolio test failed: {exc}")
-            self.tabs.setCurrentWidget(self.studio)
             return
         self.studio.show_portfolio_report(report, dataset.name,
                                           bars_by_symbol=bars_by_symbol, ranges=ranges)
-        self.tabs.setCurrentWidget(self.studio)
+
+    def _pipeline_charts(self):
+        """Charts that the data/replay/live pipeline feeds: the Chart space always, plus the
+        Studio chart only while the Studio dock is open (studio_price is None when it's closed)."""
+        charts = [self.price]
+        if self.studio_price is not None:
+            charts.append(self.studio_price)
+        return charts
 
     # --- data / strategy loading ---
     def load_bars(self, bars, strategy_factory=None, *, record=True):
@@ -1864,7 +1930,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self._strategy_factory = strategy_factory
         self.strategy.show_strategy(self._strategy_factory)
         self._bars = bars
-        self.studio.set_bars(bars)  # the Studio tab backtests the same data
+        if self.studio is not None:
+            self.studio.set_bars(bars)  # the Studio tab backtests the same data (when open)
         self._result = BacktestEngine(bars, self._strategy_factory()).run()
         self._replay = Replay(len(bars))
         # A freshly loaded chart shows the LIVE EDGE (latest bars), like TradingView — not bar 0.
@@ -1873,7 +1940,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # slider's setValue doesn't fire a seek (same-length reload, interval switch, auto-load).
         self._replay.seek(self._replay.last_index)
         overlays = self._strategy_factory().chart_overlays([b.close for b in bars])
-        for ch in (self.price, self.studio_price):
+        for ch in self._pipeline_charts():
             # The Chart space is a CLEAN viewer — no auto strategy markers OR overlays (those belong
             # to the Studio/backtest chart). Trades + the SMA legend go to Studio only; indicators on
             # the Chart space come only from ƒx Indicators — matching a plain TradingView chart.
@@ -2236,7 +2303,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # --- replay wiring ---
     def _render_frame(self):
         i = self._replay.index
-        for ch in (self.price, self.studio_price):
+        for ch in self._pipeline_charts():
             ch.show_upto(i)
         self.pos_label.setText(f"bar {i} / {self._replay.last_index}")
         if self.slider.value() != i:
@@ -2364,7 +2431,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._forward.equity_curve else []
         res = self._forward.result()
         overlays = self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
-        for ch in (self.price, self.studio_price):
+        for ch in self._pipeline_charts():
             ch.set_data(self._fwd_bars, res.trades)
             ch.set_overlays(overlays if ch is self.studio_price else {})  # Chart space stays clean
             ch.show_upto(len(self._fwd_bars) - 1)
@@ -2466,7 +2533,9 @@ class MainWindow(QtWidgets.QMainWindow):
             maximized=self.isMaximized(),
             panels=dict(self._panel_visible),
             chart_indicators=indicator_states(self.price),
-            studio_indicators=indicator_states(self.studio_price),
+            # Studio chart only exists while its dock is open; capture its indicators when present.
+            studio_indicators=(indicator_states(self.studio_price)
+                               if self.studio_price is not None else []),
             documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
             open_tools=list(self._tool_docks.keys()),
             watchlist_link=self._watchlist_link,
@@ -2594,9 +2663,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _commands(self) -> list:
         """The flat (label, callback) command list the Ctrl+K palette fuzzy-searches."""
         cmds: list = []
-        for _glyph, name, space_index in self._SPACE_ITEMS:   # Chart/Studio -> switch space
+        for _glyph, name, space_index in self._SPACE_ITEMS:   # Chart -> switch space
             cmds.append((f"Go to {name}", lambda idx=space_index: self.tabs.setCurrentIndex(idx)))
-        for _glyph, name, tool_key in self._TOOL_ITEMS:        # the 7 tools -> open the dock
+        for _glyph, name, tool_key in self._TOOL_ITEMS:        # Studio + the 7 tools -> open the dock
             cmds.append((f"Open {name}", lambda k=tool_key: self.open_tool(k)))
         for name in self._workspaces.names():
             cmds.append((f"Open workspace: {name}", lambda n=name: self._apply_workspace(n)))
@@ -2792,7 +2861,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._layout_workers = []
         if getattr(self, "news", None) is not None:
             self.news.stop_feed()  # halt the news poller thread (only if the News dock is open)
-        self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
+        if self.studio is not None:
+            self.studio.shutdown()  # wait out any in-flight AI worker (only if the Studio dock is open)
         if getattr(self, "_options_svc", None) is not None:
             self._options_svc.shutdown()  # stop the poll + wait out any options fetch worker
         if getattr(self, "_price_timer", None) is not None:
