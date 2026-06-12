@@ -1,4 +1,9 @@
-"""Offscreen integration: Data tab Test buttons drive the Studio space on the main window."""
+"""Offscreen integration: Data tab Test buttons drive the Studio space on the main window.
+
+The Data tab is an on-demand dock now (empty-workspace re-arch): each test opens it via
+``win.open_tool("data")`` (which builds the DataManagerTab, mirrors it onto win.datamanager, and
+wires its test_symbol_requested / test_dataset_requested signals) before driving those signals.
+"""
 
 import os
 
@@ -25,21 +30,35 @@ def _bars(n=12):
             for i in range(n)]
 
 
+def _studio_dock_current(win) -> bool:
+    """Studio is an on-demand dock now (not a space). The data->studio handoff opens-or-focuses it,
+    so 'switched to Studio' means: the studio dock exists, is open, and is the current tab of its
+    dock area (open_tool raises + setCurrentDockWidget)."""
+    dock = win._tool_docks.get("studio")
+    if dock is None or dock.isClosed():
+        return False
+    area = dock.dockAreaWidget()
+    return area is None or area.currentDockWidget() is dock
+
+
 def test_test_symbol_loads_studio_and_switches(app):
     win = MainWindow()
+    win.open_tool("data")
     bars = _bars()
     win.datamanager.test_symbol_requested.emit("BTCUSDT", bars)
     assert win.studio._bars == bars
-    assert win.tabs.currentWidget() is win.studio
+    assert _studio_dock_current(win)
 
 
 def test_test_dataset_runs_portfolio_into_studio(app):
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     win = MainWindow()
+    win.open_tool("data")
+    win.open_tool("studio")   # build the Studio dock so we can prime its editor before the handoff
     win.studio.editor.setText(TEMPLATES[0].code)   # a known-good strategy
     a, b = _bars(60), _bars(60)
     win.datamanager.test_dataset_requested.emit(DataSet("DS", ["A", "B"], interval="1m"), {"A": a, "B": b})
-    assert win.tabs.currentWidget() is win.studio
+    assert _studio_dock_current(win)
     assert win.studio.results.last_report is not None
 
 
@@ -48,11 +67,13 @@ def test_test_dynamic_dataset_runs_with_membership_ranges(app):
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     from vike_trader_app.data.datasets import DataSet, DateRange
     win = MainWindow()
+    win.open_tool("data")
+    win.open_tool("studio")   # build the Studio dock so we can prime its editor before the handoff
     win.studio.editor.setText(TEMPLATES[0].code)
     a, b = _bars(60), _bars(60)
     ds = DataSet("Dyn", ["A", "B"], interval="1m", ranges={"B": [DateRange(b[30].ts, None)]})  # B joins mid-run
     win.datamanager.test_dataset_requested.emit(ds, {"A": a, "B": b})
-    assert win.tabs.currentWidget() is win.studio
+    assert _studio_dock_current(win)
     assert win.studio.results.last_report is not None
 
 
@@ -60,13 +81,15 @@ def test_test_dataset_with_benchmark_symbol_uses_bars_from_bars_by_symbol(app):
     """DataSet.benchmark set to a symbol present in bars_by_symbol → report.benchmark_label == that symbol."""
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     win = MainWindow()
+    win.open_tool("data")
+    win.open_tool("studio")   # build the Studio dock so we can prime its editor before the handoff
     win.studio.editor.setText(TEMPLATES[0].code)
     a = _bars(60)
     spy = _bars(60)
     # DataSet with benchmark="SPY"; SPY bars are in the bars_by_symbol dict
     ds = DataSet("DS", ["A"], interval="1m", benchmark="SPY")
     win.datamanager.test_dataset_requested.emit(ds, {"A": a, "SPY": spy})
-    assert win.tabs.currentWidget() is win.studio
+    assert _studio_dock_current(win)
     assert win.studio.results.last_report is not None
     assert win.studio.results.last_report.benchmark_label == "SPY"
 
@@ -76,6 +99,8 @@ def test_test_dataset_benchmark_missing_from_cache_falls_back_gracefully(app, mo
     with equal-weight fallback (no crash)."""
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     win = MainWindow()
+    win.open_tool("data")
+    win.open_tool("studio")   # build the Studio dock so we can prime its editor before the handoff
     win.studio.editor.setText(TEMPLATES[0].code)
     a = _bars(60)
     # Monkeypatch read_series to always return [] so the cache load fails cleanly

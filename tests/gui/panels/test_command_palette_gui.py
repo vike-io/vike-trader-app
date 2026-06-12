@@ -61,8 +61,8 @@ def test_palette_empty_query_shows_all(app):
 def test_mainwindow_commands_cover_spaces_and_workspaces(app):
     win = MainWindow(session_path=None)
     labels = [label for label, _cb in win._commands()]
-    assert "Go to Chart" in labels
-    assert "Go to Studio" in labels
+    assert "Go to Chart" in labels                 # Chart is the only space now
+    assert "Open Studio" in labels                 # Studio is an on-demand tool dock
     assert any(l.startswith("Open workspace: Trading") for l in labels)
     assert any(l.startswith("New chart:") for l in labels)
     assert "Save workspace as…" in labels
@@ -70,11 +70,13 @@ def test_mainwindow_commands_cover_spaces_and_workspaces(app):
     win.close()
 
 
-def test_command_go_to_space_switches(app):
-    win = MainWindow(session_path=None)
+def test_command_open_studio_opens_dock(app):
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
     cmds = dict(win._commands())
-    cmds["Go to Studio"]()
-    assert win.tabs.currentWidget() is win.studio
+    cmds["Open Studio"]()
+    app.processEvents()
+    assert win.studio is not None                  # the palette command built the Studio dock
+    assert "studio" in win._tool_docks and not win._tool_docks["studio"].isClosed()
     win.close()
 
 

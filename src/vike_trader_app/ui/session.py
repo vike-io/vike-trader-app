@@ -3,6 +3,7 @@
 The shell saves a small JSON snapshot on close (window geometry, active space, symbol +
 interval, panel toggles, and each chart's user indicators) and restores it on the next
 launch, so the app reopens where the user left off (AmiBroker/MultiCharts table stakes).
+On-demand tool docks (screener/news/… opened via the rail) persist via ``open_tools``.
 
 Qt-free by design so it unit-tests without a QApplication: geometry travels as an opaque
 hex string (``QWidget.saveGeometry().toHex()``), and indicator (de)hydration is duck-typed
@@ -19,7 +20,9 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-_VERSION = 1
+_VERSION = 2  # v2: empty-workspace re-arch moved Studio + the tools from pinned SPACES to
+              # on-demand docks, so a pre-v2 dock_state_hex (old space layout) is incompatible
+              # and is dropped on load (see from_dict migration) -> clean default workspace.
 
 # Pairs indicators need a 2nd symbol's closes aligned to the loaded bars — that benchmark
 # isn't ours to persist (it's re-fetched per load), so they're dropped across sessions,
@@ -41,6 +44,7 @@ class SessionState:
     chart_indicators: list = field(default_factory=list)    # Chart space (price)
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
     documents: list = field(default_factory=list)           # open chart documents (Phase 2)
+    open_tools: list = field(default_factory=list)   # tool keys open as docks (empty-workspace re-arch)
     watchlist_link: int = 0                                  # watchlist symbol-link group (Phase 3)
     central_link: int = 0                                    # central chart symbol-link group
     central_interval_link: int = -1                          # central chart interval-link (-1=follow)
@@ -50,7 +54,10 @@ class SessionState:
 
     @classmethod
     def from_dict(cls, raw) -> "SessionState | None":
-        """Tolerant parse: unknown keys ignored, wrong-typed values fall back to defaults."""
+        """Tolerant parse: unknown keys ignored, wrong-typed values fall back to defaults.
+        NOTE: this is shared by named workspaces (WorkspaceStore), which are stored WITHOUT a
+        per-entry version, so the v2 dock-layout migration lives in load_session (the launch
+        path that keeps the version) — NOT here, or every named workspace would lose its layout."""
         if not isinstance(raw, dict):
             return None
         state = cls()
@@ -64,12 +71,30 @@ class SessionState:
 
 
 def load_session(path) -> SessionState | None:
-    """Read a saved session; ``None`` (fresh start) on any missing/corrupt/unreadable file."""
+    """Read a saved session; ``None`` (fresh start) on any missing/corrupt/unreadable file.
+
+    MIGRATION: a pre-v2 session saved a dock layout from the old space-based model (Chart, Studio
+    and the 7 tools were pinned SPACES). That blob references space docks that no longer exist, so
+    restoring it on the empty-workspace model resurrects ghost/stray docks (the user saw a
+    "permanent Studio") or crashes on a stale C++ area. On a version downgrade we DROP the dock
+    layout + active space + open_tools so the launch is a clean default workspace; lightweight
+    prefs (symbol/interval/indicators/geometry) are kept."""
     try:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001 - no file / bad JSON / locked -> fresh start
         return None
-    return SessionState.from_dict(raw)
+    state = SessionState.from_dict(raw)
+    if state is None:
+        return None
+    try:
+        stored_version = int(raw.get("version", 1))
+    except (TypeError, ValueError):
+        stored_version = 1
+    if stored_version < _VERSION:
+        state.dock_state_hex = ""
+        state.space = 0
+        state.open_tools = []
+    return state
 
 
 def save_session(path, state: SessionState) -> bool:

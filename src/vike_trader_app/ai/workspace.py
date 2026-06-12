@@ -14,9 +14,9 @@ from __future__ import annotations
 
 from .llm import LLMClient, ToolSpec
 
-# Kept in sync with the shell: the rail spaces and the chart intervals.
-SPACES = ["chart", "studio", "screener", "journal", "alerts", "data", "news",
-          "calendar", "options"]
+# Kept in sync with the shell: the only persistent spaces are Chart + Studio. The 7 tools
+# (screener/journal/alerts/data/news/calendar/options) are on-demand docks, not spaces.
+SPACES = ["chart", "studio"]
 INTERVALS = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"]
 MAX_LINK_GROUP = 6
 

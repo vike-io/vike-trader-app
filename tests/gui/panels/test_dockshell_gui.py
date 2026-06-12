@@ -80,27 +80,28 @@ def test_spacedeck_mirrors_qtabwidget_api(app):
     win = MainWindow()
     deck = win.tabs
     assert isinstance(deck, SpaceDeck)
-    assert deck.count() == len(win._RAIL_ITEMS)
-    # construction leaves the CHART space current (ADS would otherwise sit on the last-added)
+    assert deck.count() == len(win._SPACE_ITEMS)   # only Chart remains a space — Studio + the 7
+    # tools open on demand as docks now, not eager SpaceDeck spaces
+    assert deck.count() == 1
+    # construction leaves the CHART space current
     assert deck.currentIndex() == 0
     assert deck.currentWidget() is win._backtester
-    # identity round-trips
-    assert deck.widget(deck.indexOf(win.studio)) is win.studio
+    # identity round-trips for the one remaining space
+    assert deck.widget(0) is win._backtester
     assert deck.tabText(0) == "Chart"
-    assert deck.isAncestorOf(win.studio)
+    assert deck.isAncestorOf(win._backtester)
     assert not deck.isAncestorOf(win.watchlist)  # panels are NOT in the spaces area
     win.close()
 
 
 def test_spacedeck_current_changed_drives_rail(app):
+    # Re-selecting the one Chart SPACE drives the rail + title bar. (Studio and the other tools are
+    # docks now, so they no longer participate in space navigation.)
     win = MainWindow()
-    got = []
-    win.tabs.currentChanged.connect(got.append)
-    idx = win.tabs.indexOf(win.screener)
-    win.tabs.setCurrentIndex(idx)
-    assert got and got[-1] == idx
-    assert win._rail_group.button(idx).isChecked()          # rail mirrors the deck
-    assert win.windowTitle().endswith("Screener")           # title bar tracks the space
+    win.tabs.setCurrentIndex(0)
+    win._on_tab_changed(0)
+    assert win._rail_group.button(0).isChecked()            # rail mirrors the deck
+    assert win.windowTitle().endswith("Chart")              # title bar tracks the space
     win.close()
 
 
@@ -126,9 +127,9 @@ def test_user_closing_panel_syncs_rail_toggle(app):
     win._market_dock.toggleView(False)
     assert win._panel_btns["market"].isChecked() is False   # rail toggle mirrored the close
     assert win._panel_visible["market"] is False            # remembered intent updated
-    # ...and a space round-trip must NOT resurrect the closed panel
-    win.tabs.setCurrentIndex(win.tabs.indexOf(win.studio))
+    # ...and re-selecting the Chart space must NOT resurrect the closed panel
     win.tabs.setCurrentIndex(0)
+    win._on_tab_changed(0)
     assert win._market_dock.isClosed()
     win.close()
 
@@ -138,7 +139,7 @@ def test_on_tab_changed_is_non_reentrant(app):
     win = MainWindow()
     win._in_tab_change = True            # simulate being mid-dispatch
     before = win.windowTitle()
-    win._on_tab_changed(win.tabs.indexOf(win.studio))  # must no-op, not recurse
+    win._on_tab_changed(0)              # must no-op, not recurse
     assert win.windowTitle() == before
     win._in_tab_change = False
     win.close()
@@ -159,15 +160,16 @@ def test_panel_drop_into_spaces_area_does_not_crash(app):
         )
     except Exception:  # noqa: BLE001 - ADS may itself reject the drop; either way: no crash
         pass
-    win.tabs.setCurrentIndex(win.tabs.indexOf(win.studio))  # exercise a space switch after
-    win.tabs.setCurrentIndex(0)
-    assert win.tabs.count() == len(win._RAIL_ITEMS)  # still alive, spaces intact
+    win.tabs.setCurrentIndex(0)        # re-select the Chart space after the drop
+    win._on_tab_changed(0)
+    assert win.tabs.count() == len(win._SPACE_ITEMS)  # still alive, the Chart space intact
     win.close()
 
 
 def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
-    """A saved space index past the end (a build dropped a space) clamps to the last space and
-    still re-syncs the rail/title, rather than leaving the shell disconnected."""
+    """A saved space index past the end (e.g. an old session saved on a now-removed tool space)
+    clamps to Chart (0) and still re-syncs the rail/title, rather than leaving the shell
+    disconnected. (Empty-workspace re-arch: out-of-range lands on Chart, not the last space.)"""
     import json
 
     path = tmp_path / "session.json"
@@ -179,10 +181,22 @@ def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
 
     second = MainWindow(session_path=str(path))
     idx = second.tabs.currentIndex()
-    assert idx == second.tabs.count() - 1   # clamped to the last valid space
-    assert second._rail_group.button(idx).isChecked()       # rail re-synced (not stuck on 0)
-    assert second.windowTitle().endswith(second._RAIL_ITEMS[idx][1])
+    assert idx == 0                         # out-of-range (old tool-space index) clamps to Chart
+    assert second._rail_group.button(idx).isChecked()       # rail re-synced (not stuck/disconnected)
+    assert second.windowTitle().endswith(second._SPACE_ITEMS[idx][1])
     second.close()
+
+
+def test_vike_dock_titlebar_attrs_exist_before_init():
+    """Regression: Qt's C++ base can fire resizeEvent DURING super().__init__(), before the
+    instance attrs are set — our resizeEvent/refresh_native_hidden touch self._header. Class-level
+    defaults must exist so that early resize can't raise AttributeError (a real-platform crash on
+    float-restore that offscreen event timing doesn't reproduce). Guard the defaults here."""
+    from vike_trader_app.ui.dockshell import VikeDockTitleBar
+    assert VikeDockTitleBar._header is None
+    assert VikeDockTitleBar._is_panel is False
+    assert VikeDockTitleBar._deck is None
+    assert VikeDockTitleBar._area_w is None
 
 
 # --- Arrange (MultiCharts Window->Arrange parity) + keep-on-top pin -------------------------
@@ -326,19 +340,20 @@ def test_pin_appears_on_detach_and_sets_stays_on_top(app, _synthetic_load, monke
 
 
 def test_floating_a_space_does_not_wedge_navigation(app):
-    """A launcher floats a space out of the central area; navigating to OTHER docked spaces
-    must still work. Regression: _resolve_area was keyed on _docks[0], so floating Chart
-    (index 0) stranded every other space (silent setCurrentIndex no-op)."""
+    """Floating the (only) Chart space out of the central area and navigating back to it must not
+    wedge: _resolve_area falls back to the cached area when every space is floating, and the
+    float-aware setCurrentIndex re-raises the window rather than a silent no-op. (The original
+    two-space regression — floating Chart stranding a sibling space — no longer applies now that
+    Studio is a dock and Chart is the only space.)"""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.float_space(0)                  # float Chart — the worst case (was index 0)
+    win.tabs.float_space(0)                  # float Chart — the worst case (index 0)
     app.processEvents()
-    screener = win.tabs.indexOf(win.screener)
-    win.tabs.setCurrentIndex(screener)       # navigate to a still-docked space
+    assert win.tabs.dock(0).isFloating()
+    win.tabs.setCurrentIndex(0)              # navigate back to it (Go-menu / palette path)
     app.processEvents()
-    assert win.tabs.currentIndex() == screener
-    assert win.tabs.currentWidget() is win.screener
+    assert win.tabs.dock(0).isFloating()     # still reachable as a window, not wedged
     win.close()
 
 
@@ -348,13 +363,12 @@ def test_navigating_to_a_floated_space_raises_its_window(app):
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    studio = win.tabs.indexOf(win.studio)
-    win.tabs.float_space(studio)
+    win.tabs.float_space(0)                   # float the Chart space
     app.processEvents()
-    assert win.tabs.dock(studio).isFloating()
-    win.tabs.setCurrentIndex(studio)         # the Go-menu / palette path
+    assert win.tabs.dock(0).isFloating()
+    win.tabs.setCurrentIndex(0)              # the Go-menu / palette path
     app.processEvents()
-    assert win.tabs.dock(studio).isFloating()    # still a window, not a dead tab
+    assert win.tabs.dock(0).isFloating()     # still a window, not a dead tab
     win.close()
 
 
@@ -365,7 +379,7 @@ def test_floating_a_space_keeps_the_strip_hidden(app):
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.float_space(win.tabs.indexOf(win.screener))
+    win.tabs.float_space(0)                    # the Chart space (the only space; tools are docks)
     app.processEvents()
     app.processEvents()                       # the singleShot(0) re-hide
     area = win.tabs._resolve_area()

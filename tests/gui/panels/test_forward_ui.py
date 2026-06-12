@@ -78,26 +78,18 @@ def test_forward_locks_backtest_controls(app):
     win.close()
 
 
-def test_main_window_has_studio_tools_screener_tabs(app):
+def test_main_window_has_chart_space(app):
     from vike_trader_app.ui.dockshell import SpaceDeck
 
     win = MainWindow()
-    # the spaces live as ADS center-area tabs behind the QTabWidget-compatible facade
+    # the spaces live as ADS center-area tabs behind the QTabWidget-compatible facade. After the
+    # empty-workspace re-arch only Chart remains a space; Studio + the 7 tools open as docks.
     assert isinstance(win.tabs, SpaceDeck)
-    assert win.tabs.isAncestorOf(win.studio)
+    assert win.tabs.isAncestorOf(win._backtester)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    # Tools tab hidden per user request — it's no longer mounted in the rail/tab stack.
-    assert titles[:6] == ["Chart", "Studio", "Screener", "Journal", "Alerts", "Data"]
-    # the icon rail mirrors the tabs one-for-one
+    assert titles == ["Chart"]
+    # the icon rail's SPACE group mirrors the space tabs one-for-one (tool buttons are separate)
     assert len(win._rail_group.buttons()) == win.tabs.count()
-    win.close()
-
-
-def test_screener_tab_also_hides_backtester_docks(app):
-    win = MainWindow()
-    screener_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.screener)
-    win.tabs.setCurrentIndex(screener_idx)
-    assert all(d.isClosed() for d in win._docks)   # docks show only on the Backtester tab
     win.close()
 
 
@@ -135,23 +127,7 @@ def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
 def test_studio_agent_unconfigured_without_key(app, monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     win = MainWindow()
+    win.open_tool("studio")                  # Studio is an on-demand dock now -> build it first
+    app.processEvents()
     assert win.studio._agent_client is None  # graceful no-AI default when no key
-    win.close()
-
-
-def test_studio_tab_hides_backtester_docks(app):
-    win = MainWindow()
-    # Chart-first: Market watch + Trades start CLOSED on first run (ADS "closed", not hidden).
-    assert all(d.isClosed() for d in win._docks)
-    # Open them via the rail toggles, then verify the tab switch hides on Studio
-    # and restores them on the Backtester.
-    for key in ("market", "trades"):
-        win._panel_btns[key].setChecked(True)
-    studio_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.studio)
-    win.tabs.setCurrentIndex(studio_idx)
-    assert all(d.isClosed() for d in win._docks)      # clean Studio workspace
-    win.tabs.setCurrentIndex(0)                        # back to Backtester
-    # restored PER TOGGLE: the two we opened come back; dashboard tiles (toggles off) stay closed
-    for key, dock in win._panel_dock_map.items():
-        assert dock.isClosed() != (key in ("market", "trades"))
     win.close()

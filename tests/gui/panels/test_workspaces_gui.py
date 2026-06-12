@@ -58,10 +58,15 @@ def test_apply_trading_clears_documents(app):
     win.close()
 
 
-def test_apply_backtesting_selects_studio_space(app):
-    win = MainWindow(session_path=None)
+def test_apply_backtesting_opens_studio_dock(app):
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
     win._apply_workspace("Backtesting")
-    assert win.tabs.currentWidget() is win.studio
+    app.processEvents()
+    # Studio is an on-demand dock now: the Backtesting workspace opens it (via open_tools) on the
+    # Chart space, rather than switching to a (retired) Studio space.
+    assert win.tabs.currentIndex() == 0
+    assert win.studio is not None
+    assert "studio" in win._tool_docks and not win._tool_docks["studio"].isClosed()
     win.close()
 
 
@@ -77,6 +82,25 @@ def test_save_and_switch_user_workspace(app):
     win._apply_workspace("Mine")                 # restore the 2 saved docs
     assert [d.symbol for d in win._doc_widgets] == ["ADAUSDT", "DOTUSDT"]
     win.close()
+
+
+def test_workspace_restores_open_tool_docks(app, tmp_path):
+    """A workspace saved with a tool dock open must reopen that dock when loaded in a fresh
+    window that didn't have it open (Task 6 review — Fix 1)."""
+    session = tmp_path / "session.json"
+    first = MainWindow(session_path=str(session))
+    first.open_tool("screener")                  # no network feed (unlike news/calendar)
+    assert "screener" in first._tool_docks
+    assert first._save_workspace_as("WithTool")  # the workspace blob captures the open tool
+    first._tool_docks["screener"].closeDockWidget()   # close it -> session won't record it
+    assert "screener" not in first._tool_docks
+    first.close()
+
+    second = MainWindow(session_path=str(session))   # fresh shell, session has no open tools
+    assert "screener" not in second._tool_docks
+    assert second._apply_workspace("WithTool")       # load -> tool dock recreated for the blob
+    assert "screener" in second._tool_docks
+    second.close()
 
 
 def test_unknown_workspace_is_noop(app):

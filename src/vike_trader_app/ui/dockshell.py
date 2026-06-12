@@ -31,6 +31,17 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         buttons wired to ADS undock / auto-hide / float-max / close.
     NOT a tab strip (rejected design)."""
 
+    # Class-level defaults so these attrs ALWAYS exist. Qt's C++ base (CDockAreaTitleBar) can
+    # fire resizeEvent DURING super().__init__() — before the instance assignments below run —
+    # which calls our resizeEvent override and touches self._header. Without these defaults that
+    # early resize raises AttributeError ("'VikeDockTitleBar' object has no attribute '_header'"),
+    # a real-platform crash on restore when a space is floated. Offscreen event timing doesn't
+    # deliver that construction-time resize, so the GUI suite stayed green — only a live launch hit it.
+    _deck = None
+    _header = None
+    _is_panel = False
+    _area_w = None
+
     def __init__(self, area):
         super().__init__(area)
         self._deck = None
@@ -123,17 +134,29 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             pass
 
     def refresh_native_hidden(self) -> None:
-        """Hide every native child of the dock-area title bar except our inserted header. ADS
-        renders the dock title as a tab OR (single-dock areas) an eliding label, plus assorted
-        buttons, and re-shows them on relayout — chasing each kind proved unreliable, so we
-        suppress them wholesale. Re-called from hide_space_tabs / resizeEvent / currentChanged."""
+        """Suppress the native ADS title-bar chrome that fights our unified bar.
+
+        SINGLE-dock area: hide everything native (the eliding label + all buttons) and show the
+        unified bar — one clean custom title. MULTI-dock (tabbed) area: a single custom title can't
+        represent N tabs, so HIDE the unified bar and instead show the native (themed) TAB STRIP so
+        the user can switch tabs — but still kill the ▼ tabs-menu button (the one the user disliked).
+        Re-called from resizeEvent / event(LayoutRequest) so it survives tab add/remove + relayouts."""
         if self._header is None:
             return
         try:
+            multi = self._area_w.dockWidgetsCount() > 1
+        except (RuntimeError, AttributeError):
+            multi = False
+        try:
+            self._header.setVisible(not multi)
             for child in self.findChildren(QtWidgets.QWidget):
                 if child is self._header or self._header.isAncestorOf(child):
                     continue
-                child.hide()
+                if multi:
+                    # keep the switchable tab strip + themed action buttons; drop only the ▼ menu
+                    child.setVisible(child.objectName() != "tabsMenuButton")
+                else:
+                    child.hide()
         except (RuntimeError, AttributeError):
             pass
 
@@ -141,6 +164,18 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         super().resizeEvent(ev)
         if self._header is not None:        # keep native chrome suppressed across relayouts
             self.refresh_native_hidden()
+
+    def event(self, ev):  # noqa: N802 - Qt override
+        res = super().event(ev)
+        # ADS re-shows its native buttons (the ▼ tabs-menu, detach, auto-hide, close) when a 2nd
+        # dock is TABBED into this area — which does NOT fire a resizeEvent, so the natives leak in
+        # next to our unified ⧉ ─ □ ✕. Re-suppress on any layout change (cheap; guarded).
+        try:
+            if ev.type() == QtCore.QEvent.Type.LayoutRequest and self._header is not None:
+                self.refresh_native_hidden()
+        except RuntimeError:   # title bar mid-teardown
+            pass
+        return res
 
     # --- unified PANEL bar (Market watch / Trades / …) ------------------------------------
 
@@ -160,9 +195,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 dw = area.dockWidget(i)
             except (RuntimeError, AttributeError):
                 continue
-            if dw is not None and dw.objectName().startswith("panel:"):
-                self.mark_as_panel()
-                return
+            if dw is not None and dw.objectName().startswith(("panel:", "tool:")):
+                self.mark_as_panel()    # tool docks get the SAME unified bar as panels — no native
+                return                  # ADS chrome (the stray ▼ tabs-menu + duplicate close icon)
 
     def mark_as_panel(self) -> None:
         """[icon] NAME … ⧉ ─ □ ✕ wired to ADS undock / auto-hide / float-max / close —
@@ -264,10 +299,10 @@ def configure_dock_manager_defaults() -> None:
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.EqualSplitOnInsertion, True)
     # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
-    # floating containers are REAL OS windows: native title bar (min/max/close, snap, the
-    # taskbar treats them as windows) instead of ADS's custom strip — unified window chrome
+    # Floated docks are FRAMELESS (no native OS frame) so MainWindow can show our unified title bar
+    # on them via the floatingWidgetCreated hook — same chrome as docked + the chart windows.
     QtAds.CDockManager.setConfigFlag(
-        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, True)
+        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, False)
 
 
 def make_panel_dock(manager, title: str, widget, area,
@@ -347,8 +382,8 @@ class SpaceDeck(QtCore.QObject):
                 area = a
                 break
         if area is None:
-            return self._area
-        if area is not None and area is not self._area:
+            area = self._area          # all spaces floating/closed -> the cached central area
+        elif area is not self._area:
             if self._area is not None:
                 try:
                     self._area.currentChanged.disconnect(self._emit_current)
@@ -359,6 +394,14 @@ class SpaceDeck(QtCore.QObject):
             tb = area.titleBar()
             if hasattr(tb, "mark_as_chart_header"):   # VikeDockTitleBar (factory installed)
                 tb.mark_as_chart_header(self)
+        # restoreState / float relayouts can leave self._area pointing at a C++-DELETED area; probe
+        # liveness so every caller gets None (they all guard `area is None`) instead of crashing on
+        # the stale ref (e.g. _hide_space_tabs_now / _header_bar / currentIndex calling area.X()).
+        if self._area is not None:
+            try:
+                self._area.objectName()        # cheap; RuntimeError if the C++ object is gone
+            except RuntimeError:
+                self._area = None
         return self._area
 
     def _emit_current(self, *_):
@@ -416,20 +459,37 @@ class SpaceDeck(QtCore.QObject):
         return any(d.widget() is widget for d in self._documents)
 
     def close_current_document(self) -> None:
-        """Close the current chart document (the ✕ on the chart-space header). A pinned
-        SPACE is never closable, so this is a no-op unless a tear-out document is current."""
+        """The ✕ on the chart-space header. If a tear-out chart DOCUMENT is current, close it;
+        otherwise close (HIDE) the Chart space itself so the workspace can be fully emptied. The
+        Chart dock is hidden, not destroyed — its chart (self.price) survives and the pipeline
+        keeps running; the Chart rail/menu launcher re-shows it via show_space()."""
         area = self._resolve_area()
         cur = area.currentDockWidget() if area is not None else None
         if cur in self._documents:
             cur.closeDockWidget()
+        elif self._docks:
+            self._docks[0].toggleView(False)   # hide the Chart space -> empty workspace
+
+    def show_space(self, index: int = 0) -> None:
+        """Re-show a hidden space (the Chart) and make it current — the launcher counterpart of
+        the header ✕ that hides it."""
+        if 0 <= index < len(self._docks):
+            d = self._docks[index]
+            if d.isClosed():
+                d.toggleView(True)
+            d.setAsCurrentTab()
+            self.setCurrentIndex(index)
 
     # --- chart-space header (forwarded to the central area's VikeDockTitleBar) ------------
 
     def _header_bar(self):
-        area = self._resolve_area()
-        if area is None:
+        try:
+            area = self._resolve_area()
+            if area is None:
+                return None
+            tb = area.titleBar()
+        except RuntimeError:   # restoreState can leave a stale (C++-deleted) CDockAreaWidget ref
             return None
-        tb = area.titleBar()
         return tb if hasattr(tb, "set_header_title") else None
 
     def header_widget(self):
@@ -641,15 +701,19 @@ class SpaceDeck(QtCore.QObject):
     def currentIndex(self) -> int:  # noqa: N802
         """Index into the SPACES (``_docks``) of the current dock — robust to any foreign dock
         that may have landed in the area (returns -1 if the current dock isn't a space)."""
-        area = self._resolve_area()
-        cur = area.currentDockWidget() if area is not None else None
+        try:
+            area = self._resolve_area()
+            cur = area.currentDockWidget() if area is not None else None
+        except RuntimeError:   # area C++ object deleted by a restoreState/float relayout
+            return -1
         return self._docks.index(cur) if cur in self._docks else -1
 
     def currentWidget(self):  # noqa: N802
-        area = self._resolve_area()
-        if area is None:
+        try:
+            area = self._resolve_area()
+            dock = area.currentDockWidget() if area is not None else None
+        except RuntimeError:   # stale (deleted) area after a relayout
             return None
-        dock = area.currentDockWidget()
         if dock is None:
             return None
         # spaces AND documents share the center area; return either's widget so the shell can

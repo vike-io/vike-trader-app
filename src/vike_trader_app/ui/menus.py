@@ -64,8 +64,13 @@ def _fill_file(m, win):
     new = _menu(m, "New")
     new.addAction("Chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
     new.addSeparator()
-    for i, (_g, name) in enumerate(win._RAIL_ITEMS):
-        new.addAction(f"Go to {name}", lambda idx=i: win.tabs.setCurrentIndex(idx))
+    # The Chart space switches the current SpaceDeck tab; the 8 tools (Studio + the 7) open as
+    # on-demand docks.
+    for _g, name, space_index in win._SPACE_ITEMS:
+        new.addAction(f"Go to {name}", lambda idx=space_index: win.tabs.show_space(idx))
+    new.addSeparator()
+    for _g, name, tool_key in win._TOOL_ITEMS:
+        new.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
     m.addMenu(new)
     m.addSeparator()
     open_ws = _menu(m, "Open Workspace")
@@ -100,8 +105,8 @@ def _fill_file(m, win):
 
 def _fill_view(m, win):
     # Only the core panels — the dashboard tiles (movers/pnl/ecal/headlines) are hidden from
-    # the menu per the user (Calendar + News are full spaces, opened as windows from Go or
-    # the title-bar launchers); their Ctrl+Shift shortcuts + palette commands still work.
+    # the menu per the user (Calendar + News are now on-demand docks, opened via open_tool from
+    # Go or the title-bar launchers); their Ctrl+Shift shortcuts + palette commands still work.
     core = {"backtester", "market", "trades"}
     for key, _icon, tip, sc in win._PANELS:
         if key not in core:
@@ -117,12 +122,16 @@ def _fill_view(m, win):
 # --- Go ---------------------------------------------------------------------------------------
 
 def _fill_go(m, win):
-    """Space navigation (the retired left icon rail's job): one entry per space."""
+    """Navigation (the retired left icon rail's job): one entry per SPACE (just Chart now, which
+    switches the current tab) plus one per on-demand TOOL (Studio + the 7, opened via open_tool)."""
     current = win.tabs.currentIndex()
-    for i, (_g, name) in enumerate(win._RAIL_ITEMS):
-        a = m.addAction(name, lambda idx=i: win.tabs.setCurrentIndex(idx))
+    for _g, name, space_index in win._SPACE_ITEMS:
+        a = m.addAction(name, lambda idx=space_index: win.tabs.show_space(idx))
         a.setCheckable(True)
-        a.setChecked(i == current)
+        a.setChecked(space_index == current)
+    m.addSeparator()
+    for _g, name, tool_key in win._TOOL_ITEMS:
+        m.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
     m.addSeparator()
     m.addAction("New chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
 
