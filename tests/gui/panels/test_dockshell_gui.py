@@ -25,14 +25,18 @@ def app():
 
 
 def test_window_chrome_config_flags(app):
-    """S1 per-window chrome (MC16 parity): the manager runs with focus highlighting,
-    middle-click tab close, double-click detach, equal splits, and widget-titled floats."""
+    """Per-window chrome: the manager runs with focus highlighting, middle-click tab close,
+    equal splits, and widget-titled floats. Stage A1: ADS floating is disabled, so
+    DoubleClickUndocksWidget is OFF (double-clicking a title bar must NOT float a dock) —
+    charts float via chartwin instead."""
     win = MainWindow(session_path=None)  # construction runs configure_dock_manager_defaults
     M = QtAds.CDockManager
     for flag in (M.FocusHighlighting, M.MiddleMouseButtonClosesTab,
-                 M.DoubleClickUndocksWidget, M.EqualSplitOnInsertion,
+                 M.EqualSplitOnInsertion,
                  M.FloatingContainerHasWidgetTitle, M.DockAreaHideDisabledButtons):
         assert M.testConfigFlag(flag), flag
+    # Stage A1: double-click-undock is OFF (no broken ADS floats)
+    assert not M.testConfigFlag(M.DoubleClickUndocksWidget)
     win.close()
 
 
@@ -105,15 +109,17 @@ def test_spacedeck_current_changed_drives_rail(app):
     win.close()
 
 
-def test_panel_docks_are_ads_and_unlockable(app):
+def test_panel_docks_are_dock_only(app):
+    """Stage A1: panels are dock-only — closable / movable (tile+tab) / pinnable (auto-hide edge
+    tabs), but NOT floatable (ADS tear-out floating is disabled; it produced broken chrome)."""
     win = MainWindow()
     for dock in win._docks:
         assert isinstance(dock, QtAds.CDockWidget)
         feats = dock.features()
         assert feats & QtAds.CDockWidget.DockWidgetClosable
         assert feats & QtAds.CDockWidget.DockWidgetMovable
-        assert feats & QtAds.CDockWidget.DockWidgetFloatable
         assert feats & QtAds.CDockWidget.DockWidgetPinnable  # auto-hide pin (edge tabs)
+        assert not (feats & QtAds.CDockWidget.DockWidgetFloatable)  # no tear-out float (A1)
     # spaces, by contrast, are pinned in place (stable rail indices until Phase 2)
     assert win.tabs.dock(0).features() == QtAds.CDockWidget.NoDockWidgetFeatures
     win.close()

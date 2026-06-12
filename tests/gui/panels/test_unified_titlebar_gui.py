@@ -118,5 +118,7 @@ def test_panel_area_gets_unified_bar(app):
     assert isinstance(tb, VikeDockTitleBar)
     assert tb._is_panel                  # detected the 'panel:' dock
     assert tb._header is not None
-    assert {"detach", "min", "max", "close"} <= set(tb._header._buttons)
+    # Stage A1: dock-only panels carry just ─ (auto-hide/pin) + ✕ (close) — no ⧉ detach or □
+    # maximize (both depended on ADS floating, which is disabled).
+    assert {"min", "close"} == set(tb._header._buttons)
     win.close()
