@@ -10,7 +10,7 @@ columns) with plain geometry math — the user explicitly rejected dock-tiling f
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
 from .style_icons import style_icon
@@ -19,6 +19,7 @@ from .unifiedbar import BAR_H, FeedBadge, UnifiedTitleBar
 TITLE_H = BAR_H   # one shared title-bar height across every surface (chart header / panels)
 _EDGE = 6          # resize-border thickness (frame edges)
 _MIN_W, _MIN_H = 320, 160
+_SNAP_M = 28       # drag-to-edge snap zone thickness (attached frames; detached use OS snap)
 
 
 class ChartWindowFrame(QtWidgets.QFrame):
@@ -37,6 +38,8 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._normal_geo: QtCore.QRect | None = None
         self._drag_off: QtCore.QPoint | None = None
         self._resize_edge: tuple[bool, bool, bool, bool] | None = None
+        self._snap_target: "QtCore.QRect | None" = None   # pending drag-to-edge snap region
+        self._snap_overlay: "QtWidgets.QWidget | None" = None
         # Live-resize throttle: each mouse-move only STORES the target geometry (O(1)); the
         # expensive setGeometry → full pyqtgraph relayout (~90ms with 1500 candles) runs at
         # most once per tick, so the cursor never waits on the chart. Without this the handler
@@ -189,9 +192,14 @@ class ChartWindowFrame(QtWidgets.QFrame):
                     target.setX(max(-self.width() + 80, min(target.x(), r.width() - 80)))
                     target.setY(max(0, min(target.y(), r.height() - TITLE_H)))
                     self.move(target)
+                    cursor = self._host.mapFromGlobal(ev.globalPosition().toPoint())
+                    self._update_snap_preview(self._snap_zone_rect(cursor))
                 return True
             if t == QtCore.QEvent.MouseButtonRelease:
                 self._drag_off = None
+                if self._snap_target is not None and not self.is_detached():
+                    self.setGeometry(self._snap_target)   # commit the drag-to-edge snap
+                self._update_snap_preview(None)
                 return False
             if t == QtCore.QEvent.MouseButtonDblClick and ev.button() == QtCore.Qt.LeftButton:
                 self.toggle_max()
@@ -261,6 +269,45 @@ class ChartWindowFrame(QtWidgets.QFrame):
     def _edge_at(self, p: QtCore.QPoint):
         return (p.x() <= _EDGE, p.y() <= _EDGE,
                 p.x() >= self.width() - _EDGE, p.y() >= self.height() - _EDGE)
+
+    # --- drag-to-edge snap (attached frames; detached windows use the OS snap) -------------
+
+    def _snap_zone_rect(self, cursor: QtCore.QPoint) -> "QtCore.QRect | None":
+        """The target region for a drag that ended with the cursor near a host edge/corner:
+        edges → halves, corners → quarters, top edge → full. None when not in a snap zone."""
+        r = self._host.rect()
+        w, h, m = r.width(), r.height(), _SNAP_M
+        hw, hh = w // 2, h // 2
+        near_l, near_r = cursor.x() <= m, cursor.x() >= w - m
+        near_t, near_b = cursor.y() <= m, cursor.y() >= h - m
+        if near_t and near_l: return QtCore.QRect(0, 0, hw, hh)
+        if near_t and near_r: return QtCore.QRect(hw, 0, w - hw, hh)
+        if near_b and near_l: return QtCore.QRect(0, hh, hw, h - hh)
+        if near_b and near_r: return QtCore.QRect(hw, hh, w - hw, h - hh)
+        if near_l: return QtCore.QRect(0, 0, hw, h)
+        if near_r: return QtCore.QRect(hw, 0, w - hw, h)
+        if near_t: return QtCore.QRect(0, 0, w, h)              # top edge → maximize/full
+        return None
+
+    def _update_snap_preview(self, zone: "QtCore.QRect | None") -> None:
+        """Show/hide the translucent snap-preview overlay and remember the pending target."""
+        self._snap_target = zone
+        if zone is None:
+            if self._snap_overlay is not None:
+                self._snap_overlay.hide()
+            return
+        if self._snap_overlay is None:
+            ov = QtWidgets.QWidget(self._host)
+            ov.setObjectName("snapPreview")
+            c = QtGui.QColor(theme.ACCENT)
+            ov.setStyleSheet(
+                f"#snapPreview{{background:rgba({c.red()},{c.green()},{c.blue()},45);"
+                f"border:2px solid {theme.ACCENT};}}")
+            ov.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            self._snap_overlay = ov
+        self._snap_overlay.setGeometry(zone)
+        self._snap_overlay.show()
+        self._snap_overlay.raise_()
 
     def set_active(self, on: bool) -> None:
         """The ACTIVE window is shown by its bar background alone — no accent underline

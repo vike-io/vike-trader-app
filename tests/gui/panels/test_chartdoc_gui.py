@@ -16,7 +16,7 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("PySide6QtAds")
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 import vike_trader_app.ui.chartdoc as chartdoc  # noqa: E402
 from vike_trader_app.core.model import Bar  # noqa: E402
@@ -184,6 +184,23 @@ def test_clone_window_makes_independent_copy(app, _synthetic_load):
     f1 = win._chart_frames[1]
     assert f1.doc is not f0.doc
     assert f1.doc.symbol == "ETHUSDT" and f1.doc.interval == "2h"
+    win.close()
+
+
+def test_attached_frame_snap_zones(app, _synthetic_load):
+    """Stage 2: dragging an attached frame near a host edge/corner yields a half/quarter snap
+    target; the centre yields no snap."""
+    win = MainWindow(session_path=None)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("ETHUSDT", "1h")
+    f = win._chart_frames[0]
+    w, h = win.dock_manager.rect().width(), win.dock_manager.rect().height()
+    left = f._snap_zone_rect(QtCore.QPoint(3, h // 2))
+    assert left is not None and left.width() == w // 2 and left.height() == h
+    corner = f._snap_zone_rect(QtCore.QPoint(3, 3))
+    assert corner.width() == w // 2 and corner.height() == h // 2
+    assert f._snap_zone_rect(QtCore.QPoint(w // 2, h // 2)) is None
     win.close()
 
 
