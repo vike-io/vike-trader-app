@@ -134,17 +134,22 @@ def tool_hover_color(key: str, fallback: str) -> str:
 
 
 def make_tool_dock(manager, key: str, widget, icon=None) -> "QtAds.CDockWidget":
-    """Wrap a tool widget in a closable/floatable dock that is destroyed when closed.
+    """Wrap a tool widget in a dock-only (closable / movable / pinnable) dock that is destroyed
+    when closed.
 
-    Mirrors ``dockshell.make_panel_dock``'s construction (ForceNoScrollArea, default
-    features) but adds ``DockWidgetDeleteOnClose`` so a re-opened tool is rebuilt fresh
-    from its factory, and namespaces the objectName as ``tool:<key>``.
+    Mirrors ``dockshell.make_panel_dock``'s construction (ForceNoScrollArea) but adds
+    ``DockWidgetDeleteOnClose`` so a re-opened tool is rebuilt fresh from its factory, and
+    namespaces the objectName as ``tool:<key>``.
+
+    Stage A1: NOT floatable — ADS tear-out floating is disabled (it produced broken/double
+    chrome). Tile/tab/pin/close still work; clean tool windows return in Stage A2.
     """
     dock = QtAds.CDockWidget(manager, TOOL_LABELS.get(key, key))
     dock.setObjectName(f"tool:{key}")
     dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
     dock.setFeatures(
-        QtAds.CDockWidget.DefaultDockWidgetFeatures
+        QtAds.CDockWidget.DockWidgetClosable
+        | QtAds.CDockWidget.DockWidgetMovable
         | QtAds.CDockWidget.DockWidgetPinnable
         | QtAds.CDockWidget.DockWidgetDeleteOnClose
     )

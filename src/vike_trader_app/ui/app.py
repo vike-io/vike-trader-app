@@ -518,45 +518,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         chartwin.arrange(self._chart_frames, self.dock_manager, mode)
 
-    def _on_floating_created(self, floating_widget) -> None:
-        """Frameless floats: ADS hides the dock-area title bar; re-show our VikeDockTitleBar so the
-        float carries the unified ⧉ ─ □ ✕ bar (buttons are made float-aware in dockshell).
-
-        A floated TOOL/PANEL bar already self-marked via _auto_detect_panel; a floated CHART
-        space bar has no _header yet (the central area's chart header stays in the main window),
-        so mark THIS float's bar as a chart header too — same unified chrome + a live title."""
-        from .dockshell import VikeDockTitleBar
-
-        def _has_space_dock(tb) -> bool:
-            area = getattr(tb, "_area_w", None)
-            if area is None:
-                return False
-            try:
-                for i in range(area.dockWidgetsCount()):
-                    dw = area.dockWidget(i)
-                    if dw is not None and dw.objectName().startswith("space:"):
-                        return True
-            except (RuntimeError, AttributeError):
-                return False
-            return False
-
-        def _show():
-            try:
-                bars = floating_widget.findChildren(VikeDockTitleBar)
-            except RuntimeError:
-                return
-            for tb in bars:
-                try:
-                    if tb._header is None and _has_space_dock(tb):
-                        tb.mark_as_chart_header(self.tabs)   # floated Chart space -> our header
-                    tb.setVisible(True)
-                    if tb._header is not None:
-                        tb._header.setVisible(True)
-                    tb.refresh_native_hidden()
-                except (RuntimeError, AttributeError):
-                    pass
-        QtCore.QTimer.singleShot(0, self, _show)
-
     def open_tool(self, key: str):
         """Open the tool dock for ``key``, or focus it if already open.
 
@@ -771,9 +732,8 @@ class MainWindow(QtWidgets.QMainWindow):
         from .dockshell import VikeComponentsFactory
         self._dock_factory = VikeComponentsFactory()
         self.dock_manager.setComponentsFactory(self._dock_factory)
-        # Frameless floats: ADS hides the dock-area title bar inside the new floating container,
-        # so re-show our VikeDockTitleBar (the unified ⧉ ─ □ ✕ bar) on every float created.
-        self.dock_manager.floatingWidgetCreated.connect(self._on_floating_created)
+        # Stage A1: ADS floating is disabled (it produced broken/double-chrome floats), so no
+        # floatingWidgetCreated handler is wired — charts float cleanly via chartwin instead.
         self.dock_manager.setStyleSheet(dock_qss())
         self.tabs = SpaceDeck(self.dock_manager)
         # The factory recreates the chart-space header on relayout; each time it asks us to

@@ -67,11 +67,26 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             self.refresh_native_hidden()
             return
         self._deck = deck
-        win = None
-        try:
-            win = self.dockManager().window()
-        except (RuntimeError, AttributeError):
-            pass
+
+        def _resolve_window():
+            """The MainWindow hosting this header. The title bar is NOT a CDockWidget, so it has
+            no dockManager() — walk up via the area's manager, falling back to the Qt top-level
+            (self.window()). Resolved lazily because ADS recreates the header on relayout, when
+            the parent chain may not be wired yet."""
+            try:
+                a = self.dockAreaWidget()
+                m = a.dockManager() if a is not None else None
+                w = m.window() if m is not None else None
+            except (RuntimeError, AttributeError):
+                w = None
+            if w is None or not hasattr(w, "_open_central_as_window"):
+                try:
+                    w = self.window()
+                except (RuntimeError, AttributeError):
+                    w = None
+            return w if (w is not None and hasattr(w, "_open_central_as_window")) else None
+
+        win = _resolve_window()
 
         def _floating_container():
             """The CFloatingDockContainer this chart header lives in, or None when docked in the
@@ -114,33 +129,21 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             elif win is not None:
                 win.showNormal() if win.isMaximized() else win.showMaximized()
 
-        def _detach_or_redock():
-            """⧉ — float the chart space if docked, or re-dock it if already floating."""
-            idx = max(0, deck.currentIndex())
-            try:
-                d = deck.dock(idx)
-            except (RuntimeError, AttributeError, IndexError):
-                d = None
-            floating = False
-            try:
-                floating = d is not None and d.isFloating()
-            except (RuntimeError, AttributeError):
-                floating = False
-            if floating:
-                try:
-                    d.dockManager().addDockWidget(QtAds.CenterDockWidgetArea, d)
-                except (RuntimeError, AttributeError):
-                    pass
-            else:
-                deck.float_space(idx)
+        def _open_as_window():
+            """Open the central chart as a clean chartwin window. Resolves the MainWindow lazily
+            (the header is recreated on relayout, so a construction-time ref can be stale or None)
+            and is a no-op if it can't be reached or lacks the chartwin opener."""
+            w = win if (win is not None) else _resolve_window()
+            if w is not None and hasattr(w, "_open_central_as_window"):
+                w._open_central_as_window()
 
         bar = UnifiedTitleBar(title=getattr(deck, "_header_title", "Chart"),
                               icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
                               parent=self)
-        if win is not None and hasattr(win, "_open_central_as_window"):
-            bar.add_button("clone", "＋", "Open this chart in a new window",
-                           win._open_central_as_window)
-        bar.add_button("detach", "⧉", "Detach / re-dock this space", _detach_or_redock)
+        bar.add_button("clone", "＋", "Open this chart in a new window", _open_as_window)
+        # Stage A1: ⧉ opens the chart as a clean chartwin window (the SAME path as ＋ / New chart),
+        # NOT a broken ADS float. ADS floating is disabled wholesale; charts float via chartwin.
+        bar.add_button("detach", "⧉", "Open this chart as a window", _open_as_window)
         bar.add_button("min", "─", "Minimize", _win_min)
         bar.add_button("max", "□", "Maximize / restore", _win_max)
         bar.add_button("close", "✕", "Close the current chart",
@@ -263,17 +266,19 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 return                  # ADS chrome (the stray ▼ tabs-menu + duplicate close icon)
 
     def mark_as_panel(self) -> None:
-        """[icon] NAME … ⧉ ─ □ ✕ wired to ADS undock / auto-hide / float-max / close —
-        replacing the native tab + buttons (incl. the odd green auto-hide pin)."""
+        """[icon] NAME … ─ ✕ wired to auto-hide (pin to edge) / close — replacing the native tab
+        + buttons (incl. the odd green auto-hide pin).
+
+        Stage A1: dock-only — no ⧉ (detach) or □ (maximize), both of which depended on ADS
+        floating, which is now disabled. Tiling/tabbing/pinning/closing still work. Stage A2
+        re-adds a detach-to-clean-window button."""
         if self._header is not None:
             return
         from .unifiedbar import UnifiedTitleBar
 
         self._is_panel = True
         bar = UnifiedTitleBar(parent=self)
-        bar.add_button("detach", "⧉", "Detach / re-dock", self._panel_detach)
         bar.add_button("min", "─", "Minimize (collapse to edge)", self._panel_min)
-        bar.add_button("max", "□", "Maximize / restore", self._panel_max)
         bar.add_button("close", "✕", "Close", self._panel_close, danger=True)
         self._header = bar
         self._install_header_widget(bar)
@@ -310,40 +315,12 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             pass
         self.refresh_native_hidden()
 
-    def _panel_detach(self) -> None:
-        """⧉ — float a docked panel, or RE-DOCK a floating one back into the centre."""
-        d = self._cur_dock()
-        if d is None:
-            return
-        if d.isFloating():
-            try:
-                d.dockManager().addDockWidget(QtAds.CenterDockWidgetArea, d)
-            except (RuntimeError, AttributeError):
-                pass
-        else:
-            d.setFloating()
-
     def _panel_min(self) -> None:
-        """─ — on a FLOAT, minimize the floating container; otherwise collapse to the edge."""
+        """─ — the docked "minimize": collapse the panel to its edge (auto-hide pin). Stage A1:
+        panels can't float, so this is unconditionally the edge-pin toggle."""
         d = self._cur_dock()
-        if d is None:
-            return
-        if d.isFloating():
-            c = d.floatingDockContainer()
-            if c is not None:
-                c.showMinimized()
-        else:
+        if d is not None:
             d.toggleAutoHide()
-
-    def _panel_max(self) -> None:
-        d = self._cur_dock()
-        if d is None:
-            return
-        if not d.isFloating():
-            d.setFloating()
-        c = d.floatingDockContainer()
-        if c is not None:
-            c.showNormal() if c.isMaximized() else c.showMaximized()
 
     def _panel_close(self) -> None:
         d = self._cur_dock()
@@ -371,30 +348,37 @@ def configure_dock_manager_defaults() -> None:
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FocusHighlighting, True)
     # middle-click closes a closable tab (chart documents; no-op on the pinned spaces)
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.MiddleMouseButtonClosesTab, True)
-    # double-click a tab detaches it to a floating window (MC's "Detach", one gesture)
-    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.DoubleClickUndocksWidget, True)
+    # Stage A1: ADS FLOATING is disabled wholesale (it produced broken/double-chrome floats).
+    # Charts float cleanly via chartwin.ChartWindowFrame instead; tools/panels are dock-only
+    # (tile/tab/pin/close — no tear-out) for now. So double-click must NOT undock a dock to a
+    # float — keep docking gestures, kill the float gesture.
+    QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.DoubleClickUndocksWidget, False)
     # splitting an area for a new document divides the space evenly (clean 2x2 tiling)
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.EqualSplitOnInsertion, True)
     # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
-    # Frameless floats (custom-float-frames branch): no native OS frame, so we control the chrome.
+    # Stage A1: ADS floating is disabled, so this is moot — restore the clean default
+    # (native title bar on any ADS float) rather than leaving the frameless-float override.
     QtAds.CDockManager.setConfigFlag(
-        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, False)
+        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, True)
 
 
 def make_panel_dock(manager, title: str, widget, area,
                     icon: "QtGui.QIcon | None" = None) -> "QtAds.CDockWidget":
-    """An unlockable side-panel dock: closable, draggable, floatable (tear-out to a second
-    monitor) and pinnable (the auto-hide edge tabs — AmiBroker-style collapsed panels), with the
-    MC-style title bar (icon + detach/min/max/close)."""
+    """A dock-only side-panel: closable, draggable (tile/tab) and pinnable (the auto-hide edge
+    tabs — AmiBroker-style collapsed panels), with the MC-style title bar (icon + ─ ✕).
+
+    Stage A1: NOT floatable — ADS tear-out floating is disabled (it produced broken/double
+    chrome). Clean tool/panel windows return in Stage A2; charts already float via chartwin."""
     dock = QtAds.CDockWidget(manager, title)
     dock.setObjectName(f"panel:{title}")
     dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
     dock.setFeatures(
-        QtAds.CDockWidget.DefaultDockWidgetFeatures | QtAds.CDockWidget.DockWidgetPinnable
+        QtAds.CDockWidget.DockWidgetClosable | QtAds.CDockWidget.DockWidgetMovable
+        | QtAds.CDockWidget.DockWidgetPinnable
     )
     manager.addDockWidget(area, dock)
-    # The unified panel title bar (VikeDockTitleBar.mark_as_panel) renders [icon] NAME ⧉ ─ □ ✕;
+    # The unified panel title bar (VikeDockTitleBar.mark_as_panel) renders [icon] NAME ─ ✕;
     # just give the dock its icon — NOT apply_mc_titlebar's min/max title-actions, which would
     # render alongside ours as duplicate buttons.
     if icon is not None:
