@@ -45,6 +45,9 @@ class SessionState:
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
     documents: list = field(default_factory=list)           # open chart documents (Phase 2)
     open_tools: list = field(default_factory=list)   # tool keys open as docks (empty-workspace re-arch)
+    # Tools torn out to clean floating windows (Stage A2/A3): [{"key", "geometry":[x,y,w,h]}].
+    # geometry omitted for a tool detached to its own OS window (screen coords; cascades on restore).
+    tool_windows: list = field(default_factory=list)
     watchlist_link: int = 0                                  # watchlist symbol-link group (Phase 3)
     central_link: int = 0                                    # central chart symbol-link group
     central_interval_link: int = -1                          # central chart interval-link (-1=follow)
@@ -94,6 +97,7 @@ def load_session(path) -> SessionState | None:
         state.dock_state_hex = ""
         state.space = 0
         state.open_tools = []
+        state.tool_windows = []
     return state
 
 

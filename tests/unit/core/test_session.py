@@ -56,6 +56,25 @@ def test_load_session_migrates_pre_v2_to_clean_workspace(tmp_path):
     assert st.symbol == "ETHUSDT" and st.interval == "1h"       # prefs kept
 
 
+def test_tool_windows_round_trip(tmp_path):
+    # Stage A3: torn-out tool windows persist as {key, geometry} and survive a save/load.
+    import json as _json
+    from vike_trader_app.ui.session import load_session, save_session
+    p = tmp_path / "s.json"
+    state = SessionState(open_tools=["alerts"],
+                         tool_windows=[{"key": "journal", "geometry": [140, 90, 560, 360]},
+                                       {"key": "options"}])   # no geometry -> cascades on restore
+    save_session(str(p), state)
+    st = load_session(str(p))
+    assert st.open_tools == ["alerts"]
+    assert {s["key"] for s in st.tool_windows} == {"journal", "options"}
+    j = next(s for s in st.tool_windows if s["key"] == "journal")
+    assert j["geometry"] == [140, 90, 560, 360]
+    # pre-v2 migration drops tool_windows alongside open_tools (clean workspace)
+    p.write_text(_json.dumps({"version": 1, "tool_windows": [{"key": "journal"}]}), encoding="utf-8")
+    assert load_session(str(p)).tool_windows == []
+
+
 def test_load_session_keeps_v2_layout(tmp_path):
     import json as _json
     from vike_trader_app.ui.session import load_session
