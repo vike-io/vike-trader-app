@@ -17,13 +17,15 @@ def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
-def test_news_space_present_and_rail_aligned(app):
+def test_news_tool_opens_as_dock(app):
+    # News is now an on-demand TOOL (a dock), not a space: it lives in _TOOL_ITEMS keyed "news"
+    # and is built/opened via open_tool, which mirrors the live tab onto win.news while open.
     win = MainWindow()
     try:
-        names = [name for _glyph, name in win._RAIL_ITEMS]
-        assert "News" in names
-        # the rail drives tabs by position, so News's tab index must equal its rail index
-        assert win.tabs.indexOf(win.news) == names.index("News")
+        assert "news" in [key for _glyph, _name, key in win._TOOL_ITEMS]
+        assert getattr(win, "news", None) is None     # not eager
+        dock = win.open_tool("news")
+        assert dock.objectName() == "tool:news"
         assert isinstance(win.news, NewsTab)
     finally:
         win.close()
@@ -32,6 +34,7 @@ def test_news_space_present_and_rail_aligned(app):
 def test_set_symbol_forwards_to_news(app):
     win = MainWindow()
     try:
+        win.open_tool("news")                          # build the News dock (sets win.news)
         win.news.set_symbol("ETHUSDT")
         assert win.news._symbol == "ETHUSDT"
     finally:

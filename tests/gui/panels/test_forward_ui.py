@@ -78,26 +78,26 @@ def test_forward_locks_backtest_controls(app):
     win.close()
 
 
-def test_main_window_has_studio_tools_screener_tabs(app):
+def test_main_window_has_chart_and_studio_spaces(app):
     from vike_trader_app.ui.dockshell import SpaceDeck
 
     win = MainWindow()
-    # the spaces live as ADS center-area tabs behind the QTabWidget-compatible facade
+    # the spaces live as ADS center-area tabs behind the QTabWidget-compatible facade. After the
+    # empty-workspace re-arch only Chart + Studio remain spaces; the 7 tools open as docks.
     assert isinstance(win.tabs, SpaceDeck)
     assert win.tabs.isAncestorOf(win.studio)
     titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    # Tools tab hidden per user request — it's no longer mounted in the rail/tab stack.
-    assert titles[:6] == ["Chart", "Studio", "Screener", "Journal", "Alerts", "Data"]
-    # the icon rail mirrors the tabs one-for-one
+    assert titles == ["Chart", "Studio"]
+    # the icon rail's SPACE group mirrors the space tabs one-for-one (tool buttons are separate)
     assert len(win._rail_group.buttons()) == win.tabs.count()
     win.close()
 
 
-def test_screener_tab_also_hides_backtester_docks(app):
+def test_non_chart_space_also_hides_backtester_docks(app):
+    # Switching off the Chart space (to Studio) hides the Chart-only panel docks.
     win = MainWindow()
-    screener_idx = next(i for i in range(win.tabs.count()) if win.tabs.widget(i) is win.screener)
-    win.tabs.setCurrentIndex(screener_idx)
-    assert all(d.isClosed() for d in win._docks)   # docks show only on the Backtester tab
+    win.tabs.setCurrentIndex(win.tabs.indexOf(win.studio))
+    assert all(d.isClosed() for d in win._docks)   # docks show only on the Backtester (Chart) tab
     win.close()
 
 

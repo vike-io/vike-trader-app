@@ -80,7 +80,8 @@ def test_spacedeck_mirrors_qtabwidget_api(app):
     win = MainWindow()
     deck = win.tabs
     assert isinstance(deck, SpaceDeck)
-    assert deck.count() == len(win._RAIL_ITEMS)
+    assert deck.count() == len(win._SPACE_ITEMS)   # only Chart + Studio remain spaces (the 7
+    # non-Studio tools open on demand as docks now, not eager SpaceDeck spaces)
     # construction leaves the CHART space current (ADS would otherwise sit on the last-added)
     assert deck.currentIndex() == 0
     assert deck.currentWidget() is win._backtester
@@ -93,14 +94,16 @@ def test_spacedeck_mirrors_qtabwidget_api(app):
 
 
 def test_spacedeck_current_changed_drives_rail(app):
+    # Switching to a SPACE (only Chart/Studio remain) drives the rail + title bar. (Screener and
+    # the other tools are docks now, not spaces, so navigate to Studio here.)
     win = MainWindow()
     got = []
     win.tabs.currentChanged.connect(got.append)
-    idx = win.tabs.indexOf(win.screener)
+    idx = win.tabs.indexOf(win.studio)
     win.tabs.setCurrentIndex(idx)
     assert got and got[-1] == idx
     assert win._rail_group.button(idx).isChecked()          # rail mirrors the deck
-    assert win.windowTitle().endswith("Screener")           # title bar tracks the space
+    assert win.windowTitle().endswith("Studio")             # title bar tracks the space
     win.close()
 
 
@@ -161,7 +164,7 @@ def test_panel_drop_into_spaces_area_does_not_crash(app):
         pass
     win.tabs.setCurrentIndex(win.tabs.indexOf(win.studio))  # exercise a space switch after
     win.tabs.setCurrentIndex(0)
-    assert win.tabs.count() == len(win._RAIL_ITEMS)  # still alive, spaces intact
+    assert win.tabs.count() == len(win._SPACE_ITEMS)  # still alive, spaces intact
     win.close()
 
 
@@ -181,7 +184,7 @@ def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
     idx = second.tabs.currentIndex()
     assert idx == second.tabs.count() - 1   # clamped to the last valid space
     assert second._rail_group.button(idx).isChecked()       # rail re-synced (not stuck on 0)
-    assert second.windowTitle().endswith(second._RAIL_ITEMS[idx][1])
+    assert second.windowTitle().endswith(second._SPACE_ITEMS[idx][1])
     second.close()
 
 
@@ -334,11 +337,11 @@ def test_floating_a_space_does_not_wedge_navigation(app):
     app.processEvents()
     win.tabs.float_space(0)                  # float Chart — the worst case (was index 0)
     app.processEvents()
-    screener = win.tabs.indexOf(win.screener)
-    win.tabs.setCurrentIndex(screener)       # navigate to a still-docked space
+    studio = win.tabs.indexOf(win.studio)    # the only OTHER docked space now (tools are docks)
+    win.tabs.setCurrentIndex(studio)         # navigate to a still-docked space
     app.processEvents()
-    assert win.tabs.currentIndex() == screener
-    assert win.tabs.currentWidget() is win.screener
+    assert win.tabs.currentIndex() == studio
+    assert win.tabs.currentWidget() is win.studio
     win.close()
 
 
@@ -365,7 +368,7 @@ def test_floating_a_space_keeps_the_strip_hidden(app):
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.float_space(win.tabs.indexOf(win.screener))
+    win.tabs.float_space(win.tabs.indexOf(win.studio))   # any space (tools are docks now)
     app.processEvents()
     app.processEvents()                       # the singleShot(0) re-hide
     area = win.tabs._resolve_area()

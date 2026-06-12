@@ -85,7 +85,10 @@ def test_pnl_tile_follows_update_account(app):
 
 
 def test_news_tile_mirrors_feed_without_starting_it(app):
+    # News is an on-demand dock now: opening it wires its itemsUpdated -> headlines-tile mirror
+    # (and, under the suite's VIKE_DISABLE_LIVE, does NOT arm the poller).
     win = MainWindow(session_path=None)
+    win.open_tool("news")
     item = NewsItem(id="x", title="Bitcoin does a thing", url="http://e/x", summary="",
                     source="Wire", market="crypto",
                     published_ms=int(time.time() * 1000) - 120_000)
@@ -101,6 +104,7 @@ def test_news_tile_mirrors_feed_without_starting_it(app):
 def test_headlines_toggle_respects_live_kill_switch(app, monkeypatch):
     monkeypatch.setenv("VIKE_DISABLE_LIVE", "1")    # suite default, but make it explicit
     win = MainWindow(session_path=None)
+    win.open_tool("news")                           # the tile mirrors the News tool only while open
     win._on_headlines_toggled(True)
     assert win.news._worker is None                 # no network poller under the kill-switch
     win.close()

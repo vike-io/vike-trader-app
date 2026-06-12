@@ -260,10 +260,10 @@ def test_clicking_event_toggles_detail_child(app):
 # ---------------------------------------------------------------------------
 def test_mainwindow_registers_calendar_rail_item():
     # Class-attribute check — no MainWindow construction (which loads symbols and can be
-    # flaky offscreen). Verifies the rail wiring; the actual addTab is checked manually
-    # (Task 18) and guarded by the rail-count == tab-count invariant in the app.
+    # flaky offscreen). Calendar is now an on-demand TOOL (opened as a dock via open_tool),
+    # not a space, so it lives in _TOOL_ITEMS keyed "calendar" rather than _RAIL_ITEMS.
     from vike_trader_app.ui.app import MainWindow
-    assert ("▦", "Calendar") in MainWindow._RAIL_ITEMS
+    assert ("▦", "Calendar", "calendar") in MainWindow._TOOL_ITEMS
 
 
 # ---------------------------------------------------------------------------

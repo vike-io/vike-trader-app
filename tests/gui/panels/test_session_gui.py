@@ -45,14 +45,14 @@ def test_close_writes_session_snapshot(app, tmp_path):
     win = MainWindow(session_path=str(path))
     win.store = Store(":memory:")
     win._symbol, win._interval = "ETHUSDT", "1h"
-    win.tabs.setCurrentIndex(3)              # Journal
+    win.tabs.setCurrentIndex(1)              # Studio (only Chart/Studio are spaces now)
     win._panel_btns["market"].setChecked(True)
     win.close()
 
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["symbol"] == "ETHUSDT"
     assert saved["interval"] == "1h"
-    assert saved["space"] == 3
+    assert saved["space"] == 1
     assert saved["panels"]["market"] is True
     assert saved["geometry_hex"]              # non-empty opaque blob
 
@@ -62,14 +62,14 @@ def test_relaunch_restores_symbol_space_and_panels(app, tmp_path):
     first = MainWindow(session_path=str(path))
     first.store = Store(":memory:")
     first._symbol, first._interval = "ETHUSDT", "4h"
-    first.tabs.setCurrentIndex(2)             # Screener
+    first.tabs.setCurrentIndex(1)             # Studio (only Chart/Studio are spaces now)
     first._panel_btns["trades"].setChecked(True)
     first.close()
 
     second = MainWindow(session_path=str(path))
     assert second._symbol == "ETHUSDT"
     assert second._interval == "4h"
-    assert second.tabs.currentIndex() == 2
+    assert second.tabs.currentIndex() == 1
     assert second._panel_btns["trades"].isChecked()
     assert second._panel_btns["market"].isChecked() is False  # untouched -> fresh default
     assert second._restored_geometry

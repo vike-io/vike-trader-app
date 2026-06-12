@@ -1,4 +1,9 @@
-"""Offscreen integration: Data tab Test buttons drive the Studio space on the main window."""
+"""Offscreen integration: Data tab Test buttons drive the Studio space on the main window.
+
+The Data tab is an on-demand dock now (empty-workspace re-arch): each test opens it via
+``win.open_tool("data")`` (which builds the DataManagerTab, mirrors it onto win.datamanager, and
+wires its test_symbol_requested / test_dataset_requested signals) before driving those signals.
+"""
 
 import os
 
@@ -27,6 +32,7 @@ def _bars(n=12):
 
 def test_test_symbol_loads_studio_and_switches(app):
     win = MainWindow()
+    win.open_tool("data")
     bars = _bars()
     win.datamanager.test_symbol_requested.emit("BTCUSDT", bars)
     assert win.studio._bars == bars
@@ -36,6 +42,7 @@ def test_test_symbol_loads_studio_and_switches(app):
 def test_test_dataset_runs_portfolio_into_studio(app):
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     win = MainWindow()
+    win.open_tool("data")
     win.studio.editor.setText(TEMPLATES[0].code)   # a known-good strategy
     a, b = _bars(60), _bars(60)
     win.datamanager.test_dataset_requested.emit(DataSet("DS", ["A", "B"], interval="1m"), {"A": a, "B": b})
@@ -48,6 +55,7 @@ def test_test_dynamic_dataset_runs_with_membership_ranges(app):
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     from vike_trader_app.data.datasets import DataSet, DateRange
     win = MainWindow()
+    win.open_tool("data")
     win.studio.editor.setText(TEMPLATES[0].code)
     a, b = _bars(60), _bars(60)
     ds = DataSet("Dyn", ["A", "B"], interval="1m", ranges={"B": [DateRange(b[30].ts, None)]})  # B joins mid-run
@@ -60,6 +68,7 @@ def test_test_dataset_with_benchmark_symbol_uses_bars_from_bars_by_symbol(app):
     """DataSet.benchmark set to a symbol present in bars_by_symbol → report.benchmark_label == that symbol."""
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     win = MainWindow()
+    win.open_tool("data")
     win.studio.editor.setText(TEMPLATES[0].code)
     a = _bars(60)
     spy = _bars(60)
@@ -76,6 +85,7 @@ def test_test_dataset_benchmark_missing_from_cache_falls_back_gracefully(app, mo
     with equal-weight fallback (no crash)."""
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
     win = MainWindow()
+    win.open_tool("data")
     win.studio.editor.setText(TEMPLATES[0].code)
     a = _bars(60)
     # Monkeypatch read_series to always return [] so the cache load fails cleanly

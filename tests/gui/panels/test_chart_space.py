@@ -46,7 +46,7 @@ def test_main_window_uses_bots_panel(app):
 
 def test_first_space_is_chart(app):
     win = MainWindow()
-    assert win._RAIL_ITEMS[0][1] == "Chart"
+    assert win._SPACE_ITEMS[0][1] == "Chart"
     assert win._mode_tag.text() == "CHART"
 
 
