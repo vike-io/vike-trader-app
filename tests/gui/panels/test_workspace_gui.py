@@ -93,6 +93,22 @@ def test_backtest_pipeline_safe_when_studio_closed(app):
     win.close()
 
 
+def test_controls_survive_studio_close(app):
+    # The replay controls (self.slider etc.) are built eagerly and re-parented OUT of the Studio
+    # dock on close (_rescue_studio_controls). load_bars touches self.slider unconditionally, so a
+    # rescued-but-functional slider must survive a Studio close (guards the 0xC0000409 class).
+    from vike_trader_app.core.model import Bar
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
+    dock = win.open_tool("studio"); app.processEvents()
+    dock.closeDockWidget(); app.processEvents()
+    assert win.studio is None and win.studio_price is None
+    bars = [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
+            for i in range(40)]
+    win.load_bars(bars, record=False)          # must NOT crash on the rescued slider
+    assert win.slider.maximum() == len(bars) - 1
+    win.close()
+
+
 def test_options_close_reopen_no_stale_signals(app):
     # Regression: closing Options must drop the OptionsService->tab signal connections so an
     # in-flight fetch worker can't emit into the DeleteOnClose-destroyed tab (segfault class).

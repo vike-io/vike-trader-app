@@ -831,7 +831,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio_price = PriceChart()
         # Match the eager wiring the Chart chart got in __init__ (timeframe reload + pairs fetch).
         self.studio_price.intervalChosen.connect(self._on_interval_chosen)
-        self.studio_price.pairsRequested.connect(lambda n: self._add_pairs(self.studio_price, n))
+        # Capture the chart explicitly: self.studio_price is niled on dock close, so a late
+        # pairsRequested must NOT resolve self.studio_price by name (-> _add_pairs(None) crash).
+        self.studio_price.pairsRequested.connect(
+            lambda n, ch=self.studio_price: self._add_pairs(ch, n))
         self.studio = StudioTab()
         self._wire_studio_agent()
         # Replay/data controls: a vertical button strip docked to the chart's RIGHT (fitted to its
@@ -1134,7 +1137,7 @@ class MainWindow(QtWidgets.QMainWindow):
         name = (self._SPACE_ITEMS[idx][1] if idx < len(self._SPACE_ITEMS)
                 else self.tabs.tabText(idx))
         icon_name = name.lower()
-        if name in ("Chart", "Studio"):
+        if name == "Chart":   # Studio is a dock now, not a space — only Chart bears the ticker
             base = f"{name} · {self._symbol} · {self._interval}"
             html = self._header_price_html(base)
             if html is not None:
