@@ -29,7 +29,8 @@ class ChartWindowFrame(QtWidgets.QFrame):
     activated = QtCore.Signal(object)     # self (clicked/raised)
     cloneRequested = QtCore.Signal(object)   # self — duplicate this window (MainWindow handles)
 
-    def __init__(self, doc, host: QtWidgets.QWidget):
+    def __init__(self, doc, host: QtWidgets.QWidget, *, title: "str | None" = None,
+                 icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = True):
         super().__init__(host)
         self.doc = doc
         self._host = host
@@ -61,23 +62,32 @@ class ChartWindowFrame(QtWidgets.QFrame):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(1, 1, 1, 1)
         lay.setSpacing(0)
+        self._lay = lay
 
         # --- title bar (shared chrome — unifiedbar) --------------------------------------
+        # Generalized (Stage A2): a CHART passes nothing — title/icon resolve from the
+        # ChartDocument and the chart-only feed badge / clone are on. A TOOL window passes an
+        # explicit title + icon with feed=clone=False. Every chart-specific adornment below is
+        # getattr/hasattr-guarded, so a plain tool widget (no .title()/symbolChanged/_link_dot/
+        # _pin_btn) hosts cleanly in the SAME polished frame.
         self._bar = UnifiedTitleBar(
-            title=doc.title(),
-            icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16))
+            title=title if title is not None else doc.title(),
+            icon=icon if icon is not None
+            else style_icon("Candles", theme.ACCENT).pixmap(16, 16))
         # adopt the doc's symbol-link (●) + interval-link (◆) dots into the title bar's status
         # cluster (MC link colours live on the window chrome, not buried in the chart toolbar)
         for _dot in (getattr(doc, "_link_dot", None), getattr(doc, "_ivl_dot", None)):
             if _dot is not None:
                 self._bar.add_status(_dot)
-        self._feed_badge = FeedBadge()        # per-window data state (set by MainWindow)
-        self._bar.add_status(self._feed_badge)
+        self._feed_badge = FeedBadge() if feed else None   # per-window data state (chart only)
+        if self._feed_badge is not None:
+            self._bar.add_status(self._feed_badge)
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
             self._bar.add_widget(doc._pin_btn)
-        self._bar.add_button("clone", "＋", "Clone this window",
-                             lambda: self.cloneRequested.emit(self))
+        if clone:
+            self._bar.add_button("clone", "＋", "Clone this window",
+                                 lambda: self.cloneRequested.emit(self))
         self._detach_btn = self._bar.add_button(
             "detach", "⧉", "Detach to its own window", self.toggle_detach)
         self._bar.add_button("min", "─", "Minimize (roll up)", self.toggle_rollup)
@@ -164,13 +174,29 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self.move(min(self.x(), max(0, r.width() - 60)),
                       min(self.y(), max(0, r.height() - TITLE_H)))
 
-    def close_window(self) -> None:
-        self.closed.emit(self)
+    def take_body(self) -> "QtWidgets.QWidget | None":
+        """Reparent the body widget OUT of this frame (e.g. to re-dock a tool) and return it.
+        The frame is left empty — follow with dispose() to drop it WITHOUT a close-driven
+        teardown (the body now lives elsewhere)."""
+        body = self.doc
+        if body is not None:
+            self._lay.removeWidget(body)
+            body.setParent(None)
+        self.doc = None
+        return body
+
+    def dispose(self) -> None:
+        """Tear the frame down WITHOUT emitting ``closed`` — used when the body has already been
+        re-homed (take_body), so no close handler should run its teardown."""
         if self._snap_overlay is not None:   # child of the HOST, not us — delete it explicitly
             self._snap_overlay.deleteLater()
             self._snap_overlay = None
         self.hide()
         self.deleteLater()
+
+    def close_window(self) -> None:
+        self.closed.emit(self)
+        self.dispose()
 
     # --- drag / resize / activate -----------------------------------------------------------
 
@@ -323,8 +349,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._bar.set_active(on)
 
     def set_feed(self, color: str, text: str) -> None:
-        """Paint this window's feed badge (MainWindow maps the live state -> colour + text)."""
-        self._feed_badge.set_state(color, text)
+        """Paint this window's feed badge (MainWindow maps the live state -> colour + text).
+        No-op on windows without a feed badge (tool windows: feed=False)."""
+        if self._feed_badge is not None:
+            self._feed_badge.set_state(color, text)
 
     def _show_menu(self, global_pos) -> None:
         """Title-bar right-click menu (frame-local actions). Plain QMenu → it inherits the app's
@@ -338,6 +366,35 @@ class ChartWindowFrame(QtWidgets.QFrame):
             act.setChecked(pin.isChecked())
         m.addAction("Attach back into workspace" if self.is_detached() else "Detach to a window",
                     self.toggle_detach)
+        m.addAction("Restore" if self._maxed else "Maximize", self.toggle_max)
+        m.addSeparator()
+        m.addAction("Close", self.close_window)
+        m.exec(global_pos)
+
+
+class ToolWindowFrame(ChartWindowFrame):
+    """A clean floating window hosting a TOOL widget (Screener / Journal / Alerts / …).
+
+    Reuses the chart window's frame chrome and ALL of its drag / resize / drag-to-edge-snap /
+    roll-up / maximize / detach machinery — minus the chart-only adornments (live feed badge,
+    clone, symbol/interval link dots), so a torn-out tool looks pixel-identical to a chart
+    window. Adds a 'Dock into workspace' verb so the tool can be re-homed as an ADS dock
+    (MainWindow._redock_tool does the reparent)."""
+
+    redockRequested = QtCore.Signal(object)   # self — re-dock this tool into the workspace
+
+    def __init__(self, widget, host: QtWidgets.QWidget, *, title: str,
+                 icon: "QtGui.QPixmap | None" = None):
+        super().__init__(widget, host, title=title, icon=icon, feed=False, clone=False)
+
+    def _show_menu(self, global_pos) -> None:
+        """Tool-window right-click menu: dock back / detach to OS window / maximize / close.
+        Plain QMenu so it inherits the app's unified popup style (never set a local stylesheet —
+        the cascade gotcha)."""
+        m = QtWidgets.QMenu(self)
+        m.addAction("Dock into workspace", lambda: self.redockRequested.emit(self))
+        m.addAction("Attach back over workspace" if self.is_detached()
+                    else "Detach to its own window", self.toggle_detach)
         m.addAction("Restore" if self._maxed else "Maximize", self.toggle_max)
         m.addSeparator()
         m.addAction("Close", self.close_window)
