@@ -36,7 +36,6 @@ from . import icons, theme
 from .bots_panel import BotsPanel
 from .chart import PriceChart
 from .chartdoc import ChartDocument, LiveHub
-from .datamanager import DataManagerTab
 from .dialogs import LoadDataDialog, default_strategy_factory
 from .dockshell import SpaceDeck, configure_dock_manager_defaults, dock_qss, make_panel_dock
 from .linkbus import LINK_COLOR, SymbolLinkBus
@@ -57,17 +56,11 @@ from .session import (
 from .watchlist_data import is_stale, quote_from_bars
 from .workspaces import WorkspaceStore
 from .studio import StudioTab
-from .alerts import AlertsTab
-from .journal import JournalTab
-from .news import NewsTab
-from .screener import ScreenerTab
-# Tools tab (standalone calculators) hidden per user request — restore by uncommenting
-# this import, its addTab below, and the ("⚙", "Tools") entry in _RAIL_ITEMS.
-# from .tools import ToolsTab
-from .economic_calendar import EconomicCalendarTab
-from .equity_calendar import CalendarSpace
-from .options_tab import OptionsTab
-from ..data.options.service import OptionsService
+# The 7 non-Studio tool widgets (AlertsTab, JournalTab, NewsTab, ScreenerTab, DataManagerTab,
+# EconomicCalendarTab/CalendarSpace, OptionsTab) are NO LONGER imported here: they are built
+# on demand by ToolRegistry (ui/toolreg.py) inside open_tool(), not eagerly in _build_central.
+# (Tools tab of standalone calculators stays hidden — restore via its addTab + a _TOOL_ITEMS entry.)
+from ..data.options.service import OptionsService  # app-level OptionsService stays eager (Plan 1)
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
 _DAY_MS = 86_400_000
@@ -87,6 +80,14 @@ _FEED_STATES = {  # connection-watchdog badge: (colour, prefix) per state
 }
 _DB_PATH = "storage/db/vike_trader_app.sqlite"
 _PINS_PATH = "storage/pins.json"  # pinned (symbol, interval) series kept precomputed (rollups)
+# Empty-workspace re-arch: the 7 non-Studio tools open as on-demand docks (open_tool). While a
+# tool dock is open, open_tool mirrors the live instance onto the legacy MainWindow attribute below
+# (and the calendar tool's CalendarSpace onto self.calendar_space) so existing readers keep working;
+# the dock-close handler clears it back to None. The tool *key* differs from the attr only for
+# data->datamanager and calendar->calendar_space. NOTE: "studio" is NOT here — it stays an eager space.
+_TOOL_ATTR = {"screener": "screener", "journal": "journal", "alerts": "alerts",
+              "data": "datamanager", "news": "news", "calendar": "calendar_space",
+              "options": "options"}
 _SESSION_PATH = "storage/session.json"  # last-session snapshot (geometry/space/symbol/indicators)
 _ROLLUP_REFRESH_MS = 60_000       # backstop: keep pinned rollups current (incremental, cheap)
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
@@ -204,7 +205,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self, session_path: str | None = _SESSION_PATH):
         super().__init__()
-        self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[0][1]}")  # space name updated on tab change
+        self.setWindowTitle(f"vike-trader-app   {self._SPACE_ITEMS[0][1]}")  # space name updated on tab change
         self.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))  # brand V in the title bar
         self.resize(1440, 900)
         self.setDockNestingEnabled(True)
@@ -515,8 +516,49 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
         self._tool_docks[key] = dock
-        dock.closed.connect(lambda k=key: self._tool_docks.pop(k, None))
+        # Mirror the live instance onto its legacy attribute so existing readers (signals,
+        # set_symbol, dashboard-tile seeding, …) keep working while the tool is open.
+        attr = _TOOL_ATTR.get(key)
+        if attr:
+            setattr(self, attr, widget)
+        self._wire_tool(key, widget)
+
+        def _on_tool_closed(k=key, a=attr, w=widget):
+            self._tool_docks.pop(k, None)
+            if a and getattr(self, a, None) is w:
+                setattr(self, a, None)   # clear the legacy alias (no dangling ref to a dead widget)
+            # Stop any per-tool background work on dock close so no poller thread leaks.
+            if hasattr(w, "stop_feed"):
+                try:
+                    w.stop_feed()       # News poller thread
+                except Exception:  # noqa: BLE001 - teardown best-effort; never block the close
+                    pass
+            if k == "options" and getattr(self, "_options_svc", None) is not None:
+                self._options_svc.stop_polling()   # the poller lives on the app-level service,
+                self._options_started = False      # not the tab, so stop it here (re-arm next open)
+
+        dock.closed.connect(_on_tool_closed)
         return dock
+
+    def _wire_tool(self, key: str, widget) -> None:
+        """Per-tool signal wiring that used to live inline in _build_central, run once when a
+        tool dock is first created (the open-or-focus branch of open_tool returns before here, so
+        a re-opened tool is never re-wired)."""
+        if key == "data":
+            widget.test_symbol_requested.connect(self._on_test_symbol)
+            widget.test_dataset_requested.connect(self._on_test_dataset)
+        elif key == "news":
+            widget.itemsUpdated.connect(
+                lambda w=widget: self._headlines_tile.set_items(w._items))
+            if hasattr(widget, "set_symbol"):
+                widget.set_symbol(self._symbol)
+            # Seed the headlines tile from whatever the feed already merged, then arm the poller
+            # (skipped under the headless kill-switch, mirroring _on_headlines_toggled).
+            self._headlines_tile.set_items(widget._items)
+            if not os.environ.get("VIKE_DISABLE_LIVE"):
+                widget.start_feed(self._symbol)
+        elif key == "options":
+            self._wire_options(widget)   # binds the OptionsService to this tab + lazy-starts it
 
     def _open_in_new_chart(self, symbol: str) -> None:
         """Watchlist context menu → open ``symbol`` as a fresh chart document (current TF)."""
@@ -674,26 +716,20 @@ class MainWindow(QtWidgets.QMainWindow):
         # Tools tab hidden per user request (see import note above).
         # self.tools = ToolsTab()
         # self.tabs.addTab(self.tools, "Tools")
-        self.screener = ScreenerTab()
-        self.tabs.addTab(self.screener, "Screener")
-        self.journal = JournalTab()
-        self.tabs.addTab(self.journal, "Journal")
-        self.alerts = AlertsTab()
-        self.tabs.addTab(self.alerts, "Alerts")
-        self.datamanager = DataManagerTab(pins_path=_PINS_PATH)
-        self.tabs.addTab(self.datamanager, "Data")
-        self.datamanager.test_symbol_requested.connect(self._on_test_symbol)
-        self.datamanager.test_dataset_requested.connect(self._on_test_dataset)
-        self.news = NewsTab()
-        self.tabs.addTab(self.news, "News")
-        self.economic_calendar = EconomicCalendarTab()
-        self.calendar_space = CalendarSpace(economic_tab=self.economic_calendar)
-        self.tabs.addTab(self.calendar_space, "Calendar")
-        self.options = OptionsTab()
-        self.tabs.addTab(self.options, "Options")
+        #
+        # The 7 non-Studio tools (screener/journal/alerts/data/news/calendar/options) are NO
+        # LONGER eager SpaceDeck spaces — they open on-demand as dock widgets via open_tool(key)
+        # (empty-workspace re-arch). Their legacy attributes (self.screener/.datamanager/.news/…)
+        # are set by open_tool ONLY while the tool dock is open, and cleared on close, so code that
+        # reads them keeps working when the tool is live and stays guarded otherwise. SpaceDeck now
+        # holds exactly two spaces: Chart (index 0) and Studio (index 1). Per-tool signal wiring
+        # that used to live here moved to _wire_tool(); the OptionsService stays app-level (eager).
         self._options_svc = OptionsService(parent=self)
         self._options_started = False
-        self._wire_options()
+        # Eagerly nil the legacy tool attrs so any reader site fails the getattr(...) guard until
+        # the matching tool is opened (open_tool sets them; the dock-close handler re-nils them).
+        for _attr in _TOOL_ATTR.values():
+            setattr(self, _attr, None)
 
         # ADS makes the LAST-added dock current, so snap back to the Chart space before any
         # currentChanged consumers are wired.
@@ -715,15 +751,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self.topbar.symbolSubmitted.connect(self._on_topbar_symbol)
         self.topbar.intervalSubmitted.connect(self._on_topbar_interval)
         self.topbar.commandSubmitted.connect(self._run_command_label)
-        # window-type launchers (the MC16 top-right cluster): every icon opens a WINDOW —
-        # a new chart window, or the space as a floating native-title-bar window (like charts)
+        # window-type launchers (the MC16 top-right cluster): a new chart window, the Studio space
+        # as a floating native-title-bar window, and the on-demand tools (open as docks). The 7
+        # tools are no longer spaces, so their launchers call open_tool(key) instead of float_space.
         self.topbar.add_launcher("chart", "New chart window (Ctrl+N)",
                                  lambda: self._open_in_new_chart(self._symbol))
-        for icon_name, label, idx in (("screener", "Screener", 2), ("data", "Data", 5),
-                                      ("news", "News", 6), ("calendar", "Calendar", 7),
-                                      ("options", "Options", 8), ("studio", "Studio", 1)):
+        self.topbar.add_launcher("studio", "Studio window", lambda: self._float_space(1))
+        for icon_name, label, key in (("screener", "Screener", "screener"), ("data", "Data", "data"),
+                                      ("news", "News", "news"), ("calendar", "Calendar", "calendar"),
+                                      ("options", "Options", "options")):
             self.topbar.add_launcher(icon_name, f"{label} window",
-                                     lambda i=idx: self._float_space(i))
+                                     lambda k=key: self.open_tool(k))
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -741,11 +779,30 @@ class MainWindow(QtWidgets.QMainWindow):
         self._rules.raise_()
         self._update_chart_header()   # initial chart-space header title (CHART · SYM · iv)
 
-    def _wire_options(self) -> None:
-        """Connect the Options tab <-> service. Fetching only starts when the tab is first
-        shown (keeps startup + headless tests network-free). One expiry at a time: the tab
-        strip picks it; the service fetches and polls just that expiry (Deribit-style)."""
-        tab, svc = self.options, self._options_svc
+    def _wire_options(self, tab) -> None:
+        """Connect an Options tab <-> the app-level service, then lazy-start its fetch.
+
+        Empty-workspace re-arch: Options is now an on-demand dock, not a space, so wiring runs
+        once when the dock is created (from _wire_tool) against the freshly built ``tab`` rather
+        than the old eager ``self.options``. The app-level OptionsService stays single-bound for
+        Plan 1 (re-opening the dock rebinds it to the new tab); a later sub-project makes it
+        per-tab. Fetching is started here (was the space lazy-start) and is network-free under the
+        headless kill-switch (OptionsService.load_expiries/start_polling honor VIKE_DISABLE_LIVE).
+        One expiry at a time: the strip picks it; the service fetches+polls just that expiry."""
+        svc = self._options_svc
+        # Re-open path: the previous tab was DeleteOnClose-destroyed, but the service-side closures
+        # from its wiring (_on_expiries etc.) would otherwise stay connected to svc and fire into a
+        # dead C++ object. Drop ALL prior svc signal connections before rebinding to the new tab.
+        # (Tab-side connections die with the deleted tab, so only svc needs explicit teardown.)
+        # Guarded so we only disconnect when there WAS a prior wiring — disconnect() on an
+        # unconnected signal emits a noisy libpyside RuntimeWarning.
+        if getattr(self, "_options_wired", False):
+            for _sig in (svc.chainReady, svc.failed, svc.expiriesReady):
+                try:
+                    _sig.disconnect()
+                except (RuntimeError, TypeError):   # already gone — fine
+                    pass
+        self._options_wired = True
         svc.chainReady.connect(tab.set_chain)     # single-expiry flat view
         svc.failed.connect(tab.set_status)
         self._options_all_expiries: list = []
@@ -792,21 +849,30 @@ class MainWindow(QtWidgets.QMainWindow):
         tab.rangeChanged.connect(lambda: tab.set_expiries(_filtered()))
         tab.refreshRequested.connect(_refresh)
         self._load_options_underlying = _load_underlying
+        # Options-as-dock: start the fetch right after wiring (the space-switch lazy-start sites
+        # in _on_tab_changed / _float_space are now inert — they keyed on the retired space).
+        self._options_started = False   # fresh tab: re-arm so _maybe_start_options fetches
+        self._maybe_start_options()
 
     def _maybe_start_options(self) -> None:
+        if getattr(self, "options", None) is None:   # options dock not open -> nothing to start
+            return
         if not self._options_started:
             self._options_started = True
             self._load_options_underlying(self.options.underlying.currentText())
         elif self._options_expiry is not None:
             self._options_svc.start_polling()  # resume the selected expiry's poll on re-open
 
-    # Order MUST match the addTab() order in _build_central — rail buttons map to tab
-    # index by position here. Append new spaces last to keep existing indices stable.
-    _RAIL_ITEMS = [
-        ("▤", "Chart"), ("✦", "Studio"),  # ("⚙", "Tools") — hidden per user request
-        ("⊞", "Screener"), ("☰", "Journal"), ("◉", "Alerts"), ("◈", "Data"),
-        ("📰", "News"), ("▦", "Calendar"), ("⊗", "Options"),
-    ]
+    # Navigation splits into two kinds after the empty-workspace re-arch:
+    #  * SPACES — the eager SpaceDeck tabs (Chart, Studio). Selected via tabs.setCurrentIndex.
+    #    The space_index MUST match the addTab() order in _build_central.
+    #  * TOOLS — the 7 on-demand docks (screener/…/options). Opened via open_tool(tool_key).
+    # Keep both in sync with _build_central (spaces) and ToolRegistry (tool keys).
+    _SPACE_ITEMS = [("▤", "Chart", 0), ("✦", "Studio", 1)]          # (glyph, name, space_index)
+    _TOOL_ITEMS = [("⊞", "Screener", "screener"), ("☰", "Journal", "journal"),
+                   ("◉", "Alerts", "alerts"), ("◈", "Data", "data"),
+                   ("📰", "News", "news"), ("▦", "Calendar", "calendar"),
+                   ("⊗", "Options", "options")]                      # (glyph, name, tool_key)
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
     # (key, icon_name, tooltip, shortcut). "backtester" toggles the centre chart; the others
@@ -864,7 +930,9 @@ class MainWindow(QtWidgets.QMainWindow):
             f"QToolButton:hover{{background:transparent;color:{theme.TEXT2};}}"
             f"QToolButton:checked{{background:transparent;color:{theme.ACCENT};}}"
         )
-        for i, (glyph, name) in enumerate(self._RAIL_ITEMS):
+        # SPACES (Chart, Studio): exclusive, checkable, keyed by space_index so _on_tab_changed's
+        # self._rail_group.button(index) keeps the active-space highlight in sync with the tabs.
+        for _glyph, name, space_index in self._SPACE_ITEMS:
             b = QtWidgets.QToolButton()
             b.setIcon(icons.rail_icon(name.lower(), theme.TEXT3, theme.ACCENT, theme.TEXT2))
             b.setIconSize(QtCore.QSize(28, 28))
@@ -873,8 +941,20 @@ class MainWindow(QtWidgets.QMainWindow):
             b.setFixedSize(46, 46)
             b.setCursor(QtCore.Qt.PointingHandCursor)
             b.setStyleSheet(btn_qss)
-            b.clicked.connect(lambda _c, idx=i: self.tabs.setCurrentIndex(idx))
-            self._rail_group.addButton(b, i)
+            b.clicked.connect(lambda _c, idx=space_index: self.tabs.setCurrentIndex(idx))
+            self._rail_group.addButton(b, space_index)
+            col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
+        # TOOLS (screener/…/options): each opens an on-demand dock — NOT part of the exclusive
+        # space group (opening a tool dock doesn't change the current SPACE), so just action buttons.
+        for _glyph, name, tool_key in self._TOOL_ITEMS:
+            b = QtWidgets.QToolButton()
+            b.setIcon(icons.rail_icon(name.lower(), theme.TEXT3, theme.ACCENT, theme.TEXT2))
+            b.setIconSize(QtCore.QSize(28, 28))
+            b.setToolTip(self._chip_tip(name))
+            b.setFixedSize(46, 46)
+            b.setCursor(QtCore.Qt.PointingHandCursor)
+            b.setStyleSheet(btn_qss)
+            b.clicked.connect(lambda _c, k=tool_key: self.open_tool(k))
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
 
         # "+ New chart" — opens the current symbol as a fresh tear-out chart document (not a
@@ -937,12 +1017,17 @@ class MainWindow(QtWidgets.QMainWindow):
         return rail
 
     def _on_space_changed(self, index: int) -> None:
-        """Lazy-start the news feed the first time the News space is opened."""
+        """Refresh the chart-space header on a space switch.
+
+        (News is now an on-demand dock, not a space, so the old news lazy-start below is inert —
+        a space widget never equals the live News tab; kept getattr-guarded, removed by a later
+        sub-project. News arms its feed in _wire_tool when its dock opens.)"""
         self._update_chart_header()
         if index < 0:        # a chart document (not a space) became current — nothing to do
             return
-        if self.tabs.widget(index) is getattr(self, "news", None):
-            self.news.start_feed(self._symbol)
+        news = getattr(self, "news", None)
+        if news is not None and self.tabs.widget(index) is news:
+            news.start_feed(self._symbol)
 
     def _update_chart_header(self) -> None:
         """Drive the chart-space header title (the single MC-style line). For chart-bearing
@@ -953,7 +1038,7 @@ class MainWindow(QtWidgets.QMainWindow):
         idx = self.tabs.currentIndex()
         if idx < 0:                      # a chart document is current — leave the header as-is
             return
-        name = (self._RAIL_ITEMS[idx][1] if idx < len(self._RAIL_ITEMS)
+        name = (self._SPACE_ITEMS[idx][1] if idx < len(self._SPACE_ITEMS)
                 else self.tabs.tabText(idx))
         icon_name = name.lower()
         if name in ("Chart", "Studio"):
@@ -1077,7 +1162,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _float_space(self, index: int) -> None:
         """Launcher click: open the space as a floating native window over the workspace
         (the chart-window experience for every space). Lazy services that normally start on
-        a space *switch* must start here too — floating doesn't change the center tab."""
+        a space *switch* must start here too — floating doesn't change the center tab.
+
+        Empty-workspace re-arch: only Chart/Studio are spaces now, so the only caller passes
+        Studio (index 1); the news/options branches below are inert (the floated widget never
+        equals the live News/Options tab) and stay getattr-guarded — removed by a later cleanup."""
         self.tabs.float_space(index)
         widget = self.tabs.widget(index)
         if widget is getattr(self, "news", None):
@@ -1401,10 +1490,9 @@ class MainWindow(QtWidgets.QMainWindow):
                                QtAds.RightDockWidgetArea, icon=_ico("calendar"))
         headlines = make_panel_dock(self.dock_manager, "NEWS HEADLINES", self._headlines_tile,
                                     QtAds.RightDockWidgetArea, icon=_ico("news"))
-        # News tile mirrors the News space's merged feed; opening the tile starts the feed
-        # (idempotent) unless the headless kill-switch forbids network.
-        self.news.itemsUpdated.connect(
-            lambda: self._headlines_tile.set_items(self.news._items))
+        # News tile mirrors the News tool's merged feed. The News tool is now an on-demand dock,
+        # so its itemsUpdated->tile connection is made in _wire_tool when the dock opens (not here
+        # — self.news is None until then). Opening the headlines tile lazily starts the feed.
         headlines.viewToggled.connect(self._on_headlines_toggled)
         # Calendar tile reads the local week cache only (never network) — refill on open.
         ecal.viewToggled.connect(lambda on: on and self._refresh_calendar_tile())
@@ -1430,12 +1518,19 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_headlines_toggled(self, on: bool) -> None:
         """Opening the News-headlines tile seeds it from the already-merged feed and lazily
-        starts the news poller (idempotent) — never under the headless kill-switch."""
+        starts the news poller (idempotent) — never under the headless kill-switch.
+
+        News is now an on-demand dock: the tile mirrors it ONLY while the News dock is open
+        (self.news is the live tab then, None otherwise). With the dock closed the tile keeps
+        its last content rather than spawning an orphan poller with no tool to own it."""
         if not on:
             return
-        self._headlines_tile.set_items(self.news._items)
+        news = getattr(self, "news", None)
+        if news is None:
+            return
+        self._headlines_tile.set_items(news._items)
         if not os.environ.get("VIKE_DISABLE_LIVE"):
-            self.news.start_feed(self._symbol)
+            news.start_feed(self._symbol)
 
     def _refresh_calendar_tile(self) -> None:
         """Fill the Today's-calendar tile from the LOCAL week cache only — the Calendar space
@@ -1657,14 +1752,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if on_document:
                 current.ensure_loaded()  # restored docs are cache-only until first focused
                 self.setWindowTitle(f"vike-trader-app   {current.title()}")
-            elif 0 <= index < len(self._RAIL_ITEMS):
-                self.setWindowTitle(f"vike-trader-app   {self._RAIL_ITEMS[index][1]}")
-            # Options space: start fetching on first open; pause polling when navigating away.
-            if getattr(self, "options", None) is not None:
-                if current is self.options:
-                    self._maybe_start_options()
-                elif getattr(self, "_options_started", False):
-                    self._options_svc.stop_polling()
+            elif 0 <= index < len(self._SPACE_ITEMS):
+                self.setWindowTitle(f"vike-trader-app   {self._SPACE_ITEMS[index][1]}")
+            # Options is now an on-demand DOCK, not a space: it starts/stops in _wire_tool /
+            # the dock-close handler, not on a space switch. This block is intentionally inert
+            # (options is never the current space widget), kept getattr-guarded; a later
+            # sub-project removes it.
+            if getattr(self, "options", None) is not None and current is self.options:
+                self._maybe_start_options()
         finally:
             self._in_tab_change = False
 
@@ -1940,7 +2035,7 @@ class MainWindow(QtWidgets.QMainWindow):
         without ever fetching the gap, which is why the chart lagged behind Binance.) If the
         top-up fetch fails we fall back to whatever is cached rather than leaving an empty chart.
         """
-        if hasattr(self, "news"):
+        if getattr(self, "news", None) is not None:   # forward to the News tool only while open
             self.news.set_symbol(symbol)
         interval = interval or getattr(self, "_interval", None) or "1m"
         now = int(time.time() * 1000)
@@ -2440,8 +2535,10 @@ class MainWindow(QtWidgets.QMainWindow):
     def _commands(self) -> list:
         """The flat (label, callback) command list the Ctrl+K palette fuzzy-searches."""
         cmds: list = []
-        for i, (_glyph, name) in enumerate(self._RAIL_ITEMS):
-            cmds.append((f"Go to {name}", lambda idx=i: self.tabs.setCurrentIndex(idx)))
+        for _glyph, name, space_index in self._SPACE_ITEMS:   # Chart/Studio -> switch space
+            cmds.append((f"Go to {name}", lambda idx=space_index: self.tabs.setCurrentIndex(idx)))
+        for _glyph, name, tool_key in self._TOOL_ITEMS:        # the 7 tools -> open the dock
+            cmds.append((f"Open {name}", lambda k=tool_key: self.open_tool(k)))
         for name in self._workspaces.names():
             cmds.append((f"Open workspace: {name}", lambda n=name: self._apply_workspace(n)))
         cmds.append((f"New chart: {self._symbol}",
@@ -2634,8 +2731,8 @@ class MainWindow(QtWidgets.QMainWindow):
         for w in list(getattr(self, "_layout_workers", [])):
             w.wait(5000)  # wait out any in-flight layout-agent API call (no QThread-destroyed)
         self._layout_workers = []
-        if hasattr(self, "news"):
-            self.news.stop_feed()  # halt the news poller thread
+        if getattr(self, "news", None) is not None:
+            self.news.stop_feed()  # halt the news poller thread (only if the News dock is open)
         self.studio.shutdown()  # wait out any in-flight AI worker (no destroyed-while-running)
         if getattr(self, "_options_svc", None) is not None:
             self._options_svc.shutdown()  # stop the poll + wait out any options fetch worker

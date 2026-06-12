@@ -44,3 +44,27 @@ def test_open_tool_opens_then_focuses(app):
 
 def test_keys_match_factories(app):
     assert set(ToolRegistry.keys()) == set(ToolRegistry.factories())
+
+
+def test_only_chart_and_studio_remain_spaces(app):
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
+    assert win.tabs.count() == 2                      # Chart + Studio only
+    for attr in ("screener", "journal", "alerts", "datamanager",
+                 "news", "calendar_space", "options"):
+        assert getattr(win, attr, None) is None       # 7 tools no longer eager
+    win.close()
+
+
+def test_each_tool_opens_and_closes_as_dock(app):
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
+    for key in ToolRegistry.keys():
+        if key == "studio":
+            continue                                   # studio stays a space this increment
+        dock = win.open_tool(key); app.processEvents()
+        assert dock.objectName() == f"tool:{key}"
+        # legacy attr is set while open
+        attr = {"data": "datamanager", "calendar": "calendar_space"}.get(key, key)
+        assert getattr(win, attr, None) is not None
+        dock.closeDockWidget(); app.processEvents()
+        assert getattr(win, attr, None) is None        # cleared on close (no leak)
+    win.close()
