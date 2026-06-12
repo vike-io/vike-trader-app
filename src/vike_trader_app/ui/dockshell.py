@@ -382,8 +382,8 @@ class SpaceDeck(QtCore.QObject):
                 area = a
                 break
         if area is None:
-            return self._area
-        if area is not None and area is not self._area:
+            area = self._area          # all spaces floating/closed -> the cached central area
+        elif area is not self._area:
             if self._area is not None:
                 try:
                     self._area.currentChanged.disconnect(self._emit_current)
@@ -394,6 +394,14 @@ class SpaceDeck(QtCore.QObject):
             tb = area.titleBar()
             if hasattr(tb, "mark_as_chart_header"):   # VikeDockTitleBar (factory installed)
                 tb.mark_as_chart_header(self)
+        # restoreState / float relayouts can leave self._area pointing at a C++-DELETED area; probe
+        # liveness so every caller gets None (they all guard `area is None`) instead of crashing on
+        # the stale ref (e.g. _hide_space_tabs_now / _header_bar / currentIndex calling area.X()).
+        if self._area is not None:
+            try:
+                self._area.objectName()        # cheap; RuntimeError if the C++ object is gone
+            except RuntimeError:
+                self._area = None
         return self._area
 
     def _emit_current(self, *_):
@@ -693,15 +701,19 @@ class SpaceDeck(QtCore.QObject):
     def currentIndex(self) -> int:  # noqa: N802
         """Index into the SPACES (``_docks``) of the current dock — robust to any foreign dock
         that may have landed in the area (returns -1 if the current dock isn't a space)."""
-        area = self._resolve_area()
-        cur = area.currentDockWidget() if area is not None else None
+        try:
+            area = self._resolve_area()
+            cur = area.currentDockWidget() if area is not None else None
+        except RuntimeError:   # area C++ object deleted by a restoreState/float relayout
+            return -1
         return self._docks.index(cur) if cur in self._docks else -1
 
     def currentWidget(self):  # noqa: N802
-        area = self._resolve_area()
-        if area is None:
+        try:
+            area = self._resolve_area()
+            dock = area.currentDockWidget() if area is not None else None
+        except RuntimeError:   # stale (deleted) area after a relayout
             return None
-        dock = area.currentDockWidget()
         if dock is None:
             return None
         # spaces AND documents share the center area; return either's widget so the shell can
