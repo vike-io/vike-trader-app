@@ -23,6 +23,15 @@ log = logging.getLogger(__name__)
 class ToolRegistry:
     """Static registry of tool key -> factory(win) -> widget."""
 
+    # Stable tool keys, mirrored by ``factories()``. Kept as a constant so ``keys()``
+    # can be called WITHOUT triggering the heavy lazy imports in ``factories()``
+    # (the rail builder calls ``keys()`` at startup just to draw buttons).
+    # A drift guard test asserts ``set(_KEYS) == set(factories())``.
+    _KEYS: tuple[str, ...] = (
+        "screener", "journal", "alerts", "data",
+        "news", "calendar", "options", "studio",
+    )
+
     @staticmethod
     def factories() -> dict[str, Callable]:
         # Lazy local imports: break the app<->tool import cycle, keep `import toolreg` cheap.
@@ -60,11 +69,16 @@ class ToolRegistry:
 
     @staticmethod
     def keys() -> list[str]:
-        return list(ToolRegistry.factories().keys())
+        return list(ToolRegistry._KEYS)
 
     @staticmethod
     def create(key: str, win):
-        return ToolRegistry.factories()[key](win)
+        try:
+            return ToolRegistry.factories()[key](win)
+        except KeyError:
+            raise KeyError(
+                f"{key!r} not in ToolRegistry; valid keys: {list(ToolRegistry._KEYS)}"
+            )
 
 
 TOOL_LABELS = {

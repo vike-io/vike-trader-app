@@ -268,7 +268,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._active_frame = None
         # empty-workspace re-arch: open non-chart tools (screener/journal/… ) lazily as docks,
         # keyed by tool key for singleton open-or-focus (Plan 1). See ui/toolreg.py.
-        self._tool_docks: dict = {}
+        self._tool_docks: dict[str, "QtAds.CDockWidget"] = {}
 
         self._layout_workers: list = []   # in-flight AI-layout agent threads (Phase 5)
 

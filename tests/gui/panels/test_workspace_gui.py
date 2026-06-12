@@ -40,3 +40,7 @@ def test_open_tool_opens_then_focuses(app):
     d2 = win.open_tool("screener")           # singleton: re-open focuses the same dock
     assert d2 is d1
     win.close()
+
+
+def test_keys_match_factories(app):
+    assert set(ToolRegistry.keys()) == set(ToolRegistry.factories())
