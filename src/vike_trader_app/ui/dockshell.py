@@ -73,16 +73,66 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         except (RuntimeError, AttributeError):
             pass
 
+        def _floating_container():
+            """The CFloatingDockContainer this chart header lives in, or None when docked in the
+            main window. Lets the ─/□ buttons target the FLOAT (not the main window) when the
+            chart space has been torn out."""
+            try:
+                d = deck.dock(max(0, deck.currentIndex()))
+            except (RuntimeError, AttributeError, IndexError):
+                return None
+            if d is None:
+                return None
+            try:
+                if d.isFloating():
+                    return d.floatingDockContainer()
+            except (RuntimeError, AttributeError):
+                return None
+            return None
+
         def _win_min():
-            if win is not None:
+            c = _floating_container()
+            if c is not None:                      # floated chart space -> minimize the float
+                try:
+                    c.showMinimized()
+                except RuntimeError:
+                    pass
+            elif win is not None:                  # docked -> minimize the main window
                 win.showMinimized()
 
         def _win_max():
+            c = _floating_container()
+            if c is not None:                      # floated chart space -> max/restore the float
+                try:
+                    c.showNormal() if c.isMaximized() else c.showMaximized()
+                except RuntimeError:
+                    pass
+                return
             tb = getattr(win, "titlebar", None)
             if tb is not None and hasattr(tb, "_toggle_max"):
                 tb._toggle_max()
             elif win is not None:
                 win.showNormal() if win.isMaximized() else win.showMaximized()
+
+        def _detach_or_redock():
+            """⧉ — float the chart space if docked, or re-dock it if already floating."""
+            idx = max(0, deck.currentIndex())
+            try:
+                d = deck.dock(idx)
+            except (RuntimeError, AttributeError, IndexError):
+                d = None
+            floating = False
+            try:
+                floating = d is not None and d.isFloating()
+            except (RuntimeError, AttributeError):
+                floating = False
+            if floating:
+                try:
+                    d.dockManager().addDockWidget(QtAds.CenterDockWidgetArea, d)
+                except (RuntimeError, AttributeError):
+                    pass
+            else:
+                deck.float_space(idx)
 
         bar = UnifiedTitleBar(title=getattr(deck, "_header_title", "Chart"),
                               icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
@@ -90,8 +140,7 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         if win is not None and hasattr(win, "_open_central_as_window"):
             bar.add_button("clone", "＋", "Open this chart in a new window",
                            win._open_central_as_window)
-        bar.add_button("detach", "⧉", "Open this space as a window",
-                       lambda: deck.float_space(max(0, deck.currentIndex())))
+        bar.add_button("detach", "⧉", "Detach / re-dock this space", _detach_or_redock)
         bar.add_button("min", "─", "Minimize", _win_min)
         bar.add_button("max", "□", "Maximize / restore", _win_max)
         bar.add_button("close", "✕", "Close the current chart",
@@ -133,14 +182,23 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         except (RuntimeError, TypeError, AttributeError):
             pass
 
+    # Native chrome we suppress even in the MULTI-dock (tabbed) branch: the ▼ tabs-menu button and
+    # the green auto-hide pin. The standalone eliding title label (objectName 'autoHideTitleLabel',
+    # a DIRECT child of this title bar) is hidden separately — it's a redundant copy of the active
+    # tab's title. The tab labels themselves (also CElidingLabel, but children of a CDockWidgetTab)
+    # are KEPT so the tab strip stays readable + switchable.
+    _MULTI_HIDE_OBJNAMES = ("tabsMenuButton", "dockAreaAutoHideButton")
+
     def refresh_native_hidden(self) -> None:
         """Suppress the native ADS title-bar chrome that fights our unified bar.
 
         SINGLE-dock area: hide everything native (the eliding label + all buttons) and show the
         unified bar — one clean custom title. MULTI-dock (tabbed) area: a single custom title can't
         represent N tabs, so HIDE the unified bar and instead show the native (themed) TAB STRIP so
-        the user can switch tabs — but still kill the ▼ tabs-menu button (the one the user disliked).
-        Re-called from resizeEvent / event(LayoutRequest) so it survives tab add/remove + relayouts."""
+        the user can switch tabs — but still kill the ▼ tabs-menu button, the green auto-hide pin,
+        and the redundant standalone eliding title label. KEEP: the switchable tab strip + detach +
+        minimize + close. Re-called from resizeEvent / event(LayoutRequest) so it survives tab
+        add/remove + relayouts."""
         if self._header is None:
             return
         try:
@@ -153,8 +211,13 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 if child is self._header or self._header.isAncestorOf(child):
                     continue
                 if multi:
-                    # keep the switchable tab strip + themed action buttons; drop only the ▼ menu
-                    child.setVisible(child.objectName() != "tabsMenuButton")
+                    # keep the switchable tab strip + detach/min/close; drop the ▼ menu + green pin
+                    # and the standalone eliding title label (a DIRECT child of THIS title bar — not
+                    # the per-tab labels, whose parent is a CDockWidgetTab, which stay visible).
+                    hidden = child.objectName() in self._MULTI_HIDE_OBJNAMES or (
+                        isinstance(child, QtAds.CElidingLabel) and child.parent() is self
+                    )
+                    child.setVisible(not hidden)
                 else:
                     child.hide()
         except (RuntimeError, AttributeError):
@@ -208,7 +271,7 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
 
         self._is_panel = True
         bar = UnifiedTitleBar(parent=self)
-        bar.add_button("detach", "⧉", "Detach panel to a window", self._panel_detach)
+        bar.add_button("detach", "⧉", "Detach / re-dock", self._panel_detach)
         bar.add_button("min", "─", "Minimize (collapse to edge)", self._panel_min)
         bar.add_button("max", "□", "Maximize / restore", self._panel_max)
         bar.add_button("close", "✕", "Close", self._panel_close, danger=True)
@@ -248,13 +311,28 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         self.refresh_native_hidden()
 
     def _panel_detach(self) -> None:
+        """⧉ — float a docked panel, or RE-DOCK a floating one back into the centre."""
         d = self._cur_dock()
-        if d is not None and not d.isFloating():
+        if d is None:
+            return
+        if d.isFloating():
+            try:
+                d.dockManager().addDockWidget(QtAds.CenterDockWidgetArea, d)
+            except (RuntimeError, AttributeError):
+                pass
+        else:
             d.setFloating()
 
     def _panel_min(self) -> None:
+        """─ — on a FLOAT, minimize the floating container; otherwise collapse to the edge."""
         d = self._cur_dock()
-        if d is not None:
+        if d is None:
+            return
+        if d.isFloating():
+            c = d.floatingDockContainer()
+            if c is not None:
+                c.showMinimized()
+        else:
             d.toggleAutoHide()
 
     def _panel_max(self) -> None:
@@ -299,12 +377,9 @@ def configure_dock_manager_defaults() -> None:
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.EqualSplitOnInsertion, True)
     # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
-    # Floated docks are REAL OS windows with a native title bar (functional min/max/close, taskbar,
-    # OS snap). NOTE: flipping this off to chase a unified bar made ADS produce a broken hybrid
-    # (native-looking frame with dead buttons — couldn't close); true unified floating needs a
-    # custom frameless frame (like chartwin), a deferred follow-up — do NOT just flip this flag.
+    # Frameless floats (custom-float-frames branch): no native OS frame, so we control the chrome.
     QtAds.CDockManager.setConfigFlag(
-        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, True)
+        QtAds.CDockManager.FloatingContainerForceNativeTitleBar, False)
 
 
 def make_panel_dock(manager, title: str, widget, area,

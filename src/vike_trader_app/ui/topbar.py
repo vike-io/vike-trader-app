@@ -109,8 +109,15 @@ class CommandBar(QtWidgets.QWidget):
         self._lay.insertWidget(0, bar, 0, QtCore.Qt.AlignVCenter)
 
     def add_launcher(self, icon_name: str, tooltip: str, callback) -> QtGui.QAction:
+        # Each launcher carries its tool's DISTINCT colour (toolreg.TOOL_COLORS) so the top-right
+        # cluster reads like a colourful toolbar. Launchers aren't checkable, so the RESTING
+        # (Normal/Off) colour is what shows: pass the tool colour there too (not the dim TEXT3),
+        # with a lightened hover variant. Falls back to the accent for any unmapped icon.
+        from .toolreg import tool_color, tool_hover_color
+        c = tool_color(icon_name, theme.ACCENT)
         act = QtGui.QAction(
-            icons.rail_icon(icon_name, theme.TEXT3, theme.ACCENT, theme.TEXT2), tooltip, self)
+            icons.rail_icon(icon_name, c, c, tool_hover_color(icon_name, theme.TEXT2)),
+            tooltip, self)
         act.triggered.connect(callback)
         self.launchers.addAction(act)
         return act

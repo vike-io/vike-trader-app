@@ -94,6 +94,44 @@ TOOL_LABELS = {
     "studio": "Studio",
 }
 
+# Distinct per-tool launcher colours (rail + top-bar), so each tool reads at a glance like a
+# colourful competitor toolbar instead of one uniform accent. Kept HERE (not in theme.py — the
+# theme palette is off-limits) but chosen to sit comfortably in the dark theme. studio/chart stay
+# in the green accent family (they're the SPACE/primary actions, not on-demand tools).
+TOOL_COLORS = {
+    "screener": "#4c8dff",   # blue
+    "journal": "#b07cf0",    # violet
+    "alerts": "#ff5c5c",     # red
+    "data": "#36c5a8",       # teal
+    "news": "#f0a500",       # amber
+    "calendar": "#5cc46b",   # green
+    "options": "#e85aad",    # pink
+    "studio": "#3ddc97",     # green accent family
+    "chart": "#7aa2f7",      # soft blue (the chart space / New-chart action)
+}
+
+
+def tool_color(key: str, fallback: str) -> str:
+    """Resting/active launcher colour for a tool ``key`` (``fallback`` when not mapped)."""
+    return TOOL_COLORS.get(key, fallback)
+
+
+def tool_hover_color(key: str, fallback: str) -> str:
+    """A lightened hover variant of the tool colour (no Qt import — plain hex maths)."""
+    base = TOOL_COLORS.get(key)
+    if not base:
+        return fallback
+    base = base.lstrip("#")
+    try:
+        r, g, b = (int(base[i:i + 2], 16) for i in (0, 2, 4))
+    except (ValueError, IndexError):
+        return fallback
+    # blend ~40% toward white for a brighter hover cue
+    r = int(r + (255 - r) * 0.40)
+    g = int(g + (255 - g) * 0.40)
+    b = int(b + (255 - b) * 0.40)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
 
 def make_tool_dock(manager, key: str, widget, icon=None) -> "QtAds.CDockWidget":
     """Wrap a tool widget in a closable/floatable dock that is destroyed when closed.
