@@ -171,9 +171,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 dw = area.dockWidget(i)
             except (RuntimeError, AttributeError):
                 continue
-            if dw is not None and dw.objectName().startswith("panel:"):
-                self.mark_as_panel()
-                return
+            if dw is not None and dw.objectName().startswith(("panel:", "tool:")):
+                self.mark_as_panel()    # tool docks get the SAME unified bar as panels — no native
+                return                  # ADS chrome (the stray ▼ tabs-menu + duplicate close icon)
 
     def mark_as_panel(self) -> None:
         """[icon] NAME … ⧉ ─ □ ✕ wired to ADS undock / auto-hide / float-max / close —
