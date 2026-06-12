@@ -38,6 +38,8 @@ def test_open_tools_round_trips_and_old_sessions_default_empty():
     parsed = SessionState.from_dict(old)
     assert parsed.open_tools == []
     assert parsed.space == 3                                 # value preserved; clamped at restore-time
+    # a hand-corrupted file with a string instead of a list -> default []
+    assert SessionState.from_dict({"open_tools": "screener"}).open_tools == []
 
 
 def test_from_dict_rejects_non_dict():

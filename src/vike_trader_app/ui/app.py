@@ -365,7 +365,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # Recreate the last session's tool docks BEFORE restoreState, so their objectNames
         # (tool:<key>) exist and the layout blob positions them 1:1 — mirrors the chart-document
-        # recreation above. Old sessions (no open_tools) recreate nothing → a clean start.
+        # recreation above for PLACEMENT. Old sessions (no open_tools) recreate nothing → a
+        # clean start.
+        # NOTE: unlike chart docs (network=False), a restored News/Calendar dock starts its
+        # HTTP feed immediately on open_tool — acceptable (HTTP, not the non-thread-safe data
+        # layer) and reworked by Plan 2's shared feed hubs. VIKE_DISABLE_LIVE gates it in tests.
         if self._session and getattr(self._session, "open_tools", None):
             for key in self._session.open_tools:
                 try:
@@ -2501,6 +2505,18 @@ class MainWindow(QtWidgets.QMainWindow):
         for st in (state.documents or []):
             self._new_chart_document(st.get("symbol", "BTCUSDT"), st.get("interval", "1h"),
                                      state=st, network=False, make_current=False)
+
+        # Recreate the workspace's tool docks BEFORE restoreState so their tool:<key> objectNames
+        # exist for the layout blob to position 1:1 (else a Screener/News dock saved into the
+        # workspace would leave dangling references and not reappear). Unlike chart docs
+        # (network=False), a restored News/Calendar dock starts its HTTP feed immediately on
+        # open_tool — acceptable (HTTP, not the non-thread-safe data layer) and reworked by
+        # Plan 2's shared feed hubs. The dock must exist now (no deferral) — restoreState needs it.
+        for key in (state.open_tools or []):
+            try:
+                self.open_tool(key)
+            except Exception:  # noqa: BLE001 - one bad/stale tool key must not break the load
+                pass
 
         self._watchlist_link = state.watchlist_link if state.watchlist_link in LINK_COLOR else 0
         self._watchlist_dot.set_group(self._watchlist_link)
