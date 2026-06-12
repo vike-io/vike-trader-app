@@ -518,26 +518,6 @@ class MainWindow(QtWidgets.QMainWindow):
 
         chartwin.arrange(self._chart_frames, self.dock_manager, mode)
 
-    def _on_floating_created(self, floating_widget) -> None:
-        """Frameless floating windows: ADS hides the dock-area title bar on a floating container
-        (it assumes a native OS frame), but we run frameless — so re-show our VikeDockTitleBar (the
-        unified ⧉ ─ □ ✕ bar) so a floated dock looks the same as docked / as the chart windows.
-        Deferred to after ADS finishes laying the float out (singleShot, lifetime-tied to self)."""
-        from .dockshell import VikeDockTitleBar
-
-        def _show():
-            try:
-                bars = floating_widget.findChildren(VikeDockTitleBar)
-            except RuntimeError:        # container torn down before the timer fired
-                return
-            for tb in bars:
-                try:
-                    tb.setVisible(True)
-                    tb.refresh_native_hidden()
-                except RuntimeError:
-                    pass
-        QtCore.QTimer.singleShot(0, self, _show)
-
     def open_tool(self, key: str):
         """Open the tool dock for ``key``, or focus it if already open.
 
@@ -750,10 +730,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._dock_factory = VikeComponentsFactory()
         self.dock_manager.setComponentsFactory(self._dock_factory)
         self.dock_manager.setStyleSheet(dock_qss())
-        # Floated docks: ADS hides the dock-area title bar (it expected a native OS frame), but we
-        # run frameless — so re-show our VikeDockTitleBar (the unified ⧉ ─ □ ✕ bar) on each floating
-        # window so a floated tool looks the SAME as when docked / as the chart windows.
-        self.dock_manager.floatingWidgetCreated.connect(self._on_floating_created)
         self.tabs = SpaceDeck(self.dock_manager)
         # The factory recreates the chart-space header on relayout; each time it asks us to
         # re-cap its width to the panel edge (forced far-right ⧉ ─ □ ✕).
