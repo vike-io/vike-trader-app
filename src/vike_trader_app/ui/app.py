@@ -1037,7 +1037,7 @@ class MainWindow(QtWidgets.QMainWindow):
             b.setFixedSize(46, 46)
             b.setCursor(QtCore.Qt.PointingHandCursor)
             b.setStyleSheet(btn_qss)
-            b.clicked.connect(lambda _c, idx=space_index: self.tabs.setCurrentIndex(idx))
+            b.clicked.connect(lambda _c, idx=space_index: self.tabs.show_space(idx))
             self._rail_group.addButton(b, space_index)
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
         # TOOLS (screener/…/options): each opens an on-demand dock — NOT part of the exclusive
@@ -2666,8 +2666,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _commands(self) -> list:
         """The flat (label, callback) command list the Ctrl+K palette fuzzy-searches."""
         cmds: list = []
-        for _glyph, name, space_index in self._SPACE_ITEMS:   # Chart -> switch space
-            cmds.append((f"Go to {name}", lambda idx=space_index: self.tabs.setCurrentIndex(idx)))
+        for _glyph, name, space_index in self._SPACE_ITEMS:   # Chart -> show/switch space
+            cmds.append((f"Go to {name}", lambda idx=space_index: self.tabs.show_space(idx)))
         for _glyph, name, tool_key in self._TOOL_ITEMS:        # Studio + the 7 tools -> open the dock
             cmds.append((f"Open {name}", lambda k=tool_key: self.open_tool(k)))
         for name in self._workspaces.names():

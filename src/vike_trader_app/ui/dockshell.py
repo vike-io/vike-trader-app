@@ -427,12 +427,26 @@ class SpaceDeck(QtCore.QObject):
         return any(d.widget() is widget for d in self._documents)
 
     def close_current_document(self) -> None:
-        """Close the current chart document (the ✕ on the chart-space header). A pinned
-        SPACE is never closable, so this is a no-op unless a tear-out document is current."""
+        """The ✕ on the chart-space header. If a tear-out chart DOCUMENT is current, close it;
+        otherwise close (HIDE) the Chart space itself so the workspace can be fully emptied. The
+        Chart dock is hidden, not destroyed — its chart (self.price) survives and the pipeline
+        keeps running; the Chart rail/menu launcher re-shows it via show_space()."""
         area = self._resolve_area()
         cur = area.currentDockWidget() if area is not None else None
         if cur in self._documents:
             cur.closeDockWidget()
+        elif self._docks:
+            self._docks[0].toggleView(False)   # hide the Chart space -> empty workspace
+
+    def show_space(self, index: int = 0) -> None:
+        """Re-show a hidden space (the Chart) and make it current — the launcher counterpart of
+        the header ✕ that hides it."""
+        if 0 <= index < len(self._docks):
+            d = self._docks[index]
+            if d.isClosed():
+                d.toggleView(True)
+            d.setAsCurrentTab()
+            self.setCurrentIndex(index)
 
     # --- chart-space header (forwarded to the central area's VikeDockTitleBar) ------------
 

@@ -67,7 +67,7 @@ def _fill_file(m, win):
     # The Chart space switches the current SpaceDeck tab; the 8 tools (Studio + the 7) open as
     # on-demand docks.
     for _g, name, space_index in win._SPACE_ITEMS:
-        new.addAction(f"Go to {name}", lambda idx=space_index: win.tabs.setCurrentIndex(idx))
+        new.addAction(f"Go to {name}", lambda idx=space_index: win.tabs.show_space(idx))
     new.addSeparator()
     for _g, name, tool_key in win._TOOL_ITEMS:
         new.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
@@ -126,7 +126,7 @@ def _fill_go(m, win):
     switches the current tab) plus one per on-demand TOOL (Studio + the 7, opened via open_tool)."""
     current = win.tabs.currentIndex()
     for _g, name, space_index in win._SPACE_ITEMS:
-        a = m.addAction(name, lambda idx=space_index: win.tabs.setCurrentIndex(idx))
+        a = m.addAction(name, lambda idx=space_index: win.tabs.show_space(idx))
         a.setCheckable(True)
         a.setChecked(space_index == current)
     m.addSeparator()
