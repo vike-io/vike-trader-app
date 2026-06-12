@@ -94,6 +94,21 @@ def test_central_link_survives_session_roundtrip(app, tmp_path):
     w2.close()
 
 
+def test_header_feed_badge_tracks_feed_health(app):
+    """Stage 2: the chart-space header carries a feed badge that mirrors _set_feed_health."""
+    from vike_trader_app.ui.unifiedbar import FeedBadge
+
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    assert isinstance(win._header_feed, FeedBadge)
+    win._set_feed_health("live")
+    assert win._feed_state == "live" and "LIVE" in win._header_feed.text()
+    win._set_feed_health("cached")
+    assert "CACHED" in win._header_feed.text()
+    win.close()
+
+
 def test_panel_area_gets_unified_bar(app):
     win = MainWindow(session_path=None)
     win.show()

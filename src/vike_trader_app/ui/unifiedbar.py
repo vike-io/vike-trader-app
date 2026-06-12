@@ -42,6 +42,22 @@ def bar_button(glyph: str, tip: str, slot=None, danger: bool = False,
     return b
 
 
+class FeedBadge(QtWidgets.QLabel):
+    """Compact data-feed badge (● LIVE / ● CACHED / …) for a title bar. The host maps a feed
+    state to (colour, text) and calls set_state — keeps this widget app-agnostic."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("feedBadge")
+        self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+        self.set_state(theme.TEXT3, "●")
+
+    def set_state(self, color: str, text: str) -> None:
+        self.setText(text)
+        self.setStyleSheet(
+            f"#feedBadge{{color:{color};font-size:11px;font-weight:600;background:transparent;}}")
+
+
 class UnifiedTitleBar(QtWidgets.QWidget):
     """The shared 30px bar. Labels are mouse-transparent so a host's drag eventFilter on the
     bar keeps working; status widgets and buttons are interactive."""

@@ -305,6 +305,11 @@ class LiveHub(QtCore.QObject):
         if not self._docs:
             self._timer.stop()
 
+    def is_live(self) -> bool:
+        """The round-robin poller is running — windows are being live-topped-up (honest LIVE
+        vs CACHED gate, matching the main feed badge)."""
+        return self._timer.isActive()
+
     def _tick(self) -> None:
         """Serve the next VISIBLE document. The fetch is network-only (off-thread safe);
         a still-running worker just skips the tick (no pile-up)."""

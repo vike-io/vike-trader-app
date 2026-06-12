@@ -283,6 +283,8 @@ class MainWindow(QtWidgets.QMainWindow):
         _ivl = getattr(self._session, "central_interval_link", -1) if self._session else -1
         self.interval_link_group = None if _ivl < 0 else _ivl   # -1 sentinel = follow symbol
         self._link_bus.add_member(self)
+        self._feed_state = "idle"        # current feed-health state; the header badge reads it
+        self._header_feed = None         # the header's FeedBadge (recreated with the header)
 
         # named workspaces (Phase 4): persisted next to the session file; in-memory when the
         # session is disabled (offscreen tests) so a save never touches real storage.
@@ -433,6 +435,8 @@ class MainWindow(QtWidgets.QMainWindow):
             frame.setGeometry(x, y, max(320, w), max(160, h))
         frame.show()
         doc.load(network=network)
+        _fcolor, _fprefix = _FEED_STATES["live" if self._live_hub.is_live() else "cached"]
+        frame.set_feed(_fcolor, _fprefix.replace(" · ", "").strip())
         if state:
             doc.apply_state(state)
         if make_current:
@@ -953,6 +957,22 @@ class MainWindow(QtWidgets.QMainWindow):
                       label="Interval", glyph=("◇", "◆"), follow=True)
         ivl.groupChanged.connect(self._set_central_interval_link_group)
         bar.add_status(ivl)
+        from .unifiedbar import FeedBadge
+
+        self._header_feed = FeedBadge()
+        bar.add_status(self._header_feed)
+        self._render_header_feed()
+
+    def _render_header_feed(self) -> None:
+        """Paint the header's feed badge from the current feed state (compact: '● LIVE')."""
+        badge = getattr(self, "_header_feed", None)
+        if badge is None:
+            return
+        color, prefix = _FEED_STATES.get(self._feed_state, _FEED_STATES["idle"])
+        try:
+            badge.set_state(color, prefix.replace(" · ", "").strip() or "●")
+        except RuntimeError:        # header was recreated — the old badge is gone
+            self._header_feed = None
 
     def _set_central_link_group(self, gid: int) -> None:
         self.link_group = gid
@@ -1091,6 +1111,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"color:{color};font-size:10px;background:transparent;border:none;"
             f"padding:3px 6px;margin-right:6px;"
         )
+        self._feed_state = state            # mirror onto the chart-space header badge
+        self._render_header_feed()
         if not self._live_timer.isActive():
             return
         if state == "live":

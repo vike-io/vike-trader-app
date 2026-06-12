@@ -14,7 +14,7 @@ from PySide6 import QtCore, QtWidgets
 
 from . import theme
 from .style_icons import style_icon
-from .unifiedbar import BAR_H, UnifiedTitleBar
+from .unifiedbar import BAR_H, FeedBadge, UnifiedTitleBar
 
 TITLE_H = BAR_H   # one shared title-bar height across every surface (chart header / panels)
 _EDGE = 6          # resize-border thickness (frame edges)
@@ -67,6 +67,8 @@ class ChartWindowFrame(QtWidgets.QFrame):
         for _dot in (getattr(doc, "_link_dot", None), getattr(doc, "_ivl_dot", None)):
             if _dot is not None:
                 self._bar.add_status(_dot)
+        self._feed_badge = FeedBadge()        # per-window data state (set by MainWindow)
+        self._bar.add_status(self._feed_badge)
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
             self._bar.add_widget(doc._pin_btn)
@@ -260,6 +262,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
         """The ACTIVE window is shown by its bar background alone — no accent underline
         (the green rule under the header was removed per the user)."""
         self._bar.set_active(on)
+
+    def set_feed(self, color: str, text: str) -> None:
+        """Paint this window's feed badge (MainWindow maps the live state -> colour + text)."""
+        self._feed_badge.set_state(color, text)
 
 
 def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) -> None:
