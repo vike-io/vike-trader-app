@@ -2586,6 +2586,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here
+        if getattr(self, "_link_bus", None) is not None:
+            self._link_bus.remove_member(self)   # leave the bus: no apply_link after teardown
         self._stop_forward()  # never leave a feed thread running
         # Halt the live chart auto-updater AND wait out any in-flight fetch worker. Without
         # this a closed window keeps its _live_timer firing _live_tick -> _LiveFetchWorker

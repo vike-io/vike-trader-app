@@ -166,6 +166,9 @@ class ChartWindowFrame(QtWidgets.QFrame):
 
     def close_window(self) -> None:
         self.closed.emit(self)
+        if self._snap_overlay is not None:   # child of the HOST, not us — delete it explicitly
+            self._snap_overlay.deleteLater()
+            self._snap_overlay = None
         self.hide()
         self.deleteLater()
 
@@ -198,7 +201,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
             if t == QtCore.QEvent.MouseButtonRelease:
                 self._drag_off = None
                 if self._snap_target is not None and not self.is_detached():
-                    self.setGeometry(self._snap_target)   # commit the drag-to-edge snap
+                    g = QtCore.QRect(self._snap_target)   # commit the drag-to-edge snap
+                    g.setWidth(max(g.width(), _MIN_W))    # never snap below the min frame size
+                    g.setHeight(max(g.height(), _MIN_H))
+                    self.setGeometry(g)
                 self._update_snap_preview(None)
                 return False
             if t == QtCore.QEvent.MouseButtonDblClick and ev.button() == QtCore.Qt.LeftButton:
@@ -277,6 +283,8 @@ class ChartWindowFrame(QtWidgets.QFrame):
         edges → halves, corners → quarters, top edge → full. None when not in a snap zone."""
         r = self._host.rect()
         w, h, m = r.width(), r.height(), _SNAP_M
+        if w < 2 * m or h < 2 * m:   # host too small for non-overlapping edge zones — no snap
+            return None
         hw, hh = w // 2, h // 2
         near_l, near_r = cursor.x() <= m, cursor.x() >= w - m
         near_t, near_b = cursor.y() <= m, cursor.y() >= h - m
