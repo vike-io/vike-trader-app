@@ -83,6 +83,8 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         bar.add_button("close", "✕", "Close the current chart",
                        deck.close_current_document, danger=True)
         bar.set_active(True)
+        if getattr(deck, "_status_provider", None) is not None:   # header link dots (● / ◆)
+            deck._status_provider(bar)
         self._header = bar
         # Grow the header to fill the row; the MainWindow then caps its max width to the
         # right-panel's left edge (the dock area itself extends BEHIND the panels), so the
@@ -316,6 +318,7 @@ class SpaceDeck(QtCore.QObject):
         # STATELESS (state lives here in the model): a freshly-created header re-reads this.
         self._header_title = "Chart"
         self._fit_cb = None   # MainWindow-supplied: cap the header to the panel's left edge
+        self._status_provider = None   # MainWindow-supplied: add the header's link dots
 
     def _resolve_area(self):
         """The spaces' CENTRAL CDockAreaWidget. CDockManager.restoreState() can REBUILD the
@@ -433,6 +436,11 @@ class SpaceDeck(QtCore.QObject):
 
     def set_fit_callback(self, fn) -> None:
         self._fit_cb = fn
+
+    def set_header_status_provider(self, fn) -> None:
+        """fn(unified_bar) populates the chart-space header's status cluster (link dots). Called
+        on every header (re)creation so the dots survive ADS relayouts."""
+        self._status_provider = fn
 
     def _request_fit(self) -> None:
         """Ask the MainWindow to re-cap the header width once the layout settles (the header

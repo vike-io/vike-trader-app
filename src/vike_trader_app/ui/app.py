@@ -274,6 +274,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self._watchlist_link = self._session.watchlist_link if self._session else 0
         if self._watchlist_link not in LINK_COLOR:   # hand-edited / stale session -> unlinked
             self._watchlist_link = 0
+        # The CENTRAL chart space is itself a link-group member (symbol ● + interval ◆ channels,
+        # set via the dots on its header). The MainWindow proxies it: apply_link loads a received
+        # symbol/interval; _broadcast_central_link pushes its own changes. Restored from session.
+        self.link_group = getattr(self._session, "central_link", 0) if self._session else 0
+        if self.link_group not in LINK_COLOR:
+            self.link_group = 0
+        _ivl = getattr(self._session, "central_interval_link", -1) if self._session else -1
+        self.interval_link_group = None if _ivl < 0 else _ivl   # -1 sentinel = follow symbol
+        self._link_bus.add_member(self)
 
         # named workspaces (Phase 4): persisted next to the session file; in-memory when the
         # session is disabled (offscreen tests) so a save never touches real storage.
@@ -577,6 +586,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # The factory recreates the chart-space header on relayout; each time it asks us to
         # re-cap its width to the panel edge (forced far-right ⧉ ─ □ ✕).
         self.tabs.set_fit_callback(self._fit_chart_header)
+        # the header is recreated on relayout; each time, repopulate its ● symbol + ◆ interval
+        # link dots (state lives on the MainWindow, the dot WIDGETS are recreated with the header)
+        self.tabs.set_header_status_provider(self._populate_header_status)
         self.tabs.addTab(container, "Chart")
         self.studio = StudioTab()
         self._wire_studio_agent()
@@ -926,6 +938,42 @@ class MainWindow(QtWidgets.QMainWindow):
         arrow = "▲" if chg >= 0 else "▼"
         return (f"<span style='color:{theme.TEXT};'>{base} · {last:,.2f} </span>"
                 f"<span style='color:{col};'>{arrow}{abs(pct):.2f}%</span>")
+
+    # --- central-chart symbol link (the header's ● / ◆ dots) --------------------------------
+
+    def _populate_header_status(self, bar) -> None:
+        """Add the chart-space header's ● symbol + ◆ interval link dots (called by the factory
+        each time the header is (re)created — state lives on the MainWindow, dots are fresh)."""
+        from .panels import LinkDot
+
+        sym = LinkDot(self.link_group, label="Symbol")
+        sym.groupChanged.connect(self._set_central_link_group)
+        bar.add_status(sym)
+        ivl = LinkDot(-1 if self.interval_link_group is None else self.interval_link_group,
+                      label="Interval", glyph=("◇", "◆"), follow=True)
+        ivl.groupChanged.connect(self._set_central_interval_link_group)
+        bar.add_status(ivl)
+
+    def _set_central_link_group(self, gid: int) -> None:
+        self.link_group = gid
+        self._broadcast_central_link()
+
+    def _set_central_interval_link_group(self, gid: int) -> None:
+        self.interval_link_group = None if gid < 0 else gid
+        self._broadcast_central_link()
+
+    def _broadcast_central_link(self) -> None:
+        """Push the central chart's (symbol, interval) to linked members. The bus re-entrancy
+        guard makes this a no-op while we're applying a received broadcast (no ping-pong)."""
+        bus = getattr(self, "_link_bus", None)
+        if bus is not None:
+            bus.broadcast(self.link_group, self, self._symbol, self._interval,
+                          interval_group=self.interval_link_group)
+
+    def apply_link(self, symbol: "str | None", interval: "str | None") -> None:
+        """Bus receiver: a linked member changed — load it into the central chart. _load_symbol's
+        own broadcast is suppressed by the bus guard, so this can't echo back."""
+        self._load_symbol(symbol or self._symbol, interval or self._interval)
 
     def _fit_chart_header(self) -> None:
         """Cap the chart-space header to the VISIBLE chart width so its ⧉ ─ □ ✕ sit at the
@@ -1865,6 +1913,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._push_watch_quote(symbol, bars)
         self._arm_live_updates()
         self._update_chart_header()
+        self._broadcast_central_link()   # propagate to linked charts/watchlist (bus-guarded)
 
     def _on_interval_chosen(self, interval: str):
         """Timeframe dropdown -> reload the current symbol at the chosen interval."""
@@ -2217,6 +2266,9 @@ class MainWindow(QtWidgets.QMainWindow):
             studio_indicators=indicator_states(self.studio_price),
             documents=[self._doc_state_with_geometry(d) for d in self._doc_widgets],
             watchlist_link=self._watchlist_link,
+            central_link=self.link_group,
+            central_interval_link=(-1 if self.interval_link_group is None
+                                   else self.interval_link_group),
         )
 
     def _doc_state_with_geometry(self, doc) -> dict:

@@ -61,6 +61,39 @@ def test_central_area_gets_single_title_chart_header(app):
     win.close()
 
 
+def test_central_chart_is_link_member_with_header_dots(app):
+    """Stage 2: the central chart space joins the symbol-link bus and its header carries the
+    ● symbol + ◆ interval link dots; recolouring via the setters updates the model."""
+    from vike_trader_app.ui.panels import LinkDot
+
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    assert win in win._link_bus._members            # bus member (duck-typed link_group/apply_link)
+    assert hasattr(win, "link_group") and callable(win.apply_link)
+    bar = win.tabs.header_widget()
+    assert len(bar._statusbox.findChildren(LinkDot)) >= 2   # ● + ◆
+    win._set_central_link_group(2)
+    assert win.link_group == 2
+    win._set_central_interval_link_group(3)
+    assert win.interval_link_group == 3
+    win._set_central_interval_link_group(-1)        # -1 = follow symbol
+    assert win.interval_link_group is None
+    win.close()
+
+
+def test_central_link_survives_session_roundtrip(app, tmp_path):
+    path = tmp_path / "s.json"
+    w1 = MainWindow(session_path=str(path))
+    w1._set_central_link_group(4)
+    w1._set_central_interval_link_group(5)
+    w1.close()                                       # persists on close
+    w2 = MainWindow(session_path=str(path))
+    assert w2.link_group == 4
+    assert w2.interval_link_group == 5
+    w2.close()
+
+
 def test_panel_area_gets_unified_bar(app):
     win = MainWindow(session_path=None)
     win.show()

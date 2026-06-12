@@ -42,6 +42,8 @@ class SessionState:
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
     documents: list = field(default_factory=list)           # open chart documents (Phase 2)
     watchlist_link: int = 0                                  # watchlist symbol-link group (Phase 3)
+    central_link: int = 0                                    # central chart symbol-link group
+    central_interval_link: int = -1                          # central chart interval-link (-1=follow)
 
     def to_dict(self) -> dict:
         return {"version": _VERSION, **asdict(self)}
