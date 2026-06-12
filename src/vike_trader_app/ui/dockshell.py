@@ -182,14 +182,23 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         except (RuntimeError, TypeError, AttributeError):
             pass
 
+    # Native chrome we suppress even in the MULTI-dock (tabbed) branch: the ▼ tabs-menu button and
+    # the green auto-hide pin. The standalone eliding title label (objectName 'autoHideTitleLabel',
+    # a DIRECT child of this title bar) is hidden separately — it's a redundant copy of the active
+    # tab's title. The tab labels themselves (also CElidingLabel, but children of a CDockWidgetTab)
+    # are KEPT so the tab strip stays readable + switchable.
+    _MULTI_HIDE_OBJNAMES = ("tabsMenuButton", "dockAreaAutoHideButton")
+
     def refresh_native_hidden(self) -> None:
         """Suppress the native ADS title-bar chrome that fights our unified bar.
 
         SINGLE-dock area: hide everything native (the eliding label + all buttons) and show the
         unified bar — one clean custom title. MULTI-dock (tabbed) area: a single custom title can't
         represent N tabs, so HIDE the unified bar and instead show the native (themed) TAB STRIP so
-        the user can switch tabs — but still kill the ▼ tabs-menu button (the one the user disliked).
-        Re-called from resizeEvent / event(LayoutRequest) so it survives tab add/remove + relayouts."""
+        the user can switch tabs — but still kill the ▼ tabs-menu button, the green auto-hide pin,
+        and the redundant standalone eliding title label. KEEP: the switchable tab strip + detach +
+        minimize + close. Re-called from resizeEvent / event(LayoutRequest) so it survives tab
+        add/remove + relayouts."""
         if self._header is None:
             return
         try:
@@ -202,8 +211,13 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 if child is self._header or self._header.isAncestorOf(child):
                     continue
                 if multi:
-                    # keep the switchable tab strip + themed action buttons; drop only the ▼ menu
-                    child.setVisible(child.objectName() != "tabsMenuButton")
+                    # keep the switchable tab strip + detach/min/close; drop the ▼ menu + green pin
+                    # and the standalone eliding title label (a DIRECT child of THIS title bar — not
+                    # the per-tab labels, whose parent is a CDockWidgetTab, which stay visible).
+                    hidden = child.objectName() in self._MULTI_HIDE_OBJNAMES or (
+                        isinstance(child, QtAds.CElidingLabel) and child.parent() is self
+                    )
+                    child.setVisible(not hidden)
                 else:
                     child.hide()
         except (RuntimeError, AttributeError):

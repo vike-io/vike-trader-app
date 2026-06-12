@@ -32,7 +32,7 @@ from ..data.sources import select_source
 from ..data.store import RunRecord, Store
 import PySide6QtAds as QtAds
 
-from . import icons, theme
+from . import icons, theme, toolreg
 from .bots_panel import BotsPanel
 from .chart import PriceChart
 from .chartdoc import ChartDocument, LiveHub
@@ -581,7 +581,10 @@ class MainWindow(QtWidgets.QMainWindow):
         widget = ToolRegistry.create(key, self)
         dock = make_tool_dock(
             self.dock_manager, key, widget,
-            icon=icons.rail_icon(key, theme.TEXT3, theme.ACCENT, theme.TEXT2),
+            icon=icons.rail_icon(
+                key, toolreg.tool_color(key, theme.TEXT3),
+                toolreg.tool_color(key, theme.ACCENT),
+                toolreg.tool_hover_color(key, theme.TEXT2)),
         )
         self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
         self._tool_docks[key] = dock
@@ -1071,8 +1074,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # SPACES (Chart, Studio): exclusive, checkable, keyed by space_index so _on_tab_changed's
         # self._rail_group.button(index) keeps the active-space highlight in sync with the tabs.
         for _glyph, name, space_index in self._SPACE_ITEMS:
+            key = name.lower()
             b = QtWidgets.QToolButton()
-            b.setIcon(icons.rail_icon(name.lower(), theme.TEXT3, theme.ACCENT, theme.TEXT2))
+            b.setIcon(icons.rail_icon(
+                key, theme.TEXT3,
+                toolreg.tool_color(key, theme.ACCENT),
+                toolreg.tool_hover_color(key, theme.TEXT2)))
             b.setIconSize(QtCore.QSize(28, 28))
             b.setToolTip(self._chip_tip(name))
             b.setCheckable(True)
@@ -1084,9 +1091,15 @@ class MainWindow(QtWidgets.QMainWindow):
             col.addWidget(b, 0, QtCore.Qt.AlignHCenter)
         # TOOLS (screener/…/options): each opens an on-demand dock — NOT part of the exclusive
         # space group (opening a tool dock doesn't change the current SPACE), so just action buttons.
+        # Each tool gets its OWN distinct colour (toolreg.TOOL_COLORS) so the rail reads at a glance.
+        # These buttons aren't checkable, so the RESTING (off) colour is what shows — use the tool
+        # colour there too (not the dim TEXT3), with a lightened hover variant.
         for _glyph, name, tool_key in self._TOOL_ITEMS:
+            _tc = toolreg.tool_color(tool_key, theme.ACCENT)
             b = QtWidgets.QToolButton()
-            b.setIcon(icons.rail_icon(name.lower(), theme.TEXT3, theme.ACCENT, theme.TEXT2))
+            b.setIcon(icons.rail_icon(
+                tool_key, _tc, _tc,
+                toolreg.tool_hover_color(tool_key, theme.TEXT2)))
             b.setIconSize(QtCore.QSize(28, 28))
             b.setToolTip(self._chip_tip(name))
             b.setFixedSize(46, 46)
@@ -1102,7 +1115,13 @@ class MainWindow(QtWidgets.QMainWindow):
         new_chart.setToolTip(self._chip_tip("New chart", "Ctrl+N"))
         new_chart.setFixedSize(46, 46)
         new_chart.setCursor(QtCore.Qt.PointingHandCursor)
-        new_chart.setStyleSheet(btn_qss)
+        # Tint the "+" in the chart launcher colour (matches the chart space icon + topbar New-chart).
+        _chart_c = toolreg.tool_color("chart", theme.ACCENT)
+        new_chart.setStyleSheet(
+            f"QToolButton{{background:transparent;border:none;border-radius:13px;"
+            f"color:{_chart_c};font-size:22px;}}"
+            f"QToolButton:hover{{background:transparent;color:{toolreg.tool_hover_color('chart', theme.TEXT2)};}}"
+        )
         new_chart.clicked.connect(lambda: self._open_in_new_chart(self._symbol))
         col.addWidget(new_chart, 0, QtCore.Qt.AlignHCenter)
         QtGui.QShortcut(QtGui.QKeySequence("Ctrl+N"), self,
