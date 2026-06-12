@@ -189,6 +189,18 @@ def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
     second.close()
 
 
+def test_vike_dock_titlebar_attrs_exist_before_init():
+    """Regression: Qt's C++ base can fire resizeEvent DURING super().__init__(), before the
+    instance attrs are set — our resizeEvent/refresh_native_hidden touch self._header. Class-level
+    defaults must exist so that early resize can't raise AttributeError (a real-platform crash on
+    float-restore that offscreen event timing doesn't reproduce). Guard the defaults here."""
+    from vike_trader_app.ui.dockshell import VikeDockTitleBar
+    assert VikeDockTitleBar._header is None
+    assert VikeDockTitleBar._is_panel is False
+    assert VikeDockTitleBar._deck is None
+    assert VikeDockTitleBar._area_w is None
+
+
 # --- Arrange (MultiCharts Window->Arrange parity) + keep-on-top pin -------------------------
 
 

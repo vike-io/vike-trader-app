@@ -31,6 +31,17 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         buttons wired to ADS undock / auto-hide / float-max / close.
     NOT a tab strip (rejected design)."""
 
+    # Class-level defaults so these attrs ALWAYS exist. Qt's C++ base (CDockAreaTitleBar) can
+    # fire resizeEvent DURING super().__init__() — before the instance assignments below run —
+    # which calls our resizeEvent override and touches self._header. Without these defaults that
+    # early resize raises AttributeError ("'VikeDockTitleBar' object has no attribute '_header'"),
+    # a real-platform crash on restore when a space is floated. Offscreen event timing doesn't
+    # deliver that construction-time resize, so the GUI suite stayed green — only a live launch hit it.
+    _deck = None
+    _header = None
+    _is_panel = False
+    _area_w = None
+
     def __init__(self, area):
         super().__init__(area)
         self._deck = None
