@@ -46,20 +46,18 @@ def test_keys_match_factories(app):
     assert set(ToolRegistry.keys()) == set(ToolRegistry.factories())
 
 
-def test_only_chart_and_studio_remain_spaces(app):
+def test_only_chart_remains_a_space(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
-    assert win.tabs.count() == 2                      # Chart + Studio only
+    assert win.tabs.count() == 1                       # Chart only — Studio is a dock now
     for attr in ("screener", "journal", "alerts", "datamanager",
-                 "news", "calendar_space", "options"):
-        assert getattr(win, attr, None) is None       # 7 tools no longer eager
+                 "news", "calendar_space", "options", "studio"):
+        assert getattr(win, attr, None) is None        # all 8 tools no longer eager
     win.close()
 
 
 def test_each_tool_opens_and_closes_as_dock(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
-    for key in ToolRegistry.keys():
-        if key == "studio":
-            continue                                   # studio stays a space this increment
+    for key in ToolRegistry.keys():                     # incl. studio (the 8th tool now)
         dock = win.open_tool(key); app.processEvents()
         assert dock.objectName() == f"tool:{key}"
         # legacy attr is set while open
@@ -67,6 +65,31 @@ def test_each_tool_opens_and_closes_as_dock(app):
         assert getattr(win, attr, None) is not None
         dock.closeDockWidget(); app.processEvents()
         assert getattr(win, attr, None) is None        # cleared on close (no leak)
+    win.close()
+
+
+def test_studio_opens_and_closes_as_dock(app):
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
+    assert win.studio is None and win.studio_price is None      # not eager anymore
+    assert win.tabs.count() == 1                                 # only Chart remains a space
+    dock = win.open_tool("studio"); app.processEvents()
+    assert dock.objectName() == "tool:studio"
+    assert win.studio is not None and win.studio_price is not None
+    dock.closeDockWidget(); app.processEvents()
+    assert win.studio is None and win.studio_price is None       # cleared on close (no dangling)
+    win.close()
+
+
+def test_backtest_pipeline_safe_when_studio_closed(app):
+    # load_bars / replay must not crash when Studio is closed (studio_price is None)
+    from vike_trader_app.core.model import Bar
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
+    bars = [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
+            for i in range(40)]
+    win.load_bars(bars, record=False)   # studio_price is None -> _pipeline_charts() drops it
+    app.processEvents()                 # must not raise
+    win._render_frame()                 # replay render with Studio closed
+    assert len(win._pipeline_charts()) == 1   # just the Chart space chart
     win.close()
 
 

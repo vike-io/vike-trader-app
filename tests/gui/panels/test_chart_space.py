@@ -95,6 +95,7 @@ def test_chart_space_is_clean_no_auto_overlays(app):
     chart only, never the Chart-space chart (indicators there come from the ƒx Indicators picker)."""
     win = MainWindow()
     win.store = Store(":memory:")
+    win.open_tool("studio"); app.processEvents()      # Studio is an on-demand dock now -> build it
     win.load_bars(_bars(40), strategy_factory=_OverlayStrat)
     assert win.price._overlay_curves == {}            # Chart space: no auto strategy overlays
     assert "MA" in win.studio_price._overlay_curves    # Studio/backtest chart: keeps them

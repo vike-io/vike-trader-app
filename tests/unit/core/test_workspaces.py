@@ -44,12 +44,15 @@ def test_agent_spec_empty_is_safe():
 
 
 def test_agent_spec_tool_name_no_longer_routes_to_a_space():
-    # Empty-workspace re-arch: the 7 tools are on-demand docks, not spaces. A stale tool name
-    # in the agent's ``space`` field must NOT resolve to an old 2-8 tab index (which would clamp
-    # to Studio) — only chart/studio are spaces now, everything else falls back to Chart (0).
+    # Empty-workspace re-arch: ALL 8 tools (incl. Studio) are on-demand docks now, not spaces.
+    # Chart is the only space. A tool name in the agent's ``space`` field falls back to Chart (0);
+    # "studio" additionally opens the Studio dock via open_tools (no Studio space to switch to).
     for tool in ("screener", "journal", "alerts", "data", "news", "calendar", "options"):
-        assert workspace_from_agent_spec({"space": tool}).space == 0
-    assert workspace_from_agent_spec({"space": "studio"}).space == 1
+        st = workspace_from_agent_spec({"space": tool})
+        assert st.space == 0 and "studio" not in st.open_tools
+    studio_spec = workspace_from_agent_spec({"space": "studio"})
+    assert studio_spec.space == 0
+    assert studio_spec.open_tools == ["studio"]
     assert workspace_from_agent_spec({"space": "chart"}).space == 0
 
 

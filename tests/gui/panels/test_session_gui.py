@@ -45,14 +45,16 @@ def test_close_writes_session_snapshot(app, tmp_path):
     win = MainWindow(session_path=str(path))
     win.store = Store(":memory:")
     win._symbol, win._interval = "ETHUSDT", "1h"
-    win.tabs.setCurrentIndex(1)              # Studio (only Chart/Studio are spaces now)
+    win.tabs.setCurrentIndex(0)              # Chart is the only space now
+    win.open_tool("studio")                  # Studio is an on-demand dock -> persisted via open_tools
     win._panel_btns["market"].setChecked(True)
     win.close()
 
     saved = json.loads(path.read_text(encoding="utf-8"))
     assert saved["symbol"] == "ETHUSDT"
     assert saved["interval"] == "1h"
-    assert saved["space"] == 1
+    assert saved["space"] == 0
+    assert "studio" in saved["open_tools"]   # the open Studio dock is remembered
     assert saved["panels"]["market"] is True
     assert saved["geometry_hex"]              # non-empty opaque blob
 
@@ -62,14 +64,16 @@ def test_relaunch_restores_symbol_space_and_panels(app, tmp_path):
     first = MainWindow(session_path=str(path))
     first.store = Store(":memory:")
     first._symbol, first._interval = "ETHUSDT", "4h"
-    first.tabs.setCurrentIndex(1)             # Studio (only Chart/Studio are spaces now)
+    first.tabs.setCurrentIndex(0)            # Chart is the only space now
+    first.open_tool("studio")                # Studio dock -> restored via open_tools
     first._panel_btns["trades"].setChecked(True)
     first.close()
 
     second = MainWindow(session_path=str(path))
     assert second._symbol == "ETHUSDT"
     assert second._interval == "4h"
-    assert second.tabs.currentIndex() == 1
+    assert second.tabs.currentIndex() == 0
+    assert second.studio is not None         # the Studio dock was rebuilt on restore
     assert second._panel_btns["trades"].isChecked()
     assert second._panel_btns["market"].isChecked() is False  # untouched -> fresh default
     assert second._restored_geometry
@@ -101,8 +105,8 @@ def test_indicators_survive_relaunch_via_startup_load(app, tmp_path, monkeypatch
     assert names == ["rsi"]
     restored = next(iter(second.price._indicators.values()))
     assert restored.params == {"period": 21}
-    # the Studio chart had no user indicators -> none restored there
-    assert not second.studio_price._indicators
+    # the Studio dock wasn't open in the saved session -> studio_price stays None (no chart to hydrate)
+    assert second.studio_price is None
     second.close()
 
 

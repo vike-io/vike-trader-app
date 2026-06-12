@@ -58,10 +58,15 @@ def test_apply_trading_clears_documents(app):
     win.close()
 
 
-def test_apply_backtesting_selects_studio_space(app):
-    win = MainWindow(session_path=None)
+def test_apply_backtesting_opens_studio_dock(app):
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
     win._apply_workspace("Backtesting")
-    assert win.tabs.currentWidget() is win.studio
+    app.processEvents()
+    # Studio is an on-demand dock now: the Backtesting workspace opens it (via open_tools) on the
+    # Chart space, rather than switching to a (retired) Studio space.
+    assert win.tabs.currentIndex() == 0
+    assert win.studio is not None
+    assert "studio" in win._tool_docks and not win._tool_docks["studio"].isClosed()
     win.close()
 
 
