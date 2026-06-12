@@ -68,3 +68,17 @@ def test_each_tool_opens_and_closes_as_dock(app):
         dock.closeDockWidget(); app.processEvents()
         assert getattr(win, attr, None) is None        # cleared on close (no leak)
     win.close()
+
+
+def test_options_close_reopen_no_stale_signals(app):
+    # Regression: closing Options must drop the OptionsService->tab signal connections so an
+    # in-flight fetch worker can't emit into the DeleteOnClose-destroyed tab (segfault class).
+    # Re-opening must re-wire cleanly without a double-disconnect RuntimeWarning.
+    win = MainWindow(session_path=None); win.show(); app.processEvents()
+    d1 = win.open_tool("options"); app.processEvents()
+    d1.closeDockWidget(); app.processEvents()
+    assert getattr(win, "options", None) is None
+    assert win._options_wired is False                 # disconnected on close, re-armed on open
+    d2 = win.open_tool("options"); app.processEvents()  # must not warn/crash
+    assert d2.objectName() == "tool:options"
+    win.close()

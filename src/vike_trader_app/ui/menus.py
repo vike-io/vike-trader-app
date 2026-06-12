@@ -104,8 +104,8 @@ def _fill_file(m, win):
 
 def _fill_view(m, win):
     # Only the core panels — the dashboard tiles (movers/pnl/ecal/headlines) are hidden from
-    # the menu per the user (Calendar + News are full spaces, opened as windows from Go or
-    # the title-bar launchers); their Ctrl+Shift shortcuts + palette commands still work.
+    # the menu per the user (Calendar + News are now on-demand docks, opened via open_tool from
+    # Go or the title-bar launchers); their Ctrl+Shift shortcuts + palette commands still work.
     core = {"backtester", "market", "trades"}
     for key, _icon, tip, sc in win._PANELS:
         if key not in core:

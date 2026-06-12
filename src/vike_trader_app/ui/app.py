@@ -536,6 +536,17 @@ class MainWindow(QtWidgets.QMainWindow):
             if k == "options" and getattr(self, "_options_svc", None) is not None:
                 self._options_svc.stop_polling()   # the poller lives on the app-level service,
                 self._options_started = False      # not the tab, so stop it here (re-arm next open)
+                # The tab is about to be destroyed (DeleteOnClose); an in-flight _FetchWorker
+                # QThread could still emit into it (→ "C++ object already deleted" / 0xC0000409).
+                # Drop the svc->tab connections NOW, not on the next open (too late). Re-armed by
+                # _wire_options on the next open via the _options_wired guard below.
+                for _sig in (self._options_svc.chainReady, self._options_svc.failed,
+                             self._options_svc.expiriesReady):
+                    try:
+                        _sig.disconnect()
+                    except (RuntimeError, TypeError):   # already gone — fine
+                        pass
+                self._options_wired = False
 
         dock.closed.connect(_on_tool_closed)
         return dock
@@ -1803,8 +1814,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 if not benchmark_bars:
                     try:
                         from ..data.parquet_source import read_series
-                        loaded = read_series(self.datamanager._root, bench_sym, dataset.interval)
-                        benchmark_bars = loaded if loaded else None
+                        dm = getattr(self, "datamanager", None)   # None when the Data dock is closed
+                        if dm is not None:
+                            loaded = read_series(dm._root, bench_sym, dataset.interval)
+                            benchmark_bars = loaded if loaded else None
+                        # else: leave benchmark_bars None -> equal-weight fallback below
                     except Exception:  # noqa: BLE001 - cache miss / import error -> graceful fallback
                         benchmark_bars = None
 
