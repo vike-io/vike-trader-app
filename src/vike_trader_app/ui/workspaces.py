@@ -42,14 +42,18 @@ def builtin_workspaces() -> dict[str, SessionState]:
                 {"symbol": "SOLUSDT", "interval": "1h", "link_group": 3, "indicators": []},
             ],
         ),
-        # Strategy lab: Studio space with the trades panel for results.
+        # Strategy lab: the Chart space with the Studio dock open (Studio is an on-demand tool
+        # now, not a space) and the trades panel for results.
         "Backtesting": SessionState(
-            space=1, panels={"backtester": True, "market": False, "trades": True},
+            space=0, panels={"backtester": True, "market": False, "trades": True},
+            open_tools=["studio"],
         ),
     }
 
 
-_SPACE_INDEX = {"chart": 0, "studio": 1}
+# Studio is an on-demand tool dock now (not a space): an agent spec asking for the "studio" space
+# maps to the Chart space PLUS the studio tool opened.
+_SPACE_INDEX = {"chart": 0, "studio": 0}
 _INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"}
 
 
@@ -84,11 +88,15 @@ def workspace_from_agent_spec(spec: dict, *, default_interval: str = "1h") -> Se
     panels = {k: bool(panels_in[k]) for k in ("market", "trades") if k in panels_in}
     panels.setdefault("backtester", True)
 
+    # "studio" is a tool dock now: an agent asking for the studio space gets the Chart space with
+    # the Studio dock opened.
+    open_tools = ["studio"] if str(spec.get("space", "")).lower() == "studio" else []
     return SessionState(
         space=_SPACE_INDEX.get(str(spec.get("space", "")).lower(), 0),
         panels=panels,
         watchlist_link=_grp(spec.get("watchlist_link")),
         documents=documents,
+        open_tools=open_tools,
     )
 
 
