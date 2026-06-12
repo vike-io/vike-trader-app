@@ -49,8 +49,7 @@ def builtin_workspaces() -> dict[str, SessionState]:
     }
 
 
-_SPACE_INDEX = {"chart": 0, "studio": 1, "screener": 2, "journal": 3, "alerts": 4,
-                "data": 5, "news": 6, "calendar": 7, "options": 8}
+_SPACE_INDEX = {"chart": 0, "studio": 1}
 _INTERVALS = {"1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "1d", "1w"}
 
 

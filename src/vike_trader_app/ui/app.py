@@ -515,6 +515,11 @@ class MainWindow(QtWidgets.QMainWindow):
         instead of creating a second one. A later plan flips this to multi-instance — the
         open-or-focus shortcut is isolated in the leading branch so that flip is one edit.
         """
+        if key == "studio":
+            # Studio remains a SpaceDeck space in Plan 1 (its chart/backtest pipeline is fused
+            # to the central chart — deferred sub-project). Treat "open studio" as: show the space.
+            self.tabs.setCurrentIndex(1)
+            return None
         from .toolreg import ToolRegistry, make_tool_dock
 
         existing = self._tool_docks.get(key)
@@ -784,6 +789,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.topbar.add_launcher("chart", "New chart window (Ctrl+N)",
                                  lambda: self._open_in_new_chart(self._symbol))
         self.topbar.add_launcher("studio", "Studio window", lambda: self._float_space(1))
+        # Topbar shows the 5 most-used tool launchers (width-limited); journal + alerts are
+        # reachable via the rail + Go/File menus + Ctrl+K palette.
         for icon_name, label, key in (("screener", "Screener", "screener"), ("data", "Data", "data"),
                                       ("news", "News", "news"), ("calendar", "Calendar", "calendar"),
                                       ("options", "Options", "options")):
@@ -2501,6 +2508,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 btn.blockSignals(False)
 
         self._close_all_chart_windows()         # each close unregisters hub/bus + drops refs
+
+        # Close any open tool docks first — the incoming workspace fully defines which tools
+        # are open (via its open_tools); leaving stale docks open collides with the layout blob.
+        for _dock in list(self._tool_docks.values()):
+            try:
+                _dock.closeDockWidget()   # fires _on_tool_closed -> clears _tool_docks + alias
+            except Exception:  # noqa: BLE001
+                pass
+
         self._doc_seq = 0                        # fresh doc:N names that match this state's blob
         for st in (state.documents or []):
             self._new_chart_document(st.get("symbol", "BTCUSDT"), st.get("interval", "1h"),

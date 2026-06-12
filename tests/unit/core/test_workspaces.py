@@ -43,6 +43,16 @@ def test_agent_spec_empty_is_safe():
     assert st.documents == [] and st.space == 0
 
 
+def test_agent_spec_tool_name_no_longer_routes_to_a_space():
+    # Empty-workspace re-arch: the 7 tools are on-demand docks, not spaces. A stale tool name
+    # in the agent's ``space`` field must NOT resolve to an old 2-8 tab index (which would clamp
+    # to Studio) — only chart/studio are spaces now, everything else falls back to Chart (0).
+    for tool in ("screener", "journal", "alerts", "data", "news", "calendar", "options"):
+        assert workspace_from_agent_spec({"space": tool}).space == 0
+    assert workspace_from_agent_spec({"space": "studio"}).space == 1
+    assert workspace_from_agent_spec({"space": "chart"}).space == 0
+
+
 def test_builtins_available_without_a_file(tmp_path):
     store = WorkspaceStore(tmp_path / "workspaces.json")
     assert store.names() == BUILTIN_NAMES
