@@ -169,8 +169,9 @@ def test_panel_drop_into_spaces_area_does_not_crash(app):
 
 
 def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
-    """A saved space index past the end (a build dropped a space) clamps to the last space and
-    still re-syncs the rail/title, rather than leaving the shell disconnected."""
+    """A saved space index past the end (e.g. an old session saved on a now-removed tool space)
+    clamps to Chart (0) and still re-syncs the rail/title, rather than leaving the shell
+    disconnected. (Empty-workspace re-arch: out-of-range lands on Chart, not the last space.)"""
     import json
 
     path = tmp_path / "session.json"
@@ -182,8 +183,8 @@ def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
 
     second = MainWindow(session_path=str(path))
     idx = second.tabs.currentIndex()
-    assert idx == second.tabs.count() - 1   # clamped to the last valid space
-    assert second._rail_group.button(idx).isChecked()       # rail re-synced (not stuck on 0)
+    assert idx == 0                         # out-of-range (old tool-space index) clamps to Chart
+    assert second._rail_group.button(idx).isChecked()       # rail re-synced (not stuck/disconnected)
     assert second.windowTitle().endswith(second._SPACE_ITEMS[idx][1])
     second.close()
 
