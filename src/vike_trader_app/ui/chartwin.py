@@ -26,6 +26,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
 
     closed = QtCore.Signal(object)        # self
     activated = QtCore.Signal(object)     # self (clicked/raised)
+    cloneRequested = QtCore.Signal(object)   # self — duplicate this window (MainWindow handles)
 
     def __init__(self, doc, host: QtWidgets.QWidget):
         super().__init__(host)
@@ -72,11 +73,14 @@ class ChartWindowFrame(QtWidgets.QFrame):
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
             self._bar.add_widget(doc._pin_btn)
+        self._bar.add_button("clone", "＋", "Clone this window",
+                             lambda: self.cloneRequested.emit(self))
         self._detach_btn = self._bar.add_button(
             "detach", "⧉", "Detach to its own window", self.toggle_detach)
         self._bar.add_button("min", "─", "Minimize (roll up)", self.toggle_rollup)
         self._max_btn = self._bar.add_button("max", "□", "Maximize", self.toggle_max)
         self._bar.add_button("close", "✕", "Close", self.close_window, danger=True)
+        self._bar.set_menu(self._show_menu)
         lay.addWidget(self._bar)
         lay.addWidget(doc, 1)
 
@@ -266,6 +270,23 @@ class ChartWindowFrame(QtWidgets.QFrame):
     def set_feed(self, color: str, text: str) -> None:
         """Paint this window's feed badge (MainWindow maps the live state -> colour + text)."""
         self._feed_badge.set_state(color, text)
+
+    def _show_menu(self, global_pos) -> None:
+        """Title-bar right-click menu (frame-local actions). Plain QMenu → it inherits the app's
+        unified popup style; never set a local stylesheet here (the cascade gotcha)."""
+        m = QtWidgets.QMenu(self)
+        m.addAction("Clone window", lambda: self.cloneRequested.emit(self))
+        pin = getattr(self.doc, "_pin_btn", None)
+        if pin is not None:
+            act = m.addAction("Keep on top", pin.toggle)
+            act.setCheckable(True)
+            act.setChecked(pin.isChecked())
+        m.addAction("Attach back into workspace" if self.is_detached() else "Detach to a window",
+                    self.toggle_detach)
+        m.addAction("Restore" if self._maxed else "Maximize", self.toggle_max)
+        m.addSeparator()
+        m.addAction("Close", self.close_window)
+        m.exec(global_pos)
 
 
 def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) -> None:

@@ -67,6 +67,7 @@ class UnifiedTitleBar(QtWidgets.QWidget):
         self.setObjectName("unifiedBar")
         self.setFixedHeight(BAR_H)
         self._buttons: dict[str, QtWidgets.QToolButton] = {}
+        self._menu_cb = None
         lay = QtWidgets.QHBoxLayout(self)
         lay.setContentsMargins(8, 0, 0, 0)   # right margin 0 → close button touches the edge
         lay.setSpacing(6)
@@ -142,3 +143,14 @@ class UnifiedTitleBar(QtWidgets.QWidget):
         self.setStyleSheet(
             f"#unifiedBar{{background:{theme.RAISE if on else theme.SURFACE};"
             f"border-bottom:1px solid {theme.BORDER};}}")
+
+    def set_menu(self, cb) -> None:
+        """cb(global_pos) builds + shows the title-bar right-click menu. Host-supplied so this
+        widget stays app-agnostic (the menu's actions live with the host)."""
+        self._menu_cb = cb
+
+    def contextMenuEvent(self, ev):  # noqa: N802 - Qt override
+        if self._menu_cb is not None:
+            self._menu_cb(ev.globalPos())
+        else:
+            super().contextMenuEvent(ev)

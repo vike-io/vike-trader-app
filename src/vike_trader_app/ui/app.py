@@ -426,6 +426,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame = ChartWindowFrame(doc, self.dock_manager)
         frame.closed.connect(lambda f: self._on_chart_window_closed(f))
         frame.activated.connect(self._on_chart_window_activated)
+        frame.cloneRequested.connect(self._clone_window)
         self._chart_frames.append(frame)
         # cascade placement: each new window steps down-right from the last
         n = len(self._chart_frames) - 1
@@ -443,6 +444,24 @@ class MainWindow(QtWidgets.QMainWindow):
             frame.raise_()
             self._on_chart_window_activated(frame)
         return doc
+
+    def _clone_window(self, frame) -> None:
+        """Duplicate a chart window — same symbol / interval / indicators / link groups, cascaded
+        to a fresh window. Reuses the copy/paste state capture (no clipboard round-trip)."""
+        st = self._doc_state_with_geometry(frame.doc)
+        st.pop("geometry", None)   # let the new window cascade instead of stacking exactly
+        self._new_chart_document(st.get("symbol", frame.doc.symbol),
+                                 st.get("interval", frame.doc.interval), state=st)
+
+    def _open_central_as_window(self) -> None:
+        """The chart-space header's ＋ : open the central chart's current view as a floating
+        window (same symbol / interval / indicators / link group)."""
+        self._new_chart_document(self._symbol, self._interval, state={
+            "symbol": self._symbol, "interval": self._interval,
+            "indicators": indicator_states(self.price),
+            "link_group": self.link_group,
+            "interval_link_group": self.interval_link_group,
+        })
 
     def _frame_of(self, doc) -> "object | None":
         for f in self._chart_frames:

@@ -76,6 +76,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         bar = UnifiedTitleBar(title=getattr(deck, "_header_title", "Chart"),
                               icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
                               parent=self)
+        if win is not None and hasattr(win, "_open_central_as_window"):
+            bar.add_button("clone", "＋", "Open this chart in a new window",
+                           win._open_central_as_window)
         bar.add_button("detach", "⧉", "Open this space as a window",
                        lambda: deck.float_space(max(0, deck.currentIndex())))
         bar.add_button("min", "─", "Minimize", _win_min)

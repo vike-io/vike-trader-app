@@ -173,6 +173,20 @@ def test_chart_window_title_bar(app, _synthetic_load):
     win.close()
 
 
+def test_clone_window_makes_independent_copy(app, _synthetic_load):
+    """Stage 2: the ＋ clone button duplicates a window (same symbol/interval, new doc)."""
+    win = MainWindow(session_path=None)
+    win._new_chart_document("ETHUSDT", "2h")
+    f0 = win._chart_frames[0]
+    assert f0._bar._menu_cb is not None        # right-click menu wired
+    win._clone_window(f0)
+    assert len(win._chart_frames) == 2
+    f1 = win._chart_frames[1]
+    assert f1.doc is not f0.doc
+    assert f1.doc.symbol == "ETHUSDT" and f1.doc.interval == "2h"
+    win.close()
+
+
 def test_closing_window_unregisters(app, _synthetic_load):
     win = MainWindow(session_path=None)
     win._new_chart_document("ETHUSDT", "1h")
