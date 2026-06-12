@@ -24,6 +24,8 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python }}
+          enable-cache: true                  # cache uv's download store (big PySide6 wheels)
+          cache-dependency-glob: "uv.lock"    # re-key only when locked deps change
 
       # Non-UI extras: enough for the engine / analysis / indicators / ml / ai-tool
       # tests. The `ui` extra (PySide6/pyqtgraph) is omitted here for a fast gate; the
@@ -60,6 +62,8 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python }}
+          enable-cache: true                  # cache uv's download store (big PySide6 wheels)
+          cache-dependency-glob: "uv.lock"    # re-key only when locked deps change
 
       # PySide6 links a handful of system libs even under the offscreen platform — Linux only.
       # The Windows/macOS PySide6 wheels are self-contained (Qt bundled), so no system step there.
