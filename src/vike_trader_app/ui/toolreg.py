@@ -19,9 +19,6 @@ import PySide6QtAds as QtAds
 
 log = logging.getLogger(__name__)
 
-# Pinned (symbol, interval) series kept precomputed — mirrors app.py's module-level _PINS_PATH.
-_PINS_PATH = "storage/pins.json"
-
 
 class ToolRegistry:
     """Static registry of tool key -> factory(win) -> widget."""
@@ -40,10 +37,9 @@ class ToolRegistry:
         from .studio import StudioTab
 
         def _data(win):
-            # app.py builds DataManagerTab(pins_path=_PINS_PATH); prefer the live window's
-            # value if it exposes one, else fall back to the module default.
-            pins_path = getattr(win, "_pins_path", None) or _PINS_PATH
-            return DataManagerTab(pins_path=pins_path)
+            # DataManagerTab defaults pins_path internally (datamanager._PINS_PATH); pass through
+            # whatever the window exposes (None today) so a future task can wire win._pins_path.
+            return DataManagerTab(pins_path=getattr(win, "_pins_path", None))
 
         def _calendar(win):
             # app.py: EconomicCalendarTab() mounted inside CalendarSpace(economic_tab=…).
@@ -95,6 +91,7 @@ def make_tool_dock(manager, key: str, widget, icon=None) -> "QtAds.CDockWidget":
     dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
     dock.setFeatures(
         QtAds.CDockWidget.DefaultDockWidgetFeatures
+        | QtAds.CDockWidget.DockWidgetPinnable
         | QtAds.CDockWidget.DockWidgetDeleteOnClose
     )
     if icon is not None:

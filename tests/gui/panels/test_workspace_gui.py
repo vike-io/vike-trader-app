@@ -5,6 +5,7 @@ pytest.importorskip("PySide6"); pytest.importorskip("PySide6QtAds")
 import PySide6QtAds as QtAds  # noqa: E402
 from PySide6 import QtWidgets  # noqa: E402
 from vike_trader_app.ui.toolreg import ToolRegistry, make_tool_dock  # noqa: E402
+from vike_trader_app.ui.dockshell import configure_dock_manager_defaults  # noqa: E402
 
 
 @pytest.fixture(scope="module")
@@ -18,6 +19,7 @@ def test_registry_lists_tool_keys(app):
 
 
 def test_make_tool_dock_wraps_widget(app):
+    configure_dock_manager_defaults()
     host = QtWidgets.QMainWindow()
     mgr = QtAds.CDockManager(host)
     w = QtWidgets.QLabel("x")
