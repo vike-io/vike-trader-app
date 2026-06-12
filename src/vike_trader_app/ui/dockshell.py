@@ -153,6 +153,18 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         if self._header is not None:        # keep native chrome suppressed across relayouts
             self.refresh_native_hidden()
 
+    def event(self, ev):  # noqa: N802 - Qt override
+        res = super().event(ev)
+        # ADS re-shows its native buttons (the ▼ tabs-menu, detach, auto-hide, close) when a 2nd
+        # dock is TABBED into this area — which does NOT fire a resizeEvent, so the natives leak in
+        # next to our unified ⧉ ─ □ ✕. Re-suppress on any layout change (cheap; guarded).
+        try:
+            if ev.type() == QtCore.QEvent.Type.LayoutRequest and self._header is not None:
+                self.refresh_native_hidden()
+        except RuntimeError:   # title bar mid-teardown
+            pass
+        return res
+
     # --- unified PANEL bar (Market watch / Trades / …) ------------------------------------
 
     def _auto_detect_panel(self) -> None:
@@ -276,7 +288,9 @@ def configure_dock_manager_defaults() -> None:
     # floating windows carry the floated widget's own title (e.g. "BTCUSDT · 1h")
     QtAds.CDockManager.setConfigFlag(QtAds.CDockManager.FloatingContainerHasWidgetTitle, True)
     # floating containers are REAL OS windows: native title bar (min/max/close, snap, the
-    # taskbar treats them as windows) instead of ADS's custom strip — unified window chrome
+    # taskbar treats them as windows) instead of ADS's custom strip — unified window chrome.
+    # NOTE: flipping this off makes ADS show its OWN floating title bar, which carries a tabs-menu
+    # ▼ after the close button — true frameless-unified floating needs a custom frame (follow-up).
     QtAds.CDockManager.setConfigFlag(
         QtAds.CDockManager.FloatingContainerForceNativeTitleBar, True)
 
