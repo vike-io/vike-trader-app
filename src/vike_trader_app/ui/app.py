@@ -533,9 +533,22 @@ class MainWindow(QtWidgets.QMainWindow):
             f.close_window()
 
     def _arrange_chart_windows(self, mode: str) -> None:
+        """Window ▸ Arrange: tidy EVERYTHING the user has open.
+
+        - Floating windows (chart windows + torn-out tool windows, all chartwin frames) are
+          geometry-tiled by chartwin.arrange (grid / rows / columns / cascade).
+        - Docked tools are ADS-tiled by SpaceDeck.arrange_docks (docking has no cascade, so
+          cascade falls back to grid for them).
+        So opening tools from the launcher (which dock) and hitting Arrange now actually tiles
+        them, not just the chart windows."""
         from . import chartwin
 
-        chartwin.arrange(self._chart_frames, self.dock_manager, mode)
+        frames = self._chart_frames + list(self._tool_frames.values())
+        chartwin.arrange(frames, self.dock_manager, mode)
+        tool_docks = [d for d in self._tool_docks.values()
+                      if d is not None and not d.isClosed()]
+        if tool_docks:
+            self.tabs.arrange_docks(tool_docks, "grid" if mode == "cascade" else mode)
 
     def open_tool(self, key: str):
         """Open the tool dock for ``key``, or focus it if already open.

@@ -675,6 +675,39 @@ class SpaceDeck(QtCore.QObject):
         docks[0].setAsCurrentTab()
         return n
 
+    def arrange_docks(self, docks, mode: str = "grid") -> int:
+        """Tile an arbitrary set of docks (the open TOOL docks) into a grid / row / column,
+        seeded on the first dock's area so they tidy up among THEMSELVES without being merged
+        into the central chart space. ``tabs`` gathers them into one stack. Mirrors
+        arrange_documents' splitter pattern + equalisation. Returns the count arranged."""
+        docks = [d for d in docks
+                 if d is not None and not d.isClosed() and d.widget() is not None]
+        if not docks:
+            return 0
+        n = len(docks)
+        # Normalise FIRST: gather every dock into the first dock's area (one tab stack) so the
+        # split tree below starts deterministic — re-arranging from a prior grid/rows otherwise
+        # leaves nested splitters the equaliser can't flatten (columns came out gapped/overflowed).
+        for d in docks[1:]:
+            self._mgr.addDockWidget(QtAds.CenterDockWidgetArea, d, docks[0].dockAreaWidget())
+        if mode == "tabs" or n == 1:
+            docks[0].setAsCurrentTab()
+            return n
+        cols = 1 if mode == "rows" else (n if mode == "columns" else math.ceil(math.sqrt(n)))
+        tops = [docks[0]]
+        for c in range(1, min(cols, n)):
+            self._mgr.addDockWidget(QtAds.RightDockWidgetArea, docks[c],
+                                    tops[-1].dockAreaWidget())
+            tops.append(docks[c])
+        above = list(tops)
+        for i in range(cols, n):
+            c = i % cols
+            self._mgr.addDockWidget(QtAds.BottomDockWidgetArea, docks[i],
+                                    above[c].dockAreaWidget())
+            above[c] = docks[i]
+        self._equalize_splitters([d.dockAreaWidget() for d in docks])
+        return n
+
     def _equalize_splitters(self, areas: list) -> None:
         """Best-effort equal cell sizes after a tiling: successive ADS splits halve the
         remaining space (1/2, 1/4, ...), so walk the splitters above the arranged areas and

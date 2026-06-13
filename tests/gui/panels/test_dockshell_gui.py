@@ -394,6 +394,26 @@ def test_nav_keeps_space_strip_hidden(app):
     win.close()
 
 
+def test_arrange_tiles_open_tool_docks(app):
+    """Window ▸ Arrange tiles the open tool DOCKS (the launcher case), not just chart windows:
+    grid splits them into distinct areas; tabs gathers them back into one."""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    for k in ("screener", "journal", "alerts"):
+        win.open_tool(k)
+        app.processEvents()
+    win._arrange_chart_windows("grid")           # the Window ▸ Arrange All path
+    app.processEvents()
+    areas = {id(win._tool_docks[k].dockAreaWidget()) for k in ("screener", "journal", "alerts")}
+    assert len(areas) == 3                        # each tool tiled into its own area
+    win.tabs.arrange_docks(list(win._tool_docks.values()), "tabs")   # gather back to one stack
+    app.processEvents()
+    areas2 = {id(win._tool_docks[k].dockAreaWidget()) for k in ("screener", "journal", "alerts")}
+    assert len(areas2) == 1
+    win.close()
+
+
 def test_reclaim_unfloats_a_restored_native_float(app, tmp_path):
     """A stale/legacy session blob can describe a dock as a native ADS float; restoreState
     resurrects it. _reclaim_floating_docks must pull it back so NO visible native float survives
