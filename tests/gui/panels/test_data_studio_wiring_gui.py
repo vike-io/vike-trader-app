@@ -31,9 +31,12 @@ def _bars(n=12):
 
 
 def _studio_dock_current(win) -> bool:
-    """Studio is an on-demand dock now (not a space). The data->studio handoff opens-or-focuses it,
-    so 'switched to Studio' means: the studio dock exists, is open, and is the current tab of its
-    dock area (open_tool raises + setCurrentDockWidget)."""
+    """Studio opens as its own window now (MT-style); the data->studio handoff opens-or-focuses it.
+    'Switched to Studio' means it's open — as a window (the default), or as a dock if the user has
+    since docked it via 'Dock into workspace'."""
+    frame = win._tool_frames.get("studio")
+    if frame is not None:
+        return True
     dock = win._tool_docks.get("studio")
     if dock is None or dock.isClosed():
         return False

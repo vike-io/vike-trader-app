@@ -46,7 +46,7 @@ def test_close_writes_session_snapshot(app, tmp_path):
     win.store = Store(":memory:")
     win._symbol, win._interval = "ETHUSDT", "1h"
     win.tabs.setCurrentIndex(0)              # Chart is the only space now
-    win.open_tool("studio")                  # Studio is an on-demand dock -> persisted via open_tools
+    win.open_tool("studio")                  # Studio opens as a window -> persisted via tool_windows
     win._panel_btns["market"].setChecked(True)
     win.close()
 
@@ -54,7 +54,7 @@ def test_close_writes_session_snapshot(app, tmp_path):
     assert saved["symbol"] == "ETHUSDT"
     assert saved["interval"] == "1h"
     assert saved["space"] == 0
-    assert "studio" in saved["open_tools"]   # the open Studio dock is remembered
+    assert any(s.get("key") == "studio" for s in saved["tool_windows"])  # open Studio window remembered
     assert saved["panels"]["market"] is True
     assert saved["geometry_hex"]              # non-empty opaque blob
 

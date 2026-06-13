@@ -203,6 +203,110 @@ def test_vike_dock_titlebar_attrs_exist_before_init():
     assert VikeDockTitleBar._is_panel is False
     assert VikeDockTitleBar._deck is None
     assert VikeDockTitleBar._area_w is None
+    assert VikeDockTitleBar._rolled is False
+    assert VikeDockTitleBar._roll_maxh is None
+
+
+# --- chart-header window verbs: ─ roll-up + □ maximize (AmiBroker-style, never the OS window) ---
+
+
+def test_chart_header_min_rolls_up_not_minimizes_window(app):
+    """Chart header ─ rolls the central chart area up to its title strip (the AmiBroker
+    minimize-to-stub) — it must NOT minimize the whole OS window (the reported bug). A second
+    click restores the area's height."""
+    from vike_trader_app.ui.dockshell import VikeDockTitleBar
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    app.processEvents()
+    tb = next((t for t in win.findChildren(VikeDockTitleBar)
+               if getattr(t, "_deck", None) is not None and t._header is not None), None)
+    assert tb is not None
+    area = tb.dockAreaWidget()
+    full = area.maximumHeight()
+    tb._header.button("min").click()
+    app.processEvents()
+    assert not win.isMinimized()                          # the bug: must NOT minimize the app
+    assert tb._rolled and area.maximumHeight() <= 40      # rolled to the title strip
+    tb._header.button("min").click()
+    app.processEvents()
+    assert not tb._rolled and area.maximumHeight() == full   # restored
+    win.close()
+
+
+def test_chart_header_max_hides_then_restores_panels(app):
+    """Chart header □ maximizes the chart by hiding the open side panels (it must NOT minimize the
+    OS window), and toggling again restores exactly the panels that were open."""
+    win = MainWindow(session_path=None)
+    win.show()
+    win._panel_btns["market"].setChecked(True)
+    win._panel_btns["trades"].setChecked(True)
+    app.processEvents()
+    open_before = {k for k, d in win._panel_dock_map.items() if not d.isClosed()}
+    assert {"market", "trades"} <= open_before
+    win._toggle_chart_maximize()
+    app.processEvents()
+    assert not win.isMinimized()
+    assert all(win._panel_dock_map[k].isClosed() for k in open_before)
+    win._toggle_chart_maximize()
+    app.processEvents()
+    assert {k for k, d in win._panel_dock_map.items() if not d.isClosed()} >= open_before
+    win.close()
+
+
+def test_tool_launcher_opens_dock_despite_checked_arg(app):
+    """Regression: a tool launcher icon connects to QAction.triggered, which emits a `checked`
+    bool. A ``lambda k=key:`` captured that bool into ``k`` -> open_tool(False) -> KeyError, so
+    the icon silently did nothing. ``lambda *_a, k=key:`` absorbs it. Triggering the Screener
+    launcher (emits checked=False, like a real click) must open the Screener tool — MT-style, as
+    its own window."""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    act = next((a for a in win.topbar.launchers.actions()
+                if "Screener" in (a.toolTip() or a.text())), None)
+    assert act is not None, "no Screener launcher"
+    act.trigger()                              # emits triggered(checked=False) — the real-click path
+    app.processEvents()
+    assert win._tool_frames.get("screener") is not None   # opened as its own window
+    win.close()
+
+
+def test_panel_min_button_autohides_via_real_click(app):
+    """Regression: the panel ─ button was a DEAD no-op. _panel_min -> _cur_dock() read the cached
+    self._area_w, which ADS had swapped out (stale C++ ref) -> currentDockWidget() None -> nothing
+    happened (clicking Market Watch ─ did nothing on the live app). Resolving the live area fixes
+    it: a real ─ click auto-hides the dock to its edge tab."""
+    win = MainWindow(session_path=None)
+    win.show()
+    win._panel_btns["market"].setChecked(True)
+    app.processEvents()
+    app.processEvents()
+    assert not win._market_dock.isAutoHide()
+    tb = win._market_dock.dockAreaWidget().titleBar()
+    tb._header.button("min").click()             # the real ─ click path (used to be a no-op)
+    app.processEvents()
+    assert win._market_dock.isAutoHide()         # now actually collapses to the edge
+    win._market_dock.setAutoHide(False)          # and un-pins back into the layout
+    app.processEvents()
+    assert not win._market_dock.isAutoHide()
+    win.close()
+
+
+def test_panel_close_button_closes_via_real_click(app):
+    """Companion regression: the panel ✕ button also went through the stale _cur_dock(); a real
+    click must actually close the dock."""
+    win = MainWindow(session_path=None)
+    win.show()
+    win._panel_btns["trades"].setChecked(True)
+    app.processEvents()
+    app.processEvents()
+    assert not win._trades_dock.isClosed()
+    tb = win._trades_dock.dockAreaWidget().titleBar()
+    tb._header.button("close").click()
+    app.processEvents()
+    assert win._trades_dock.isClosed()
+    win.close()
 
 
 # --- Arrange (MultiCharts Window->Arrange parity) + keep-on-top pin -------------------------
@@ -394,23 +498,24 @@ def test_nav_keeps_space_strip_hidden(app):
     win.close()
 
 
-def test_arrange_tiles_open_tool_docks(app):
-    """Window ▸ Arrange tiles the open tool DOCKS (the launcher case), not just chart windows:
-    grid splits them into distinct areas; tabs gathers them back into one."""
+def test_arrange_tiles_open_tool_windows(app):
+    """MT-style: tools open as their OWN windows; Window ▸ Arrange tiles those tool windows into a
+    grid of distinct, non-overlapping rectangles (the same geometry path as chart windows)."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
     for k in ("screener", "journal", "alerts"):
         win.open_tool(k)
         app.processEvents()
-    win._arrange_chart_windows("grid")           # the Window ▸ Arrange All path
+    frames = [win._tool_frames.get(k) for k in ("screener", "journal", "alerts")]
+    assert all(f is not None for f in frames)     # each tool is its own window, not a dock
+    win._arrange_chart_windows("grid")            # the Window ▸ Arrange All path (tiles frames)
     app.processEvents()
-    areas = {id(win._tool_docks[k].dockAreaWidget()) for k in ("screener", "journal", "alerts")}
-    assert len(areas) == 3                        # each tool tiled into its own area
-    win.tabs.arrange_docks(list(win._tool_docks.values()), "tabs")   # gather back to one stack
-    app.processEvents()
-    areas2 = {id(win._tool_docks[k].dockAreaWidget()) for k in ("screener", "journal", "alerts")}
-    assert len(areas2) == 1
+    geos = [f.geometry() for f in frames]
+    assert len({(g.x(), g.y(), g.width(), g.height()) for g in geos}) == 3
+    for i in range(3):
+        for j in range(i + 1, 3):
+            assert not geos[i].intersects(geos[j])
     win.close()
 
 
