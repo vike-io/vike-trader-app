@@ -414,6 +414,47 @@ def test_arrange_tiles_open_tool_docks(app):
     win.close()
 
 
+def test_chart_dock_undock_round_trip(app):
+    """A chart window 'Dock into workspace' becomes a clean ADS dock (NOT a native float) hosting
+    the SAME live doc; its ⧉ tears it back out to a clean window; a real close unregisters the doc.
+    Charts are now symmetric with tools — no native CFloatingDockContainer at any step."""
+    from vike_trader_app.ui.chartwin import ChartWindowFrame
+
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    doc = win._new_chart_document("BTCUSDT", network=False)
+    app.processEvents()
+    frame = win._frame_of(doc)
+    assert frame in win._chart_frames
+
+    # Dock into workspace -> clean ADS dock, same live doc, no native float
+    win._redock_chart(frame)
+    app.processEvents()
+    assert frame not in win._chart_frames
+    names = [n for n, d in win._chart_docks.items() if d.widget() is doc]
+    assert names and doc in win._doc_widgets
+    assert len(list(win.dock_manager.floatingWidgets())) == 0
+
+    # Tear back out -> clean window, doc still live
+    win._detach_chart_dock(names[0])
+    app.processEvents()
+    assert names[0] not in win._chart_docks
+    assert isinstance(win._frame_of(doc), ChartWindowFrame)
+    assert doc in win._doc_widgets
+    assert not win._chart_detaching
+
+    # Redock + real close -> doc unregistered (full teardown)
+    win._redock_chart(win._frame_of(doc))
+    app.processEvents()
+    name2 = [n for n, d in win._chart_docks.items() if d.widget() is doc][0]
+    win._chart_docks[name2].closeDockWidget()
+    app.processEvents()
+    assert name2 not in win._chart_docks
+    assert doc not in win._doc_widgets
+    win.close()
+
+
 def test_reclaim_unfloats_a_restored_native_float(app, tmp_path):
     """A stale/legacy session blob can describe a dock as a native ADS float; restoreState
     resurrects it. _reclaim_floating_docks must pull it back so NO visible native float survives

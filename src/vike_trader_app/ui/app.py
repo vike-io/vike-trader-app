@@ -283,6 +283,12 @@ class MainWindow(QtWidgets.QMainWindow):
         # teardown (stop_feed / alias-nil / studio-shutdown) that a real close runs.
         self._tool_frames: dict[str, "ToolWindowFrame"] = {}
         self._tool_detaching: set[str] = set()
+        # A chart window docked into the workspace ("Dock into workspace") lives here as an ADS
+        # dock (objectName chart:<n>); it tears back out to a clean window via the dock's ⧉.
+        # _chart_detaching marks a dock close that is really a tear-out (the doc lives on).
+        self._chart_docks: dict[str, "QtAds.CDockWidget"] = {}
+        self._chart_detaching: set[str] = set()
+        self._chart_seq = 0
 
         self._layout_workers: list = []   # in-flight AI-layout agent threads (Phase 5)
 
@@ -465,17 +471,28 @@ class MainWindow(QtWidgets.QMainWindow):
         re-attaches saved indicators/links (and geometry). Registered with the LiveHub so its
         live edge ticks while visible.
         """
-        from .chartwin import ChartWindowFrame
-
         doc = ChartDocument(symbol, interval or self._interval)
         self._doc_widgets.append(doc)
         self._live_hub.register(doc)
         doc.set_bus(self._link_bus)        # join symbol link groups (colour set via its dot)
 
+        self._make_chart_frame(doc, state=state, make_current=make_current)
+        doc.load(network=network)
+        if state:
+            doc.apply_state(state)
+        return doc
+
+    def _make_chart_frame(self, doc, *, state: dict | None = None, make_current: bool = True):
+        """Wrap an (already-registered) ChartDocument in a clean ChartWindowFrame, wire its
+        signals, place + show it, and paint its feed badge. Shared by _new_chart_document (a fresh
+        doc) and _detach_chart_dock (tear a docked chart back out — the doc is already loaded)."""
+        from .chartwin import ChartWindowFrame
+
         frame = ChartWindowFrame(doc, self.dock_manager)
         frame.closed.connect(lambda f: self._on_chart_window_closed(f))
         frame.activated.connect(self._on_chart_window_activated)
         frame.cloneRequested.connect(self._clone_window)
+        frame.redockRequested.connect(self._redock_chart)
         self._chart_frames.append(frame)
         # cascade placement: each new window steps down-right from the last
         n = len(self._chart_frames) - 1
@@ -484,15 +501,81 @@ class MainWindow(QtWidgets.QMainWindow):
             x, y, w, h = (int(v) for v in state["geometry"])
             frame.setGeometry(x, y, max(320, w), max(160, h))
         frame.show()
-        doc.load(network=network)
         _fcolor, _fprefix = _FEED_STATES["live" if self._live_hub.is_live() else "cached"]
         frame.set_feed(_fcolor, _fprefix.replace(" · ", "").strip())
-        if state:
-            doc.apply_state(state)
         if make_current:
             frame.raise_()
             self._on_chart_window_activated(frame)
-        return doc
+        return frame
+
+    # --- chart dock/undock (symmetric with tools; "Dock into workspace") --------------------
+    def _redock_chart(self, frame):
+        """'Dock into workspace' on a chart window — reparent the LIVE ChartDocument into a clean
+        ADS dock (no reload, no state loss; the doc stays registered with the live hub + link bus).
+        Tear it back out via the dock's ⧉ (-> _detach_chart_dock)."""
+        if frame not in self._chart_frames:
+            return None
+        doc = frame.take_body()
+        self._chart_frames.remove(frame)
+        if self._active_frame is frame:
+            self._active_frame = None
+        frame.dispose()                      # drop the frame; no close-driven unregister
+        if doc is None:
+            return None
+        from .toolreg import make_chart_dock
+
+        self._chart_seq += 1
+        name = f"chart:{self._chart_seq}"
+        dock = make_chart_dock(self.dock_manager, doc, name, icon=self._tool_icon("chart"))
+        # Tile it VISIBLY to the right of the central chart (so it appears alongside, not hidden as
+        # a tab behind it); fall back to the central area if that can't be resolved.
+        base = None
+        try:
+            sd = self.tabs.dock(0)
+            if sd is not None and not sd.isClosed():
+                base = sd.dockAreaWidget()
+        except (RuntimeError, AttributeError, IndexError):
+            base = None
+        if base is not None:
+            self.dock_manager.addDockWidget(QtAds.RightDockWidgetArea, dock, base)
+        else:
+            self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
+        self._chart_docks[name] = dock
+        dock.closed.connect(self._make_chart_dock_close_handler(name, doc))
+        dock.toggleView(True)
+        dock.raise_()
+        return dock
+
+    def _make_chart_dock_close_handler(self, name: str, doc):
+        """The dock ``closed`` slot for a docked chart. A close that is really a tear-out (name in
+        _chart_detaching — the doc lives on in a window) only drops the dock ref; a real close
+        unregisters the doc (live hub / link bus / _doc_widgets) like a chart window close."""
+        def _on_closed(n=name, d=doc):
+            self._chart_docks.pop(n, None)
+            if n in self._chart_detaching:
+                self._chart_detaching.discard(n)
+                return
+            self._on_document_closed(d)
+        return _on_closed
+
+    def _detach_chart_dock(self, name: str):
+        """⧉ on a docked chart — tear the LIVE ChartDocument back out to a clean window."""
+        dock = self._chart_docks.get(name)
+        if dock is None or dock.isClosed():
+            return None
+        doc = dock.takeWidget()
+        if doc is None:
+            return None
+        self._chart_detaching.add(name)
+        dock.closeDockWidget()               # remove the empty dock (handler skips unregister)
+        return self._make_chart_frame(doc)
+
+    def _close_all_chart_docks(self) -> None:
+        for dock in list(self._chart_docks.values()):
+            try:
+                dock.closeDockWidget()
+            except Exception:  # noqa: BLE001 - teardown best-effort
+                pass
 
     def _clone_window(self, frame) -> None:
         """Duplicate a chart window — same symbol / interval / indicators / link groups, cascaded
@@ -545,10 +628,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
         frames = self._chart_frames + list(self._tool_frames.values())
         chartwin.arrange(frames, self.dock_manager, mode)
-        tool_docks = [d for d in self._tool_docks.values()
-                      if d is not None and not d.isClosed()]
-        if tool_docks:
-            self.tabs.arrange_docks(tool_docks, "grid" if mode == "cascade" else mode)
+        docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values())
+                 if d is not None and not d.isClosed()]
+        if docks:
+            self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
 
     def open_tool(self, key: str):
         """Open the tool dock for ``key``, or focus it if already open.
@@ -2786,6 +2869,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 btn.blockSignals(False)
 
         self._close_all_chart_windows()         # each close unregisters hub/bus + drops refs
+        self._close_all_chart_docks()           # close any docked charts (unregister their docs)
         self._close_all_tool_windows()          # dispose torn-out tool windows (with teardown)
 
         # Close any open tool docks first — the incoming workspace fully defines which tools

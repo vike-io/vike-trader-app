@@ -28,6 +28,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
     closed = QtCore.Signal(object)        # self
     activated = QtCore.Signal(object)     # self (clicked/raised)
     cloneRequested = QtCore.Signal(object)   # self — duplicate this window (MainWindow handles)
+    redockRequested = QtCore.Signal(object)  # self — dock this window into the workspace (charts + tools)
 
     def __init__(self, doc, host: QtWidgets.QWidget, *, title: "str | None" = None,
                  icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = True):
@@ -359,6 +360,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
         unified popup style; never set a local stylesheet here (the cascade gotcha)."""
         m = QtWidgets.QMenu(self)
         m.addAction("Clone window", lambda: self.cloneRequested.emit(self))
+        m.addAction("Dock into workspace", lambda: self.redockRequested.emit(self))
         pin = getattr(self.doc, "_pin_btn", None)
         if pin is not None:
             act = m.addAction("Keep on top", pin.toggle)
@@ -379,9 +381,8 @@ class ToolWindowFrame(ChartWindowFrame):
     roll-up / maximize / detach machinery — minus the chart-only adornments (live feed badge,
     clone, symbol/interval link dots), so a torn-out tool looks pixel-identical to a chart
     window. Adds a 'Dock into workspace' verb so the tool can be re-homed as an ADS dock
-    (MainWindow._redock_tool does the reparent)."""
-
-    redockRequested = QtCore.Signal(object)   # self — re-dock this tool into the workspace
+    (MainWindow._redock_tool does the reparent). ``redockRequested`` is inherited from
+    ChartWindowFrame (shared by charts + tools)."""
 
     def __init__(self, widget, host: QtWidgets.QWidget, *, title: str,
                  icon: "QtGui.QPixmap | None" = None):
