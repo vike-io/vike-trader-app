@@ -118,64 +118,62 @@ def test_panel_area_gets_unified_bar(app):
     assert isinstance(tb, VikeDockTitleBar)
     assert tb._is_panel                  # detected the 'panel:' dock
     assert tb._header is not None
-    # Stage A1: dock-only panels carry just ─ (auto-hide/pin) + ✕ (close) — no ⧉ detach or □
-    # maximize (both depended on ADS floating, which is disabled).
-    assert {"min", "close"} == set(tb._header._buttons)
+    # Unified title bar: every panel (side panels too) carries the same ⧉ ─ □ ✕ as the chart and
+    # the tool/chart windows — ⧉ floats it to a window, □ maximizes, ─ auto-hides, ✕ closes.
+    assert {"detach", "min", "max", "close"} == set(tb._header._buttons)
     win.close()
 
 
-def test_tool_dock_gets_detach_button(app):
-    """Stage A2: a TOOL dock (tool:…) carries a ⧉ 'open as window' verb that a side panel
-    (panel:…) does not — they share the unified bar but only tools tear out."""
-    win = MainWindow(session_path=None)
-    win.show()
-    app.processEvents()
-    dock = win.open_tool("screener")
-    app.processEvents()
-    app.processEvents()                  # let mark_as_panel's singleShot(0) re-hide run
-    tb = dock.dockAreaWidget().titleBar()
-    assert isinstance(tb, VikeDockTitleBar)
-    assert tb._is_panel                  # tool docks share the panel bar flavor
-    assert {"detach", "min", "close"} == set(tb._header._buttons)
-    win.close()
-
-
-def test_tool_detach_redock_close_lifecycle(app):
-    """Stage A2: ⧉ tears the LIVE tool widget into a clean ToolWindowFrame (no rebuild, no state
-    loss, alias intact), 'Dock into workspace' reparents it back, and the window ✕ runs the full
-    teardown (alias nil'd)."""
+def test_tool_opens_as_window_with_unified_bar(app):
+    """MT-style (the user's choice): a tool opens as its OWN window (ToolWindowFrame), and that
+    window carries the unified ⧉ ─ □ ✕ title bar (no chart-only ＋)."""
     from vike_trader_app.ui.chartwin import ToolWindowFrame
 
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    dock = win.open_tool("screener")
+    frame = win.open_tool("screener")
     app.processEvents()
-    widget = dock.widget()
-    assert win.screener is widget        # legacy alias set while open
-
-    # detach -> clean tool window hosting the SAME widget; dock ref gone; alias intact
-    win._detach_tool("screener")
-    app.processEvents()
-    frame = win._tool_frames.get("screener")
     assert isinstance(frame, ToolWindowFrame)
-    assert frame.doc is widget
-    assert "screener" not in win._tool_docks
-    assert not win._tool_detaching       # the detach-close flag was consumed
-    assert frame._feed_badge is None and frame._bar.button("clone") is None
-    assert win.screener is widget        # teardown skipped on detach
+    assert win._tool_frames.get("screener") is frame
+    assert {"detach", "min", "max", "close"} == set(frame._bar._buttons)
+    win.close()
 
-    # re-dock -> back as a dock hosting the SAME widget
+
+def test_tool_window_redock_detach_close_lifecycle(app):
+    """MT-style: a tool opens as a window; 'Dock into workspace' reparents the LIVE widget into a
+    dock (no rebuild, alias intact); ⧉ tears it back out; the window ✕ runs the full teardown."""
+    from vike_trader_app.ui.chartwin import ToolWindowFrame
+
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    frame = win.open_tool("screener")            # opens as a window
+    app.processEvents()
+    assert isinstance(frame, ToolWindowFrame)
+    widget = frame.doc
+    assert win.screener is widget                # legacy alias set while open
+
+    # Dock into workspace -> back as a dock hosting the SAME widget
     win._redock_tool("screener")
     app.processEvents()
-    dock2 = win._tool_docks.get("screener")
-    assert dock2 is not None and dock2.widget() is widget
+    dock = win._tool_docks.get("screener")
+    assert dock is not None and dock.widget() is widget
     assert "screener" not in win._tool_frames
     assert win.screener is widget
 
-    # detach again, then close the WINDOW -> full teardown (alias nil'd, no dock left)
+    # ⧉ detach again -> clean tool window hosting the SAME widget; dock ref gone; alias intact
     win._detach_tool("screener")
     app.processEvents()
+    frame2 = win._tool_frames.get("screener")
+    assert isinstance(frame2, ToolWindowFrame)
+    assert frame2.doc is widget
+    assert "screener" not in win._tool_docks
+    assert not win._tool_detaching               # the detach-close flag was consumed
+    assert frame2._feed_badge is None and frame2._bar.button("clone") is None
+    assert win.screener is widget                # teardown skipped on detach
+
+    # close the WINDOW -> full teardown (alias nil'd, no dock left)
     win._tool_frames["screener"].close_window()
     app.processEvents()
     assert "screener" not in win._tool_frames
