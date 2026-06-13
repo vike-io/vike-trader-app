@@ -27,7 +27,7 @@ def test_state_roundtrip():
 
 
 def test_to_dict_carries_version():
-    assert SessionState().to_dict()["version"] == 2
+    assert SessionState().to_dict()["version"] == 3
 
 
 def test_from_dict_is_pure_parse_no_migration():
@@ -83,6 +83,23 @@ def test_load_session_keeps_v2_layout(tmp_path):
                                           open_tools=["studio"]).to_dict()), encoding="utf-8")
     st = load_session(str(p))
     assert st.dock_state_hex == "cafe" and st.open_tools == ["studio"]
+
+
+def test_load_session_v2_to_v3_drops_only_dock_layout(tmp_path):
+    # v2 -> v3: a v2 dock_state blob can carry a dock saved as a native float; drop ONLY the layout
+    # blob so it isn't replayed, but KEEP open tools/windows + active space (they reopen cleanly).
+    import json as _json
+    from vike_trader_app.ui.session import load_session
+    p = tmp_path / "s.json"
+    p.write_text(_json.dumps({"version": 2, "symbol": "ETHUSDT", "space": 0,
+                              "dock_state_hex": "deadbeef", "open_tools": ["screener"],
+                              "tool_windows": [{"key": "journal", "geometry": [10, 10, 400, 300]}]}),
+                 encoding="utf-8")
+    st = load_session(str(p))
+    assert st.dock_state_hex == ""                       # layout dropped (no native-float replay)
+    assert st.open_tools == ["screener"]                 # tools reopen
+    assert [s["key"] for s in st.tool_windows] == ["journal"]   # windows reopen
+    assert st.symbol == "ETHUSDT"
 
 
 def test_from_dict_rejects_non_dict():

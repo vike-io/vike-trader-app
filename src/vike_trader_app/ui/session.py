@@ -20,9 +20,13 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-_VERSION = 2  # v2: empty-workspace re-arch moved Studio + the tools from pinned SPACES to
-              # on-demand docks, so a pre-v2 dock_state_hex (old space layout) is incompatible
-              # and is dropped on load (see from_dict migration) -> clean default workspace.
+_VERSION = 3  # v2: empty-workspace re-arch moved Studio + the tools from pinned SPACES to
+              # on-demand docks (a pre-v2 dock_state_hex is wholly incompatible -> dropped).
+              # v3: a v2 dock_state blob can still carry a dock (space/tool/panel) saved as a
+              # NATIVE ADS CFloatingDockContainer (the retired float_space path); restoreState
+              # would resurrect that native float on every launch. On v2->v3 we drop ONLY the
+              # layout blob so it isn't replayed (open tools/windows reopen from open_tools/
+              # tool_windows; panels fall back to default positions). See load_session migration.
 
 # Pairs indicators need a 2nd symbol's closes aligned to the loaded bars — that benchmark
 # isn't ours to persist (it's re-fetched per load), so they're dropped across sessions,
@@ -93,11 +97,17 @@ def load_session(path) -> SessionState | None:
         stored_version = int(raw.get("version", 1))
     except (TypeError, ValueError):
         stored_version = 1
-    if stored_version < _VERSION:
+    if stored_version < 2:
+        # pre-v2: the old space-based dock layout is wholly incompatible -> clean default workspace
+        # (drop layout + active space + open tools/windows).
         state.dock_state_hex = ""
         state.space = 0
         state.open_tools = []
         state.tool_windows = []
+    if stored_version < 3:
+        # v2 -> v3: drop ONLY the layout blob so a dock saved as a native float can't be replayed;
+        # open tools/windows still reopen from open_tools/tool_windows, panels fall back to default.
+        state.dock_state_hex = ""
     return state
 
 
