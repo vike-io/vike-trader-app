@@ -261,11 +261,11 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 dw = area.dockWidget(i)
             except (RuntimeError, AttributeError):
                 continue
-            if dw is not None and dw.objectName().startswith(("panel:", "tool:")):
-                # tool docks get the SAME unified bar as panels (no native ADS chrome — the stray
-                # ▼ tabs-menu + duplicate close icon) PLUS a ⧉ "open as window" verb (Stage A2);
-                # side panels stay dock-only (no ⧉ — they're chart companions, not tear-outs).
-                self.mark_as_panel(is_tool=dw.objectName().startswith("tool:"))
+            if dw is not None and dw.objectName().startswith(("panel:", "tool:", "chart:")):
+                # tool + docked-chart docks get the SAME unified bar as panels (no native ADS
+                # chrome — the stray ▼ tabs-menu + duplicate close icon) PLUS a ⧉ "open as window"
+                # verb; side panels stay dock-only (no ⧉ — they're chart companions, not tear-outs).
+                self.mark_as_panel(is_tool=dw.objectName().startswith(("tool:", "chart:")))
                 return
 
     def mark_as_panel(self, is_tool: bool = False) -> None:
@@ -339,17 +339,20 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         return w if (w is not None and hasattr(w, "_detach_tool")) else None
 
     def _panel_detach(self) -> None:
-        """⧉ on a TOOL dock — open it as a clean floating window (MainWindow._detach_tool). A
-        no-op for side panels (which never get this button) and when the host can't be resolved."""
+        """⧉ on a TOOL or docked-CHART dock — open it as a clean floating window
+        (MainWindow._detach_tool / _detach_chart_dock). A no-op for side panels (which never get
+        this button) and when the host can't be resolved."""
         d = self._cur_dock()
         if d is None:
             return
         name = d.objectName()
-        if not name.startswith("tool:"):
-            return
         win = self._resolve_main_window()
-        if win is not None:
+        if win is None:
+            return
+        if name.startswith("tool:"):
             win._detach_tool(name.split(":", 1)[1])
+        elif name.startswith("chart:"):
+            win._detach_chart_dock(name)
 
     def _panel_min(self) -> None:
         """─ — the docked "minimize": collapse the panel to its edge (auto-hide pin). Stage A1:

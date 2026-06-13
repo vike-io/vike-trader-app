@@ -156,3 +156,25 @@ def make_tool_dock(manager, key: str, widget, icon=None) -> "QtAds.CDockWidget":
     if icon is not None:
         dock.setIcon(icon)
     return dock
+
+
+def make_chart_dock(manager, doc, name: str, icon=None) -> "QtAds.CDockWidget":
+    """Wrap a ChartDocument in a dock-only (closable / movable / pinnable, NOT floatable) dock for
+    the chart "Dock into workspace" verb — symmetric with make_tool_dock. DeleteOnClose so a real
+    close tears it down; a chart tears back out to a clean window via the dock's ⧉ (the doc is
+    taken out FIRST, so the close just removes the empty dock). NOT floatable: native ADS floats
+    are retired (charts float via chartwin)."""
+    title = doc.title() if hasattr(doc, "title") else name
+    dock = QtAds.CDockWidget(manager, title)
+    dock.setObjectName(name)
+    dock.setWidget(doc, QtAds.CDockWidget.ForceNoScrollArea)
+    dock.setFeatures(
+        QtAds.CDockWidget.DockWidgetClosable
+        | QtAds.CDockWidget.DockWidgetMovable
+        | QtAds.CDockWidget.DockWidgetPinnable
+        | QtAds.CDockWidget.DockWidgetFocusable
+        | QtAds.CDockWidget.DockWidgetDeleteOnClose
+    )
+    if icon is not None:
+        dock.setIcon(icon)
+    return dock
