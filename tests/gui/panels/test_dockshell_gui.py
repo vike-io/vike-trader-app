@@ -342,50 +342,48 @@ def test_pin_appears_on_detach_and_sets_stays_on_top(app, _synthetic_load, monke
     win.close()
 
 
-# --- launcher-floated spaces stay navigable (regression: review wjs9t80fy) ------------------
+# --- spaces never become native floats (title-bar / float re-arch) --------------------------
 
 
-def test_floating_a_space_does_not_wedge_navigation(app):
-    """Floating the (only) Chart space out of the central area and navigating back to it must not
-    wedge: _resolve_area falls back to the cached area when every space is floating, and the
-    float-aware setCurrentIndex re-raises the window rather than a silent no-op. (The original
-    two-space regression — floating Chart stranding a sibling space — no longer applies now that
-    Studio is a dock and Chart is the only space.)"""
+def test_space_cannot_float_natively(app):
+    """Native ADS floating is retired: float_space is removed, no space is DockWidgetFloatable, and
+    setCurrentIndex no longer floats. Navigating to the Chart space keeps it DOCKED (never a native
+    CFloatingDockContainer) — charts float only via chartwin."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.float_space(0)                  # float Chart — the worst case (index 0)
+    assert not hasattr(win.tabs, "float_space")          # the native-float entry point is gone
+    win.tabs.setCurrentIndex(0)                          # the Go-menu / palette nav path
     app.processEvents()
-    assert win.tabs.dock(0).isFloating()
-    win.tabs.setCurrentIndex(0)              # navigate back to it (Go-menu / palette path)
-    app.processEvents()
-    assert win.tabs.dock(0).isFloating()     # still reachable as a window, not wedged
+    assert not win.tabs.dock(0).isFloating()             # docked, never a native float
+    assert len(list(win.dock_manager.floatingWidgets())) == 0
     win.close()
 
 
-def test_navigating_to_a_floated_space_raises_its_window(app):
-    """setCurrentIndex on a floated space is float-aware: it raises the window instead of a
-    dead no-op, and the space stays floating (reachable from Go menu / palette)."""
+def test_show_space_reshows_a_hidden_space_docked(app):
+    """Hiding the Chart space (header ✕) then re-showing it (rail/menu launcher) brings it back
+    DOCKED and current — no native float involved."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.float_space(0)                   # float the Chart space
+    win.tabs.close_current_document()                    # hide the Chart space
     app.processEvents()
-    assert win.tabs.dock(0).isFloating()
-    win.tabs.setCurrentIndex(0)              # the Go-menu / palette path
+    assert win.tabs.dock(0).isClosed()
+    win.tabs.show_space(0)                               # the launcher counterpart
     app.processEvents()
-    assert win.tabs.dock(0).isFloating()     # still a window, not a dead tab
+    assert not win.tabs.dock(0).isClosed()
+    assert not win.tabs.dock(0).isFloating()
+    assert len(list(win.dock_manager.floatingWidgets())) == 0
     win.close()
 
 
-def test_floating_a_space_keeps_the_strip_hidden(app):
-    """float_space must keep the native space TAB strip hidden (ADS re-shows it on the tab-bar
-    rebuild). The central area's title bar is now the unified chart HEADER — intentionally
-    visible (it replaces the strip), so we assert the tabs stay hidden + the header is present."""
+def test_nav_keeps_space_strip_hidden(app):
+    """Navigating to the Chart space keeps the native space TAB strip hidden (the unified chart
+    HEADER replaces it), verified after a setCurrentIndex nav."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.float_space(0)                    # the Chart space (the only space; tools are docks)
+    win.tabs.setCurrentIndex(0)
     app.processEvents()
     app.processEvents()                       # the singleShot(0) re-hide
     area = win.tabs._resolve_area()
@@ -394,6 +392,36 @@ def test_floating_a_space_keeps_the_strip_hidden(app):
     tb = area.titleBar()
     assert getattr(tb, "is_chart_header", lambda: False)()   # header, not the raw tab strip
     win.close()
+
+
+def test_reclaim_unfloats_a_restored_native_float(app, tmp_path):
+    """A stale/legacy session blob can describe a dock as a native ADS float; restoreState
+    resurrects it. _reclaim_floating_docks must pull it back so NO visible native float survives
+    (covers spaces AND tools — the user's 'avoid the same issue for other tools')."""
+    import PySide6QtAds as QtAds
+    from vike_trader_app.ui.session import SessionState, save_session
+
+    # 1) simulate a legacy blob: force the Chart space into a native float, capture the layout.
+    w1 = MainWindow(session_path=None); w1.show(); app.processEvents()
+    d = w1.tabs.dock(0)
+    d.setFeatures(QtAds.CDockWidget.DockWidgetMovable | QtAds.CDockWidget.DockWidgetFloatable
+                  | QtAds.CDockWidget.DockWidgetClosable)
+    d.setFloating(); app.processEvents()
+    assert len(list(w1.dock_manager.floatingWidgets())) == 1   # a native float now exists
+    blob = bytes(w1.dock_manager.saveState().toHex()).decode("ascii")
+    w1.close(); app.processEvents()
+
+    # 2) write it at the CURRENT version so the migration KEEPS the blob -> reclaim is what saves us.
+    sp = tmp_path / "s.json"
+    save_session(str(sp), SessionState(dock_state_hex=blob))
+    w2 = MainWindow(session_path=str(sp)); w2.show()
+    for _ in range(30):
+        app.processEvents()
+    visible_floats = [c for c in w2.dock_manager.floatingWidgets()
+                      if c.isVisible() and list(c.dockWidgets())]
+    assert visible_floats == []                                 # reclaim un-floated it
+    assert not w2.tabs.dock(0).isFloating()                     # Chart space is back, docked
+    w2.close()
 
 
 def test_dock_layout_round_trips_through_session(app, tmp_path):

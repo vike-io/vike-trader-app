@@ -435,11 +435,13 @@ class SpaceDeck(QtCore.QObject):
     currentChanged = QtCore.Signal(int)        # SPACE index (>=0), or -1 when a document/none
     documentClosed = QtCore.Signal(object)     # the ChartDocument widget that was closed
 
-    # Tear-out-capable chart documents: closable, draggable, floatable to a separate window,
-    # pinnable to an edge, and destroyed (with their content) when closed.
+    # Chart documents: closable, draggable (tile/tab), pinnable to an edge, and destroyed (with
+    # their content) when closed. NOT floatable — native ADS floats are retired (charts float via
+    # chartwin); a re-docked chart reuses add_document, so this MUST stay non-floatable or a
+    # re-docked chart could be torn back to a native-chrome float by a title-bar drag.
     _DOC_FEATURES = (
         QtAds.CDockWidget.DockWidgetClosable | QtAds.CDockWidget.DockWidgetMovable
-        | QtAds.CDockWidget.DockWidgetFloatable | QtAds.CDockWidget.DockWidgetPinnable
+        | QtAds.CDockWidget.DockWidgetPinnable
         | QtAds.CDockWidget.DockWidgetFocusable | QtAds.CDockWidget.DockWidgetDeleteOnClose
     )
 
@@ -748,35 +750,13 @@ class SpaceDeck(QtCore.QObject):
         """The CDockWidget wrapping space ``index`` (Phase 2+ uses this directly)."""
         return self._docks[index]
 
-    # MC16-style "window-type launcher": a space opens as a floating OS window (native title
-    # bar via FloatingContainerForceNativeTitleBar) over the workspace, like chart windows.
-    _FLOAT_FEATURES = (
-        QtAds.CDockWidget.DockWidgetMovable | QtAds.CDockWidget.DockWidgetFloatable
-        | QtAds.CDockWidget.DockWidgetClosable | QtAds.CDockWidget.DockWidgetFocusable
-    )
-
-    def float_space(self, index: int) -> "QtAds.CDockWidget":
-        """Open space ``index`` as a floating window; if it already floats, focus it.
-        Closing the window just hides the dock — the next launch re-shows it floating."""
-        dock = self._docks[index]
-        if dock.isClosed():
-            dock.toggleView(True)     # re-show (ADS restores its last floating container)
-        if not dock.isFloating():
-            # pinned spaces carry NoDockWidgetFeatures; grant float-capable features so the
-            # floating container is movable/closable like a real window
-            dock.setFeatures(self._FLOAT_FEATURES)
-            dock.setFloating()
-        container = dock.floatingDockContainer()
-        if container is not None:
-            if container.size().width() < 700:       # first float: give it a usable size
-                container.resize(1000, 640)
-            container.raise_()
-            container.activateWindow()
-        dock.setAsCurrentTab()
-        # setFloating() rebuilds the central area's tab bar, which ADS re-shows — reclaim the
-        # spaces strip again (every other mutation point does this; float_space must too).
-        self.hide_space_tabs()
-        return dock
+    # NOTE: SpaceDeck.float_space (a space → native ADS CFloatingDockContainer) was REMOVED in the
+    # title-bar/float re-arch. Native ADS floating produced inconsistent native-chrome windows that
+    # couldn't carry our live title bar, couldn't be raised above our attached chartwin frames, and
+    # hid-instead-of-closed. ALL floating now goes through chartwin (ChartWindowFrame /
+    # ToolWindowFrame); no dock in the app is DockWidgetFloatable. setCurrentIndex therefore no
+    # longer has a float branch, and _reclaim_floating_docks (app.py) un-floats any dock a stale
+    # session/workspace blob tries to restore as a native float.
 
     # --- QTabWidget vocabulary ------------------------------------------------------------
 
@@ -826,17 +806,15 @@ class SpaceDeck(QtCore.QObject):
         if not (0 <= index < len(self._docks)):
             return
         dock = self._docks[index]
-        # Float-aware nav: a space launched as a floating window isn't in the central area, so
-        # a plain setAsCurrentTab() only re-tabs inside its own float and reads as a dead no-op
-        # to the Go menu / palette / Data→Studio handoff. Raise its window instead (and re-show
-        # if its window was closed) so every navigation surface can reach a floated space.
+        # Native ADS floating is retired (floats go through chartwin), so a space can no longer be
+        # a floating window — it's either docked or hidden(closed). Re-show a hidden space, then
+        # bring it current. (This used to branch to float_space for a floated space; that path
+        # produced the native-chrome float and has been removed.)
         try:
-            floated = dock.isFloating() or dock.isClosed()
+            if dock.isClosed():
+                dock.toggleView(True)
         except RuntimeError:
-            floated = False
-        if floated:
-            self.float_space(index)
-            return
+            pass
         dock.setAsCurrentTab()
         self.hide_space_tabs()   # becoming current re-shows the tab; keep spaces rail-only
 

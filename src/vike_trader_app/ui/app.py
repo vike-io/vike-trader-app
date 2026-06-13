@@ -405,6 +405,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             finally:
                 self._syncing_docks = False
+            self._reclaim_floating_docks()   # un-float any dock a stale blob restored as a native float
         # restoreState rebuilds tab widgets and re-shows the space tabs — re-hide them (the
         # rail is the space switcher; the center strip carries only chart documents).
         self.tabs.hide_space_tabs()
@@ -1104,8 +1105,8 @@ class MainWindow(QtWidgets.QMainWindow):
         tab.rangeChanged.connect(lambda: tab.set_expiries(_filtered()))
         tab.refreshRequested.connect(_refresh)
         self._load_options_underlying = _load_underlying
-        # Options-as-dock: start the fetch right after wiring (the space-switch lazy-start sites
-        # in _on_tab_changed / _float_space are now inert — they keyed on the retired space).
+        # Options-as-dock: start the fetch right after wiring (the old space-switch lazy-start site
+        # in _on_tab_changed is now inert — it keyed on the retired Options space).
         self._options_started = False   # fresh tab: re-arm so _maybe_start_options fetches
         self._maybe_start_options()
 
@@ -1431,36 +1432,51 @@ class MainWindow(QtWidgets.QMainWindow):
         except RuntimeError:
             pass
 
-    def _float_space(self, index: int) -> None:
-        """Launcher click: open the space as a floating native window over the workspace
-        (the chart-window experience for every space). Lazy services that normally start on
-        a space *switch* must start here too — floating doesn't change the center tab.
-
-        Empty-workspace re-arch: only Chart/Studio are spaces now, so the only caller passes
-        Studio (index 1); the news/options branches below are inert (the floated widget never
-        equals the live News/Options tab) and stay getattr-guarded — removed by a later cleanup."""
-        self.tabs.float_space(index)
-        widget = self.tabs.widget(index)
-        if widget is getattr(self, "news", None):
-            self.news.start_feed(self._symbol)
-        elif widget is getattr(self, "options", None):
-            self._maybe_start_options()
-        # Stop the lazy service when the floating window is CLOSED — floating never changes the
-        # center tab, so _on_space_changed's stop branch never fires for it (the Options 15s
-        # poller would otherwise leak until the next center-space switch). Wire each dock once.
-        if not hasattr(self, "_floated_close_wired"):
-            self._floated_close_wired: set[int] = set()
-        if index not in self._floated_close_wired:
-            self._floated_close_wired.add(index)
-            self.tabs.dock(index).closed.connect(
-                lambda i=index: self._on_floated_space_closed(i))
-
-    def _on_floated_space_closed(self, index: int) -> None:
-        """A space's floating window was closed — tear down its lazy service (start/stop
-        symmetry the center-tab navigation already provides)."""
-        widget = self.tabs.widget(index)
-        if widget is getattr(self, "options", None) and getattr(self, "_options_started", False):
-            self._options_svc.stop_polling()
+    def _reclaim_floating_docks(self) -> None:
+        """Defence after CDockManager.restoreState(): native ADS floating is retired, but a stale
+        session / named-workspace blob can still describe a dock as a native CFloatingDockContainer,
+        which ADS resurrects on restore (the inconsistent native 'Chart' window that can't be raised
+        above our chartwin frames and hides-instead-of-closes). Pull every floating dock back into
+        the central area and dispose the now-empty husks, so chartwin is the ONLY float path."""
+        mgr = getattr(self, "dock_manager", None)
+        if mgr is None:
+            return
+        try:
+            floats = list(mgr.floatingWidgets())
+        except (RuntimeError, AttributeError):
+            return
+        if not floats:
+            return
+        # a docked area to re-home into (prefer one that isn't itself floating)
+        central = None
+        for d in mgr.dockWidgets():
+            try:
+                if not d.isFloating() and d.dockAreaWidget() is not None:
+                    central = d.dockAreaWidget()
+                    break
+            except RuntimeError:
+                continue
+        for container in floats:
+            try:
+                docks = list(container.dockWidgets())
+            except (RuntimeError, AttributeError):
+                docks = []
+            for d in docks:
+                try:
+                    if central is not None:
+                        mgr.addDockWidget(QtAds.CenterDockWidgetArea, d, central)
+                    else:                                  # nothing docked yet — seed the central area
+                        mgr.addDockWidget(QtAds.CenterDockWidgetArea, d)
+                        central = d.dockAreaWidget()
+                except (RuntimeError, TypeError):
+                    continue
+        # dispose any now-empty floating husk (its content was re-homed above)
+        for container in list(mgr.floatingWidgets()):
+            try:
+                if not list(container.dockWidgets()):
+                    container.deleteLater()
+            except (RuntimeError, AttributeError):
+                pass
 
     def _build_statusbar(self) -> QtWidgets.QStatusBar:
         sb = QtWidgets.QStatusBar()
@@ -2796,6 +2812,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
             finally:
                 self._syncing_docks = False
+            self._reclaim_floating_docks()   # un-float any dock the workspace blob restored as a native float
         self.tabs.hide_space_tabs()   # restoreState re-shows space tabs; the rail switches spaces
 
         # Stage A3: recreate the workspace's torn-out tool windows (chartwin frames live outside
