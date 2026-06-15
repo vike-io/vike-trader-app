@@ -1089,6 +1089,23 @@ class ResultsPanel(QtWidgets.QWidget):
         self._status.setVisible(True)
         self._position_status()
 
+    def _reset_metric_labels(self) -> None:
+        """Blank the Performance hero tiles + detail metric labels (shared by clear / show_error)."""
+        for lbl in self._value_labels.values():
+            lbl.setText("—")
+            lbl.setStyleSheet(self._metric_style("", None))
+        for lbl in self._hero_val.values():
+            lbl.setText("—")
+        for lbl in self._hero_sub.values():
+            lbl.setText("")
+
+    def _clear_report_tables(self) -> None:
+        """Empty every per-report results table (shared by clear / show_error). The Runs-history
+        table is intentionally NOT here — only clear() wipes run history."""
+        for t in (self._trades, self._by_symbol_table, self._robust_table, self._mc_table,
+                  self._periods_table, self._dd_table, self._bench_table):
+            t.setRowCount(0)
+
     def show_error(self, msg: str) -> None:
         """Display an error message; clear any previous report."""
         self.last_report = None
@@ -1098,20 +1115,8 @@ class ResultsPanel(QtWidgets.QWidget):
         self._status.setStyleSheet(f"color:{theme.DOWN};font-size:11px;padding:4px 8px;")
         self._status.setVisible(True)
         self._position_status()
-        for lbl in self._value_labels.values():
-            lbl.setText("—")
-            lbl.setStyleSheet(self._metric_style("", None))
-        for lbl in self._hero_val.values():
-            lbl.setText("—")
-        for lbl in self._hero_sub.values():
-            lbl.setText("")
-        self._trades.setRowCount(0)
-        self._by_symbol_table.setRowCount(0)
-        self._robust_table.setRowCount(0)
-        self._mc_table.setRowCount(0)
-        self._periods_table.setRowCount(0)
-        self._dd_table.setRowCount(0)
-        self._bench_table.setRowCount(0)
+        self._reset_metric_labels()
+        self._clear_report_tables()
         self._reset_wf_surface()
 
     def _reset_wf_surface(self) -> None:
@@ -1128,21 +1133,9 @@ class ResultsPanel(QtWidgets.QWidget):
         self._runs = []
         self._banner.setVisible(False)
         self._status.setVisible(False)
-        for lbl in self._value_labels.values():
-            lbl.setText("—")
-            lbl.setStyleSheet(self._metric_style("", None))
-        for lbl in self._hero_val.values():
-            lbl.setText("—")
-        for lbl in self._hero_sub.values():
-            lbl.setText("")
-        self._trades.setRowCount(0)
-        self._by_symbol_table.setRowCount(0)
-        self._runs_table.setRowCount(0)
-        self._robust_table.setRowCount(0)
-        self._mc_table.setRowCount(0)
-        self._periods_table.setRowCount(0)
-        self._dd_table.setRowCount(0)
-        self._bench_table.setRowCount(0)
+        self._reset_metric_labels()
+        self._clear_report_tables()
+        self._runs_table.setRowCount(0)   # run-history table — clear() only
         self._reset_wf_surface()
 
 
