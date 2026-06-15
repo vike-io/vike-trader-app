@@ -746,15 +746,10 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _minimize_tool_to_left(self, key: str):
         """A tool's ─ : dock it into the workspace and auto-hide it to the LEFT edge as a vertical
-        tab (AmiBroker-style) — click the tab to reveal it. Reuses ADS auto-hide (SideBarLeft) on
-        the live tool widget via _redock_tool (window -> dock, no rebuild)."""
-        self._redock_tool(key)
-        dock = self._tool_docks.get(key)
-        if dock is not None:
-            try:
-                dock.setAutoHide(True, QtAds.SideBarLeft)
-            except (RuntimeError, TypeError):
-                pass
+        tab (AmiBroker-style) — click the tab to reveal it. Lands the live tool widget straight on
+        the left auto-hide rail via _redock_tool(auto_hide_side=…) — NOT addDockWidget(center)+
+        setAutoHide, which deleted earlier tool docks once several were minimized."""
+        self._redock_tool(key, auto_hide_side=QtAds.SideBarLeft)
 
     def _minimize_chart_window_to_left(self, frame):
         """A chart WINDOW's ─ : dock it into the workspace and auto-hide it to the LEFT edge as a
@@ -899,10 +894,17 @@ class MainWindow(QtWidgets.QMainWindow):
             out.append(spec)
         return out
 
-    def _redock_tool(self, key: str):
+    def _redock_tool(self, key: str, auto_hide_side=None):
         """'Dock into workspace' on a tool window — reparent the LIVE widget back into a fresh
         ADS dock (state preserved; signals stay connected, so no re-wire). The frame is disposed
-        WITHOUT its close handler (the widget has been re-homed)."""
+        WITHOUT its close handler (the widget has been re-homed).
+
+        ``auto_hide_side`` (a QtAds.SideBar* value) lands the dock straight on that auto-hide rail
+        via addAutoHideDockWidget — used by the ─ minimize. The old path (addDockWidget to the
+        CENTER, then setAutoHide) tabbed each tool into the central area first, then yanked it to
+        the sidebar; with several tools that center-tab-then-yank dance corrupted ADS's auto-hide
+        bookkeeping and DELETED earlier tool docks wholesale (measured: minimizing the 4th tool
+        destroyed all four). addAutoHideDockWidget never touches the center, so it's safe."""
         from .toolreg import make_tool_dock
 
         frame = self._tool_frames.pop(key, None)
@@ -913,13 +915,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if widget is None:
             return None
         dock = make_tool_dock(self.dock_manager, key, widget, icon=self._tool_icon(key))
-        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
+        if auto_hide_side is not None:
+            self.dock_manager.addAutoHideDockWidget(auto_hide_side, dock)
+        else:
+            self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
         self._tool_docks[key] = dock
         # Re-arm the close handler for the new dock (signals/alias from the first open still hold,
         # so _wire_tool is NOT re-run — that would double-connect).
         dock.closed.connect(self._make_tool_close_handler(key, widget))
-        dock.toggleView(True)
-        dock.raise_()
+        if auto_hide_side is None:
+            dock.toggleView(True)
+            dock.raise_()
         return dock
 
     def _on_tool_window_closed(self, key: str) -> None:
