@@ -21,7 +21,7 @@ _EDGE = 6          # resize-border thickness (frame edges)
 _MIN_W, _MIN_H = 320, 160
 _SNAP_M = 28       # drag-to-edge snap zone thickness (attached frames; detached use OS snap)
 _STUB_W = 230      # width of a rolled-up window's title stub on the left rail (AmiBroker-style)
-_TILE_GAP = 4      # px breathing room between tiled windows + as the outer margin (Arrange)
+_TILE_GAP = 2      # px breathing room between tiled windows + as the outer margin (Arrange)
 
 
 class ChartWindowFrame(QtWidgets.QFrame):

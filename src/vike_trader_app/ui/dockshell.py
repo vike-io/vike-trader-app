@@ -1012,13 +1012,13 @@ def dock_qss() -> str:
     return f"""
     ads--CDockContainerWidget {{ background: {theme.BG}; }}
     ads--CDockContainerWidget > QSplitter {{ padding: 0; }}
-    /* Unified window padding: the splitter between two docked areas IS a 4px background-coloured
+    /* Unified window padding: the splitter between two docked areas IS a 2px background-coloured
        gap (matching the floating-window Arrange gap, chartwin._TILE_GAP), and each dock area
        carries a 1px border — so a docked window reads exactly like a floating one
-       (1px border + 4px gap + 1px border) instead of butting together over a single hairline. */
+       (1px border + 2px gap + 1px border) instead of butting together over a single hairline. */
     ads--CDockSplitter::handle {{ background: {theme.BG}; }}
-    ads--CDockSplitter::handle:horizontal {{ width: 4px; }}
-    ads--CDockSplitter::handle:vertical {{ height: 4px; }}
+    ads--CDockSplitter::handle:horizontal {{ width: 2px; }}
+    ads--CDockSplitter::handle:vertical {{ height: 2px; }}
     ads--CDockAreaWidget {{ background: {theme.BG}; border: 1px solid {theme.BORDER}; }}
 
     ads--CDockAreaTitleBar {{
