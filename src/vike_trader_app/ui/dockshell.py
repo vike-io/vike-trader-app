@@ -433,11 +433,15 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             win._toggle_panel_maximize(d)
 
     def _panel_min(self) -> None:
-        """─ — the docked "minimize": collapse the panel to its edge (auto-hide pin). Stage A1:
-        panels can't float, so this is unconditionally the edge-pin toggle."""
+        """─ — minimize: auto-hide the panel to the LEFT edge as a vertical tab (AmiBroker-style,
+        consistent with the tools + chart). `toggleAutoHide()` would collapse to the panel's *docked*
+        edge (Market Watch is docked right → right tab), so force `SideBarLeft` explicitly."""
         d = self._cur_dock()
         if d is not None:
-            d.toggleAutoHide()
+            try:
+                d.setAutoHide(True, QtAds.SideBarLeft)
+            except (RuntimeError, TypeError):
+                pass
 
     def _panel_close(self) -> None:
         d = self._cur_dock()

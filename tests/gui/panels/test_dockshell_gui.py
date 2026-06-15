@@ -284,6 +284,9 @@ def test_panel_min_button_autohides_via_real_click(app):
     tb._header.button("min").click()             # the real ─ click path (used to be a no-op)
     app.processEvents()
     assert win._market_dock.isAutoHide()         # now actually collapses to the edge
+    # ...and to the LEFT edge (AmiBroker rail), NOT the panel's docked RIGHT edge. toggleAutoHide()
+    # would have sent Market-Watch (docked right) to SideBarRight — _panel_min forces SideBarLeft.
+    assert win._market_dock.autoHideLocation() == QtAds.SideBarLeft
     win._market_dock.setAutoHide(False)          # and un-pins back into the layout
     app.processEvents()
     assert not win._market_dock.isAutoHide()
