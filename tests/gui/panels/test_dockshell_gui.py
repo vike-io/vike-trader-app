@@ -10,7 +10,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("PySide6QtAds")
 
 import PySide6QtAds as QtAds  # noqa: E402
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 import vike_trader_app.ui.chartdoc as chartdoc  # noqa: E402
 from vike_trader_app.core.model import Bar  # noqa: E402
@@ -127,6 +127,32 @@ def test_user_closing_panel_syncs_rail_toggle(app):
     win.tabs.setCurrentIndex(0)
     win._on_tab_changed(0)
     assert win._market_dock.isClosed()
+    win.close()
+
+
+def test_arrange_tiles_docked_chart_and_panels(app):
+    """Window>Arrange must tile the central chart + open side panels (the docked layout), not just
+    floating windows — it was a dead no-op on a plain chart+Market-Watch layout. Horizontally
+    (rows) stacks the panel BELOW the chart; Vertically (columns) puts it to the RIGHT."""
+    win = MainWindow(session_path=None)
+    win.resize(1200, 800)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._panel_btns["market"].setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    mkt = win._panel_dock_map["market"]
+    chart = win._chart_space_dock()
+
+    def tl(dock):
+        return dock.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
+
+    win._arrange_chart_windows("rows")            # Tile Horizontally -> stacked
+    QtWidgets.QApplication.processEvents()
+    assert tl(mkt).y() > tl(chart).y() + 50       # Market watch now BELOW the chart
+
+    win._arrange_chart_windows("columns")          # Tile Vertically -> side by side
+    QtWidgets.QApplication.processEvents()
+    assert tl(mkt).x() > tl(chart).x() + 50        # Market watch now RIGHT of the chart
     win.close()
 
 
