@@ -55,6 +55,14 @@ def y_bounds(bars, lo: int, hi: int):
     return (min(b.low for b in visible), max(b.high for b in visible))
 
 
+def series_slice(series, index: int) -> tuple[list[int], list]:
+    """An indicator/overlay series revealed up to (and including) bar ``index``: the x indices with
+    a non-None value and their y values. Shared by every chart reveal path so the None-filter +
+    index-cap logic lives in one Qt-free, unit-testable place."""
+    xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
+    return xs, [series[k] for k in xs]
+
+
 # --- timestamp <-> bar-index mapping + axis/legend formatting (TradingView-style chrome) ---
 
 def bar_spacing(bars) -> int:

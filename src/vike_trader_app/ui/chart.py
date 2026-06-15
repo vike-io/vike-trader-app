@@ -17,6 +17,7 @@ from .chartdata import (
     bar_spacing,
     fmt_price,
     follow_window,
+    series_slice,
     ts_to_x,
     x_to_ts,
     y_bounds,
@@ -116,6 +117,12 @@ def _pen_style(name):
         "dashed": QtCore.Qt.DashLine,
         "dotted": QtCore.Qt.DotLine,
     }.get(name, QtCore.Qt.SolidLine)
+
+
+def _ma_line_pen(ind):
+    """The pen for an indicator's smoothing-MA curve (_MA_SERIES_KEY): the indicator's smooth_color
+    (orange fallback), width 1, solid — one definition shared by the overlay + oscillator render paths."""
+    return pg.mkPen(getattr(ind, "smooth_color", "#f5a623"), width=1, style=_pen_style("solid"))
 
 
 def _all_intervals():
@@ -1405,9 +1412,7 @@ class OscillatorPane(pg.PlotWidget):
         styles = getattr(ind, "styles", ["solid"])
         for i, label in enumerate(ind.series):
             if label == _MA_SERIES_KEY:  # smoothing MA line (appended last -> own colour, own pen)
-                pen = pg.mkPen(getattr(ind, "smooth_color", "#f5a623"), width=1,
-                               style=_pen_style("solid"))
-                cs[label] = self.plot([], [], pen=pen)
+                cs[label] = self.plot([], [], pen=_ma_line_pen(ind))
                 continue
             col = ind.colors[i % len(ind.colors)]
             if _is_histogram(ind.name, label):
@@ -1460,8 +1465,7 @@ class OscillatorPane(pg.PlotWidget):
             last = None
             for label, curve in self._curves.get(ind.uid, {}).items():
                 series = ind.series.get(label, [])
-                xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
-                ys = [series[k] for k in xs]
+                xs, ys = series_slice(series, index)
                 if isinstance(curve, pg.BarGraphItem):
                     curve.setOpts(x=xs, height=ys, width=0.8, brushes=_hist_brushes(ys), pen=None)
                 else:
@@ -2197,8 +2201,7 @@ class PriceChart(pg.PlotWidget):
             dot = ind.name in _DOT_OVERLAY_NAMES   # Parabolic SAR etc. -> discrete dots, no line
             for i, lbl in enumerate(ind.series):
                 if lbl == _MA_SERIES_KEY:  # smoothing MA line (appended last -> own colour)
-                    col = getattr(ind, "smooth_color", "#f5a623")
-                    pen = pg.mkPen(col, width=1, style=_pen_style("solid"))
+                    pen = _ma_line_pen(ind)
                 else:
                     col = ind.colors[i % len(ind.colors)]
                     pen = pg.mkPen(col, width=widths[i % len(widths)],
@@ -2271,8 +2274,8 @@ class PriceChart(pg.PlotWidget):
         if ind.kind == "overlay":
             for lbl, curve in ind.curves.items():
                 series = ind.series.get(lbl, [])
-                xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
-                curve.setData(xs, [series[k] for k in xs])
+                xs, ys = series_slice(series, index)
+                curve.setData(xs, ys)
                 curve.setVisible(ind.shown)
         elif ind.kind in ("oscillator", "pairs") and ind.pane is not None:
             ind.pane.reveal(index)
@@ -2997,8 +3000,7 @@ class PriceChart(pg.PlotWidget):
         self._render_markers(index, marker_off)
         for label, curve in self._overlay_curves.items():
             series = self._overlays.get(label, [])
-            xs = [i for i in range(min(index + 1, len(series))) if series[i] is not None]
-            ys = [series[i] for i in xs]
+            xs, ys = series_slice(series, index)
             curve.setData(xs, ys)
         # replay cursor only mid-replay; hidden at the end so there's no persistent
         # vertical line at rest (TradingView has none).
