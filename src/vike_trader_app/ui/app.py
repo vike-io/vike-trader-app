@@ -1120,34 +1120,58 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._panel_maxed is None:
             self._panel_maxed = dock.objectName()
             self._panel_max_dock = dock
-            self._panel_max_restore = {"chart": self.tabs.isVisible(), "docks": []}
-            if self.tabs.isVisible():
-                self.tabs.setVisible(False)
+            chart_dock = self._chart_space_dock()
+            chart_open = chart_dock is not None and not chart_dock.isClosed()
+            self._panel_max_restore = {"chart": chart_open, "docks": []}
+            if chart_open:
+                # toggleView (NOT setVisible) so ADS RECLAIMS the chart's splitter space and the
+                # panel actually fills the workspace — setVisible left the chart's slot a black hole.
+                self._set_dock_open(chart_dock, False)
                 # park the now-hidden chart on the left rail (the 'minimized chart' the user expects)
                 self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
                                    self._restore_from_panel_max)
-            for k, d in self._panel_dock_map.items():
+            # Hide EVERY other live dock (side panels + docked charts + docked tools), not just the
+            # side panels — so the maximized panel is the ONLY visible dock and ADS hands it the
+            # whole workspace. Leaving any other dock visible was why it didn't fill on some layouts.
+            for d in self._other_docks(dock):
                 try:
-                    if d is not dock and not d.isClosed():
-                        self._panel_max_restore["docks"].append(k)
+                    if not d.isClosed():
+                        self._panel_max_restore["docks"].append(d)
                         self._set_dock_open(d, False)
                 except RuntimeError:
                     continue
         else:
             self._min_rail.remove("__central_chart__")
-            if self._panel_max_restore.get("chart"):
-                self.tabs.setVisible(True)
-            for k in self._panel_max_restore.get("docks", []):
-                d = self._panel_dock_map.get(k)
-                if d is not None:
-                    try:
-                        self._set_dock_open(d, True)
-                    except RuntimeError:    # a remembered panel was torn down meanwhile — skip
-                        continue
+            chart_dock = self._chart_space_dock()
+            if self._panel_max_restore.get("chart") and chart_dock is not None:
+                self._set_dock_open(chart_dock, True)
+            for d in self._panel_max_restore.get("docks", []):
+                try:
+                    self._set_dock_open(d, True)
+                except RuntimeError:        # a remembered dock was torn down meanwhile — skip
+                    continue
             self._panel_max_restore = {}
             self._sync_panel_max_glyph(self._panel_max_dock, False)
             self._panel_maxed = None
             self._panel_max_dock = None
+
+    def _chart_space_dock(self):
+        """The central chart-space CDockWidget (space 0), or None if torn down."""
+        try:
+            return self.tabs.dock(0)
+        except (RuntimeError, AttributeError, IndexError):
+            return None
+
+    def _other_docks(self, keep) -> list:
+        """Every live dock EXCEPT the chart space and ``keep`` — side panels + docked charts +
+        docked tools. Used to clear the workspace so a maximized panel fills it on any layout."""
+        out = []
+        for src in (self._panel_dock_map.values(), self._chart_docks.values(),
+                    self._tool_docks.values()):
+            for d in src:
+                if d is not None and d is not keep and d not in out:
+                    out.append(d)
+        return out
 
     def _restore_from_panel_max(self):
         """The chart's left-rail tab → un-maximize the panel (bring the chart + other panels back)."""
