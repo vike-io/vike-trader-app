@@ -22,6 +22,23 @@ def _default_sizer():
 
 
 @dataclass
+class SymbolState:
+    """All mutable per-symbol state for the portfolio engine — ONE per symbol (was 11 parallel
+    ``dict[str, …]`` keyed by symbol, mutated in lockstep across the engine)."""
+    pos: Position = field(default_factory=Position)
+    pending: list = field(default_factory=list)
+    realized: float = 0.0           # realized PnL
+    stop: float | None = None       # active protective stop price (None == none)
+    entry_fee: float = 0.0
+    entry_ts: int = 0
+    price: float = 0.0              # last seen price
+    hi_since: float = 0.0          # running high since the position opened (MAE/MFE)
+    lo_since: float = float("inf")  # running low since the position opened
+    tf: dict = field(default_factory=dict)    # higher-TF aggregates: tf -> (target_ms, [coarse bars])
+    sub: list = field(default_factory=list)   # granular sub-bars bucketed per coarse step
+
+
+@dataclass
 class PortfolioResult:
     """Outcome of a portfolio backtest run."""
 
@@ -194,40 +211,31 @@ class PortfolioEngine:
         self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
-        self._realized: dict[str, float] = {s: 0.0 for s in self.symbols}  # realized PnL per symbol
-        self._pos: dict[str, Position] = {s: Position() for s in self.symbols}
-        self._pending: dict[str, list[Order]] = {s: [] for s in self.symbols}
-        # Active protective stop price per symbol (armed when a risk-sized entry fills; None == none).
-        self._stop: dict[str, float | None] = {s: None for s in self.symbols}
-        self._entry_fee: dict[str, float] = {s: 0.0 for s in self.symbols}
-        self._entry_ts: dict[str, int] = {s: 0 for s in self.symbols}
-        self._price: dict[str, float] = {
-            s: bars_by_symbol[s][0].open if self.n else 0.0 for s in self.symbols
+        # All per-symbol mutable state lives in ONE SymbolState per symbol (was 11 parallel dicts).
+        # price seeds to the first open; sub is sized to the step count and filled from granular data
+        # below; pos/realized/stop/entry_fee/entry_ts/hi_since/lo_since/tf use the dataclass defaults.
+        self._sym: dict[str, SymbolState] = {
+            s: SymbolState(price=(bars_by_symbol[s][0].open if self.n else 0.0),
+                           sub=[[] for _ in range(self.n)])
+            for s in self.symbols
         }
-        # Per-symbol running price extremes since the current position opened (for MAE/MFE).
-        # Reset to the fill price when a position opens from flat; updated each bar.
-        self._hi_since: dict[str, float] = {s: 0.0 for s in self.symbols}
-        self._lo_since: dict[str, float] = {s: float("inf") for s in self.symbols}
-        # Per-symbol higher-TF aggregates: symbol -> tf -> (target_ms, [coarse bars]).
-        # Empty when no timeframes configured (opt-in — no change to existing behaviour).
+        # Per-symbol higher-TF aggregates: symbol -> tf -> (target_ms, [coarse bars]). Empty when no
+        # timeframes are configured (opt-in — no change to existing behaviour).
         from .timeframe import parse_timeframe, resample
-        self._tf: dict[str, dict[str, tuple[int, list]]] = {}
         for s in self.symbols:
-            self._tf[s] = {}
             for tf in timeframes or []:
                 ms = parse_timeframe(tf)
-                self._tf[s][tf] = (ms, resample(self.bars[s], ms))
+                self._sym[s].tf[tf] = (ms, resample(self.bars[s], ms))
         # Current step timestamp (shared across all symbols — they share an aligned timeline).
         self._now = self.bars[self.symbols[0]][0].ts if (self.symbols and self.n) else 0
         # --- granular (intraday sub-bar) fill processing (WL "Use Granular Limit/Stop Processing") ---
         # Opt-in finer bars per symbol. We bucket each symbol's sub-bars into the coarse step they fall
         # into: sub-bar with ts ∈ [coarse[i].ts, coarse[i+1].ts) belongs to step i; the LAST coarse bar
-        # absorbs everything with ts >= coarse[i].ts (no upper edge). self._sub[symbol] is a list aligned
+        # absorbs everything with ts >= coarse[i].ts (no upper edge). self._sym[symbol].sub is a list aligned
         # to self.bars[symbol] step indices; each entry is the (time-ordered) sub-bar list for that step.
         # A symbol with no granular data gets all-empty lists -> the coarse path is used for every step.
         self.granular_by_symbol = granular_by_symbol
-        self._sub: dict[str, list[list[Bar]]] = {s: [[] for _ in range(self.n)] for s in self.symbols}
-        for s in self.symbols:
+        for s in self.symbols:                       # self._sym[s].sub already sized to self.n above
             subs = (granular_by_symbol or {}).get(s)
             if not subs:
                 continue
@@ -239,7 +247,7 @@ class PortfolioEngine:
                 i = bisect.bisect_right(edges, sub.ts) - 1
                 if i < 0:
                     continue  # sub-bar precedes the first coarse bar — not attributable to any step
-                self._sub[s][i].append(sub)
+                self._sym[s].sub[i].append(sub)
         strategy._engine = self
 
     # --- membership (dynamic DataSet) ---
@@ -250,15 +258,15 @@ class PortfolioEngine:
     def _at_open_cap(self) -> bool:
         """Return True when the MaxOpenPositions cap is set and already reached (count is live)."""
         cap = self.max_open_positions
-        return bool(cap) and sum(1 for s in self.symbols if self._pos[s].size != 0) >= cap
+        return bool(cap) and sum(1 for s in self.symbols if self._sym[s].pos.size != 0) >= cap
 
     def _long_count(self) -> int:
         """Count of symbols with a long (positive) open position."""
-        return sum(1 for s in self.symbols if self._pos[s].size > 0)
+        return sum(1 for s in self.symbols if self._sym[s].pos.size > 0)
 
     def _short_count(self) -> int:
         """Count of symbols with a short (negative) open position."""
-        return sum(1 for s in self.symbols if self._pos[s].size < 0)
+        return sum(1 for s in self.symbols if self._sym[s].pos.size < 0)
 
     def _at_long_cap(self) -> bool:
         """Return True when the max_open_long cap is set and already reached."""
@@ -293,29 +301,29 @@ class PortfolioEngine:
 
     # --- reads exposed to the strategy ---
     def position_of(self, symbol: str) -> Position:
-        return self._pos[symbol]
+        return self._sym[symbol].pos
 
     def price_of(self, symbol: str) -> float:
-        return self._price[symbol]
+        return self._sym[symbol].price
 
     def equity_now(self) -> float:
-        return self.cash + sum(self._pos[s].size * self._price[s] * self.multiplier for s in self.symbols)
+        return self.cash + sum(self._sym[s].pos.size * self._sym[s].price * self.multiplier for s in self.symbols)
 
     # --- sizing (WL PosSizer) ---
     def _is_opening(self, symbol: str, side_sign: int) -> bool:
         """True when an order on ``symbol`` in direction ``side_sign`` opens-from-flat or adds in the
         same direction (an entry). False when it reduces/closes/flips. Mirrors the fill-loop's
         ``opening = pos.size == 0 or (pos.size > 0) == (side > 0)`` test."""
-        pos = self._pos[symbol]
+        pos = self._sym[symbol].pos
         return pos.size == 0 or (pos.size > 0) == (side_sign > 0)
 
     def _open_risk(self) -> float:
         """Total $ risk currently open across the book: for every symbol with an armed protective
         stop and a non-flat position, ``|price - stop| * |size| * multiplier``. Used by PortfolioHeat."""
         return sum(
-            abs(self._price[s] - self._stop[s]) * abs(self._pos[s].size) * self.multiplier
+            abs(self._sym[s].price - self._sym[s].stop) * abs(self._sym[s].pos.size) * self.multiplier
             for s in self.symbols
-            if self._stop[s] is not None and self._pos[s].size != 0
+            if self._sym[s].stop is not None and self._sym[s].pos.size != 0
         )
 
     def _size_entry(self, symbol: str, side_sign: int, size: float, raw: bool, stop=None) -> float:
@@ -330,7 +338,7 @@ class PortfolioEngine:
         peak = self._equity_peak
         drawdown = max(0.0, 1.0 - equity / peak) if peak > 0 else 0.0
         return self.sizer.size(SizeContext(
-            symbol, side_sign, size, self._price[symbol],
+            symbol, side_sign, size, self._sym[symbol].price,
             equity, self.cash, self.multiplier,
             atr=self._atr(symbol),
             drawdown=drawdown,
@@ -348,19 +356,19 @@ class PortfolioEngine:
         eq = self.equity_now()
         if eq <= 0.0:
             return 0.0
-        pos = self._pos[symbol]
+        pos = self._sym[symbol].pos
         # only cap orders that increase exposure on this symbol (open-from-flat or same-direction add)
         if pos.size != 0 and (pos.size > 0) != (side_sign > 0):
             return size                                  # reducing/closing: never capped
         max_notional = self.leverage * eq
         # current total notional across all symbols + this symbol's already-pending market opens
-        cur = sum(abs(self._pos[s].size) * self._price[s] * self.multiplier for s in self.symbols)
-        pending = sum(o.side * o.size for o in self._pending[symbol] if o.kind == "market") * \
-            self._price[symbol] * self.multiplier
+        cur = sum(abs(self._sym[s].pos.size) * self._sym[s].price * self.multiplier for s in self.symbols)
+        pending = sum(o.side * o.size for o in self._sym[symbol].pending if o.kind == "market") * \
+            self._sym[symbol].price * self.multiplier
         room_notional = max_notional - cur - abs(pending)
         if room_notional <= 0.0:
             return 0.0
-        room = room_notional / (self._price[symbol] * self.multiplier)
+        room = room_notional / (self._sym[symbol].price * self.multiplier)
         return size if size <= room else room
 
     def _check_liquidation(self, cur: dict) -> None:
@@ -368,19 +376,19 @@ class PortfolioEngine:
         below maint_margin * total adverse notional, force-close ALL positions at their adverse marks."""
         if self.maint_margin <= 0.0:
             return
-        held = [s for s in self.symbols if self._pos[s].size != 0]
+        held = [s for s in self.symbols if self._sym[s].pos.size != 0]
         if not held:
             return
         eq_adv = self.cash
         notional_adv = 0.0
         for s in held:
-            pos = self._pos[s]
+            pos = self._sym[s].pos
             adverse = cur[s].low if pos.size > 0 else cur[s].high
             eq_adv += pos.size * adverse * self.multiplier
             notional_adv += abs(pos.size) * adverse * self.multiplier
         if eq_adv <= self.maint_margin * notional_adv:
             for s in held:
-                pos = self._pos[s]
+                pos = self._sym[s].pos
                 adverse = cur[s].low if pos.size > 0 else cur[s].high
                 side = -1 if pos.size > 0 else 1
                 self._apply_fill(s, side, abs(pos.size), adverse, cur[s].ts)
@@ -399,18 +407,18 @@ class PortfolioEngine:
         for s in self.symbols:
             if s in skip:
                 continue
-            stop = self._stop[s]
-            pos = self._pos[s]
+            stop = self._sym[s].stop
+            pos = self._sym[s].pos
             if stop is None or pos.size == 0:
                 continue
             if pos.size > 0:  # long protective sell-stop
                 if cur[s].low <= stop:
                     self._apply_fill(s, -1, abs(pos.size), stop, cur[s].ts)
-                    self._stop[s] = None  # _apply_fill already clears on flat; explicit for clarity
+                    self._sym[s].stop = None  # _apply_fill already clears on flat; explicit for clarity
             else:             # short protective buy-stop
                 if cur[s].high >= stop:
                     self._apply_fill(s, +1, abs(pos.size), stop, cur[s].ts)
-                    self._stop[s] = None
+                    self._sym[s].stop = None
 
     def _close_inactive(self, cur):
         """Force-close any held position whose symbol is inactive this bar (WL removal-day exit),
@@ -418,9 +426,9 @@ class PortfolioEngine:
         if self.active_mask is None:
             return
         for s in self.symbols:
-            if self._pos[s].size != 0 and not self.is_active(s):
-                side = -1 if self._pos[s].size > 0 else 1
-                self._apply_fill(s, side, abs(self._pos[s].size), cur[s].open, cur[s].ts)
+            if self._sym[s].pos.size != 0 and not self.is_active(s):
+                side = -1 if self._sym[s].pos.size > 0 else 1
+                self._apply_fill(s, side, abs(self._sym[s].pos.size), cur[s].open, cur[s].ts)
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
@@ -428,55 +436,55 @@ class PortfolioEngine:
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._pending[symbol].append(Order("market", side_sign, size, weight=weight, stop=stop))
+            self._sym[symbol].pending.append(Order("market", side_sign, size, weight=weight, stop=stop))
 
     def submit_close(self, symbol: str) -> None:
-        pos = self._pos[symbol]
+        pos = self._sym[symbol].pos
         if pos.size != 0:
             side = -1 if pos.size > 0 else 1
-            self._pending[symbol].append(Order("market", side, abs(pos.size)))
+            self._sym[symbol].pending.append(Order("market", side, abs(pos.size)))
 
     def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                      raw: bool = False, stop=None) -> None:
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)
-        self._pending[symbol].append(Order("limit", side_sign, size, price=price, weight=weight, stop=stop))
+        self._sym[symbol].pending.append(Order("limit", side_sign, size, price=price, weight=weight, stop=stop))
 
     def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                     raw: bool = False) -> None:
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._pending[symbol].append(Order("stop", side_sign, size, price=price, weight=weight))
+        self._sym[symbol].pending.append(Order("stop", side_sign, size, price=price, weight=weight))
 
     def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0,
                         raw: bool = False) -> None:
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._pending[symbol].append(Order("trailing", side_sign, size, trail=trail,
-                                           extreme=self._price[symbol], weight=weight))
+        self._sym[symbol].pending.append(Order("trailing", side_sign, size, trail=trail,
+                                           extreme=self._sym[symbol].price, weight=weight))
 
     def submit_market_close(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
                             raw: bool = False) -> None:
         size = self._size_entry(symbol, side_sign, size, raw)
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._pending[symbol].append(Order("market_close", side_sign, size, weight=weight))
+            self._sym[symbol].pending.append(Order("market_close", side_sign, size, weight=weight))
 
     def submit_limit_close(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                            raw: bool = False) -> None:
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._pending[symbol].append(Order("limit_close", side_sign, size, price=price, weight=weight))
+        self._sym[symbol].pending.append(Order("limit_close", side_sign, size, price=price, weight=weight))
 
     def cancel_all(self, symbol: str) -> None:
-        self._pending[symbol] = []
+        self._sym[symbol].pending = []
 
     # --- higher-TF reads (mirror BacktestEngine, per symbol) ---
     def bars_for(self, symbol: str, tf: str):
         """Completed higher-TF bars for ``symbol`` visible at the current step (no look-ahead)."""
-        ms, coarse = self._tf[symbol][tf]
+        ms, coarse = self._sym[symbol].tf[tf]
         window_start = self._now - self._now % ms
         return [b for b in coarse if b.ts < window_start]
 
     def forming_for(self, symbol: str, tf: str):
         """The still-building coarse bar for ``tf`` / ``symbol`` from base bars seen so far, or None."""
-        ms, _ = self._tf[symbol][tf]
+        ms, _ = self._sym[symbol].tf[tf]
         window_start = self._now - self._now % ms
         window = [b for b in self.bars[symbol] if window_start <= b.ts <= self._now]
         if not window:
@@ -504,7 +512,7 @@ class PortfolioEngine:
             # chronological sub-bar order. Granular + cash_gate is out of scope (documented): the gated
             # shared-cash path always uses coarse bars, so granular symbols there fall back to coarse.
             granular_syms = (
-                {s for s in self.symbols if self._sub[s][i]} if not self.cash_gate else set()
+                {s for s in self.symbols if self._sym[s].sub[i]} if not self.cash_gate else set()
             )
             # Protective-stop breach check BEFORE this step's fills/on_bar, for the NON-granular symbols
             # only (granular symbols do their own stop check inside _fill_pending_granular, so we must
@@ -522,13 +530,13 @@ class PortfolioEngine:
             self.strategy.index = i
             for s in self.symbols:
                 bar = cur[s]
-                self._price[s] = bar.close
-                if bar.funding is not None and self._pos[s].size != 0:
-                    self.cash -= funding_charge(self._pos[s].size, bar.close, bar.funding, self.multiplier)
+                self._sym[s].price = bar.close
+                if bar.funding is not None and self._sym[s].pos.size != 0:
+                    self.cash -= funding_charge(self._sym[s].pos.size, bar.close, bar.funding, self.multiplier)
                 # Update MAE/MFE extremes for any open position using this bar's high/low (no look-ahead).
-                if self._pos[s].size != 0:
-                    self._hi_since[s] = max(self._hi_since[s], bar.high)
-                    self._lo_since[s] = min(self._lo_since[s], bar.low)
+                if self._sym[s].pos.size != 0:
+                    self._sym[s].hi_since = max(self._sym[s].hi_since, bar.high)
+                    self._sym[s].lo_since = min(self._sym[s].lo_since, bar.low)
             self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
@@ -538,23 +546,23 @@ class PortfolioEngine:
             equity_curve.append(eq)
             equity_ts.append(ts)
             for s in self.symbols:
-                pos = self._pos[s]
-                per_symbol_curve[s].append(self._realized[s] + pos.size * (self._price[s] - pos.avg_price) * self.multiplier)
+                pos = self._sym[s].pos
+                per_symbol_curve[s].append(self._sym[s].realized + pos.size * (self._sym[s].price - pos.avg_price) * self.multiplier)
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
-            s: self._realized[s] + self._pos[s].size * (self._price[s] - self._pos[s].avg_price) * self.multiplier
+            s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
             for s in self.symbols
         }
         return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts)
 
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
         still = []
-        for o in self._pending[symbol]:
+        for o in self._sym[symbol].pending:
             fp = order_fill_price(o, bar)
             if fp is None:
                 still.append(o)               # rest until triggered
             else:
-                pos = self._pos[symbol]
+                pos = self._sym[symbol].pos
                 opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)  # open-from-flat or same-dir add
                 if opening and not self.is_active(symbol):
                     continue                  # inactive member: drop opening/adding fills (reduces still apply)
@@ -578,9 +586,9 @@ class PortfolioEngine:
                     # Arm this entry's protective stop once the position is actually open. Armed
                     # in the fill phase (top of the step) — the stop-breach check runs in the NEXT
                     # step's fill phase, so an entry can't be stopped on its own entry bar.
-                    if o.stop is not None and self._pos[symbol].size != 0:
-                        self._stop[symbol] = o.stop
-        self._pending[symbol] = still
+                    if o.stop is not None and self._sym[symbol].pos.size != 0:
+                        self._sym[symbol].stop = o.stop
+        self._sym[symbol].pending = still
 
     def _cancel_protective_exits(self, symbol: str, was_long: bool) -> None:
         """OCO: when a protective stop closes a position inside the granular path, cancel any pending
@@ -590,8 +598,8 @@ class PortfolioEngine:
         (side > 0). Pending entry orders and same-direction adds are left untouched (they're not OCO
         siblings of the stop)."""
         closing_side = -1 if was_long else 1  # the side that REDUCES/closes the stopped-out position
-        self._pending[symbol] = [
-            o for o in self._pending[symbol]
+        self._sym[symbol].pending = [
+            o for o in self._sym[symbol].pending
             if not (o.kind in ("limit", "limit_close") and o.side == closing_side)
         ]
 
@@ -610,32 +618,32 @@ class PortfolioEngine:
         next-open. KEY: a take-profit limit and a protective stop on the same coarse bar resolve by
         which sub-bar comes first.
         """
-        sub_bars = self._sub[symbol][i]
+        sub_bars = self._sym[symbol].sub[i]
         for sub in sub_bars:
             # 1) Protective stop first within this sub-bar (only sees a stop armed on a PRIOR step or a
             #    prior sub-bar — same "can't stop on its own entry bar" guarantee as the coarse path,
             #    since an entry filled in THIS sub-bar arms the stop after this point and is breach-
             #    checked from the next sub-bar / step).
-            stop = self._stop[symbol]
-            pos = self._pos[symbol]
+            stop = self._sym[symbol].stop
+            pos = self._sym[symbol].pos
             if stop is not None and pos.size != 0:
                 was_long = pos.size > 0
                 if was_long and sub.low <= stop:  # long protective sell-stop
                     self._apply_fill(symbol, -1, abs(pos.size), stop, sub.ts)
-                    self._stop[symbol] = None
+                    self._sym[symbol].stop = None
                     self._cancel_protective_exits(symbol, was_long)  # OCO: drop the sibling TP exit
                 elif (not was_long) and sub.high >= stop:  # short protective buy-stop
                     self._apply_fill(symbol, +1, abs(pos.size), stop, sub.ts)
-                    self._stop[symbol] = None
+                    self._sym[symbol].stop = None
                     self._cancel_protective_exits(symbol, was_long)  # OCO: drop the sibling TP exit
             # 2) Resting / market orders that trigger on THIS sub-bar, in pending order.
             still = []
-            for o in self._pending[symbol]:
+            for o in self._sym[symbol].pending:
                 fp = order_fill_price(o, sub)  # ratchets a trailing extreme in place per sub-bar
                 if fp is None:
                     still.append(o)  # rest until a later sub-bar (or step) triggers it
                     continue
-                pos = self._pos[symbol]
+                pos = self._sym[symbol].pos
                 opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)
                 if opening and not self.is_active(symbol):
                     continue  # inactive member: drop opening/adding fills (reduces still apply)
@@ -656,9 +664,9 @@ class PortfolioEngine:
                     self._apply_fill(symbol, o.side, fill_size, fp, sub.ts, is_maker=o.kind == "limit")
                     # Arm this entry's protective stop once the position is open. Armed within this
                     # sub-bar's fill phase; breach-checked from the NEXT sub-bar / step (above).
-                    if o.stop is not None and self._pos[symbol].size != 0:
-                        self._stop[symbol] = o.stop
-            self._pending[symbol] = still
+                    if o.stop is not None and self._sym[symbol].pos.size != 0:
+                        self._sym[symbol].stop = o.stop
+            self._sym[symbol].pending = still
 
     def _fill_step_gated(self, cur):
         """Collect every triggered fill across symbols this bar, then apply with a shared-cash gate.
@@ -670,18 +678,18 @@ class PortfolioEngine:
         seq = 0
         for s in self.symbols:
             still = []
-            for o in self._pending[s]:
+            for o in self._sym[s].pending:
                 fp = order_fill_price(o, cur[s])
                 if fp is None:
                     still.append(o)
                     continue
-                pos = self._pos[s]
+                pos = self._sym[s].pos
                 increasing = pos.size == 0 or (pos.size > 0) == (o.side > 0)
                 if increasing and not self.is_active(s):
                     continue              # inactive member: drop opening/adding fills before the cash gate
                 (opens if increasing else frees).append((s, o, fp, seq))
                 seq += 1
-            self._pending[s] = still
+            self._sym[s].pending = still
         # reductions/closes first — they free cash and never get gated
         for s, o, fp, _ in frees:
             fill_size = o.size
@@ -696,14 +704,14 @@ class PortfolioEngine:
         # opens/adds: highest weight first, ties by trigger order; drop the unfundable
         for s, o, fp, _ in sorted(opens, key=lambda t: (-t[1].weight, t[3])):
             # MaxOpenPositions cap: re-checked live so count updates as positions open during this loop
-            if self._pos[s].size == 0 and self._at_open_cap():
+            if self._sym[s].pos.size == 0 and self._at_open_cap():
                 self.dropped.append((s, o.kind, o.size, o.weight))
                 continue
             # Per-direction caps: re-checked live; only block new-symbol opens
-            if self._pos[s].size == 0 and o.side > 0 and self._at_long_cap():
+            if self._sym[s].pos.size == 0 and o.side > 0 and self._at_long_cap():
                 self.dropped.append((s, o.kind, o.size, o.weight))
                 continue
-            if self._pos[s].size == 0 and o.side < 0 and self._at_short_cap():
+            if self._sym[s].pos.size == 0 and o.side < 0 and self._at_short_cap():
                 self.dropped.append((s, o.kind, o.size, o.weight))
                 continue
             # %-of-volume liquidity cap: clamp fill size to volume_limit * bar.volume.
@@ -725,8 +733,8 @@ class PortfolioEngine:
                 continue
             self._apply_fill(s, o.side, fill_size, fp, cur[s].ts, is_maker=o.kind == "limit")
             # Arm this entry's protective stop (see _fill_pending: armed at fill, checked next step).
-            if o.stop is not None and self._pos[s].size != 0:
-                self._stop[s] = o.stop
+            if o.stop is not None and self._sym[s].pos.size != 0:
+                self._sym[s].stop = o.stop
 
     def _apply_fill(self, symbol: str, side_sign: int, size: float, price: float, ts: int,
                     is_maker: bool = False) -> None:
@@ -734,39 +742,39 @@ class PortfolioEngine:
         rate = self.maker_fee if is_maker else self.taker_fee
         fee = _fee(size, price, rate, self.multiplier)
         delta = side_sign * size
-        pos = self._pos[symbol]
+        pos = self._sym[symbol].pos
         self.cash -= fee  # transaction cost
         self.cash -= delta * price * self.multiplier  # signed notional moves cash in every case
 
         if pos.size == 0:  # open from flat
             pos.size = delta
             pos.avg_price = price
-            self._entry_fee[symbol] = fee
-            self._entry_ts[symbol] = ts
+            self._sym[symbol].entry_fee = fee
+            self._sym[symbol].entry_ts = ts
             # Reset excursion extremes to the fill price so MAE/MFE starts from entry.
-            self._hi_since[symbol] = price
-            self._lo_since[symbol] = price
+            self._sym[symbol].hi_since = price
+            self._sym[symbol].lo_since = price
             return
 
         if (pos.size > 0) == (delta > 0):  # add in the same direction
             new_size = pos.size + delta
             pos.avg_price = (pos.avg_price * abs(pos.size) + price * abs(delta)) / abs(new_size)
             pos.size = new_size
-            self._entry_fee[symbol] += fee
+            self._sym[symbol].entry_fee += fee
             return
 
         # opposite direction: reduce part of the position, fully close, or close-and-flip.
         sign = 1.0 if pos.size > 0 else -1.0
         closing = min(abs(delta), abs(pos.size))  # units of the existing position retired
         portion = closing / abs(pos.size)
-        entry_fee_portion = self._entry_fee[symbol] * portion
+        entry_fee_portion = self._sym[symbol].entry_fee * portion
         exit_fee_portion = fee * (closing / abs(delta)) if delta != 0 else 0.0
         realized = (price - pos.avg_price) * (sign * closing) * self.multiplier  # signed: works for shorts
-        self._realized[symbol] += realized
+        self._sym[symbol].realized += realized
         # Compute MAE/MFE fractions relative to entry price (guard entry==0).
         entry = pos.avg_price
-        hi = self._hi_since[symbol]
-        lo = self._lo_since[symbol]
+        hi = self._sym[symbol].hi_since
+        lo = self._sym[symbol].lo_since
         if entry != 0:
             if pos.size > 0:  # long
                 mfe = (hi - entry) / entry
@@ -783,7 +791,7 @@ class PortfolioEngine:
                 size=closing,
                 pnl=realized,
                 fees=entry_fee_portion + exit_fee_portion,
-                entry_ts=self._entry_ts[symbol],
+                entry_ts=self._sym[symbol].entry_ts,
                 exit_ts=ts,
                 symbol=symbol,
                 mae=mae,
@@ -793,26 +801,26 @@ class PortfolioEngine:
         remaining = abs(pos.size) - closing
         if remaining > 1e-12:  # partial reduce: keep the remainder at the same cost basis
             pos.size = sign * remaining
-            self._entry_fee[symbol] -= entry_fee_portion
+            self._sym[symbol].entry_fee -= entry_fee_portion
             return
 
         leftover = abs(delta) - closing  # crossed through zero -> open opposite side
         if leftover > 1e-12:
             pos.size = (1.0 if delta > 0 else -1.0) * leftover
             pos.avg_price = price
-            self._entry_fee[symbol] = fee * (leftover / abs(delta))
-            self._entry_ts[symbol] = ts
+            self._sym[symbol].entry_fee = fee * (leftover / abs(delta))
+            self._sym[symbol].entry_ts = ts
             # Reset excursion extremes for the new opposite-side position.
-            self._hi_since[symbol] = price
-            self._lo_since[symbol] = price
+            self._sym[symbol].hi_since = price
+            self._sym[symbol].lo_since = price
             # The old protective stop belonged to the position we just closed; the flip's own
             # stop (if any) is armed by the fill loop after this fill returns.
-            self._stop[symbol] = None
+            self._sym[symbol].stop = None
         else:  # flat
             pos.size = 0.0
             pos.avg_price = 0.0
-            self._entry_fee[symbol] = 0.0
-            self._entry_ts[symbol] = 0
+            self._sym[symbol].entry_fee = 0.0
+            self._sym[symbol].entry_ts = 0
             # Position closed by any means — clear any dangling protective stop so it can't
             # re-trigger / re-open later.
-            self._stop[symbol] = None
+            self._sym[symbol].stop = None

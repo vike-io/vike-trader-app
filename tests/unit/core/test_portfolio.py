@@ -182,8 +182,8 @@ def test_portfolio_leverage_caps_account_notional():
     eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)]}, OverBuy(), cash=1000.0, leverage=1.0)
     eng.run()
     # capped to ~10 units (1000 notional at price 100), not 100
-    assert eng._pos["A"].size <= 10.0 + 1e-9
-    assert eng._pos["A"].size > 0.0
+    assert eng._sym["A"].pos.size <= 10.0 + 1e-9
+    assert eng._sym["A"].pos.size > 0.0
 
 
 def test_portfolio_liquidation_force_closes_underwater_position():
@@ -201,7 +201,7 @@ def test_portfolio_liquidation_force_closes_underwater_position():
             Bar(ts=3, open=60, high=60, low=40, close=50, volume=1)]        # crash: adverse low 40
     eng = PortfolioEngine({"A": bars}, LongOnce(), cash=200.0, leverage=10.0, maint_margin=0.1)
     eng.run()
-    assert eng._pos["A"].size == 0.0    # liquidated
+    assert eng._sym["A"].pos.size == 0.0    # liquidated
 
 
 def test_portfolio_funding_charged_per_symbol():
@@ -238,8 +238,8 @@ def test_cash_gate_drops_unfundable_lower_weight_open():
     eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
                           TwoBuys(), cash=1000.0, cash_gate=True)
     eng.run()
-    assert eng._pos["A"].size == 8.0          # higher weight funded
-    assert eng._pos["B"].size == 0.0          # lower weight dropped (insufficient cash)
+    assert eng._sym["A"].pos.size == 8.0          # higher weight funded
+    assert eng._sym["B"].pos.size == 0.0          # lower weight dropped (insufficient cash)
     assert any(d[0] == "B" for d in eng.dropped)
 
 
@@ -259,7 +259,7 @@ def test_cash_gate_off_by_default_allows_negative_cash():
     eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
                           TwoBuys(), cash=1000.0)   # cash_gate default False
     eng.run()
-    assert eng._pos["A"].size == 8.0 and eng._pos["B"].size == 8.0   # both fill, cash goes negative
+    assert eng._sym["A"].pos.size == 8.0 and eng._sym["B"].pos.size == 8.0   # both fill, cash goes negative
     assert eng.cash < 0.0
 
 
@@ -287,7 +287,7 @@ def test_max_open_long_blocks_second_long():
     }
     eng = PortfolioEngine(bars, _BothBuy(), cash=100_000.0, max_open_long=1)
     eng.run()
-    open_longs = sum(1 for s in ("AAA", "BBB") if eng._pos[s].size > 0)
+    open_longs = sum(1 for s in ("AAA", "BBB") if eng._sym[s].pos.size > 0)
     assert open_longs == 1
 
 
@@ -307,7 +307,7 @@ def test_max_open_short_blocks_second_short():
     }
     eng = PortfolioEngine(bars, _BothSell(), cash=100_000.0, max_open_short=1)
     eng.run()
-    open_shorts = sum(1 for s in ("AAA", "BBB") if eng._pos[s].size < 0)
+    open_shorts = sum(1 for s in ("AAA", "BBB") if eng._sym[s].pos.size < 0)
     assert open_shorts == 1
 
 
@@ -325,8 +325,8 @@ def test_max_open_long_does_not_block_shorts():
     }
     eng = PortfolioEngine(bars, _LongAndShort(), cash=100_000.0, max_open_long=1)
     eng.run()
-    assert eng._pos["AAA"].size > 0  # long opened
-    assert eng._pos["BBB"].size < 0  # short also opened (different cap)
+    assert eng._sym["AAA"].pos.size > 0  # long opened
+    assert eng._sym["BBB"].pos.size < 0  # short also opened (different cap)
 
 
 def test_long_short_caps_zero_means_no_limit():
@@ -345,7 +345,7 @@ def test_long_short_caps_zero_means_no_limit():
 
     eng = PortfolioEngine(bars, _AllBuy(), cash=100_000.0)  # max_open_long=0 by default
     eng.run()
-    assert all(eng._pos[s].size > 0 for s in ("AAA", "BBB", "CCC"))
+    assert all(eng._sym[s].pos.size > 0 for s in ("AAA", "BBB", "CCC"))
 
 
 def test_equity_ts_has_one_ts_per_equity_point():
@@ -503,7 +503,7 @@ def test_volume_cap_clamps_fill_and_records_dropped():
     eng = PortfolioEngine(bars, _BuyFifty(), cash=100_000.0, volume_limit=0.1)
     eng.run()
     # Only 10 units should have filled (10% of volume=100)
-    assert eng._pos["S"].size == pytest.approx(10.0)
+    assert eng._sym["S"].pos.size == pytest.approx(10.0)
     # 40 units (50 - 10) should appear in dropped as "volume_cap"
     vol_drops = [(s, k, sz, w) for s, k, sz, w in eng.dropped if k == "volume_cap"]
     assert len(vol_drops) == 1
@@ -522,5 +522,5 @@ def test_volume_cap_none_leaves_fills_uncapped():
     }
     eng = PortfolioEngine(bars, _BuyFifty(), cash=100_000.0)  # volume_limit=None (default)
     eng.run()
-    assert eng._pos["S"].size == pytest.approx(50.0)
+    assert eng._sym["S"].pos.size == pytest.approx(50.0)
     assert not any(k == "volume_cap" for _, k, _, _ in eng.dropped)

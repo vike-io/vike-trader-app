@@ -55,17 +55,17 @@ def test_shim_forwards_resting_orders_to_engine():
     shim.submit_limit(+1, 1.0, 95.0)
     shim.submit_stop(+1, 1.0, 105.0)
     shim.submit_trailing(-1, 1.0, 5.0)
-    assert len(eng._pending["A"]) == 3
-    assert {o.kind for o in eng._pending["A"]} == {"limit", "stop", "trailing"}
+    assert len(eng._sym["A"].pending) == 3
+    assert {o.kind for o in eng._sym["A"].pending} == {"limit", "stop", "trailing"}
     shim.cancel_all()
-    assert eng._pending["A"] == []
+    assert eng._sym["A"].pending == []
 
 
 def test_shim_bars_for_raises_when_tf_not_configured():
     import pytest
     eng = PortfolioEngine({"A": [_bar(1, 1.0)]}, PortfolioStrategy(), cash=10.0)
     shim = SymbolEngineShim(eng, "A", None)
-    # No timeframes configured -> KeyError (the tf is not in self._tf[symbol])
+    # No timeframes configured -> KeyError (the tf is not in self._sym[symbol].tf)
     with pytest.raises(KeyError):
         shim.bars_for("1h")
 
@@ -183,7 +183,7 @@ def test_protective_stop_closes_position_at_stop_price():
     runner.run()
     eng = runner._engine
     assert eng.position_of("A").size == 0.0          # closed by the protective stop
-    assert eng._stop["A"] is None                    # stop cleared after the close
+    assert eng._sym["A"].stop is None                    # stop cleared after the close
     # loss = (90 - 100) * 10 units = -100
     assert runner.run().per_symbol_pnl  # sanity: run produces attribution
     # exit was AT the stop price (90), not the bar low (89)
@@ -201,7 +201,7 @@ def test_protective_stop_not_triggered_on_entry_bar():
     runner.run()
     eng = runner._engine
     assert eng.position_of("A").size == pytest.approx(10.0)  # NOT stopped on its own entry bar
-    assert eng._stop["A"] == 90.0                            # still armed for future bars
+    assert eng._sym["A"].stop == 90.0                            # still armed for future bars
 
 
 def test_protective_stop_cleared_when_position_closed_by_other_means():
@@ -222,7 +222,7 @@ def test_protective_stop_cleared_when_position_closed_by_other_means():
     runner.run()
     eng = runner._engine
     assert eng.position_of("A").size == 0.0
-    assert eng._stop["A"] is None  # no dangling stop -> the bar-3 dip neither re-triggers nor re-opens
+    assert eng._sym["A"].stop is None  # no dangling stop -> the bar-3 dip neither re-triggers nor re-opens
 
 
 class StaggeredBuyWithStop(Strategy):
@@ -365,9 +365,9 @@ def test_inactive_symbol_does_not_open():
     # B is inactive on ts=10/ts=20 (skipped, no order), first buys on the ts=30 bar (active),
     # which fills at the ts=40 open -> entry_ts == 40. If membership were ignored, B would have
     # filled at the ts=20 open (entry_ts == 20) like A.
-    assert eng._pos["A"].size == 1.0 and eng._entry_ts["A"] == 20
-    assert eng._pos["B"].size == 1.0, "B must hold exactly one unit opened on its first active bar"
-    assert eng._entry_ts["B"] == 40, "B's position must not predate its activation (no fill while inactive)"
+    assert eng._sym["A"].pos.size == 1.0 and eng._sym["A"].entry_ts == 20
+    assert eng._sym["B"].pos.size == 1.0, "B must hold exactly one unit opened on its first active bar"
+    assert eng._sym["B"].entry_ts == 40, "B's position must not predate its activation (no fill while inactive)"
     # And no completed trade for B ever closed (it only opened on the last fillable bar).
     assert [t for t in res.trades if t.symbol == "B"] == []
 
@@ -463,7 +463,7 @@ def test_max_open_positions_caps_resting_entries():
     runner = MultiSymbolStrategyRunner(LimitBuy, {"A": a, "B": b}, TesterConfig(cash=10_000.0),
                                        max_open_positions=1)
     runner.run()
-    open_syms = [s for s in ("A", "B") if runner._engine._pos[s].size != 0]
+    open_syms = [s for s in ("A", "B") if runner._engine._sym[s].pos.size != 0]
     assert len(open_syms) == 1
 
 
@@ -507,7 +507,7 @@ def test_pct_equity_sizer_sizes_entries_off_equity():
     runner = MultiSymbolStrategyRunner(Enter, {"A": a}, cfg)
     runner.run()
     # 50% of 10k equity / price 100 = ~50 shares opened, NOT the literal 1.0
-    assert abs(runner._engine._pos["A"].size - 50.0) < 1e-6
+    assert abs(runner._engine._sym["A"].pos.size - 50.0) < 1e-6
 
 
 def test_default_passthrough_sizer_is_byte_for_byte():
@@ -524,7 +524,7 @@ def test_default_passthrough_sizer_is_byte_for_byte():
     a = [_b(1, 100.0), _b(2, 100.0)]
     runner = MultiSymbolStrategyRunner(Enter, {"A": a}, TesterConfig(cash=10_000.0))  # no sizer
     runner.run()
-    assert runner._engine._pos["A"].size == 3.0   # literal size, unchanged
+    assert runner._engine._sym["A"].pos.size == 3.0   # literal size, unchanged
 
 
 def test_buy_on_close_fills_at_next_bar_close_in_portfolio_mode():
@@ -547,8 +547,8 @@ def test_buy_on_close_fills_at_next_bar_close_in_portfolio_mode():
     runner = MultiSymbolStrategyRunner(BuyOnCloseMOC, {"A": bars}, TesterConfig(cash=10_000.0))
     runner.run()
     eng = runner._engine
-    assert eng._pos["A"].size == pytest.approx(1.0)
-    assert eng._pos["A"].avg_price == pytest.approx(107.0)  # bar[1].close, NOT bar[1].open
+    assert eng._sym["A"].pos.size == pytest.approx(1.0)
+    assert eng._sym["A"].pos.avg_price == pytest.approx(107.0)  # bar[1].close, NOT bar[1].open
 
 
 def test_order_target_percent_is_not_resized_by_sizer():
@@ -572,7 +572,7 @@ def test_order_target_percent_is_not_resized_by_sizer():
     cfg = replace(TesterConfig(cash=10_000.0), sizer=FixedSharesSizer(7.0))
     runner = MultiSymbolStrategyRunner(Target, {"A": a}, cfg)
     runner.run()
-    assert abs(runner._engine._pos["A"].size - 50.0) < 1e-6
+    assert abs(runner._engine._sym["A"].pos.size - 50.0) < 1e-6
 
 
 # --- benchmark curve ---
