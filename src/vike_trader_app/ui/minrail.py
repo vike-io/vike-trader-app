@@ -20,19 +20,17 @@ from . import theme
 
 
 class _VTabButton(QtWidgets.QToolButton):
-    """One vertical tab: the tool icon on top, the label drawn rotated 90° below it."""
+    """One vertical TEXT tab (AmiBroker-style): just the rotated label, no icon."""
 
-    def __init__(self, label: str, icon: QtGui.QIcon | None, parent=None):
+    def __init__(self, label: str, icon: QtGui.QIcon | None = None, parent=None):
         super().__init__(parent)
-        self._label = label
-        self._vicon = icon
+        self._label = label                       # icon arg accepted but unused — text-only rail
         self.setCursor(QtCore.Qt.PointingHandCursor)
         self.setToolTip(f"Restore {label}")
         self.setAutoRaise(True)
         text_w = self.fontMetrics().horizontalAdvance(label)
-        self._icon_h = 16 if (icon is not None and not icon.isNull()) else 0
         self.setFixedWidth(24)
-        self.setFixedHeight(10 + self._icon_h + (8 if self._icon_h else 0) + text_w + 12)
+        self.setFixedHeight(12 + text_w + 12)
         self.setStyleSheet(
             "QToolButton{border:none;background:transparent;border-radius:4px;}"
             f"QToolButton:hover{{background:{theme.HOVER};}}"
@@ -42,16 +40,16 @@ class _VTabButton(QtWidgets.QToolButton):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         p.setRenderHint(QtGui.QPainter.TextAntialiasing)
-        w = self.width()
-        y = 8
-        if self._icon_h:
-            self._vicon.paint(p, (w - 16) // 2, y, 16, 16)
-            y += self._icon_h + 8
+        w, h = self.width(), self.height()
+        fm = p.fontMetrics()
         p.setPen(QtGui.QColor(theme.TEXT2))
-        # rotate 90° clockwise: text reads top→bottom down the strip, centred on the width
-        p.translate((w + p.fontMetrics().ascent()) / 2 - 1, y)
-        p.rotate(90)
-        p.drawText(0, 0, self._label)
+        # Vertical label reads BOTTOM-TO-TOP (AmiBroker / VS-Code left-rail convention), anchored at
+        # the bottom and running up; drawText's y-offset of capHeight/2 centres it across the strip.
+        p.save()
+        p.translate(w / 2.0, h - 10)
+        p.rotate(-90)
+        p.drawText(0, fm.capHeight() / 2.0, self._label)
+        p.restore()
         p.end()
 
 

@@ -16,7 +16,7 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("PySide6QtAds")
 
-from PySide6 import QtCore, QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtGui, QtWidgets  # noqa: E402
 
 import vike_trader_app.ui.chartdoc as chartdoc  # noqa: E402
 from vike_trader_app.core.model import Bar  # noqa: E402
@@ -233,6 +233,83 @@ def test_window_verbs_minimize_max_arrange(app, _synthetic_load):
     win._arrange_chart_windows("grid")              # tiles only the VISIBLE windows (f2, f3)
     geos = [f.geometry() for f in win._chart_frames if f.isVisible()]
     assert len(geos) == 2 and geos[0] != geos[1] and not geos[0].intersects(geos[1])
+    win.close()
+
+
+def test_maximized_window_refits_on_workspace_resize(app, _synthetic_load):
+    """Regression: a chart window maximized at one workspace size must KEEP filling the workspace
+    when the main window grows/shrinks (OS-maximize, drag). host_resized() handled this but was
+    never wired to MainWindow.resizeEvent, so a window maximized small left empty space when the
+    window grew (the reported 'chart not resized to full screen' bug)."""
+    win = MainWindow(session_path=None)
+    win.resize(900, 700)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("BTCUSDT", "1h")
+    QtWidgets.QApplication.processEvents()
+    frame = win._chart_frames[-1]
+    frame.toggle_max()
+    QtWidgets.QApplication.processEvents()
+    assert frame.width() == win.dock_manager.rect().width()      # fills at the small size
+
+    win.resize(1400, 900)                                        # grow the workspace
+    QtWidgets.QApplication.processEvents()
+    assert frame.width() == win.dock_manager.rect().width()      # still fills — no empty space
+    win.resize(1100, 800)                                        # shrink
+    QtWidgets.QApplication.processEvents()
+    assert frame.width() == win.dock_manager.rect().width()
+    win.close()
+
+
+def test_open_windows_auto_retile_to_fill_on_resize(app, _synthetic_load):
+    """Tiled workspace ('auto re-tile to fill' — the user's choice): with 2+ open floating windows,
+    a workspace resize re-tiles them to fill it (no empty gap). A resize ARMS a debounced re-tile;
+    a maximized window is left filling (not re-tiled); cascade opts out entirely."""
+    win = MainWindow(session_path=None)
+    win.resize(1200, 820)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("BTCUSDT", "1h")
+    win._new_chart_document("ETHUSDT", "1h")
+    win._arrange_chart_windows("grid")
+    QtWidgets.QApplication.processEvents()
+    host = win.dock_manager
+
+    # BEHAVIOR: the re-tile (what the debounced timer fires) fills the current workspace — no gap.
+    win._retile_open_windows()
+    QtWidgets.QApplication.processEvents()
+    right = max(f.geometry().right() for f in win._chart_frames)
+    bottom = max(f.geometry().bottom() for f in win._chart_frames)
+    assert right >= host.rect().width() - 10
+    assert bottom >= host.rect().height() - 10
+
+    # WIRING: a non-cascade resize ARMS the debounced re-tile; cascade does NOT. Drive resizeEvent
+    # directly — synchronous, so no event-loop time passes and the 140ms singleShot can't fire/clear
+    # mid-assert (an isActive() check after win.resize()+processEvents() is timing-flaky under xdist).
+    win._retile_timer.stop()
+    win.resizeEvent(QtGui.QResizeEvent(QtCore.QSize(1100, 800), QtCore.QSize(1200, 820)))
+    assert win._retile_timer.isActive()
+    win._arrange_chart_windows("cascade")
+    win._retile_timer.stop()
+    win.resizeEvent(QtGui.QResizeEvent(QtCore.QSize(1000, 760), QtCore.QSize(1100, 800)))
+    assert not win._retile_timer.isActive()
+
+    # GUARD: a maximized window is left filling — the re-tile is a no-op while one is maximized.
+    win._arrange_chart_windows("grid")
+    f0 = win._chart_frames[0]
+    f0.toggle_max()
+    QtWidgets.QApplication.processEvents()
+    win._retile_open_windows()
+    QtWidgets.QApplication.processEvents()
+    assert f0._maxed and f0.width() == host.rect().width()
+    f0.toggle_max()
+
+    # GUARD: cascade re-tile is a no-op (free overlap preserved).
+    win._arrange_chart_windows("cascade")
+    geos = [QtCore.QRect(f.geometry()) for f in win._chart_frames]
+    win._retile_open_windows()
+    QtWidgets.QApplication.processEvents()
+    assert [f.geometry() for f in win._chart_frames] == geos
     win.close()
 
 

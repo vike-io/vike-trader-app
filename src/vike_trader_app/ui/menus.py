@@ -61,18 +61,10 @@ def _active_chart(win):
 # --- File -------------------------------------------------------------------------------------
 
 def _fill_file(m, win):
-    new = _menu(m, "New")
-    new.addAction("Chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
-    new.addSeparator()
-    # The Chart space switches the current SpaceDeck tab; the 8 tools (Studio + the 7) open as
-    # on-demand docks.
-    for _g, name, space_index in win._SPACE_ITEMS:
-        new.addAction(f"Go to {name}", lambda idx=space_index: win.tabs.show_space(idx))
-    new.addSeparator()
-    for _g, name, tool_key in win._TOOL_ITEMS:
-        new.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
-    m.addMenu(new)
-    m.addSeparator()
+    # No 'New' submenu — it duplicated the Go menu verbatim (Open <tool> for all 8 tools + a
+    # 'Chart window' twin of Go's 'New chart window') plus a vestigial 'Go to Chart' no-op
+    # (show_space(0) on the only space). Open tools/charts from the Go menu or the title-bar
+    # launchers; File now holds just the workspace + export/exit verbs.
     open_ws = _menu(m, "Open Workspace")
     for name in win._workspaces.names():
         open_ws.addAction(name, lambda n=name: win._apply_workspace(n))
@@ -122,14 +114,10 @@ def _fill_view(m, win):
 # --- Go ---------------------------------------------------------------------------------------
 
 def _fill_go(m, win):
-    """Navigation (the retired left icon rail's job): one entry per SPACE (just Chart now, which
-    switches the current tab) plus one per on-demand TOOL (Studio + the 7, opened via open_tool)."""
-    current = win.tabs.currentIndex()
-    for _g, name, space_index in win._SPACE_ITEMS:
-        a = m.addAction(name, lambda idx=space_index: win.tabs.show_space(idx))
-        a.setCheckable(True)
-        a.setChecked(space_index == current)
-    m.addSeparator()
+    """Navigation: one 'Open …' entry per on-demand TOOL (Studio + the 7, opened via open_tool),
+    plus a new chart window. The old per-SPACE entry ('Chart') is gone — there is a single Chart
+    space now, so navigating to it was a vestigial no-op (show_space(0) on the already-current
+    space). Open a chart via 'New chart window'."""
     for _g, name, tool_key in win._TOOL_ITEMS:
         m.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
     m.addSeparator()

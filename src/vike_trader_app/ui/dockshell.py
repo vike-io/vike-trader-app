@@ -135,11 +135,21 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             if w is not None and hasattr(w, "_minimize_chart_to_left"):
                 w._minimize_chart_to_left()
 
+        def _set_max_icon(maxed: bool):
+            # Flip the maximize glyph the same way the floating windows do: ❐ + "Restore" while
+            # maximized, □ + "Maximize" otherwise. `bar` is assigned below but resolved at call
+            # time (this only runs after the bar exists).
+            b = bar.button("max")
+            if b is not None:
+                b.setText("❐" if maxed else "□")
+                b.setToolTip("Restore" if maxed else "Maximize / restore")
+
         def _win_max():
             c = _floating_container()
             if c is not None:                      # floated chart space -> max/restore the float
                 try:
                     c.showNormal() if c.isMaximized() else c.showMaximized()
+                    _set_max_icon(c.isMaximized())
                 except RuntimeError:
                     pass
                 return
@@ -148,6 +158,7 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             w = win if win is not None else _resolve_window()   # docked -> maximize chart in workspace
             if w is not None and hasattr(w, "_toggle_chart_maximize"):
                 w._toggle_chart_maximize()
+                _set_max_icon(getattr(w, "_chart_maxed", False))
 
         def _open_as_window():
             """Open the central chart as a clean chartwin window. Resolves the MainWindow lazily
@@ -169,6 +180,7 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         bar.add_button("close", "✕", "Close the current chart",
                        deck.close_current_document, danger=True)
         bar.set_active(True)
+        _set_max_icon(bool(getattr(win, "_chart_maxed", False)))   # header rebuilt while maxed -> ❐
         if getattr(deck, "_status_provider", None) is not None:   # header link dots (● / ◆)
             deck._status_provider(bar)
         self._header = bar
@@ -458,11 +470,21 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
 
     def _panel_max(self) -> None:
         """□ — maximize this panel to fill the workspace (hide the chart + other panels); toggle
-        restores. Delegated to the MainWindow, which owns the dock visibility bookkeeping."""
+        restores. Delegated to the MainWindow, which owns the dock visibility bookkeeping. Flip the
+        glyph □↔❐ to match the floating windows (❐ + 'Restore' while THIS panel is the maximized
+        one)."""
         d = self._cur_dock()
         win = self._resolve_main_window()
         if d is not None and win is not None and hasattr(win, "_toggle_panel_maximize"):
             win._toggle_panel_maximize(d)
+            try:
+                maxed = getattr(win, "_panel_maxed", None) == d.objectName()
+                b = self._header.button("max") if self._header is not None else None
+                if b is not None:
+                    b.setText("❐" if maxed else "□")
+                    b.setToolTip("Restore" if maxed else "Maximize / restore")
+            except (RuntimeError, AttributeError):
+                pass
 
     def _panel_min(self) -> None:
         """─ — minimize: hide the panel and park a vertical restore tab on the MainWindow's custom
@@ -990,8 +1012,14 @@ def dock_qss() -> str:
     return f"""
     ads--CDockContainerWidget {{ background: {theme.BG}; }}
     ads--CDockContainerWidget > QSplitter {{ padding: 0; }}
-    ads--CDockSplitter::handle {{ background: {theme.BORDER}; }}
-    ads--CDockAreaWidget {{ background: {theme.BG}; border: none; }}
+    /* Unified window padding: the splitter between two docked areas IS a 2px background-coloured
+       gap (matching the floating-window Arrange gap, chartwin._TILE_GAP), and each dock area
+       carries a 1px border — so a docked window reads exactly like a floating one
+       (1px border + 2px gap + 1px border) instead of butting together over a single hairline. */
+    ads--CDockSplitter::handle {{ background: {theme.BG}; }}
+    ads--CDockSplitter::handle:horizontal {{ width: 2px; }}
+    ads--CDockSplitter::handle:vertical {{ height: 2px; }}
+    ads--CDockAreaWidget {{ background: {theme.BG}; border: 1px solid {theme.BORDER}; }}
 
     ads--CDockAreaTitleBar {{
         background: {theme.BG};
