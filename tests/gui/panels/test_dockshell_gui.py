@@ -130,6 +130,55 @@ def test_user_closing_panel_syncs_rail_toggle(app):
     win.close()
 
 
+def test_chart_maximize_fills_workspace_and_restores(app):
+    """LOCK current behavior (guards the maximize-unification refactor): chart header box hides the
+    side panels so the chart fills the workspace (chrome stays), flips box->restore glyph, and
+    toggling brings the panels back."""
+    win = MainWindow(session_path=None)
+    win.resize(1200, 800)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._panel_btns["market"].setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    mkt = win._panel_dock_map["market"]
+    hb = win.tabs.header_widget().button("max")
+    win._toggle_chart_maximize()
+    QtWidgets.QApplication.processEvents()
+    assert mkt.isClosed()                                  # side panel hidden
+    assert win._chart_maxed is True
+    assert hb.text() == "❐"                                # restore glyph
+    win._toggle_chart_maximize()
+    QtWidgets.QApplication.processEvents()
+    assert not mkt.isClosed()                              # panel back
+    assert win._chart_maxed is False
+    assert hb.text() == "□"                                # maximize glyph
+    win.close()
+
+
+def test_panel_maximize_fills_and_parks_chart_on_rail(app):
+    """LOCK current behavior: a side panel's box maximizes it to FILL the workspace (chart + every
+    other dock hidden) and parks the chart as a left-rail tab; toggling restores chart + panel."""
+    win = MainWindow(session_path=None)
+    win.resize(1200, 800)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._panel_btns["market"].setChecked(True)
+    QtWidgets.QApplication.processEvents()
+    mkt = win._panel_dock_map["market"]
+    win._toggle_panel_maximize(mkt)
+    QtWidgets.QApplication.processEvents()
+    assert win._panel_maxed == mkt.objectName()
+    assert win._chart_space_dock().isClosed()              # chart hidden
+    assert win._min_rail.has("__central_chart__")          # chart parked on the left rail
+    assert mkt.dockAreaWidget().width() >= win.dock_manager.width() - 40   # panel fills workspace
+    win._toggle_panel_maximize(mkt)
+    QtWidgets.QApplication.processEvents()
+    assert win._panel_maxed is None
+    assert not win._chart_space_dock().isClosed()          # chart back
+    assert not win._min_rail.has("__central_chart__")      # rail tab cleared
+    win.close()
+
+
 def test_arrange_tiles_docked_chart_and_panels(app):
     """Window>Arrange must tile the central chart + open side panels (the docked layout), not just
     floating windows — it was a dead no-op on a plain chart+Market-Watch layout. Horizontally
