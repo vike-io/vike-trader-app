@@ -792,14 +792,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._last_arrange_mode = mode      # remember it so a workspace resize re-applies it
         frames = self._chart_frames + list(self._tool_frames.values())
+        live_frames = [f for f in frames
+                       if not f.is_detached() and f.isVisible() and not getattr(f, "_rolled", False)]
         chartwin.arrange(frames, self.dock_manager, mode)
         docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values())
                  if d is not None and not d.isClosed()]
         if docks:
             self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
-        # tile the central chart + the open side panels too (chart stays the anchor)
-        self.tabs.arrange_workspace(self._chart_space_dock(),
-                                    list(self._panel_dock_map.values()), mode)
+        # Tile the docked central chart + side panels ONLY when there are no floating windows being
+        # tiled. When floating chart/tool windows exist (e.g. Go > New chart), THEY are the
+        # arrangement and cover the workspace — re-docking the panels behind them just churns the
+        # hidden background layout (and was hitting a deleted-dock crash). With no floating windows
+        # this is the docked-layout tiling from #149.
+        if not live_frames:
+            self.tabs.arrange_workspace(self._chart_space_dock(),
+                                        list(self._panel_dock_map.values()), mode)
 
     def open_tool(self, key: str):
         """Open the tool for ``key`` as its own floating window, or focus it if already open.
