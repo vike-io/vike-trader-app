@@ -60,8 +60,8 @@ def test_classify_garbage_is_none():
 def test_topbar_exists_with_menu_and_launchers(app):
     win = MainWindow(session_path=None)
     assert [a.text() for a in win.topbar.menubar.actions()] == \
-        ["File", "Go", "Window", "Help"]
-    assert len(win.topbar.launchers.actions()) == 7   # new chart + 6 space launchers
+        ["File", "Window", "Help"]                    # Go menu dropped (#154) — it duped the launcher row
+    assert len(win.topbar.launchers.actions()) == 9   # new chart + studio + 7 tool launchers
     win.close()
 
 
