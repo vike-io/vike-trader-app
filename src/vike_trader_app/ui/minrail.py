@@ -42,16 +42,19 @@ class _VTabButton(QtWidgets.QToolButton):
         p = QtGui.QPainter(self)
         p.setRenderHint(QtGui.QPainter.Antialiasing)
         p.setRenderHint(QtGui.QPainter.TextAntialiasing)
-        w = self.width()
-        y = 8
+        w, h = self.width(), self.height()
         if self._icon_h:
-            self._vicon.paint(p, (w - 16) // 2, y, 16, 16)
-            y += self._icon_h + 8
+            self._vicon.paint(p, (w - 16) // 2, 8, 16, 16)
+        fm = p.fontMetrics()
         p.setPen(QtGui.QColor(theme.TEXT2))
-        # rotate 90° clockwise: text reads top→bottom down the strip, centred on the width
-        p.translate((w + p.fontMetrics().ascent()) / 2 - 1, y)
-        p.rotate(90)
-        p.drawText(0, 0, self._label)
+        # Vertical label reads BOTTOM-TO-TOP (AmiBroker / VS-Code left-rail convention — was the
+        # reversed top-to-bottom). Anchored at the bottom, running up; drawText's y-offset of
+        # capHeight/2 centres the glyph band across the 24px strip width.
+        p.save()
+        p.translate(w / 2.0, h - 10)
+        p.rotate(-90)
+        p.drawText(0, fm.capHeight() / 2.0, self._label)
+        p.restore()
         p.end()
 
 
