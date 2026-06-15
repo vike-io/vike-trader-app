@@ -84,7 +84,10 @@ class LinkDot(QtWidgets.QToolButton):
     def set_group(self, gid: int, *, emit: bool = False) -> None:
         self._group = gid
         for g, act in self._actions.items():   # the MC-style check on the active entry
-            act.setChecked(g == gid)
+            try:
+                act.setChecked(g == gid)
+            except RuntimeError:               # the header (and this menu) was recreated on a
+                continue                       # relayout, leaving a stale QAction — skip it
         self._refresh()
         if emit:
             self.groupChanged.emit(gid)
@@ -277,14 +280,19 @@ class TradesTable(QtWidgets.QTableWidget):
 
     def update_trades(self, trades):
         rows = trade_rows(trades)
-        self.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            for c, val in enumerate(row):
-                item = QtWidgets.QTableWidgetItem(val)
-                item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
-                if c == 6:  # PnL column: colour by sign
-                    item.setForeground(QtCore.Qt.green if val.startswith("+") else QtCore.Qt.red)
-                self.setItem(r, c, item)
+        try:
+            self.setRowCount(len(rows))
+            for r, row in enumerate(rows):
+                for c, val in enumerate(row):
+                    item = QtWidgets.QTableWidgetItem(val)
+                    item.setTextAlignment(QtCore.Qt.AlignVCenter | QtCore.Qt.AlignRight)
+                    if c == 6:  # PnL column: colour by sign
+                        item.setForeground(QtCore.Qt.green if val.startswith("+") else QtCore.Qt.red)
+                    self.setItem(r, c, item)
+        except RuntimeError:
+            # the table was torn down (its tool window closed) while a feed callback still held a
+            # reference — skip the repaint rather than touch a deleted C++ widget.
+            return
 
 
 class WatchlistPanel(QtWidgets.QListWidget):

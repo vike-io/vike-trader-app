@@ -20,6 +20,7 @@ TITLE_H = BAR_H   # one shared title-bar height across every surface (chart head
 _EDGE = 6          # resize-border thickness (frame edges)
 _MIN_W, _MIN_H = 320, 160
 _SNAP_M = 28       # drag-to-edge snap zone thickness (attached frames; detached use OS snap)
+_STUB_W = 230      # width of a rolled-up window's title stub on the left rail (AmiBroker-style)
 
 
 class ChartWindowFrame(QtWidgets.QFrame):
@@ -31,7 +32,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
     redockRequested = QtCore.Signal(object)  # self — dock this window into the workspace (charts + tools)
 
     def __init__(self, doc, host: QtWidgets.QWidget, *, title: "str | None" = None,
-                 icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = True):
+                 icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = False):
         super().__init__(host)
         self.doc = doc
         self._host = host
@@ -137,9 +138,15 @@ class ChartWindowFrame(QtWidgets.QFrame):
         body.setVisible(not self._rolled)
         if self._rolled:
             self._roll_geo = self.geometry()
-            self.resize(self.width(), TITLE_H + 2)
+            self.resize(_STUB_W, TITLE_H + 2)        # collapse to a narrow title stub
         else:
-            self.resize(self._roll_geo.size())
+            self.setGeometry(self._roll_geo)         # restore position AND size
+        # AmiBroker-style hide: attached rolled windows park as stubs stacked down the LEFT edge of
+        # the workspace; restoring one re-stacks the rest. Detached (OS) windows roll up in place.
+        w = self.window()
+        if hasattr(w, "_restack_left_rail"):
+            w._restack_left_rail()
+        self.raise_()
 
     def toggle_max(self) -> None:
         if self._rolled:

@@ -283,6 +283,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # teardown (stop_feed / alias-nil / studio-shutdown) that a real close runs.
         self._tool_frames: dict[str, "ToolWindowFrame"] = {}
         self._tool_detaching: set[str] = set()
+        # Side panels (Market watch / Trades) unify to the same ⧉ ─ □ ✕ as tools/charts: ⧉ floats
+        # the panel into a window (lives here, keyed by the dock objectName), ─ auto-hides to the
+        # edge, □ maximizes it in the workspace, ✕ closes. _panel_detaching marks a dock close that
+        # is really a float (skip the rail-toggle off-sync); _panel_max_* hold the maximize restore.
+        self._panel_frames: dict[str, "ToolWindowFrame"] = {}
+        self._panel_detaching: set[str] = set()
+        self._panel_maxed: "str | None" = None
+        self._panel_max_restore: dict = {}
         # A chart window docked into the workspace ("Dock into workspace") lives here as an ADS
         # dock (objectName chart:<n>); it tears back out to a clean window via the dock's ⧉.
         # _chart_detaching marks a dock close that is really a tear-out (the doc lives on).
@@ -595,6 +603,45 @@ class MainWindow(QtWidgets.QMainWindow):
             "interval_link_group": self.interval_link_group,
         })
 
+    def _restack_left_rail(self) -> None:
+        """AmiBroker-style hide: lay out every rolled-up (attached) window as a title stub stacked
+        down the LEFT edge of the workspace. Called by ChartWindowFrame.toggle_rollup so clicking ─
+        on a tool/chart window collapses it to the left rail; clicking ─ again restores it and the
+        remaining stubs re-stack. Detached OS windows are left where they are (skipped)."""
+        y = 6
+        for f in (self._chart_frames + list(self._tool_frames.values())
+                  + list(self._panel_frames.values())):
+            try:
+                if not f.is_detached() and getattr(f, "_rolled", False):
+                    f.move(6, y)
+                    f.raise_()
+                    y += f.height() + 4
+            except RuntimeError:        # frame mid-teardown — skip
+                continue
+
+    def _toggle_chart_maximize(self) -> None:
+        """Chart header □ : maximize the chart to fill the workspace by hiding the side panels,
+        remembering which were open so the toggle restores exactly those. Pairs with the chart
+        header ─ roll-up (VikeDockTitleBar._toggle_chart_rollup) for AmiBroker-style window verbs
+        that act on the chart, never on the whole OS window."""
+        if not getattr(self, "_chart_maxed", False):
+            self._chart_maxed = True
+            self._chart_max_hidden = []
+            for key, dock in getattr(self, "_panel_dock_map", {}).items():
+                try:
+                    if not dock.isClosed():
+                        self._chart_max_hidden.append(key)
+                        self._set_dock_open(dock, False)
+                except RuntimeError:        # dock torn down mid-relayout — skip
+                    continue
+        else:
+            self._chart_maxed = False
+            for key in getattr(self, "_chart_max_hidden", []):
+                dock = self._panel_dock_map.get(key)
+                if dock is not None:
+                    self._set_dock_open(dock, True)
+            self._chart_max_hidden = []
+
     def _frame_of(self, doc) -> "object | None":
         for f in self._chart_frames:
             if f.doc is doc:
@@ -634,39 +681,40 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
 
     def open_tool(self, key: str):
-        """Open the tool dock for ``key``, or focus it if already open.
+        """Open the tool for ``key`` as its own floating window, or focus it if already open.
 
-        SINGLETON (Plan 1): re-opening the same key raises and selects the existing dock
-        instead of creating a second one. A later plan flips this to multi-instance — the
-        open-or-focus shortcut is isolated in the leading branch so that flip is one edit.
+        SINGLETON: re-opening the same key focuses the existing window (or dock, if the user has
+        since docked it via "Dock into workspace") instead of creating a second one.
 
-        Studio is the 8th tool here: ToolRegistry's "studio" factory calls _build_studio_widget,
-        which builds the StudioTab + its lockstep chart (self.studio / self.studio_price) on
-        demand; the close handler below tears both down (shutdown + nil).
+        MT-style (the user's choice over MultiCharts-style dock-anywhere): a tool is its OWN
+        window, not a dock — independent, multi-monitor friendly, and free of the ADS dock-area
+        split/collapse teardown race that was silently deleting docked tools.
         """
-        from .toolreg import ToolRegistry, make_tool_dock
-
-        # Stage A2: the tool may already be open as a floating WINDOW (torn out) — focus it
-        # instead of creating a second docked instance.
+        # The tool may already be open as a floating WINDOW — focus it.
         frame = self._tool_frames.get(key)
         if frame is not None:
             frame.raise_()
             frame.activated.emit(frame)
             return frame
         existing = self._tool_docks.get(key)
-        if existing is not None and not existing.isClosed():
-            existing.toggleView(True)
-            area = existing.dockAreaWidget()
-            if area is not None:
-                area.setCurrentDockWidget(existing)
-            existing.raise_()
-            return existing
-        widget = self._build_tool_widget(key)
-        dock = make_tool_dock(self.dock_manager, key, widget, icon=self._tool_icon(key))
-        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
-        self._tool_docks[key] = dock
-        dock.closed.connect(self._make_tool_close_handler(key, widget))
-        return dock
+        if existing is not None:
+            try:
+                alive = not existing.isClosed()
+            except RuntimeError:        # DeleteOnClose dock destroyed without notifying us
+                alive = False
+                self._tool_docks.pop(key, None)
+            if alive:
+                existing.toggleView(True)
+                area = existing.dockAreaWidget()
+                if area is not None:
+                    area.setCurrentDockWidget(existing)
+                existing.raise_()
+                return existing
+        # MT-style: a tool opens as its OWN floating window (ToolWindowFrame), NOT a dock — each
+        # tool is independent, so there's no dock-area split/tab/collapse teardown race (the bug
+        # that silently deleted tools). It can still be docked later via the window's "Dock into
+        # workspace" verb. Reuses the tested session-restore window path (_open_tool_window).
+        return self._open_tool_window(key)
 
     def _build_tool_widget(self, key: str):
         """Create a fresh tool widget from the registry, mirror it onto its legacy alias (so
@@ -847,6 +895,92 @@ class MainWindow(QtWidgets.QMainWindow):
         via _on_tool_window_closed (wired to each frame's closed signal)."""
         for frame in list(self._tool_frames.values()):
             frame.close_window()
+
+    def _close_all_panel_windows(self) -> None:
+        """Re-home every floated side panel (Market watch / Trades) back into its dock then close it
+        (used on workspace swap / app close), so a floated panel is never orphaned when the layout
+        is replaced. Teardown runs via _on_panel_window_closed (wired to each frame's closed)."""
+        for frame in list(self._panel_frames.values()):
+            try:
+                frame.close_window()
+            except RuntimeError:        # frame mid-teardown — skip
+                pass
+
+    def _detach_panel(self, dock):
+        """⧉ on a side panel (Market watch / Trades) — float its widget into a clean window. Panels
+        are NOT DeleteOnClose, so the SAME dock is reused: take the widget out + hide the empty dock
+        (rail stays on — it's floating, not closed), and put the widget back on redock/close."""
+        from .chartwin import ToolWindowFrame
+        fid = next((k for k, d in self._panel_dock_map.items() if d is dock), dock.objectName())
+        if fid in self._panel_frames:
+            self._panel_frames[fid].raise_()
+            return self._panel_frames[fid]
+        title, icon = dock.windowTitle(), dock.icon()
+        widget = dock.takeWidget()
+        if widget is None:
+            return None
+        self._set_dock_open(dock, False)             # hide the now-empty dock (guarded: no rail off)
+        frame = ToolWindowFrame(widget, self.dock_manager, title=title,
+                                icon=icon.pixmap(16, 16) if (icon and not icon.isNull()) else None)
+        frame.closed.connect(lambda _f, f=fid: self._on_panel_window_closed(f))
+        frame.redockRequested.connect(lambda _f, f=fid: self._redock_panel(f))
+        self._panel_frames[fid] = frame
+        n = len(self._panel_frames) - 1
+        frame.move(100 + (n % 6) * 32, 80 + (n % 6) * 28)
+        frame.show()
+        frame.raise_()
+        return frame
+
+    def _redock_panel(self, fid: str):
+        """'Dock into workspace' on a floated panel window — put the live widget back into its
+        (reused, hidden) dock and re-show it."""
+        frame = self._panel_frames.pop(fid, None)
+        if frame is None:
+            return
+        widget = frame.take_body()
+        frame.dispose()
+        dock = self._panel_dock_map.get(fid)
+        if dock is None or widget is None:
+            return
+        dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
+        self._set_dock_open(dock, True)
+
+    def _on_panel_window_closed(self, fid: str):
+        """A floated panel window closed (✕) — re-home its widget into the (reused) dock and close
+        the panel so the rail reflects it closed and the widget is never orphaned."""
+        frame = self._panel_frames.pop(fid, None)
+        if frame is None:
+            return
+        widget = getattr(frame, "doc", None)
+        dock = self._panel_dock_map.get(fid)
+        if dock is not None and widget is not None:
+            dock.setWidget(widget, QtAds.CDockWidget.ForceNoScrollArea)
+            dock.toggleView(False)                   # unguarded -> the rail shows the panel closed
+
+    def _toggle_panel_maximize(self, dock):
+        """□ on a panel — maximize it to fill the workspace by hiding the chart space + the OTHER
+        panels; toggle restores exactly what was visible before."""
+        if self._panel_maxed is None:
+            self._panel_maxed = dock.objectName()
+            self._panel_max_restore = {"chart": self.tabs.isVisible(), "docks": []}
+            if self.tabs.isVisible():
+                self.tabs.setVisible(False)
+            for k, d in self._panel_dock_map.items():
+                try:
+                    if d is not dock and not d.isClosed():
+                        self._panel_max_restore["docks"].append(k)
+                        self._set_dock_open(d, False)
+                except RuntimeError:
+                    continue
+        else:
+            self._panel_maxed = None
+            if self._panel_max_restore.get("chart"):
+                self.tabs.setVisible(True)
+            for k in self._panel_max_restore.get("docks", []):
+                d = self._panel_dock_map.get(k)
+                if d is not None:
+                    self._set_dock_open(d, True)
+            self._panel_max_restore = {}
 
     def _wire_tool(self, key: str, widget) -> None:
         """Per-tool signal wiring that used to live inline in _build_central, run once when a
@@ -1059,7 +1193,7 @@ class MainWindow(QtWidgets.QMainWindow):
                                       ("news", "News", "news"), ("calendar", "Calendar", "calendar"),
                                       ("options", "Options", "options")):
             self.topbar.add_launcher(icon_name, f"{label} window",
-                                     lambda k=key: self.open_tool(k))
+                                     lambda *_a, k=key: self.open_tool(k))
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -1736,22 +1870,28 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         self._live_fail_streak = 0
         merged, appended, replaced_last = merge_live_bars(self._bars, fetched)
-        if appended or replaced_last:
-            was_at_end = self._replay.at_end
-            self._bars = merged
-            self._replay.n_bars = len(merged)
-            self.slider.setMaximum(self._replay.last_index)
-            overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
-            for ch in self._pipeline_charts():  # Chart space stays clean (no auto overlays)
-                ch.apply_live(merged, overlays if ch is self.studio_price else None, repaint=False)
-            self._update_chart_header()   # live ticker: header last price + change% (overcome MC)
-            if was_at_end:  # following the live edge -> advance the cursor and repaint
-                self._replay.seek(self._replay.last_index)
-                self._render_frame()
-                self.foot_info.setText(
-                    f"{self._symbol} · {self._interval} · {len(merged):,} bars"
-                )
-        self._update_feed_health()
+        try:
+            if appended or replaced_last:
+                was_at_end = self._replay.at_end
+                self._bars = merged
+                self._replay.n_bars = len(merged)
+                self.slider.setMaximum(self._replay.last_index)
+                overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
+                for ch in self._pipeline_charts():  # Chart space stays clean (no auto overlays)
+                    ch.apply_live(merged, overlays if ch is self.studio_price else None, repaint=False)
+                self._update_chart_header()   # live ticker: header last price + change% (overcome MC)
+                if was_at_end:  # following the live edge -> advance the cursor and repaint
+                    self._replay.seek(self._replay.last_index)
+                    self._render_frame()
+                    self.foot_info.setText(
+                        f"{self._symbol} · {self._interval} · {len(merged):,} bars"
+                    )
+            self._update_feed_health()
+        except RuntimeError:
+            # The chart space (and its slider / footer) was torn down while this live fetch was in
+            # flight — the live timer outran teardown. Skip the repaint rather than crash on the
+            # deleted C++ widget (the same mid-teardown guard used across the dock title bars).
+            return
 
     def _on_live_fetch_failed(self, _message: str) -> None:
         """Main thread: a transient fetch failure -> watchdog backs off and keeps retrying.
@@ -2871,6 +3011,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._close_all_chart_windows()         # each close unregisters hub/bus + drops refs
         self._close_all_chart_docks()           # close any docked charts (unregister their docs)
         self._close_all_tool_windows()          # dispose torn-out tool windows (with teardown)
+        self._close_all_panel_windows()         # re-home any floated side panels (Market/Trades)
 
         # Close any open tool docks first — the incoming workspace fully defines which tools
         # are open (via its open_tools); leaving stale docks open collides with the layout blob.
@@ -2898,7 +3039,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
 
         self._watchlist_link = state.watchlist_link if state.watchlist_link in LINK_COLOR else 0
-        self._watchlist_dot.set_group(self._watchlist_link)
+        try:
+            self._watchlist_dot.set_group(self._watchlist_link)
+        except RuntimeError:
+            # the chart header (and its link dots) is recreated on relayout, so _watchlist_dot can
+            # be a stale/deleted LinkDot here — the freshly-rebuilt dot picks up _watchlist_link via
+            # _populate_header_status, so skipping this stale one is safe (workspace still applies).
+            pass
 
         if state.dock_state_hex:                 # a saved layout; built-ins use default positions
             self._syncing_docks = True

@@ -35,10 +35,10 @@ from vike_trader_app.ui.app import MainWindow  # noqa: E402
 
 def test_open_tool_opens_then_focuses(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
-    d1 = win.open_tool("screener"); app.processEvents()
-    assert d1.objectName() == "tool:screener" and not d1.isClosed()
-    d2 = win.open_tool("screener")           # singleton: re-open focuses the same dock
-    assert d2 is d1
+    f1 = win.open_tool("screener"); app.processEvents()      # MT-style: opens as its own window
+    assert win._tool_frames.get("screener") is f1
+    f2 = win.open_tool("screener")           # singleton: re-open focuses the same window
+    assert f2 is f1
     win.close()
 
 
@@ -55,27 +55,28 @@ def test_only_chart_remains_a_space(app):
     win.close()
 
 
-def test_each_tool_opens_and_closes_as_dock(app):
+def test_each_tool_opens_and_closes_as_window(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
     for key in ToolRegistry.keys():                     # incl. studio (the 8th tool now)
-        dock = win.open_tool(key); app.processEvents()
-        assert dock.objectName() == f"tool:{key}"
+        frame = win.open_tool(key); app.processEvents()  # MT-style: each tool is its own window
+        assert win._tool_frames.get(key) is frame
         # legacy attr is set while open
         attr = {"data": "datamanager", "calendar": "calendar_space"}.get(key, key)
         assert getattr(win, attr, None) is not None
-        dock.closeDockWidget(); app.processEvents()
+        frame.close_window(); app.processEvents()
         assert getattr(win, attr, None) is None        # cleared on close (no leak)
+        assert key not in win._tool_frames
     win.close()
 
 
-def test_studio_opens_and_closes_as_dock(app):
+def test_studio_opens_and_closes_as_window(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
     assert win.studio is None and win.studio_price is None      # not eager anymore
     assert win.tabs.count() == 1                                 # only Chart remains a space
-    dock = win.open_tool("studio"); app.processEvents()
-    assert dock.objectName() == "tool:studio"
+    frame = win.open_tool("studio"); app.processEvents()
+    assert win._tool_frames.get("studio") is frame
     assert win.studio is not None and win.studio_price is not None
-    dock.closeDockWidget(); app.processEvents()
+    frame.close_window(); app.processEvents()
     assert win.studio is None and win.studio_price is None       # cleared on close (no dangling)
     win.close()
 
@@ -99,8 +100,8 @@ def test_controls_survive_studio_close(app):
     # rescued-but-functional slider must survive a Studio close (guards the 0xC0000409 class).
     from vike_trader_app.core.model import Bar
     win = MainWindow(session_path=None); win.show(); app.processEvents()
-    dock = win.open_tool("studio"); app.processEvents()
-    dock.closeDockWidget(); app.processEvents()
+    frame = win.open_tool("studio"); app.processEvents()
+    frame.close_window(); app.processEvents()
     assert win.studio is None and win.studio_price is None
     bars = [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
             for i in range(40)]
@@ -114,12 +115,12 @@ def test_options_close_reopen_no_stale_signals(app):
     # in-flight fetch worker can't emit into the DeleteOnClose-destroyed tab (segfault class).
     # Re-opening must re-wire cleanly without a double-disconnect RuntimeWarning.
     win = MainWindow(session_path=None); win.show(); app.processEvents()
-    d1 = win.open_tool("options"); app.processEvents()
-    d1.closeDockWidget(); app.processEvents()
+    f1 = win.open_tool("options"); app.processEvents()
+    f1.close_window(); app.processEvents()
     assert getattr(win, "options", None) is None
     assert win._options_wired is False                 # disconnected on close, re-armed on open
-    d2 = win.open_tool("options"); app.processEvents()  # must not warn/crash
-    assert d2.objectName() == "tool:options"
+    f2 = win.open_tool("options"); app.processEvents()  # must not warn/crash
+    assert win._tool_frames.get("options") is f2
     win.close()
 
 
@@ -129,8 +130,8 @@ def test_open_tools_persist_across_restart(app, tmp_path):
     w1.open_tool("screener"); w1.open_tool("news"); app.processEvents()
     w1.close(); app.processEvents()                       # closeEvent saves the session
     w2 = MainWindow(session_path=p); w2.show(); app.processEvents()
-    names = [d.objectName() for d in w2.dock_manager.dockWidgetsMap().values()]
-    assert "tool:screener" in names and "tool:news" in names
+    # MT-style: tools persist + restore as their own windows (in _tool_frames), not docks
+    assert "screener" in w2._tool_frames and "news" in w2._tool_frames
     # legacy aliases re-bound on restore
     assert getattr(w2, "screener", None) is not None
     assert getattr(w2, "news", None) is not None

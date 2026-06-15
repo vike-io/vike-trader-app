@@ -17,15 +17,15 @@ def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
-def test_news_tool_opens_as_dock(app):
-    # News is now an on-demand TOOL (a dock), not a space: it lives in _TOOL_ITEMS keyed "news"
-    # and is built/opened via open_tool, which mirrors the live tab onto win.news while open.
+def test_news_tool_opens_as_window(app):
+    # News is an on-demand TOOL keyed "news"; open_tool builds it and (MT-style) opens it as its
+    # own window, mirroring the live tab onto win.news while open.
     win = MainWindow()
     try:
         assert "news" in [key for _glyph, _name, key in win._TOOL_ITEMS]
         assert getattr(win, "news", None) is None     # not eager
-        dock = win.open_tool("news")
-        assert dock.objectName() == "tool:news"
+        win.open_tool("news")
+        assert "news" in win._tool_frames
         assert isinstance(win.news, NewsTab)
     finally:
         win.close()

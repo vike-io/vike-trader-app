@@ -70,13 +70,13 @@ def test_mainwindow_commands_cover_spaces_and_workspaces(app):
     win.close()
 
 
-def test_command_open_studio_opens_dock(app):
+def test_command_open_studio_opens_window(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
     cmds = dict(win._commands())
     cmds["Open Studio"]()
     app.processEvents()
-    assert win.studio is not None                  # the palette command built the Studio dock
-    assert "studio" in win._tool_docks and not win._tool_docks["studio"].isClosed()
+    assert win.studio is not None                  # the palette command built Studio
+    assert "studio" in win._tool_frames            # opens as its own window (MT-style)
     win.close()
 
 
