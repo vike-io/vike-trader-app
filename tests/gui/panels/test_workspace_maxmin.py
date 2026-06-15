@@ -215,3 +215,25 @@ def test_arrange_tiles_floating_windows_without_overlap(app):
     xs = [f.geometry().x() for f in fr]
     assert len(set(xs)) > 1                                    # cascade: staggered
     win.close()
+
+
+def test_arrange_with_floating_charts_leaves_docked_panels_alone(app):
+    """Regression: with floating chart windows open (Go > New chart), Arrange tiles THEM and must
+    NOT churn the docked panels behind them — it used to also re-dock the panels and crash on a
+    deleted panel dock. The panel layout must be untouched and Arrange must not raise."""
+    win = _win("market")
+    for _ in range(3):
+        win._new_chart_document("BTCUSDT", "1m")
+    _pe(8)
+    mkt = win._panel_dock_map["market"]
+    before = mkt.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
+    win._arrange_chart_windows("grid")        # must not raise; floating frames are the target
+    _pe()
+    after = mkt.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
+    assert (before.x(), before.y()) == (after.x(), after.y())   # panel layout untouched
+    fr = [f for f in win._chart_frames if not f.is_detached() and f.isVisible()]
+    assert len(fr) == 3
+    for i in range(len(fr)):
+        for j in range(i + 1, len(fr)):
+            assert not fr[i].geometry().intersects(fr[j].geometry())
+    win.close()

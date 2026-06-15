@@ -846,9 +846,14 @@ class SpaceDeck(QtCore.QObject):
         beside it: BELOW for 'rows' (Tile Horizontally → stacked bands), to the RIGHT otherwise
         ('columns'/'grid'/'cascade' → side-by-side strips). Each panel chains off the previous so
         N panels form a clean row/column. Sizes are then equalised. Returns the cell count."""
-        panels = [d for d in panels
-                  if d is not None and not d.isClosed() and d is not chart_dock]
-        if chart_dock is None or chart_dock.isClosed() or not panels:
+        def _live(d):
+            try:
+                return d is not None and not d.isClosed()
+            except RuntimeError:   # a DeleteOnClose dock whose C++ object is already gone
+                return False
+
+        panels = [d for d in panels if _live(d) and d is not chart_dock]
+        if not _live(chart_dock) or not panels:
             return 0
         side = QtAds.BottomDockWidgetArea if mode == "rows" else QtAds.RightDockWidgetArea
         prev_area = chart_dock.dockAreaWidget()
