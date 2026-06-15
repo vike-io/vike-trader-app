@@ -662,6 +662,13 @@ class ResultsPanel(QtWidgets.QWidget):
         table.setItem(row, 0, label_item)
         table.setItem(row, 1, value_item)
 
+    def _fill_metric_table(self, table, rows) -> None:
+        """Populate a 2-column metric table from ``rows`` of (label, value, color) — the shared tail
+        of the robustness / monte-carlo / benchmark fills."""
+        table.setRowCount(len(rows))
+        for r, (lbl, val, col) in enumerate(rows):
+            self._table_row(table, r, lbl, val, col)
+
     def _fill_robustness(self, report) -> None:
         from ..analysis.overfit import probabilistic_sharpe_ratio
 
@@ -703,9 +710,7 @@ class ResultsPanel(QtWidgets.QWidget):
         else:
             rows.append(("Overfit verdict", "Run Optimize/Walk-forward to populate", None))
 
-        self._robust_table.setRowCount(len(rows))
-        for r, (lbl, val, col) in enumerate(rows):
-            self._table_row(self._robust_table, r, lbl, val, col)
+        self._fill_metric_table(self._robust_table, rows)
 
     def _fill_montecarlo(self, report) -> None:
         from ..analysis.montecarlo import mc_summary
@@ -744,9 +749,7 @@ class ResultsPanel(QtWidgets.QWidget):
             ("Risk of Ruin (50% loss)", self._pct(s["risk_of_ruin"]),
              theme.DOWN if s["risk_of_ruin"] > 0.05 else theme.TEXT),
         ]
-        self._mc_table.setRowCount(len(rows))
-        for r, (lbl, val, col) in enumerate(rows):
-            self._table_row(self._mc_table, r, lbl, val, col)
+        self._fill_metric_table(self._mc_table, rows)
 
     def _fill_periods(self, report) -> None:
         from ..analysis.periods import drawdown_table, monthly_return_matrix
@@ -861,9 +864,7 @@ class ResultsPanel(QtWidgets.QWidget):
             ("Down Capture", self._pct(stats["down_capture"]),
              theme.UP if stats["down_capture"] < 1.0 and stats["down_capture"] != 0 else None),
         ]
-        self._bench_table.setRowCount(len(rows))
-        for r, (lbl, val, col) in enumerate(rows):
-            self._table_row(self._bench_table, r, lbl, val, col)
+        self._fill_metric_table(self._bench_table, rows)
 
     # --- walk-forward matrix + optimization surface ---
 
