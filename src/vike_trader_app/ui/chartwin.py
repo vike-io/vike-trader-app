@@ -430,6 +430,9 @@ def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) 
     for f in live:
         f.setUpdatesEnabled(True)
         f.update()
-    if mode == "cascade":
-        for f in live:
-            f.raise_()
+    # Raise every tiled frame above the workspace so a tile can't sink behind the central chart
+    # area or a sibling. Was cascade-ONLY; grid/rows/columns left tiles un-raised, so a window
+    # overlapping the chart could hide behind it. Iterating in `live` order keeps cascade's
+    # last-on-top stack.
+    for f in live:
+        f.raise_()
