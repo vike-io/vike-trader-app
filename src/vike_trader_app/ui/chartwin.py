@@ -404,7 +404,9 @@ def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) 
     columns / rows. Geometries are computed first, then applied with each frame's painting
     disabled — so the bulk re-tile costs ONE repaint/relayout per frame instead of letting
     intermediate FullViewportUpdate repaints stack up (a cold 4-window grid went ~2.4s→~0.3s)."""
-    live = [f for f in frames if not f.is_detached() and not f._rolled]
+    # Skip hidden frames: a minimized window is hidden + parked on the left rail (not destroyed),
+    # so it stays in the frame list — but Arrange must tile only what's actually on screen.
+    live = [f for f in frames if not f.is_detached() and not f._rolled and f.isVisible()]
     if not live:
         return
     r = host.rect()

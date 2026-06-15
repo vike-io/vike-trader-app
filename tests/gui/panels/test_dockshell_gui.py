@@ -210,11 +210,10 @@ def test_vike_dock_titlebar_attrs_exist_before_init():
 # --- chart-header window verbs: ─ roll-up + □ maximize (AmiBroker-style, never the OS window) ---
 
 
-def test_chart_header_min_autohides_left_not_minimizes_window(app):
-    """Chart header ─ auto-hides the central chart to the LEFT edge as a vertical tab (AmiBroker-
-    style, consistent with the tools) — it must NOT minimize the whole OS window (the reported
-    bug) nor roll up into an empty workspace."""
-    import PySide6QtAds as QtAds
+def test_chart_header_min_parks_on_left_rail_not_os_minimize(app):
+    """Chart header ─ HIDES the central chart and parks a vertical restore tab on the custom left
+    rail (AmiBroker-style) — it must NOT minimize the whole OS window (the reported bug) nor roll up
+    into an empty workspace. (Replaces ADS auto-hide, which deleted docks + left an empty flyout.)"""
     from vike_trader_app.ui.dockshell import VikeDockTitleBar
     win = MainWindow(session_path=None)
     win.show()
@@ -227,7 +226,11 @@ def test_chart_header_min_autohides_left_not_minimizes_window(app):
     app.processEvents()
     assert not win.isMinimized()                          # the bug: must NOT minimize the OS window
     d = win.tabs.dock(0)
-    assert d.isAutoHide() and d.autoHideLocation() == QtAds.SideBarLeft   # left vertical tab
+    assert not d.toggleViewAction().isChecked()           # central chart hidden
+    assert win._min_rail.has("__central_chart__")         # parked on the left rail
+    win._restore_central_chart()                          # restore via the rail tab
+    app.processEvents()
+    assert d.toggleViewAction().isChecked()               # chart back, no empty space
     win.close()
 
 
@@ -269,27 +272,27 @@ def test_tool_launcher_opens_dock_despite_checked_arg(app):
     win.close()
 
 
-def test_panel_min_button_autohides_via_real_click(app):
-    """Regression: the panel ─ button was a DEAD no-op. _panel_min -> _cur_dock() read the cached
-    self._area_w, which ADS had swapped out (stale C++ ref) -> currentDockWidget() None -> nothing
-    happened (clicking Market Watch ─ did nothing on the live app). Resolving the live area fixes
-    it: a real ─ click auto-hides the dock to its edge tab."""
+def test_panel_min_button_parks_on_left_rail_via_real_click(app):
+    """The panel ─ button HIDES the dock and parks a vertical restore tab on the custom left rail
+    (AmiBroker-style). Replaces ADS auto-hide (whose fixed-width slide-out flyout left empty space on
+    restore). A real ─ click must hide + rail; restoring brings the panel back full-size.
+    (Regression-keeper: _panel_min once read a stale cached area and did nothing on a real click.)"""
     win = MainWindow(session_path=None)
     win.show()
     win._panel_btns["market"].setChecked(True)
     app.processEvents()
     app.processEvents()
-    assert not win._market_dock.isAutoHide()
+    assert not win._market_dock.isClosed()
+    key = win._market_dock.objectName()
     tb = win._market_dock.dockAreaWidget().titleBar()
     tb._header.button("min").click()             # the real ─ click path (used to be a no-op)
     app.processEvents()
-    assert win._market_dock.isAutoHide()         # now actually collapses to the edge
-    # ...and to the LEFT edge (AmiBroker rail), NOT the panel's docked RIGHT edge. toggleAutoHide()
-    # would have sent Market-Watch (docked right) to SideBarRight — _panel_min forces SideBarLeft.
-    assert win._market_dock.autoHideLocation() == QtAds.SideBarLeft
-    win._market_dock.setAutoHide(False)          # and un-pins back into the layout
+    assert win._market_dock.isClosed()           # hidden
+    assert win._min_rail.has(key)                # parked on the left rail
+    win._restore_panel_from_rail(win._market_dock)
     app.processEvents()
-    assert not win._market_dock.isAutoHide()
+    assert not win._market_dock.isClosed()       # restored full-size (no empty space)
+    assert not win._min_rail.has(key)            # rail tab dropped
     win.close()
 
 
@@ -326,18 +329,20 @@ def test_panel_titlebar_has_no_native_chrome_leak(app):
 
 
 def test_chart_header_recovers_after_autohide_reveal(app):
-    """Regression: minimizing the central chart to the left rail then revealing it rebuilt the dock
-    area with a fresh title bar whose _header was None — SpaceDeck only (re)marks the chart header on
-    an area-CHANGE, which the un-pin-from-edge path misses — so the header was permanently lost and
-    native ADS chrome (the ▼ tabs-menu + auto-hide pin) leaked through. _auto_detect_panel now
-    re-marks the 'space:' central dock as the chart header on the heal/relayout pass."""
+    """Regression: auto-hiding the central chart then revealing it rebuilds the dock area with a fresh
+    title bar whose _header is None — SpaceDeck only (re)marks the chart header on an area-CHANGE,
+    which the un-pin path misses — so the header was permanently lost and native ADS chrome (the ▼
+    tabs-menu + auto-hide pin) leaked through. _auto_detect_panel now re-marks the 'space:' central
+    dock as the chart header on the heal/relayout pass. (Minimize no longer uses auto-hide, but ADS
+    can still auto-hide the central dock via other paths, so the recovery must hold.)"""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
     ch = win.tabs.dock(0)
     tb = ch.dockAreaWidget().titleBar()
     assert tb._header is not None and tb._header.button("max") is not None   # fresh: header marked
-    tb._header.button("min").click()                                         # ─ -> auto-hide left
+    ch.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
+    ch.setAutoHide(True, QtAds.SideBarLeft)                                  # auto-hide directly
     app.processEvents()
     assert ch.isAutoHide() and ch.autoHideLocation() == QtAds.SideBarLeft
     ch.setAutoHide(False)                                                    # reveal back in-layout

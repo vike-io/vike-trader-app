@@ -691,11 +691,14 @@ class MainWindow(QtWidgets.QMainWindow):
         window, not a dock — independent, multi-monitor friendly, and free of the ADS dock-area
         split/collapse teardown race that was silently deleting docked tools.
         """
-        # The tool may already be open as a floating WINDOW — focus it.
+        # The tool may already be open as a floating WINDOW — focus it (and un-minimize it from the
+        # left rail if it was parked there: the frame is just hidden, so show + drop its rail tab).
         frame = self._tool_frames.get(key)
         if frame is not None:
+            frame.show()
             frame.raise_()
             frame.activated.emit(frame)
+            self._min_rail.remove(key)
             return frame
         existing = self._tool_docks.get(key)
         if existing is not None:
@@ -745,28 +748,46 @@ class MainWindow(QtWidgets.QMainWindow):
         return frame
 
     def _minimize_tool_to_left(self, key: str):
-        """A tool's ─ : dock it into the workspace and auto-hide it to the LEFT edge as a vertical
-        tab (AmiBroker-style) — click the tab to reveal it. Lands the live tool widget straight on
-        the left auto-hide rail via _redock_tool(auto_hide_side=…) — NOT addDockWidget(center)+
-        setAutoHide, which deleted earlier tool docks once several were minimized."""
-        self._redock_tool(key, auto_hide_side=QtAds.SideBarLeft)
+        """A tool's ─ : HIDE its window and park a vertical restore tab on the left rail (AmiBroker
+        style); click the tab to restore it full-size. The frame stays alive (hidden) so there is no
+        rebuild / state loss. Replaces ADS auto-hide (which deleted docks + left an empty-space
+        flyout once several were minimized)."""
+        frame = self._tool_frames.get(key)
+        if frame is None:
+            return
+        frame.hide()
+        self._min_rail.add(key, toolreg.TOOL_LABELS.get(key, key), self._tool_icon(key),
+                           lambda k=key: self._restore_tool_from_rail(k))
+
+    def _restore_tool_from_rail(self, key: str):
+        self._min_rail.remove(key)      # idempotent — also drops the tab when called programmatically
+        frame = self._tool_frames.get(key)
+        if frame is None:               # closed while minimized — reopen fresh
+            self.open_tool(key)
+            return
+        try:
+            frame.show(); frame.raise_(); frame.activated.emit(frame)
+        except RuntimeError:
+            self._tool_frames.pop(key, None)
 
     def _minimize_chart_window_to_left(self, frame):
-        """A chart WINDOW's ─ : dock it into the workspace and auto-hide it to the LEFT edge as a
-        vertical tab (AmiBroker-style, like the tools) — not an in-place roll-up. Reuses
-        _redock_chart (window -> dock, live ChartDocument, no reload)."""
-        dock = self._redock_chart(frame)
-        if dock is not None:
-            try:
-                dock.setAutoHide(True, QtAds.SideBarLeft)
-            except (RuntimeError, TypeError):
-                pass
+        """A chart WINDOW's ─ : hide it and park a restore tab on the left rail (like the tools)."""
+        key = f"chartwin:{id(frame)}"
+        doc = getattr(frame, "doc", None)
+        label = doc.title() if (doc is not None and hasattr(doc, "title")) else "Chart"
+        frame.hide()
+        self._min_rail.add(key, label, self._tool_icon("chart"),
+                           lambda f=frame: self._restore_chart_window(f))
+
+    def _restore_chart_window(self, frame):
+        self._min_rail.remove(f"chartwin:{id(frame)}")
+        try:
+            frame.show(); frame.raise_(); frame.activated.emit(frame)
+        except RuntimeError:
+            pass
 
     def _minimize_chart_to_left(self):
-        """Chart header ─ : auto-hide the central chart dock to the LEFT edge as a vertical tab
-        (AmiBroker-style), consistent with the tools — NOT the old in-place roll-up that left an
-        empty workspace. The chart space dock is non-pinnable by default (pinned space), so enable
-        Pinnable first; verified the central dock auto-hides to SideBarLeft."""
+        """Chart header ─ : hide the central chart space and park a restore tab on the left rail."""
         try:
             dock = self.tabs.dock(0)
         except (RuntimeError, AttributeError, IndexError):
@@ -774,9 +795,37 @@ class MainWindow(QtWidgets.QMainWindow):
         if dock is None:
             return
         try:
-            dock.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
-            dock.setAutoHide(True, QtAds.SideBarLeft)
-        except (RuntimeError, TypeError):
+            dock.toggleView(False)
+        except RuntimeError:
+            return
+        self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
+                           self._restore_central_chart)
+
+    def _restore_central_chart(self):
+        self._min_rail.remove("__central_chart__")
+        try:
+            self.tabs.dock(0).toggleView(True)
+            self.tabs.dock(0).raise_()
+        except (RuntimeError, AttributeError, IndexError):
+            pass
+
+    def _minimize_panel_to_rail(self, dock):
+        """A side panel's ─ : hide the dock and park a restore tab on the left rail (AmiBroker)."""
+        key = dock.objectName() or f"panel:{id(dock)}"
+        label = dock.windowTitle() or key
+        try:
+            self._set_dock_open(dock, False)
+        except RuntimeError:
+            return
+        self._min_rail.add(key, label, dock.icon(),
+                           lambda d=dock: self._restore_panel_from_rail(d))
+
+    def _restore_panel_from_rail(self, dock):
+        try:
+            self._min_rail.remove(dock.objectName())
+            self._set_dock_open(dock, True)
+            dock.raise_()
+        except RuntimeError:
             pass
 
     def _tool_icon(self, key: str):
@@ -1159,6 +1208,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._backtester = container
         configure_dock_manager_defaults()  # static config — must precede CDockManager()
         self.dock_manager = QtAds.CDockManager(self)  # installs itself as the central widget
+        # Custom MINIMIZE rail (left of the central widget). The ─ verb hides a window/panel and
+        # parks a vertical tab here; clicking restores it. Replaces ADS auto-hide (unstable with
+        # several auto-hide containers — deleted docks + empty-space flyout). See ui/minrail.py.
+        from .minrail import MinimizedRail
+        self._min_rail = MinimizedRail(self)
+        self.addToolBar(QtCore.Qt.LeftToolBarArea, self._min_rail)
+        self._restore_cbs: dict[str, "callable"] = {}
         # Unified title bar (stage 1): our factory renders every dock-area title bar — the
         # central spaces area carries the single-title MC chart header; panels keep MC chrome.
         # Per-manager install (not the global setFactory) so offscreen tests + any future

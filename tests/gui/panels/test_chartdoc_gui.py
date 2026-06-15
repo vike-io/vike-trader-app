@@ -216,7 +216,6 @@ def test_closing_window_unregisters(app, _synthetic_load):
 
 
 def test_window_verbs_minimize_max_arrange(app, _synthetic_load):
-    import PySide6QtAds as QtAds
     win = MainWindow(session_path=None)
     win.show()
     QtWidgets.QApplication.processEvents()
@@ -224,16 +223,15 @@ def test_window_verbs_minimize_max_arrange(app, _synthetic_load):
     win._new_chart_document("SOLUSDT", "1h")
     win._new_chart_document("ADAUSDT", "1h")
     f1, f2, f3 = win._chart_frames
-    f1.toggle_rollup()                              # minimize -> dock + auto-hide to the LEFT edge
+    f1.toggle_rollup()                              # minimize -> hide + park a tab on the left rail
     QtWidgets.QApplication.processEvents()
-    assert f1 not in win._chart_frames              # f1 redocked out of the window list
-    assert any(d.isAutoHide() and d.autoHideLocation() == QtAds.SideBarLeft
-               for d in win._chart_docks.values())  # docked + auto-hidden left (AmiBroker-style)
+    assert not f1.isVisible()                       # hidden (not destroyed; still tracked)
+    assert win._min_rail.has(f"chartwin:{id(f1)}")  # parked on the custom left rail
     f2.toggle_max()
     assert f2.size() == win.dock_manager.size()     # maximize fills the workspace
     f2.toggle_max()
-    win._arrange_chart_windows("grid")              # tiles the remaining windows (f2, f3)
-    geos = [f.geometry() for f in win._chart_frames]
+    win._arrange_chart_windows("grid")              # tiles only the VISIBLE windows (f2, f3)
+    geos = [f.geometry() for f in win._chart_frames if f.isVisible()]
     assert len(geos) == 2 and geos[0] != geos[1] and not geos[0].intersects(geos[1])
     win.close()
 
