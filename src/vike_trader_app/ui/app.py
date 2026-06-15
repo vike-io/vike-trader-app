@@ -1411,11 +1411,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self.topbar.add_launcher("chart", "New chart window (Ctrl+N)",
                                  lambda: self._open_in_new_chart(self._symbol))
         self.topbar.add_launcher("studio", "Studio window", lambda: self.open_tool("studio"))
-        # Topbar shows the 5 most-used tool launchers (width-limited); journal + alerts are
-        # reachable via the rail + Go/File menus + Ctrl+K palette.
-        for icon_name, label, key in (("screener", "Screener", "screener"), ("data", "Data", "data"),
-                                      ("news", "News", "news"), ("calendar", "Calendar", "calendar"),
-                                      ("options", "Options", "options")):
+        # Every tool has a title-bar launcher icon (the Go menu's tool list was dropped as a dupe);
+        # journal + alerts included so they're not menu-only. Order matches the old Go menu.
+        for icon_name, label, key in (("screener", "Screener", "screener"),
+                                      ("journal", "Journal", "journal"), ("alerts", "Alerts", "alerts"),
+                                      ("data", "Data", "data"), ("news", "News", "news"),
+                                      ("calendar", "Calendar", "calendar"), ("options", "Options", "options")):
             self.topbar.add_launcher(icon_name, f"{label} window",
                                      lambda *_a, k=key: self.open_tool(k))
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row

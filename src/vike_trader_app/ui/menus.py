@@ -35,7 +35,7 @@ _BAR_QSS = (
 # View/Insert/Format dropped from the bar per the user (panel toggles keep their Ctrl
 # shortcuts + palette commands; indicator picker + chart style live on the chart's own
 # toolbar); their _fill_* helpers stay for the command palette / future use.
-_SECTIONS = (("File", "_fill_file"), ("Go", "_fill_go"),
+_SECTIONS = (("File", "_fill_file"),
              ("Window", "_fill_window"), ("Help", "_fill_help"))
 
 
@@ -111,17 +111,10 @@ def _fill_view(m, win):
     m.addAction("Command palette\tCtrl+K", win._open_command_palette)
 
 
-# --- Go ---------------------------------------------------------------------------------------
-
-def _fill_go(m, win):
-    """Navigation: one 'Open …' entry per on-demand TOOL (Studio + the 7, opened via open_tool),
-    plus a new chart window. The old per-SPACE entry ('Chart') is gone — there is a single Chart
-    space now, so navigating to it was a vestigial no-op (show_space(0) on the already-current
-    space). Open a chart via 'New chart window'."""
-    for _g, name, tool_key in win._TOOL_ITEMS:
-        m.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
-    m.addSeparator()
-    m.addAction("New chart window\tCtrl+N", lambda: win._open_in_new_chart(win._symbol))
+# --- Go (REMOVED) -----------------------------------------------------------------------------
+# The Go menu (one 'Open …' per tool + 'New chart window') was dropped: every tool now has a
+# title-bar launcher ICON (incl. Journal + Alerts), New chart window has its icon + Ctrl+N, and the
+# Ctrl+K palette still lists everything. The menu was a pure duplicate of the icon row.
 
 
 # --- Insert -----------------------------------------------------------------------------------
