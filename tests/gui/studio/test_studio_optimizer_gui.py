@@ -92,8 +92,9 @@ def test_surface_needs_two_params_shows_hint(app):
 
 
 def test_optimizer_config_dialog_roundtrip_and_contextual_enable(app):
-    cfg = {"method": "genetic", "criterion": "sortino", "mode": "rolling", "n_splits": 5,
-           "n_trials": 80, "pop_size": 30, "generations": 12, "sampler": "gp", "seed": 7}
+    from vike_trader_app.ui.studio import OptimizerConfig
+    cfg = OptimizerConfig(method="genetic", criterion="sortino", mode="rolling", n_splits=5,
+                          n_trials=80, pop_size=30, generations=12, sampler="gp", seed=7)
     dlg = OptimizerConfigDialog(cfg)
     assert dlg.values() == cfg
     # genetic -> population/generations enabled, trials/sampler disabled
@@ -116,7 +117,7 @@ def test_clear_resets_wf_and_surface(app):
 def test_optimizer_dialog_hides_bayesian_without_optuna(app, monkeypatch):
     import vike_trader_app.ui.studio as studio
     monkeypatch.setattr(studio, "_HAS_OPTUNA", False)
-    dlg = studio.OptimizerConfigDialog({"method": "bayesian"})
+    dlg = studio.OptimizerConfigDialog(studio.OptimizerConfig(method="bayesian"))
     methods = [dlg.method.itemText(i) for i in range(dlg.method.count())]
     assert "bayesian" not in methods
     assert dlg.method.currentText() == "grid"  # a requested-but-unavailable method falls back

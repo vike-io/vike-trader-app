@@ -8,6 +8,7 @@ space (app.py), not here. The overfit-risk verdict banner sits above the tabs.
 
 import difflib
 import html
+from dataclasses import asdict, dataclass, replace
 
 import numpy as np
 import pyqtgraph as pg
@@ -49,6 +50,31 @@ _OPT_METHODS = ["grid", "random", "genetic", "bayesian"]
 _OPT_CRITERIA = ["sharpe", "sortino", "calmar", "omega", "total_return", "profit_factor", "recovery_factor"]
 _WF_MODES = ["anchored", "rolling"]
 _BAYES_SAMPLERS = ["tpe", "gp", "cmaes", "random"]
+
+
+@dataclass
+class OptimizerConfig:
+    """Optimizer + walk-forward settings (was a bare 9-key dict). Field names match the tester
+    optimize/walk_forward kwargs exactly, so `asdict(cfg)` IS the kwargs dict."""
+    method: str = "grid"
+    criterion: str = "sharpe"
+    mode: str = "anchored"
+    n_splits: int = 3
+    n_trials: int = 50
+    pop_size: int = 20
+    generations: int = 10
+    sampler: str = "tpe"
+    seed: int = 0
+
+
+@dataclass
+class BacktestConfig:
+    """One backtest's run settings (was a positional 4-tuple). ``resolution_ms`` is None when the
+    chosen resolution equals/exceeds the base data (no resampling)."""
+    capital: float
+    start_ts: int
+    end_ts: int
+    resolution_ms: int | None
 # Cap the in-sample grid we backtest to draw the optimization surface (combos = product of axes).
 _SURFACE_MAX_COMBOS = 400
 
@@ -1506,20 +1532,18 @@ class BacktestConfigDialog(QtWidgets.QDialog):
         btns.rejected.connect(self.reject)
         root.addWidget(btns)
 
-    def values(self):
-        """(capital, start_ts, end_ts, resolution_ms) — dates inclusive (epoch ms).
-
-        ``resolution_ms`` is None when the chosen resolution equals the base data (no
-        resampling needed); otherwise it's the coarse window to aggregate the bars to.
-        """
-        cap = self.capital.value()
-        start_ts = QtCore.QDateTime(self.start.date(), QtCore.QTime(0, 0, 0)).toMSecsSinceEpoch()
-        end_ts = QtCore.QDateTime(self.end.date(), QtCore.QTime(23, 59, 59)).toMSecsSinceEpoch()
-        res_lbl = self.resolution.value()
-        res_ms = _RESOLUTIONS.get(res_lbl)
+    def values(self) -> BacktestConfig:
+        """BacktestConfig with inclusive dates (epoch ms). ``resolution_ms`` is None when the chosen
+        resolution equals/is-finer-than the base data (no resampling); else the coarse aggregate window."""
+        res_ms = _RESOLUTIONS.get(self.resolution.value())
         if res_ms is not None and self._base_ms is not None and res_ms <= self._base_ms:
             res_ms = None  # same as (or finer than) base -> no resampling
-        return cap, start_ts, end_ts, res_ms
+        return BacktestConfig(
+            capital=self.capital.value(),
+            start_ts=QtCore.QDateTime(self.start.date(), QtCore.QTime(0, 0, 0)).toMSecsSinceEpoch(),
+            end_ts=QtCore.QDateTime(self.end.date(), QtCore.QTime(23, 59, 59)).toMSecsSinceEpoch(),
+            resolution_ms=res_ms,
+        )
 
 
 class OptimizerConfigDialog(QtWidgets.QDialog):
@@ -1530,7 +1554,7 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
     the walk-forward train window is anchored (expanding) or rolling (fixed-width sliding).
     """
 
-    def __init__(self, config: dict, parent: QtWidgets.QWidget | None = None):
+    def __init__(self, config: OptimizerConfig, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
         self.setWindowTitle("Optimizer configuration")
         self.setModal(True)
@@ -1553,17 +1577,16 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
         self.method = QtWidgets.QComboBox()
         methods = _OPT_METHODS if _HAS_OPTUNA else [m for m in _OPT_METHODS if m != "bayesian"]
         self.method.addItems(methods)
-        want = config.get("method", "grid")
-        self.method.setCurrentText(want if want in methods else "grid")
+        self.method.setCurrentText(config.method if config.method in methods else "grid")
         self.criterion = QtWidgets.QComboBox()
         self.criterion.addItems(_OPT_CRITERIA)
-        self.criterion.setCurrentText(config.get("criterion", "sharpe"))
+        self.criterion.setCurrentText(config.criterion)
         self.mode = QtWidgets.QComboBox()
         self.mode.addItems(_WF_MODES)
-        self.mode.setCurrentText(config.get("mode", "anchored"))
+        self.mode.setCurrentText(config.mode)
         self.sampler = QtWidgets.QComboBox()
         self.sampler.addItems(_BAYES_SAMPLERS)
-        self.sampler.setCurrentText(config.get("sampler", "tpe"))
+        self.sampler.setCurrentText(config.sampler)
 
         def _spin(lo, hi, val):
             s = QtWidgets.QSpinBox()
@@ -1571,11 +1594,11 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
             s.setValue(int(val))
             return s
 
-        self.n_splits = _spin(2, 20, config.get("n_splits", 3))
-        self.n_trials = _spin(5, 2000, config.get("n_trials", 50))
-        self.pop_size = _spin(4, 500, config.get("pop_size", 20))
-        self.generations = _spin(1, 500, config.get("generations", 10))
-        self.seed = _spin(0, 1_000_000, config.get("seed", 0))
+        self.n_splits = _spin(2, 20, config.n_splits)
+        self.n_trials = _spin(5, 2000, config.n_trials)
+        self.pop_size = _spin(4, 500, config.pop_size)
+        self.generations = _spin(1, 500, config.generations)
+        self.seed = _spin(0, 1_000_000, config.seed)
 
         form.addRow("Search method", self.method)
         form.addRow("Ranking criterion", self.criterion)
@@ -1613,18 +1636,18 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
         self.generations.setEnabled(m == "genetic")
         self.sampler.setEnabled(m == "bayesian")
 
-    def values(self) -> dict:
-        return {
-            "method": self.method.currentText(),
-            "criterion": self.criterion.currentText(),
-            "mode": self.mode.currentText(),
-            "n_splits": self.n_splits.value(),
-            "n_trials": self.n_trials.value(),
-            "pop_size": self.pop_size.value(),
-            "generations": self.generations.value(),
-            "sampler": self.sampler.currentText(),
-            "seed": self.seed.value(),
-        }
+    def values(self) -> OptimizerConfig:
+        return OptimizerConfig(
+            method=self.method.currentText(),
+            criterion=self.criterion.currentText(),
+            mode=self.mode.currentText(),
+            n_splits=self.n_splits.value(),
+            n_trials=self.n_trials.value(),
+            pop_size=self.pop_size.value(),
+            generations=self.generations.value(),
+            sampler=self.sampler.currentText(),
+            seed=self.seed.value(),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1730,9 +1753,7 @@ class StudioTab(QtWidgets.QWidget):
         self._portfolio_ranges = None  # per-symbol membership ranges (survivorship-free)
         self._portfolio_name = ""    # DataSet name surfaced in toasts
         # Optimizer + walk-forward config (set via the Optimizer modal; consumed by _optimize).
-        self._opt_config = {"method": "grid", "criterion": "sharpe", "mode": "anchored",
-                            "n_splits": 3, "n_trials": 50, "pop_size": 20, "generations": 10,
-                            "sampler": "tpe", "seed": 0}
+        self._opt_config = OptimizerConfig()
 
         root = QtWidgets.QVBoxLayout(self)
         # No root inset — every visible gap is a single, uniform _GAP instead of doubling up
@@ -2025,7 +2046,6 @@ class StudioTab(QtWidgets.QWidget):
         A single-symbol run exits portfolio-optimize mode so the Walk-forward button follows
         the latest action.
         """
-        from dataclasses import replace
 
         from vike_trader_app.core.strategy_loader import load_strategy_from_string
         from vike_trader_app.tester import StrategyTester, TesterConfig
@@ -2086,8 +2106,6 @@ class StudioTab(QtWidgets.QWidget):
         OUT-OF-SAMPLE, and the stitched result carries a PBO/deflated-Sharpe overfit verdict (the
         banner) — so a curve-fit grid sweep shows up as High overfit risk rather than a shiny number.
         """
-        from dataclasses import replace
-
         from vike_trader_app.core.strategy_loader import load_strategy_from_string
         from vike_trader_app.tester import StrategyTester, TesterConfig
 
@@ -2105,9 +2123,7 @@ class StudioTab(QtWidgets.QWidget):
             self.results.toast("Add a PARAM_GRID to the strategy to walk-forward optimize it.")
             return
         cfg = self._opt_config
-        wf_kw = dict(n_splits=cfg["n_splits"], criterion=cfg["criterion"], mode=cfg["mode"],
-                     method=cfg["method"], seed=cfg["seed"], n_trials=cfg["n_trials"],
-                     pop_size=cfg["pop_size"], generations=cfg["generations"], sampler=cfg["sampler"])
+        wf_kw = asdict(cfg)   # OptimizerConfig fields == walk_forward kwargs
         if self._portfolio_bars:
             from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester
             n = min((len(b) for b in self._portfolio_bars.values()), default=0)
@@ -2126,8 +2142,8 @@ class StudioTab(QtWidgets.QWidget):
             finally:
                 QtWidgets.QApplication.restoreOverrideCursor()
             self.results.add_run(wf.oos_report, [])    # portfolio: no per-bar price chart
-            self.results.show_walk_forward(wf, cfg["criterion"])
-            self._populate_surface(pt, cls.make, grid, cfg["criterion"])
+            self.results.show_walk_forward(wf, cfg.criterion)
+            self._populate_surface(pt, cls.make, grid, cfg.criterion)
             best = wf.windows[-1].best_params if wf.windows else {}
             level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
             self.results.toast(f"Portfolio WF-OOS · {self._portfolio_name} · overfit: {level} · best {best}")
@@ -2147,8 +2163,8 @@ class StudioTab(QtWidgets.QWidget):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
         self.results.add_run(wf.oos_report, bars)
-        self.results.show_walk_forward(wf, cfg["criterion"])
-        self._populate_surface(st, cls.make, grid, cfg["criterion"])
+        self.results.show_walk_forward(wf, cfg.criterion)
+        self._populate_surface(st, cls.make, grid, cfg.criterion)
         best = wf.windows[-1].best_params if wf.windows else {}
         level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
         self.results.toast(f"Walk-forward OOS · overfit risk: {level} · best {best}")
@@ -2184,7 +2200,7 @@ class StudioTab(QtWidgets.QWidget):
             self._opt_config = dlg.values()
             c = self._opt_config
             self.results.toast(
-                f"Optimizer · {c['method']} · {c['criterion']} · WF {c['mode']} ({c['n_splits']}) — press Walk-forward"
+                f"Optimizer · {c.method} · {c.criterion} · WF {c.mode} ({c.n_splits}) — press Walk-forward"
             )
 
     def _export_csv(self) -> None:
@@ -2232,13 +2248,13 @@ class StudioTab(QtWidgets.QWidget):
         dlg = BacktestConfigDialog(self._bars, capital=cap, parent=self)
         dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)  # freed after exec returns (deferred delete)
         if dlg.exec() == QtWidgets.QDialog.Accepted:
-            cap, start_ts, end_ts, res_ms = dlg.values()
-            self._run_capital = cap
-            self._run_range = (start_ts, end_ts)
-            self._run_resolution = res_ms
+            bc = dlg.values()
+            self._run_capital = bc.capital
+            self._run_range = (bc.start_ts, bc.end_ts)
+            self._run_resolution = bc.resolution_ms
             res_lbl = dlg.resolution.value() or "base"
             self.results.toast(
-                f"Settings · capital ${cap:,.0f} · {res_lbl} · range set — press Run"
+                f"Settings · capital ${bc.capital:,.0f} · {res_lbl} · range set — press Run"
             )
 
     # --- AI provider / connect-to-Claude ---
