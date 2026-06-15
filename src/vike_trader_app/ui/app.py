@@ -637,11 +637,10 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
 
     def _toggle_chart_maximize(self) -> None:
-        """Chart header □ : maximize the chart to fill the workspace by hiding the OPEN side panels,
-        remembering which so the toggle restores exactly those. If nothing is open to hide (the chart
-        already fills its area — e.g. the panels were minimized to the rail), this is a no-op and the
-        chart stays UN-maxed, so the button never lands in a false 'maximized' state with no visible
-        effect. Decoupled from minimize: restoring the chart or any panel from the rail clears this."""
+        """Chart header □ : maximize the chart to fill the WORKSPACE, exactly like MultiCharts /
+        AmiBroker — hide the open side panels so the chart spans the whole docked area, while the
+        app's menu bar + status bar STAY put. Click □ again (or press Esc) to bring the panels
+        back. Remembers which panels were open so restore is exact."""
         if not getattr(self, "_chart_maxed", False):
             hidden = []
             for key, dock in getattr(self, "_panel_dock_map", {}).items():
@@ -652,17 +651,28 @@ class MainWindow(QtWidgets.QMainWindow):
                 except RuntimeError:        # dock torn down mid-relayout — skip
                     continue
             if not hidden:
-                return                      # nothing open to hide -> not maximized; leave □
-            self._chart_maxed = True
+                return                      # no panels open -> chart already fills the workspace
             self._chart_max_hidden = hidden
+            self._chart_maxed = True
         else:
-            self._chart_maxed = False
             for key in getattr(self, "_chart_max_hidden", []):
                 dock = self._panel_dock_map.get(key)
                 if dock is not None:
-                    self._set_dock_open(dock, True)
+                    try:
+                        self._set_dock_open(dock, True)
+                    except RuntimeError:    # a remembered panel was torn down meanwhile — skip
+                        continue
             self._chart_max_hidden = []
+            self._chart_maxed = False
         self._refresh_chart_max_icon()
+        self._fit_chart_header()            # visible chart width changed (panels hidden/shown)
+
+    def keyPressEvent(self, event):  # noqa: N802 - Esc un-maximizes the chart (brings panels back)
+        if event.key() == QtCore.Qt.Key_Escape and getattr(self, "_chart_maxed", False):
+            self._toggle_chart_maximize()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _refresh_chart_max_icon(self) -> None:
         """Sync the chart header's maximize glyph (□ / ❐) to _chart_maxed — called whenever the
