@@ -95,17 +95,21 @@ def test_run_populates_equity_and_trades(app):
     assert len(tab.results._report_trades) == tab.results.last_report.n_trades
 
 
-def test_trade_click_is_noop(app):
-    """_on_trade_clicked is now a deliberate no-op; price-chart focus lives in the Chart space."""
+def test_trades_table_readonly_and_no_navigation(app):
+    """Trades table is read-only / row-select with NO row-click navigation (chart focus lives in
+    the Chart space now), and selecting a row leaves the results tab unchanged."""
     tab = StudioTab()
     tab.set_bars(_bars())
     tab.set_config(TesterConfig(taker_fee=0.0))
     tab.set_text(_GOOD)
     tab.run_code()
-    tab.results._tabs.setCurrentIndex(2)        # stay on the Trades tab
-    result = tab.results._on_trade_clicked(0, 0)  # call must not raise
-    assert result is None                          # returns nothing (explicit return)
-    assert tab.results._tabs.currentIndex() == 2  # tab index unchanged — no navigation
+    trades = tab.results._trades
+    assert trades.editTriggers() == QtWidgets.QAbstractItemView.NoEditTriggers
+    assert trades.selectionBehavior() == QtWidgets.QAbstractItemView.SelectRows
+    tab.results._tabs.setCurrentIndex(2)            # stay on the Trades tab
+    if trades.rowCount():
+        trades.selectRow(0)                          # selecting a row must not navigate
+    assert tab.results._tabs.currentIndex() == 2
 
 
 def test_runs_history_records_and_reopens(app):
