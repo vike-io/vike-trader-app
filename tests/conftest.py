@@ -40,6 +40,26 @@ _NETWORK_TESTS = {
 
 
 @pytest.fixture(autouse=True)
+def _no_background_quotes(monkeypatch):
+    """Disable the watchlist quote timers in tests (mirrors VIKE_DISABLE_LIVE for the chart feed).
+
+    ``_populate_watchlist`` (in MainWindow.__init__) starts a 10ms ``_price_timer`` that does a
+    Catalog/Parquet read + ``watchlist.set_prices`` every tick, then a 6s ``_refresh_timer``. Under
+    parallel xdist load a heavy GUI test runs long enough that those ticks fire *during* dock/window
+    teardown — the reentrant data-layer read and ``set_prices`` on a torn-down label intermittently
+    crash the worker (``CDockWidget already deleted`` / native ``worker crashed``). In isolation the
+    test finishes before a tick matters, so it passes — the classic xdist-only flake. No test depends
+    on live quotes, so no-op the two starters. Reads ``sys.modules`` (never imports Qt) so the
+    Qt-free unit run stays untouched."""
+    app_mod = sys.modules.get("vike_trader_app.ui.app")
+    if app_mod is None:
+        return  # Qt-free unit run — app never imported, nothing (and no Qt) to touch
+    monkeypatch.setattr(app_mod.MainWindow, "_start_price_fill", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(app_mod.MainWindow, "_start_quote_refresh", lambda *a, **k: None,
+                        raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _cleanup_qt_widgets():
     """Tear down leaked Qt widget trees deterministically at each test boundary.
 
