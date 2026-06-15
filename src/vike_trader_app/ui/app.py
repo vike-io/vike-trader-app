@@ -501,6 +501,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.activated.connect(self._on_chart_window_activated)
         frame.cloneRequested.connect(self._clone_window)
         frame.redockRequested.connect(self._redock_chart)
+        frame.minimizeRequested.connect(self._minimize_chart_window_to_left)
         self._chart_frames.append(frame)
         # cascade placement: each new window steps down-right from the last
         n = len(self._chart_frames) - 1
@@ -739,8 +740,49 @@ class MainWindow(QtWidgets.QMainWindow):
                                 icon=self._tool_icon(key).pixmap(16, 16))
         frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
         frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
+        frame.minimizeRequested.connect(lambda _f, k=key: self._minimize_tool_to_left(k))
         self._tool_frames[key] = frame
         return frame
+
+    def _minimize_tool_to_left(self, key: str):
+        """A tool's ─ : dock it into the workspace and auto-hide it to the LEFT edge as a vertical
+        tab (AmiBroker-style) — click the tab to reveal it. Reuses ADS auto-hide (SideBarLeft) on
+        the live tool widget via _redock_tool (window -> dock, no rebuild)."""
+        self._redock_tool(key)
+        dock = self._tool_docks.get(key)
+        if dock is not None:
+            try:
+                dock.setAutoHide(True, QtAds.SideBarLeft)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _minimize_chart_window_to_left(self, frame):
+        """A chart WINDOW's ─ : dock it into the workspace and auto-hide it to the LEFT edge as a
+        vertical tab (AmiBroker-style, like the tools) — not an in-place roll-up. Reuses
+        _redock_chart (window -> dock, live ChartDocument, no reload)."""
+        dock = self._redock_chart(frame)
+        if dock is not None:
+            try:
+                dock.setAutoHide(True, QtAds.SideBarLeft)
+            except (RuntimeError, TypeError):
+                pass
+
+    def _minimize_chart_to_left(self):
+        """Chart header ─ : auto-hide the central chart dock to the LEFT edge as a vertical tab
+        (AmiBroker-style), consistent with the tools — NOT the old in-place roll-up that left an
+        empty workspace. The chart space dock is non-pinnable by default (pinned space), so enable
+        Pinnable first; verified the central dock auto-hides to SideBarLeft."""
+        try:
+            dock = self.tabs.dock(0)
+        except (RuntimeError, AttributeError, IndexError):
+            dock = None
+        if dock is None:
+            return
+        try:
+            dock.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
+            dock.setAutoHide(True, QtAds.SideBarLeft)
+        except (RuntimeError, TypeError):
+            pass
 
     def _tool_icon(self, key: str):
         """The colourful per-tool launcher icon (rail + dock + tool window), one place."""

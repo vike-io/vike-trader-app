@@ -30,6 +30,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
     activated = QtCore.Signal(object)     # self (clicked/raised)
     cloneRequested = QtCore.Signal(object)   # self — duplicate this window (MainWindow handles)
     redockRequested = QtCore.Signal(object)  # self — dock this window into the workspace (charts + tools)
+    minimizeRequested = QtCore.Signal(object)  # self — minimize via the host (tools: AmiBroker left auto-hide tab)
 
     def __init__(self, doc, host: QtWidgets.QWidget, *, title: "str | None" = None,
                  icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = False):
@@ -90,9 +91,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
         if clone:
             self._bar.add_button("clone", "＋", "Clone this window",
                                  lambda: self.cloneRequested.emit(self))
-        self._detach_btn = self._bar.add_button(
-            "detach", "⧉", "Detach to its own window", self.toggle_detach)
-        self._bar.add_button("min", "─", "Minimize (roll up)", self.toggle_rollup)
+        # ⧉ dropped (MC/VS model): detach/attach is via the right-click menu, and you float a
+        # docked panel by dragging its title bar out. No dedicated detach BUTTON on the bar.
+        self._detach_btn = None
+        self._bar.add_button("min", "─", "Minimize (hide to left edge)", self.toggle_rollup)
         self._max_btn = self._bar.add_button("max", "□", "Maximize", self.toggle_max)
         self._bar.add_button("close", "✕", "Close", self.close_window, danger=True)
         self._bar.set_menu(self._show_menu)
@@ -117,7 +119,6 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self.move(60, 60)
             self.resize(geo.size())
             self.show()
-            self._detach_btn.setToolTip("Detach to its own window")
             if hasattr(self.doc, "set_floating"):
                 self.doc.set_floating(False)
         else:
@@ -126,27 +127,16 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
             self.move(global_pos)
             self.show()
-            self._detach_btn.setToolTip("Attach back into the workspace")
             if hasattr(self.doc, "set_floating"):
                 self.doc.set_floating(True)
         self.raise_()
         self.activated.emit(self)
 
     def toggle_rollup(self) -> None:
-        self._rolled = not self._rolled
-        body = self.doc
-        body.setVisible(not self._rolled)
-        if self._rolled:
-            self._roll_geo = self.geometry()
-            self.resize(_STUB_W, TITLE_H + 2)        # collapse to a narrow title stub
-        else:
-            self.setGeometry(self._roll_geo)         # restore position AND size
-        # AmiBroker-style hide: attached rolled windows park as stubs stacked down the LEFT edge of
-        # the workspace; restoring one re-stacks the rest. Detached (OS) windows roll up in place.
-        w = self.window()
-        if hasattr(w, "_restack_left_rail"):
-            w._restack_left_rail()
-        self.raise_()
+        # Minimize (─) routes to the host, which docks this window and auto-hides it to the LEFT
+        # edge as a vertical tab (AmiBroker-style, consistent across charts + tools) — NOT an
+        # in-place roll-up. The host wiring differs (chart vs tool), so it owns the behaviour.
+        self.minimizeRequested.emit(self)
 
     def toggle_max(self) -> None:
         if self._rolled:

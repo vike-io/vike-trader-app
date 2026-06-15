@@ -129,7 +129,11 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 except RuntimeError:
                     pass
                 return
-            self._toggle_chart_rollup()            # docked -> roll the chart up to its title strip
+            # docked -> auto-hide the chart to the LEFT edge as a vertical tab (AmiBroker-style,
+            # consistent with the tools), NOT an in-place roll-up that left an empty workspace.
+            w = win if win is not None else _resolve_window()
+            if w is not None and hasattr(w, "_minimize_chart_to_left"):
+                w._minimize_chart_to_left()
 
         def _win_max():
             c = _floating_container()
@@ -157,11 +161,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                               icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
                               parent=self)
         # Unified title bar (the user's MC-style choice): every title bar is ⧉ ─ □ ✕. The old ＋
-        # "clone" was redundant here — it called the SAME _open_as_window as ⧉ — so it's dropped
-        # (a brand-new chart window is still on the top-bar launcher + Ctrl+N).
-        # ⧉ opens the chart as a clean chartwin window (NOT a broken ADS float — ADS floating is
-        # disabled wholesale; charts float via chartwin).
-        bar.add_button("detach", "⧉", "Open this chart as a window", _open_as_window)
+        # ⧉ and the redundant ＋ are BOTH dropped (MC/VS model): float by dragging the title bar
+        # out; a brand-new chart window is on the top-bar launcher + Ctrl+N. (_open_as_window stays
+        # for the drag-to-float path + Window-menu verbs.)
         bar.add_button("min", "─", "Minimize", _win_min)
         bar.add_button("max", "□", "Maximize / restore", _win_max)
         bar.add_button("close", "✕", "Close the current chart",
@@ -347,9 +349,8 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
 
         self._is_panel = True
         bar = UnifiedTitleBar(parent=self)
-        # Unified title bar: EVERY panel (side panels too, not just tools) carries the same
-        # ⧉ ─ □ ✕ as the chart + tool/chart windows.
-        bar.add_button("detach", "⧉", "Open this panel as a window", self._panel_detach)
+        # Unified title bar: ─ □ ✕ (MC/VS). ⧉ is dropped — float a panel by DRAGGING its title bar
+        # out (wired below via the bar's drag eventFilter -> _panel_detach), not a button.
         bar.add_button("min", "─", "Minimize (collapse to edge)", self._panel_min)
         bar.add_button("max", "□", "Maximize / restore", self._panel_max)
         bar.add_button("close", "✕", "Close", self._panel_close, danger=True)

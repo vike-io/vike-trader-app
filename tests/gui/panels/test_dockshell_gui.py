@@ -210,10 +210,11 @@ def test_vike_dock_titlebar_attrs_exist_before_init():
 # --- chart-header window verbs: ─ roll-up + □ maximize (AmiBroker-style, never the OS window) ---
 
 
-def test_chart_header_min_rolls_up_not_minimizes_window(app):
-    """Chart header ─ rolls the central chart area up to its title strip (the AmiBroker
-    minimize-to-stub) — it must NOT minimize the whole OS window (the reported bug). A second
-    click restores the area's height."""
+def test_chart_header_min_autohides_left_not_minimizes_window(app):
+    """Chart header ─ auto-hides the central chart to the LEFT edge as a vertical tab (AmiBroker-
+    style, consistent with the tools) — it must NOT minimize the whole OS window (the reported
+    bug) nor roll up into an empty workspace."""
+    import PySide6QtAds as QtAds
     from vike_trader_app.ui.dockshell import VikeDockTitleBar
     win = MainWindow(session_path=None)
     win.show()
@@ -222,15 +223,11 @@ def test_chart_header_min_rolls_up_not_minimizes_window(app):
     tb = next((t for t in win.findChildren(VikeDockTitleBar)
                if getattr(t, "_deck", None) is not None and t._header is not None), None)
     assert tb is not None
-    area = tb.dockAreaWidget()
-    full = area.maximumHeight()
     tb._header.button("min").click()
     app.processEvents()
-    assert not win.isMinimized()                          # the bug: must NOT minimize the app
-    assert tb._rolled and area.maximumHeight() <= 40      # rolled to the title strip
-    tb._header.button("min").click()
-    app.processEvents()
-    assert not tb._rolled and area.maximumHeight() == full   # restored
+    assert not win.isMinimized()                          # the bug: must NOT minimize the OS window
+    d = win.tabs.dock(0)
+    assert d.isAutoHide() and d.autoHideLocation() == QtAds.SideBarLeft   # left vertical tab
     win.close()
 
 
