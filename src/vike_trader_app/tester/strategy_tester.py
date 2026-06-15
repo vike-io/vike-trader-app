@@ -11,29 +11,23 @@ from .report import TesterReport
 _CRITERIA = ("sharpe", "sortino", "calmar", "omega", "total_return", "profit_factor", "recovery_factor")
 
 
-class StrategyTester:
-    """Front door over the tester layer. ``data`` is the bar list for runs."""
+class _OptimizeMixin:
+    """Template-method ``optimize()`` shared by the single-symbol and portfolio testers. The ONLY
+    per-tester difference is how one param combo is scored (the inner runner), so a subclass supplies
+    ``_run_trial(make, params) -> TesterReport`` and inherits the search + ranking + overfit
+    bookkeeping. (``self.config`` is set by the subclass ``__init__``.)"""
 
-    def __init__(self, strategy, data, config: TesterConfig | None = None):
-        self.strategy = strategy
-        self.data = data
-        self.config = config or TesterConfig()
-
-    def run(self) -> TesterReport:
-        """Single historical backtest -> standardized report."""
-        return Backtester(self.strategy, self.data, self.config).run()
+    def _run_trial(self, make, params: dict) -> TesterReport:
+        raise NotImplementedError
 
     def optimize(self, make, param_grid: dict, *, criterion: str = "sharpe", method: str = "grid",
                  seed: int = 0, n_trials: int | None = None, pop_size: int = 20,
                  generations: int = 10, mutation_rate: float = 0.2, sampler: str = "tpe") -> OptimizeReport:
-        """Search ``param_grid`` with ``method``, scoring each combo through the event engine; rank by ``criterion``.
-
-        ``make(**params) -> Strategy``. ``criterion`` is a TesterReport metric name. ``method`` is
-        ``grid`` (exhaustive), ``random``, ``genetic`` (no-dep GA), or ``bayesian`` (optuna: TPE /
-        GP / CMA-ES via ``sampler``). Every combo uses the SAME TesterConfig as ``run()`` (consistent
-        costs); an evaluation cache backtests each distinct combo once. Trial return-series feed a
-        correlation-aware effective trial count for the overfit verdict.
-        """
+        """Search ``param_grid`` with ``method``, scoring each combo through the engine; rank by
+        ``criterion`` (a TesterReport metric). ``make(**params) -> Strategy``. ``method`` = ``grid``
+        (exhaustive) / ``random`` / ``genetic`` (no-dep GA) / ``bayesian`` (optuna TPE/GP/CMA-ES via
+        ``sampler``). Every combo uses the tester's SAME TesterConfig, cached so each distinct combo
+        runs once; trial return-series feed a correlation-aware effective trial count for the verdict."""
         if criterion not in _CRITERIA:
             raise ValueError(f"unknown criterion {criterion!r}; expected one of {_CRITERIA}")
         reports: dict[tuple, TesterReport] = {}
@@ -42,7 +36,7 @@ class StrategyTester:
             key = tuple(sorted(params.items()))
             rep = reports.get(key)
             if rep is None:
-                rep = Backtester(make(**params), self.data, self.config).run()
+                rep = self._run_trial(make, params)
                 reports[key] = rep
             return getattr(rep, criterion)
 
@@ -57,6 +51,22 @@ class StrategyTester:
             best=trials[0], ranked=trials, trial_scores=[t.score for t in trials],
             n_trials=len(trials), effective_n=effective_n_trials(return_series), criterion=criterion,
         )
+
+
+class StrategyTester(_OptimizeMixin):
+    """Front door over the tester layer. ``data`` is the bar list for runs."""
+
+    def __init__(self, strategy, data, config: TesterConfig | None = None):
+        self.strategy = strategy
+        self.data = data
+        self.config = config or TesterConfig()
+
+    def run(self) -> TesterReport:
+        """Single historical backtest -> standardized report."""
+        return Backtester(self.strategy, self.data, self.config).run()
+
+    def _run_trial(self, make, params: dict) -> TesterReport:
+        return Backtester(make(**params), self.data, self.config).run()
 
 
     def walk_forward(self, make, param_grid: dict, *, n_splits: int = 4, criterion: str = "sharpe",

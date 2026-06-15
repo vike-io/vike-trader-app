@@ -8,17 +8,13 @@ PORTFOLIO equity instead of a single symbol's. Walk-forward windows are DATE-bas
 series are sliced to a shared ``[ts_lo, ts_hi)`` time window), so membership ranges apply per split.
 """
 
-from ..analysis import samplers
-from ..analysis.metrics import returns
-from ..analysis.overfit import effective_n_trials
 from ..core.portfolio_adapter import MultiSymbolStrategyRunner
 from .config import TesterConfig
-from .optimize import OptimizeReport, OptimizeTrial
 from .report import TesterReport
-from .strategy_tester import _CRITERIA, assemble_walk_forward
+from .strategy_tester import _CRITERIA, _OptimizeMixin, assemble_walk_forward
 
 
-class PortfolioStrategyTester:
+class PortfolioStrategyTester(_OptimizeMixin):
     """Optimize / walk-forward a single-symbol ``Strategy`` across a DataSet, scored on PORTFOLIO equity."""
 
     def __init__(self, bars_by_symbol: dict, config: TesterConfig | None = None, *,
@@ -36,45 +32,15 @@ class PortfolioStrategyTester:
             max_open_positions=self.max_open_positions, ranges=self.ranges,
         ).report()
 
-    def optimize(self, make, param_grid: dict, *, criterion: str = "sharpe", method: str = "grid",
-                 seed: int = 0, n_trials: int | None = None, pop_size: int = 20,
-                 generations: int = 10, mutation_rate: float = 0.2, sampler: str = "tpe") -> OptimizeReport:
-        """Search ``param_grid`` with ``method`` as PORTFOLIO backtests; rank by ``criterion``.
-
-        ``make(**params) -> Strategy``. ``criterion`` is a TesterReport metric. ``method`` is grid /
-        random / genetic / bayesian (see ``StrategyTester.optimize``). Each combo uses the SAME
-        TesterConfig / membership ranges as ``run()`` (consistent costs); an evaluation cache runs
-        each distinct combo once. Trial portfolio-equity return-series feed the correlation-aware
-        effective trial count for the overfit verdict.
-        """
-        if criterion not in _CRITERIA:
-            raise ValueError(f"unknown criterion {criterion!r}; expected one of {_CRITERIA}")
-        reports: dict[tuple, TesterReport] = {}
-
-        def objective(params: dict) -> float:
-            key = tuple(sorted(params.items()))
-            rep = reports.get(key)
-            if rep is None:
-                # mp=params default-arg capture: each lambda binds ITS OWN combo (no late-binding bug),
-                # so every per-symbol strategy copy in this trial is built with this combo's params.
-                rep = MultiSymbolStrategyRunner(
-                    lambda mp=params: make(**mp), self.bars_by_symbol, self.config,
-                    max_open_positions=self.max_open_positions, ranges=self.ranges,
-                ).report()
-                reports[key] = rep
-            return getattr(rep, criterion)
-
-        sampled = samplers.optimize(
-            param_grid, objective, method=method, seed=seed, n_trials=n_trials,
-            pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler,
-        )
-        trials = [OptimizeTrial(params=s.params, score=s.score, report=reports[tuple(sorted(s.params.items()))])
-                  for s in sampled]
-        return_series = [returns(t.report.equity_curve) for t in trials]
-        return OptimizeReport(
-            best=trials[0], ranked=trials, trial_scores=[t.score for t in trials],
-            n_trials=len(trials), effective_n=effective_n_trials(return_series), criterion=criterion,
-        )
+    # optimize() is inherited from _OptimizeMixin (search + ranking + overfit bookkeeping); only the
+    # per-trial PORTFOLIO runner differs:
+    def _run_trial(self, make, params: dict) -> TesterReport:
+        # mp=params default-arg capture: each lambda binds ITS OWN combo (no late-binding bug),
+        # so every per-symbol strategy copy in this trial is built with this combo's params.
+        return MultiSymbolStrategyRunner(
+            lambda mp=params: make(**mp), self.bars_by_symbol, self.config,
+            max_open_positions=self.max_open_positions, ranges=self.ranges,
+        ).report()
 
     def walk_forward(self, make, param_grid: dict, *, n_splits: int = 4, criterion: str = "sharpe",
                      mode: str = "anchored", method: str = "grid", seed: int = 0,
