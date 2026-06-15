@@ -122,14 +122,10 @@ def _fill_view(m, win):
 # --- Go ---------------------------------------------------------------------------------------
 
 def _fill_go(m, win):
-    """Navigation (the retired left icon rail's job): one entry per SPACE (just Chart now, which
-    switches the current tab) plus one per on-demand TOOL (Studio + the 7, opened via open_tool)."""
-    current = win.tabs.currentIndex()
-    for _g, name, space_index in win._SPACE_ITEMS:
-        a = m.addAction(name, lambda idx=space_index: win.tabs.show_space(idx))
-        a.setCheckable(True)
-        a.setChecked(space_index == current)
-    m.addSeparator()
+    """Navigation: one 'Open …' entry per on-demand TOOL (Studio + the 7, opened via open_tool),
+    plus a new chart window. The old per-SPACE entry ('Chart') is gone — there is a single Chart
+    space now, so navigating to it was a vestigial no-op (show_space(0) on the already-current
+    space). Open a chart via 'New chart window'."""
     for _g, name, tool_key in win._TOOL_ITEMS:
         m.addAction(f"Open {name}", lambda k=tool_key: win.open_tool(k))
     m.addSeparator()
