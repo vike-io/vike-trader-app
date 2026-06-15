@@ -300,6 +300,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._panel_frames: dict[str, "ToolWindowFrame"] = {}
         self._panel_detaching: set[str] = set()
         self._panel_maxed: "str | None" = None
+        self._panel_max_dock = None              # the dock currently panel-maximized (for rail restore)
         self._panel_max_restore: dict = {}
         # A chart window docked into the workspace ("Dock into workspace") lives here as an ADS
         # dock (objectName chart:<n>); it tears back out to a clean window via the dock's ⧉.
@@ -1113,12 +1114,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _toggle_panel_maximize(self, dock):
         """□ on a panel — maximize it to fill the workspace by hiding the chart space + the OTHER
-        panels; toggle restores exactly what was visible before."""
+        panels (MultiCharts/AmiBroker-style). The hidden chart is parked as a 'Chart' tab on the
+        left rail so it is visibly minimized and one click from coming back; toggling (the panel's
+        ❐, or that rail tab) restores exactly what was visible before."""
         if self._panel_maxed is None:
             self._panel_maxed = dock.objectName()
+            self._panel_max_dock = dock
             self._panel_max_restore = {"chart": self.tabs.isVisible(), "docks": []}
             if self.tabs.isVisible():
                 self.tabs.setVisible(False)
+                # park the now-hidden chart on the left rail (the 'minimized chart' the user expects)
+                self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
+                                   self._restore_from_panel_max)
             for k, d in self._panel_dock_map.items():
                 try:
                     if d is not dock and not d.isClosed():
@@ -1127,14 +1134,38 @@ class MainWindow(QtWidgets.QMainWindow):
                 except RuntimeError:
                     continue
         else:
-            self._panel_maxed = None
+            self._min_rail.remove("__central_chart__")
             if self._panel_max_restore.get("chart"):
                 self.tabs.setVisible(True)
             for k in self._panel_max_restore.get("docks", []):
                 d = self._panel_dock_map.get(k)
                 if d is not None:
-                    self._set_dock_open(d, True)
+                    try:
+                        self._set_dock_open(d, True)
+                    except RuntimeError:    # a remembered panel was torn down meanwhile — skip
+                        continue
             self._panel_max_restore = {}
+            self._sync_panel_max_glyph(self._panel_max_dock, False)
+            self._panel_maxed = None
+            self._panel_max_dock = None
+
+    def _restore_from_panel_max(self):
+        """The chart's left-rail tab → un-maximize the panel (bring the chart + other panels back)."""
+        if self._panel_maxed is not None and self._panel_max_dock is not None:
+            self._toggle_panel_maximize(self._panel_max_dock)
+
+    def _sync_panel_max_glyph(self, dock, maxed: bool) -> None:
+        """Sync a panel's □/❐ glyph when its maximize state changes OUTSIDE its own button (e.g.
+        un-maximized via the chart's rail tab), mirroring dockshell._panel_max's own flip."""
+        try:
+            tb = dock.dockAreaWidget().titleBar()
+            hdr = getattr(tb, "_header", None)
+            b = hdr.button("max") if (hdr is not None and hasattr(hdr, "button")) else None
+            if b is not None:
+                b.setText("❐" if maxed else "□")
+                b.setToolTip("Restore" if maxed else "Maximize / restore")
+        except (RuntimeError, AttributeError):
+            pass
 
     def _wire_tool(self, key: str, widget) -> None:
         """Per-tool signal wiring that used to live inline in _build_central, run once when a
