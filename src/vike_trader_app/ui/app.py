@@ -420,6 +420,12 @@ class MainWindow(QtWidgets.QMainWindow):
             finally:
                 self._syncing_docks = False
             self._reclaim_floating_docks()   # un-float any dock a stale blob restored as a native float
+            # ADS materializes a restored CFloatingDockContainer on a DEFERRED tick — AFTER the
+            # synchronous call above, so floatingWidgets() was still empty and a stale float (e.g. a
+            # session-saved floating Market Watch) survived launch with native chrome (app icon +
+            # size grip), the ONE title bar that isn't our unified bar. Re-run on the next event-loop
+            # turn to catch it (tied to self so a closed window cancels it, not crash on a dead obj).
+            QtCore.QTimer.singleShot(0, self, self._reclaim_floating_docks)
         # restoreState rebuilds tab widgets and re-shows the space tabs — re-hide them (the
         # rail is the space switcher; the center strip carries only chart documents).
         self.tabs.hide_space_tabs()
@@ -1778,9 +1784,10 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             floats = list(mgr.floatingWidgets())
         except (RuntimeError, AttributeError):
-            return
-        if not floats:
-            return
+            floats = []
+        # NOTE: do NOT early-return when there are no floats — the un-pin-auto-hide pass at the end
+        # must still run (a stale blob can restore an auto-hidden chart with no float at all). The
+        # float loops below are simply no-ops when `floats` is empty.
         # a docked area to re-home into (prefer one that isn't itself floating)
         central = None
         for d in mgr.dockWidgets():
@@ -1797,7 +1804,11 @@ class MainWindow(QtWidgets.QMainWindow):
                 docks = []
             for d in docks:
                 try:
-                    if central is not None:
+                    # A side PANEL belongs back on the RIGHT rail, not tabbed full-width into the
+                    # center (which would shove the chart aside). Tools/charts re-home to center.
+                    if d.objectName().startswith("panel:"):
+                        mgr.addDockWidget(QtAds.RightDockWidgetArea, d)
+                    elif central is not None:
                         mgr.addDockWidget(QtAds.CenterDockWidgetArea, d, central)
                     else:                                  # nothing docked yet — seed the central area
                         mgr.addDockWidget(QtAds.CenterDockWidgetArea, d)
@@ -1811,6 +1822,24 @@ class MainWindow(QtWidgets.QMainWindow):
                     container.deleteLater()
             except (RuntimeError, AttributeError):
                 pass
+        # ADS auto-hide is ALSO retired — minimize uses the custom left rail now. A stale blob can
+        # restore a dock pinned to an edge (e.g. the chart as a left auto-hide tab, collapsed to a
+        # thin strip while a panel fills the rest), so un-pin restored auto-hidden docks back into
+        # the layout. mgr.dockWidgets() does NOT list auto-hidden docks, so walk the KNOWN docks
+        # (chart space + panels + tools) explicitly.
+        known = []
+        try:
+            known.append(self.tabs.dock(0))
+        except (RuntimeError, AttributeError, IndexError):
+            pass
+        known += list(getattr(self, "_panel_dock_map", {}).values())
+        known += list(getattr(self, "_tool_docks", {}).values())
+        for d in known:
+            try:
+                if d is not None and not d.isClosed() and d.isAutoHide():
+                    d.setAutoHide(False)
+            except (RuntimeError, AttributeError):
+                continue
 
     def _build_statusbar(self) -> QtWidgets.QStatusBar:
         sb = QtWidgets.QStatusBar()

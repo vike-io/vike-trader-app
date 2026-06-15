@@ -302,6 +302,26 @@ def test_panel_close_button_closes_via_real_click(app):
     win.close()
 
 
+def test_reclaim_unpins_autohidden_docks(app):
+    """Regression: a stale session blob can restore the chart (or a panel) ADS-auto-hidden — but
+    ADS auto-hide is retired (minimize uses the custom left rail now), and a pinned chart collapses
+    to a thin strip while a panel fills the rest (the 'old float / weird layout' the user hit on a
+    restored session). _reclaim_floating_docks must un-pin restored auto-hidden docks. (Note:
+    mgr.dockWidgets() omits auto-hidden docks, so the reclaim walks the known docks explicitly.)"""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    ch = win.tabs.dock(0)
+    ch.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
+    ch.setAutoHide(True, QtAds.SideBarLeft)
+    app.processEvents()
+    assert ch.isAutoHide()                       # restored pinned to the edge
+    win._reclaim_floating_docks()
+    app.processEvents()
+    assert not ch.isAutoHide()                   # un-pinned back into the layout
+    win.close()
+
+
 def test_panel_titlebar_has_no_native_chrome_leak(app):
     """Regression: ADS re-shows its native dockAreaCloseButton on a deferred tick AFTER our
     refresh_native_hidden() child.hide() ran, leaking a 2nd ✕ onto the Market-Watch bar next to our
