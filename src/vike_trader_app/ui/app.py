@@ -675,17 +675,30 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         super().keyPressEvent(event)
 
-    def _refresh_chart_max_icon(self) -> None:
-        """Sync the chart header's maximize glyph (□ / ❐) to _chart_maxed — called whenever the
-        state changes outside the button's own click (rail restore of the chart or a panel)."""
-        h = self.tabs.header_widget()
-        if h is None:
-            return
-        b = h.button("max") if hasattr(h, "button") else None
+    def _max_button_for(self, dock):
+        """The □/❐ maximize button for any dock: the chart-space HEADER for the chart space, else
+        the dock's own title-bar header. None if unavailable."""
+        try:
+            if dock is not None and dock is self._chart_space_dock():
+                h = self.tabs.header_widget()
+                return h.button("max") if (h is not None and hasattr(h, "button")) else None
+            hdr = dock.dockAreaWidget().titleBar()._header
+            return hdr.button("max") if hasattr(hdr, "button") else None
+        except (RuntimeError, AttributeError):
+            return None
+
+    def _sync_max_glyph(self, dock, maxed: bool) -> None:
+        """THE single place that flips a dock's maximize glyph □↔❐ (+ tooltip). Shared by the chart
+        header AND every panel, so the two glyph paths can't drift apart (the recurring icon-desync
+        bug came from having two copies of this)."""
+        b = self._max_button_for(dock)
         if b is not None:
-            maxed = getattr(self, "_chart_maxed", False)
             b.setText("❐" if maxed else "□")
             b.setToolTip("Restore" if maxed else "Maximize / restore")
+
+    def _refresh_chart_max_icon(self) -> None:
+        """Sync the chart header glyph to _chart_maxed (state changed outside the button's click)."""
+        self._sync_max_glyph(self._chart_space_dock(), getattr(self, "_chart_maxed", False))
 
     def _clear_chart_maxed(self) -> None:
         """Drop the chart-maximized state (chart back to a normal docked share) + sync the icon.
@@ -1185,16 +1198,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _sync_panel_max_glyph(self, dock, maxed: bool) -> None:
         """Sync a panel's □/❐ glyph when its maximize state changes OUTSIDE its own button (e.g.
-        un-maximized via the chart's rail tab), mirroring dockshell._panel_max's own flip."""
-        try:
-            tb = dock.dockAreaWidget().titleBar()
-            hdr = getattr(tb, "_header", None)
-            b = hdr.button("max") if (hdr is not None and hasattr(hdr, "button")) else None
-            if b is not None:
-                b.setText("❐" if maxed else "□")
-                b.setToolTip("Restore" if maxed else "Maximize / restore")
-        except (RuntimeError, AttributeError):
-            pass
+        un-maximized via the chart's rail tab). Routes through the shared _sync_max_glyph."""
+        self._sync_max_glyph(dock, maxed)
 
     def _wire_tool(self, key: str, widget) -> None:
         """Per-tool signal wiring that used to live inline in _build_central, run once when a
