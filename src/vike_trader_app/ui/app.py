@@ -299,9 +299,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # is really a float (skip the rail-toggle off-sync); _panel_max_* hold the maximize restore.
         self._panel_frames: dict[str, "ToolWindowFrame"] = {}
         self._panel_detaching: set[str] = set()
+        # Maximize state — ONE machine for the chart header AND every side panel (see _maximize_dock).
+        # _maximized is the dock filling the workspace (chart space or a panel); _max_hidden is what
+        # was hidden to make room. _chart_maxed / _panel_maxed are kept in sync only as compat flags
+        # the dock title-bar glyph code (dockshell) still reads.
+        self._maximized = None
+        self._max_hidden: list = []
+        self._chart_maxed: bool = False
         self._panel_maxed: "str | None" = None
-        self._panel_max_dock = None              # the dock currently panel-maximized (for rail restore)
-        self._panel_max_restore: dict = {}
         # A chart window docked into the workspace ("Dock into workspace") lives here as an ADS
         # dock (objectName chart:<n>); it tears back out to a clean window via the dock's ⧉.
         # _chart_detaching marks a dock close that is really a tear-out (the doc lives on).
@@ -638,39 +643,85 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
 
     def _toggle_chart_maximize(self) -> None:
-        """Chart header □ : maximize the chart to fill the WORKSPACE, exactly like MultiCharts /
-        AmiBroker — hide the open side panels so the chart spans the whole docked area, while the
-        app's menu bar + status bar STAY put. Click □ again (or press Esc) to bring the panels
-        back. Remembers which panels were open so restore is exact."""
-        if not getattr(self, "_chart_maxed", False):
-            hidden = []
-            for key, dock in getattr(self, "_panel_dock_map", {}).items():
-                try:
-                    if not dock.isClosed():
-                        hidden.append(key)
-                        self._set_dock_open(dock, False)
-                except RuntimeError:        # dock torn down mid-relayout — skip
-                    continue
-            if not hidden:
-                return                      # no panels open -> chart already fills the workspace
-            self._chart_max_hidden = hidden
-            self._chart_maxed = True
-        else:
-            for key in getattr(self, "_chart_max_hidden", []):
-                dock = self._panel_dock_map.get(key)
-                if dock is not None:
-                    try:
-                        self._set_dock_open(dock, True)
-                    except RuntimeError:    # a remembered panel was torn down meanwhile — skip
-                        continue
-            self._chart_max_hidden = []
-            self._chart_maxed = False
-        self._refresh_chart_max_icon()
-        self._fit_chart_header()            # visible chart width changed (panels hidden/shown)
+        """Chart header □ : maximize the chart to fill the workspace (MultiCharts/AmiBroker-style),
+        toggling back. Thin wrapper over the unified _maximize_dock."""
+        self._maximize_dock(self._chart_space_dock())
 
-    def keyPressEvent(self, event):  # noqa: N802 - Esc un-maximizes the chart (brings panels back)
-        if event.key() == QtCore.Qt.Key_Escape and getattr(self, "_chart_maxed", False):
-            self._toggle_chart_maximize()
+    def _maximize_dock(self, target) -> None:
+        """Unified maximize/restore for the chart header AND any side panel: make ``target`` fill
+        the workspace by hiding every OTHER live dock (chart space, side panels, docked charts /
+        tools), keeping the app chrome; the central chart, when hidden, is parked as a 'Chart' tab
+        on the left rail. Toggling the same target's □ (or that rail tab) restores everything. If
+        there is nothing to hide (the target already fills the workspace) it is a deliberate no-op,
+        so the button never lands in a false maximized state."""
+        if target is None:
+            return
+        if self._maximized is target:                  # same target -> toggle off
+            self._restore_maximized()
+            return
+        if self._maximized is not None:                # a different dock is maximized -> undo first
+            self._restore_maximized()
+        chart_dock = self._chart_space_dock()
+        to_hide = [d for d in self._all_live_docks()
+                   if d is not target and not self._dock_closed(d)]
+        if not to_hide:
+            return                                     # already fills the workspace -> no-op
+        self._maximized = target
+        self._max_hidden = []
+        for d in to_hide:
+            self._max_hidden.append(d)
+            try:
+                self._set_dock_open(d, False)
+            except RuntimeError:
+                continue
+            if d is chart_dock:                        # park the central chart on the left rail
+                self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
+                                   self._restore_maximized)
+        self._chart_maxed = (target is chart_dock)     # compat flags (dockshell glyph readers)
+        self._panel_maxed = None if target is chart_dock else target.objectName()
+        self._sync_max_glyph(target, True)
+        self._fit_chart_header()
+
+    def _restore_maximized(self) -> None:
+        """Undo _maximize_dock: re-show every hidden dock, drop the chart rail tab, reset glyph+flags."""
+        if self._maximized is None:
+            return
+        self._min_rail.remove("__central_chart__")
+        for d in self._max_hidden:
+            try:
+                self._set_dock_open(d, True)
+            except RuntimeError:                       # a hidden dock was torn down meanwhile
+                continue
+        self._max_hidden = []
+        target = self._maximized
+        self._maximized = None
+        self._chart_maxed = False
+        self._panel_maxed = None
+        self._sync_max_glyph(target, False)
+        self._fit_chart_header()
+
+    def _all_live_docks(self) -> list:
+        """The chart space + every side panel + docked chart + docked tool (deduped, None-safe)."""
+        docks = []
+        cs = self._chart_space_dock()
+        if cs is not None:
+            docks.append(cs)
+        for src in (self._panel_dock_map.values(), self._chart_docks.values(),
+                    self._tool_docks.values()):
+            for d in src:
+                if d is not None and d not in docks:
+                    docks.append(d)
+        return docks
+
+    def _dock_closed(self, dock) -> bool:
+        try:
+            return dock.isClosed()
+        except RuntimeError:
+            return True
+
+    def keyPressEvent(self, event):  # noqa: N802 - Esc un-maximizes (brings everything back)
+        if event.key() == QtCore.Qt.Key_Escape and self._maximized is not None:
+            self._restore_maximized()
             event.accept()
             return
         super().keyPressEvent(event)
@@ -696,16 +747,15 @@ class MainWindow(QtWidgets.QMainWindow):
             b.setText("❐" if maxed else "□")
             b.setToolTip("Restore" if maxed else "Maximize / restore")
 
-    def _refresh_chart_max_icon(self) -> None:
-        """Sync the chart header glyph to _chart_maxed (state changed outside the button's click)."""
-        self._sync_max_glyph(self._chart_space_dock(), getattr(self, "_chart_maxed", False))
-
     def _clear_chart_maxed(self) -> None:
-        """Drop the chart-maximized state (chart back to a normal docked share) + sync the icon.
-        Used when the chart or a panel is restored from the rail, so maximize never fights minimize."""
+        """Defensive: when the chart or a panel is restored from the MINIMIZE rail, make sure no
+        stale chart-maximize state/glyph lingers (minimize must never fight maximize). Clears the
+        unified state only if the CHART was the maximized one, and normalises the chart glyph."""
+        if self._maximized is self._chart_space_dock():
+            self._maximized = None
+            self._max_hidden = []
         self._chart_maxed = False
-        self._chart_max_hidden = []
-        self._refresh_chart_max_icon()
+        self._sync_max_glyph(self._chart_space_dock(), False)
 
     def _frame_of(self, doc) -> "object | None":
         for f in self._chart_frames:
@@ -1131,47 +1181,9 @@ class MainWindow(QtWidgets.QMainWindow):
             dock.toggleView(False)                   # unguarded -> the rail shows the panel closed
 
     def _toggle_panel_maximize(self, dock):
-        """□ on a panel — maximize it to fill the workspace by hiding the chart space + the OTHER
-        panels (MultiCharts/AmiBroker-style). The hidden chart is parked as a 'Chart' tab on the
-        left rail so it is visibly minimized and one click from coming back; toggling (the panel's
-        ❐, or that rail tab) restores exactly what was visible before."""
-        if self._panel_maxed is None:
-            self._panel_maxed = dock.objectName()
-            self._panel_max_dock = dock
-            chart_dock = self._chart_space_dock()
-            chart_open = chart_dock is not None and not chart_dock.isClosed()
-            self._panel_max_restore = {"chart": chart_open, "docks": []}
-            if chart_open:
-                # toggleView (NOT setVisible) so ADS RECLAIMS the chart's splitter space and the
-                # panel actually fills the workspace — setVisible left the chart's slot a black hole.
-                self._set_dock_open(chart_dock, False)
-                # park the now-hidden chart on the left rail (the 'minimized chart' the user expects)
-                self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
-                                   self._restore_from_panel_max)
-            # Hide EVERY other live dock (side panels + docked charts + docked tools), not just the
-            # side panels — so the maximized panel is the ONLY visible dock and ADS hands it the
-            # whole workspace. Leaving any other dock visible was why it didn't fill on some layouts.
-            for d in self._other_docks(dock):
-                try:
-                    if not d.isClosed():
-                        self._panel_max_restore["docks"].append(d)
-                        self._set_dock_open(d, False)
-                except RuntimeError:
-                    continue
-        else:
-            self._min_rail.remove("__central_chart__")
-            chart_dock = self._chart_space_dock()
-            if self._panel_max_restore.get("chart") and chart_dock is not None:
-                self._set_dock_open(chart_dock, True)
-            for d in self._panel_max_restore.get("docks", []):
-                try:
-                    self._set_dock_open(d, True)
-                except RuntimeError:        # a remembered dock was torn down meanwhile — skip
-                    continue
-            self._panel_max_restore = {}
-            self._sync_panel_max_glyph(self._panel_max_dock, False)
-            self._panel_maxed = None
-            self._panel_max_dock = None
+        """□ on a panel — maximize it to fill the workspace (chart + other docks hidden, chart
+        parked on the left rail), toggling back. Thin wrapper over the unified _maximize_dock."""
+        self._maximize_dock(dock)
 
     def _chart_space_dock(self):
         """The central chart-space CDockWidget (space 0), or None if torn down."""
@@ -1179,27 +1191,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return self.tabs.dock(0)
         except (RuntimeError, AttributeError, IndexError):
             return None
-
-    def _other_docks(self, keep) -> list:
-        """Every live dock EXCEPT the chart space and ``keep`` — side panels + docked charts +
-        docked tools. Used to clear the workspace so a maximized panel fills it on any layout."""
-        out = []
-        for src in (self._panel_dock_map.values(), self._chart_docks.values(),
-                    self._tool_docks.values()):
-            for d in src:
-                if d is not None and d is not keep and d not in out:
-                    out.append(d)
-        return out
-
-    def _restore_from_panel_max(self):
-        """The chart's left-rail tab → un-maximize the panel (bring the chart + other panels back)."""
-        if self._panel_maxed is not None and self._panel_max_dock is not None:
-            self._toggle_panel_maximize(self._panel_max_dock)
-
-    def _sync_panel_max_glyph(self, dock, maxed: bool) -> None:
-        """Sync a panel's □/❐ glyph when its maximize state changes OUTSIDE its own button (e.g.
-        un-maximized via the chart's rail tab). Routes through the shared _sync_max_glyph."""
-        self._sync_max_glyph(dock, maxed)
 
     def _wire_tool(self, key: str, widget) -> None:
         """Per-tool signal wiring that used to live inline in _build_central, run once when a
