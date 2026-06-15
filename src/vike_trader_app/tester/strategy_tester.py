@@ -1,6 +1,7 @@
 """StrategyTester — the MT5-style facade: .run() single backtest, .optimize() grid/genetic/Bayesian sweep."""
 
 from ..analysis import samplers
+from ..analysis.metrics import returns
 from ..analysis.overfit import effective_n_trials
 from .backtester import Backtester
 from .config import TesterConfig
@@ -51,7 +52,7 @@ class StrategyTester:
         )
         trials = [OptimizeTrial(params=s.params, score=s.score, report=reports[tuple(sorted(s.params.items()))])
                   for s in sampled]
-        return_series = [_returns(t.report.equity_curve) for t in trials]
+        return_series = [returns(t.report.equity_curve) for t in trials]
         return OptimizeReport(
             best=trials[0], ranked=trials, trial_scores=[t.score for t in trials],
             n_trials=len(trials), effective_n=effective_n_trials(return_series), criterion=criterion,
@@ -107,7 +108,7 @@ class StrategyTester:
         observed_sr = m.sharpe(stitched, 1) if len(stitched) > 1 else 0.0
         trial_sharpes = [m.sharpe(c, 1) for c in final_curves] or [observed_sr]
         # Verdict is scoped to the final (largest-train) window's trials for coherent DSR/PBO/effective-N.
-        final_returns = [_returns(c) for c in final_curves]
+        final_returns = [returns(c) for c in final_curves]
         dsr = deflated_sharpe_with_effective_n(
             observed_sr, trial_sharpes, final_returns, max(len(stitched) - 1, 2)
         )
@@ -132,7 +133,3 @@ def wf_efficiency(windows) -> float:
     return mean_oos / mean_is if mean_is > 1e-9 else 0.0
 
 
-def _returns(equity_curve) -> list:
-    """Per-step simple returns of an equity curve (for trial-correlation / effective-N)."""
-    return [equity_curve[i] / equity_curve[i - 1] - 1.0
-            for i in range(1, len(equity_curve)) if equity_curve[i - 1] != 0]

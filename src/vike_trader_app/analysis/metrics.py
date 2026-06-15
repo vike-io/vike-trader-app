@@ -13,6 +13,22 @@ def total_return(equity_curve: list[float]) -> float:
     return equity_curve[-1] / equity_curve[0] - 1.0
 
 
+def returns(equity_curve: list[float]) -> list[float]:
+    """Per-bar simple returns of an equity curve (``e[i]/e[i-1] - 1``), SKIPPING any step whose
+    prior equity is 0 (avoids divide-by-zero). The canonical primitive behind sharpe / sortino /
+    omega and the overfit reports — one definition so they can't drift apart.
+
+    NB: this skips zero-denominator steps, which can SHORTEN the list. Benchmark-comparison code
+    (alpha/beta/capture) pairs two curves element-wise and must instead pad — it keeps its own
+    length-preserving variant on purpose.
+    """
+    return [
+        equity_curve[i] / equity_curve[i - 1] - 1.0
+        for i in range(1, len(equity_curve))
+        if equity_curve[i - 1] != 0
+    ]
+
+
 def win_rate(trades) -> float:
     """Fraction of trades with positive PnL (0..1)."""
     if not trades:
@@ -51,15 +67,11 @@ def sortino(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) 
     """
     if len(equity_curve) < 2:
         return 0.0
-    returns = [
-        equity_curve[i] / equity_curve[i - 1] - 1.0
-        for i in range(1, len(equity_curve))
-        if equity_curve[i - 1] != 0
-    ]
-    if len(returns) < 2:
+    rets = returns(equity_curve)
+    if len(rets) < 2:
         return 0.0
-    mean = sum(returns) / len(returns)
-    downside_var = sum(min(0.0, r) ** 2 for r in returns) / (len(returns) - 1)
+    mean = sum(rets) / len(rets)
+    downside_var = sum(min(0.0, r) ** 2 for r in rets) / (len(rets) - 1)
     downside_dev = math.sqrt(downside_var)
     if downside_dev == 0:
         return 0.0
@@ -98,13 +110,9 @@ def omega(equity_curve: list[float], threshold: float = 0.0) -> float:
     """
     if len(equity_curve) < 2:
         return 0.0
-    returns = [
-        equity_curve[i] / equity_curve[i - 1] - 1.0
-        for i in range(1, len(equity_curve))
-        if equity_curve[i - 1] != 0
-    ]
-    gains = sum(r - threshold for r in returns if r > threshold)
-    losses = sum(threshold - r for r in returns if r < threshold)
+    rets = returns(equity_curve)
+    gains = sum(r - threshold for r in rets if r > threshold)
+    losses = sum(threshold - r for r in rets if r < threshold)
     if losses == 0:
         return float("inf") if gains > 0 else 0.0
     return gains / losses
@@ -117,15 +125,11 @@ def sharpe(equity_curve: list[float], periods_per_year: float = 365 * 24 * 60) -
     """
     if len(equity_curve) < 2:
         return 0.0
-    returns = [
-        equity_curve[i] / equity_curve[i - 1] - 1.0
-        for i in range(1, len(equity_curve))
-        if equity_curve[i - 1] != 0
-    ]
-    if len(returns) < 2:
+    rets = returns(equity_curve)
+    if len(rets) < 2:
         return 0.0
-    mean = sum(returns) / len(returns)
-    var = sum((r - mean) ** 2 for r in returns) / (len(returns) - 1)
+    mean = sum(rets) / len(rets)
+    var = sum((r - mean) ** 2 for r in rets) / (len(rets) - 1)
     std = math.sqrt(var)
     if std == 0:
         return 0.0
