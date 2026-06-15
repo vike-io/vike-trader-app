@@ -721,8 +721,10 @@ class MainWindow(QtWidgets.QMainWindow):
           geometry-tiled by chartwin.arrange (grid / rows / columns / cascade).
         - Docked tools are ADS-tiled by SpaceDeck.arrange_docks (docking has no cascade, so
           cascade falls back to grid for them).
-        So opening tools from the launcher (which dock) and hitting Arrange now actually tiles
-        them, not just the chart windows."""
+        - The central chart + open side panels (the common docked layout) are tiled by
+          SpaceDeck.arrange_workspace — previously Arrange ignored these entirely, so on a plain
+          chart+Market-Watch layout every Arrange item was a dead no-op.
+        """
         from . import chartwin
 
         self._last_arrange_mode = mode      # remember it so a workspace resize re-applies it
@@ -732,6 +734,9 @@ class MainWindow(QtWidgets.QMainWindow):
                  if d is not None and not d.isClosed()]
         if docks:
             self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
+        # tile the central chart + the open side panels too (chart stays the anchor)
+        self.tabs.arrange_workspace(self._chart_space_dock(),
+                                    list(self._panel_dock_map.values()), mode)
 
     def open_tool(self, key: str):
         """Open the tool for ``key`` as its own floating window, or focus it if already open.
