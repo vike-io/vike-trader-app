@@ -274,6 +274,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
         self._active_frame = None
+        # Auto-tile: the workspace behaves like a tiled layout — on resize/maximize the open
+        # floating windows re-tile to fill it (no empty gap). `_last_arrange_mode` is the layout
+        # to re-apply (grid by default; Window>Arrange sets it); "cascade" opts OUT of auto-tiling
+        # (free overlap). The re-tile is DEBOUNCED so it runs once after a resize settles, never
+        # per-event (each setGeometry relays a chart ~90ms — synchronous re-tile would re-stick).
+        self._last_arrange_mode = "grid"
+        self._retile_timer = QtCore.QTimer(self)
+        self._retile_timer.setSingleShot(True)
+        self._retile_timer.setInterval(140)
+        self._retile_timer.timeout.connect(self._retile_open_windows)
         # empty-workspace re-arch: open non-chart tools (screener/journal/… ) lazily as docks,
         # keyed by tool key for singleton open-or-focus (Plan 1). See ui/toolreg.py.
         self._tool_docks: dict[str, "QtAds.CDockWidget"] = {}
@@ -704,6 +714,7 @@ class MainWindow(QtWidgets.QMainWindow):
         them, not just the chart windows."""
         from . import chartwin
 
+        self._last_arrange_mode = mode      # remember it so a workspace resize re-applies it
         frames = self._chart_frames + list(self._tool_frames.values())
         chartwin.arrange(frames, self.dock_manager, mode)
         docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values())
@@ -3079,6 +3090,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._place_rules()
         self._fit_chart_header()   # chart width changed -> re-pin the header's ⧉ ─ □ ✕
         self._reflow_frames()      # keep MAXIMIZED windows filling the workspace as it changes
+        # Tiled-workspace fill: re-tile the open windows to the new size once the resize settles
+        # (debounced — see _retile_open_windows). "cascade" is the free-overlap mode → no re-tile.
+        if self._last_arrange_mode != "cascade":
+            self._retile_timer.start()
 
     def _reflow_frames(self) -> None:
         """On a workspace resize, re-fit every attached chartwin frame via host_resized(): a
@@ -3092,6 +3107,25 @@ class MainWindow(QtWidgets.QMainWindow):
                 f.host_resized()
             except RuntimeError:
                 pass
+
+    def _retile_open_windows(self) -> None:
+        """Debounced re-tile after a workspace resize: re-apply the last Arrange layout so the
+        open floating windows keep filling the workspace (the user chose 'auto re-tile to fill').
+        Skipped when a window is MAXIMIZED (it already fills via host_resized — re-tiling would
+        un-maximize it) or in cascade (free-overlap) mode. arrange() itself skips detached /
+        minimized / hidden frames, so only the live tiled set is touched."""
+        if self._last_arrange_mode == "cascade":
+            return
+        frames = self._chart_frames + list(self._tool_frames.values())
+        live = [f for f in frames
+                if not f.is_detached() and not f._rolled and f.isVisible()]
+        # Only auto-fill a MULTI-window layout: a lone floating window must not balloon to the
+        # whole workspace on every app-resize (use its own □ to fill it). Skip while one is
+        # maximized — it already fills via host_resized, and re-tiling would un-maximize it.
+        if len(live) < 2 or any(getattr(f, "_maxed", False) for f in live):
+            return
+        from . import chartwin
+        chartwin.arrange(frames, self.dock_manager, self._last_arrange_mode)
 
     def _place_rules(self) -> None:
         """Size the separator overlay to the whole window and tell it where the bottom rule
