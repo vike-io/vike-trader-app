@@ -236,6 +236,31 @@ def test_window_verbs_minimize_max_arrange(app, _synthetic_load):
     win.close()
 
 
+def test_maximized_window_refits_on_workspace_resize(app, _synthetic_load):
+    """Regression: a chart window maximized at one workspace size must KEEP filling the workspace
+    when the main window grows/shrinks (OS-maximize, drag). host_resized() handled this but was
+    never wired to MainWindow.resizeEvent, so a window maximized small left empty space when the
+    window grew (the reported 'chart not resized to full screen' bug)."""
+    win = MainWindow(session_path=None)
+    win.resize(900, 700)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("BTCUSDT", "1h")
+    QtWidgets.QApplication.processEvents()
+    frame = win._chart_frames[-1]
+    frame.toggle_max()
+    QtWidgets.QApplication.processEvents()
+    assert frame.width() == win.dock_manager.rect().width()      # fills at the small size
+
+    win.resize(1400, 900)                                        # grow the workspace
+    QtWidgets.QApplication.processEvents()
+    assert frame.width() == win.dock_manager.rect().width()      # still fills — no empty space
+    win.resize(1100, 800)                                        # shrink
+    QtWidgets.QApplication.processEvents()
+    assert frame.width() == win.dock_manager.rect().width()
+    win.close()
+
+
 def test_resize_drag_freezes_chart_repaints(app, _synthetic_load):
     """Perf regression: an edge-resize drag must FREEZE chart-view + body repaints for the duration.
 

@@ -3019,6 +3019,20 @@ class MainWindow(QtWidgets.QMainWindow):
         super().resizeEvent(event)
         self._place_rules()
         self._fit_chart_header()   # chart width changed -> re-pin the header's ⧉ ─ □ ✕
+        self._reflow_frames()      # keep MAXIMIZED windows filling the workspace as it changes
+
+    def _reflow_frames(self) -> None:
+        """On a workspace resize, re-fit every attached chartwin frame via host_resized(): a
+        MAXIMIZED window must keep filling the workspace (else a chart maximized at the old size
+        leaves empty space when the main window grows / OS-maximizes — the reported bug), and a
+        floating one is clamped back in-bounds. host_resized() existed for exactly this but was
+        never wired to MainWindow.resizeEvent."""
+        for f in (self._chart_frames + list(self._tool_frames.values())
+                  + list(self._panel_frames.values())):
+            try:
+                f.host_resized()
+            except RuntimeError:
+                pass
 
     def _place_rules(self) -> None:
         """Size the separator overlay to the whole window and tell it where the bottom rule
