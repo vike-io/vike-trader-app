@@ -42,6 +42,17 @@ def bar_button(glyph: str, tip: str, slot=None, danger: bool = False,
     return b
 
 
+def update_max_button_state(button, maxed: bool) -> None:
+    """Flip a title-bar maximize button between maximized (❐ + 'Restore') and normal
+    (□ + 'Maximize / restore'). THE single place every title bar / frame flips this glyph + tooltip,
+    so they can't drift apart (the tooltip text was inconsistent across sites before). No-op if the
+    button is None."""
+    if button is None:
+        return
+    button.setText("❐" if maxed else "□")
+    button.setToolTip("Restore" if maxed else "Maximize / restore")
+
+
 class FeedBadge(QtWidgets.QLabel):
     """Compact data-feed badge (● LIVE / ● CACHED / …) for a title bar. The host maps a feed
     state to (colour, text) and calls set_state — keeps this widget app-agnostic."""

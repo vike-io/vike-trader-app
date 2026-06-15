@@ -14,7 +14,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 from . import theme
 from .style_icons import style_icon
-from .unifiedbar import BAR_H, FeedBadge, UnifiedTitleBar
+from .unifiedbar import BAR_H, FeedBadge, UnifiedTitleBar, update_max_button_state
 
 TITLE_H = BAR_H   # one shared title-bar height across every surface (chart header / panels)
 _EDGE = 6          # resize-border thickness (frame edges)
@@ -146,14 +146,11 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self._normal_geo = self.geometry()
             self._maxed = True
             self._fit_to_host()
-            self._max_btn.setText("❐")
-            self._max_btn.setToolTip("Restore")
         else:
             self._maxed = False
             if self._normal_geo is not None:
                 self.setGeometry(self._normal_geo)
-            self._max_btn.setText("□")
-            self._max_btn.setToolTip("Maximize")
+        update_max_button_state(self._max_btn, self._maxed)
         self.raise_()
 
     def _fit_to_host(self) -> None:
