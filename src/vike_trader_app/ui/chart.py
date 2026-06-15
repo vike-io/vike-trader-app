@@ -137,6 +137,7 @@ class CandlestickItem(pg.GraphicsObject):
         super().__init__()
         self._bars = bars
         self._picture = QtGui.QPicture()
+        self._brect = QRectF(0, 0, 1, 1)
         self._generate()
 
     def set_bars(self, bars):
@@ -148,7 +149,14 @@ class CandlestickItem(pg.GraphicsObject):
     def _generate(self):
         self._picture = QtGui.QPicture()
         if not self._bars:
+            self._brect = QRectF(0, 0, 1, 1)
             return
+        # Cache the bounding rect here (we already walk every bar): pyqtgraph calls boundingRect()
+        # MANY times per paint/relayout, and recomputing min()/max() over all bars each call was a
+        # measured hot path during resize (483k genexpr calls). It only changes when bars change.
+        lo = min(b.low for b in self._bars)
+        hi = max(b.high for b in self._bars)
+        self._brect = QRectF(-1, lo, len(self._bars) + 1, hi - lo)
         painter = QtGui.QPainter(self._picture)
         width = 0.6
         for i, b in enumerate(self._bars):
@@ -171,11 +179,7 @@ class CandlestickItem(pg.GraphicsObject):
         painter.drawPicture(0, 0, self._picture)
 
     def boundingRect(self):
-        if not self._bars:
-            return QRectF(0, 0, 1, 1)
-        lo = min(b.low for b in self._bars)
-        hi = max(b.high for b in self._bars)
-        return QRectF(-1, lo, len(self._bars) + 1, hi - lo)
+        return self._brect          # cached in _generate(); recomputed only when bars change
 
 
 class TimeAxis(pg.AxisItem):

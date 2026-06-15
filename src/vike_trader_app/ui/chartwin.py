@@ -236,6 +236,44 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 return True
         return super().eventFilter(obj, ev)
 
+    def _set_resize_frozen(self, frozen: bool) -> None:
+        """During an edge-resize drag, freeze the EXPENSIVE content repaints across the workspace.
+
+        Measured: the dominant resize cost is NOT the dragged window's own border — it's the other
+        widgets repainting as the window moves over them. The central chart (and any pyqtgraph view)
+        replays a ~10k-candle QPicture (~130ms each); the OTHER open windows' tables/panels repaint
+        on reveal. With 6 overlapping windows a single resize frame hit ~300ms-1.2s, so the drag
+        stuck. We freeze, for the duration of the drag: every chart view (pyqtgraph PlotWidget is a
+        QGraphicsView — matched on the base class, no pyqtgraph import) AND every other window's body
+        content (each frame's .doc). The window borders still resize live (cheap); one clean repaint
+        of everything follows on release. Resolved off the top-level window so it covers the central
+        chart + all sibling frames; tolerant of a frame torn down mid-drag."""
+        top = self.window()
+        if top is None:
+            return
+        targets: list = []
+        try:
+            targets.extend(top.findChildren(QtWidgets.QGraphicsView))   # all charts (central + windows)
+        except RuntimeError:
+            return
+        frames = list(getattr(top, "_chart_frames", []) or [])
+        frames += list(getattr(top, "_tool_frames", {}).values())
+        for f in frames:
+            body = getattr(f, "doc", None)
+            if body is not None:
+                targets.append(body)            # tool/chart body content (tables, panels, etc.)
+        seen = set()
+        for w in targets:
+            if id(w) in seen:
+                continue
+            seen.add(id(w))
+            try:
+                w.setUpdatesEnabled(not frozen)
+                if not frozen:
+                    w.update()
+            except RuntimeError:
+                pass
+
     def mousePressEvent(self, ev):  # noqa: N802 - edge-resize start + activate
         self.raise_()
         self.activated.emit(self)
@@ -245,6 +283,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 self._resize_edge = e
                 self._press_geo = self.geometry()
                 self._press_pos = ev.globalPosition().toPoint()
+                self._set_resize_frozen(True)        # stop per-frame chart repaints for the drag
                 return
         super().mousePressEvent(ev)
 
@@ -289,11 +328,14 @@ class ChartWindowFrame(QtWidgets.QFrame):
 
     def mouseReleaseEvent(self, ev):  # noqa: N802
         # apply the final geometry exactly (don't lose the last sub-tick move) and stop ticking
+        was_resizing = self._resize_edge is not None
         if self._pending_geo is not None:
             self.setGeometry(self._pending_geo)
             self._pending_geo = None
         self._resize_timer.stop()
         self._resize_edge = None
+        if was_resizing:
+            self._set_resize_frozen(False)           # unfreeze + one clean repaint at final size
         super().mouseReleaseEvent(ev)
 
     def _edge_at(self, p: QtCore.QPoint):

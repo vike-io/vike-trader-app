@@ -236,6 +236,32 @@ def test_window_verbs_minimize_max_arrange(app, _synthetic_load):
     win.close()
 
 
+def test_resize_drag_freezes_chart_repaints(app, _synthetic_load):
+    """Perf regression: an edge-resize drag must FREEZE chart-view + body repaints for the duration.
+
+    The central chart (and any chart window) replays a ~10k-candle QPicture (~130ms) on every
+    paint, and other open windows' tables repaint on reveal — so repainting per resize frame stuck
+    the drag at ~300ms-2s with several windows open (measured). _set_resize_frozen disables every
+    QGraphicsView + each frame's body content during the drag and restores them on release."""
+    win = MainWindow(session_path=None)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("ETHUSDT", "1h")
+    win.open_tool("journal")
+    QtWidgets.QApplication.processEvents()
+    frame = win._chart_frames[-1]
+    views = win.findChildren(QtWidgets.QGraphicsView)
+    assert views, "no chart views to freeze"
+    assert all(v.updatesEnabled() for v in views)          # live before a drag
+
+    frame._set_resize_frozen(True)                         # simulate drag start
+    assert all(not v.updatesEnabled() for v in views), "chart views not frozen during resize"
+
+    frame._set_resize_frozen(False)                        # simulate drag release
+    assert all(v.updatesEnabled() for v in views), "chart views not restored after resize"
+    win.close()
+
+
 def test_link_group_syncs_symbol_and_interval(app, _synthetic_load):
     win = MainWindow(session_path=None)
     d1 = win._new_chart_document("ETHUSDT", "1h")
