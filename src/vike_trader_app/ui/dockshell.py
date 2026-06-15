@@ -76,7 +76,7 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
     def mark_as_chart_header(self, deck) -> None:
         """Render the single-title chart-space header into this bar (idempotent — the title
         text is refreshed separately via set_header_title)."""
-        from .unifiedbar import UnifiedTitleBar
+        from .unifiedbar import UnifiedTitleBar, update_max_button_state
         from .style_icons import style_icon
 
         if self._header is not None:
@@ -136,13 +136,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 w._minimize_chart_to_left()
 
         def _set_max_icon(maxed: bool):
-            # Flip the maximize glyph the same way the floating windows do: ❐ + "Restore" while
-            # maximized, □ + "Maximize" otherwise. `bar` is assigned below but resolved at call
-            # time (this only runs after the bar exists).
-            b = bar.button("max")
-            if b is not None:
-                b.setText("❐" if maxed else "□")
-                b.setToolTip("Restore" if maxed else "Maximize / restore")
+            # Flip the maximize glyph the same way every title bar does (shared helper). `bar` is
+            # assigned below but resolved at call time (this only runs after the bar exists).
+            update_max_button_state(bar.button("max"), maxed)
 
         def _win_max():
             c = _floating_container()
@@ -478,11 +474,10 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         if d is not None and win is not None and hasattr(win, "_toggle_panel_maximize"):
             win._toggle_panel_maximize(d)
             try:
+                from .unifiedbar import update_max_button_state
                 maxed = getattr(win, "_panel_maxed", None) == d.objectName()
                 b = self._header.button("max") if self._header is not None else None
-                if b is not None:
-                    b.setText("❐" if maxed else "□")
-                    b.setToolTip("Restore" if maxed else "Maximize / restore")
+                update_max_button_state(b, maxed)
             except (RuntimeError, AttributeError):
                 pass
 

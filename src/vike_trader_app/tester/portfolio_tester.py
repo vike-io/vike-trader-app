@@ -9,12 +9,13 @@ series are sliced to a shared ``[ts_lo, ts_hi)`` time window), so membership ran
 """
 
 from ..analysis import samplers
+from ..analysis.metrics import returns
 from ..analysis.overfit import effective_n_trials
 from ..core.portfolio_adapter import MultiSymbolStrategyRunner
 from .config import TesterConfig
 from .optimize import OptimizeReport, OptimizeTrial
 from .report import TesterReport
-from .strategy_tester import _CRITERIA, _returns, wf_efficiency
+from .strategy_tester import _CRITERIA, assemble_walk_forward
 
 
 class PortfolioStrategyTester:
@@ -69,7 +70,7 @@ class PortfolioStrategyTester:
         )
         trials = [OptimizeTrial(params=s.params, score=s.score, report=reports[tuple(sorted(s.params.items()))])
                   for s in sampled]
-        return_series = [_returns(t.report.equity_curve) for t in trials]
+        return_series = [returns(t.report.equity_curve) for t in trials]
         return OptimizeReport(
             best=trials[0], ranked=trials, trial_scores=[t.score for t in trials],
             n_trials=len(trials), effective_n=effective_n_trials(return_series), criterion=criterion,
@@ -87,11 +88,8 @@ class PortfolioStrategyTester:
         survivorship windows still apply within each split. Returns a ``WalkForwardReport`` whose
         stitched ``oos_report.verdict`` is an ``analysis.overfit.Verdict``.
         """
-        from ..analysis import metrics as m
-        from ..analysis.overfit import deflated_sharpe_with_effective_n, overfit_verdict
         from ..analysis.validation import walk_forward_splits
-        from ..core.engine import Result
-        from .walkforward import WalkForwardReport, WalkForwardWindow, _pbo_from_curves
+        from .walkforward import WalkForwardWindow
 
         ts_all = sorted({b.ts for bars in self.bars_by_symbol.values() for b in bars})
 
@@ -135,24 +133,7 @@ class PortfolioStrategyTester:
             equity = start * (oos.final_equity / cash)
             concat_trades.extend(oos.trades)
 
-        oos_report = TesterReport.from_result(
-            Result(concat_trades, stitched or [cash], stitched[-1] if stitched else cash),
-            periods_per_year=self.config.periods_per_year,
-        )
-        wf_consistency = (
-            sum(1 for w in windows if w.oos_report.total_return > 0) / len(windows) if windows else 0.0
-        )
-        observed_sr = m.sharpe(stitched, 1) if len(stitched) > 1 else 0.0
-        trial_sharpes = [m.sharpe(c, 1) for c in final_curves] or [observed_sr]
-        # Verdict scoped to the final (largest-train) window's trials for coherent DSR/PBO/effective-N.
-        final_returns = [_returns(c) for c in final_curves]
-        dsr = deflated_sharpe_with_effective_n(
-            observed_sr, trial_sharpes, final_returns, max(len(stitched) - 1, 2)
-        )
-        oos_report.verdict = overfit_verdict(_pbo_from_curves(final_curves), dsr, wf_consistency)
-        return WalkForwardReport(windows=windows, oos_report=oos_report,
-                                 wf_consistency=wf_consistency, n_windows=len(windows),
-                                 wf_efficiency=wf_efficiency(windows))
+        return assemble_walk_forward(windows, final_curves, stitched, concat_trades, self.config)
 
     def _slice(self, lo: int, hi: int) -> dict:
         """Per-symbol bars within ``[lo, hi)``; symbols with no bars in the window are dropped."""

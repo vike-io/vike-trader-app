@@ -10,6 +10,7 @@ import time
 
 from ..core.model import Bar
 from .rest import get_json
+from .rows import rows_to_bars
 
 OKX_API = "https://www.okx.com"
 
@@ -32,10 +33,7 @@ def market_symbol(symbol: str) -> str:
 
 def to_bars(rows: list[list]) -> list[Bar]:
     """``[ts, o, h, l, c, vol, ...]`` rows (newest-first) -> ascending ``Bar``s."""
-    bars = [Bar(ts=int(r[0]), open=float(r[1]), high=float(r[2]), low=float(r[3]),
-                close=float(r[4]), volume=float(r[5])) for r in rows]
-    bars.sort(key=lambda b: b.ts)
-    return bars
+    return rows_to_bars(rows, {"ts": 0, "open": 1, "high": 2, "low": 3, "close": 4, "volume": 5})
 
 
 def _fetch(after_ms: int, symbol: str, interval: str, limit: int = 100,

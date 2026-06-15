@@ -6,7 +6,7 @@ show. The headline is a retail-readable "overfit risk" verdict.
 
 from dataclasses import dataclass
 
-from .metrics import sharpe
+from .metrics import returns, sharpe
 from .optimizer import grid_search
 from .overfit import Verdict, deflated_sharpe_ratio, overfit_verdict, pbo_cscv
 
@@ -23,14 +23,6 @@ class OverfitReport:
     verdict: Verdict
 
 
-def _returns(equity_curve):
-    return [
-        equity_curve[i] / equity_curve[i - 1] - 1.0
-        for i in range(1, len(equity_curve))
-        if equity_curve[i - 1] != 0
-    ]
-
-
 def build_overfit_report(bars, make, param_grid, n_splits: int = 4, fee_rate: float = 0.0):
     """Optimize ``make`` over ``param_grid`` and assess the best config for overfitting."""
     # Rank by per-observation Sharpe so the headline matches the DSR input.
@@ -43,7 +35,7 @@ def build_overfit_report(bars, make, param_grid, n_splits: int = 4, fee_rate: fl
     dsr = deflated_sharpe_ratio(best.score, trial_sharpes, n_obs)
 
     # PBO: per-observation returns of every trial form the T x N matrix.
-    trial_returns = [_returns(r.result.equity_curve) for r in results]
+    trial_returns = [returns(r.result.equity_curve) for r in results]
     min_len = min((len(r) for r in trial_returns), default=0)
     pbo = 0.0
     if len(results) >= 2 and min_len >= n_splits:

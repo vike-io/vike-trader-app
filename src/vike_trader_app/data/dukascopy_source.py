@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 from ..core.model import Bar
 from .binance_source import interval_ms
+from .retry import with_backoff
 
 DATAFEED = "https://datafeed.dukascopy.com/datafeed"
 HOUR_MS = 3_600_000
@@ -107,19 +108,11 @@ def _is_transient(err: BaseException) -> bool:
 
 
 def _retry(call, *, tries: int = 4, sleep=time.sleep, base: float = 0.5):
-    """Run ``call()``, retrying transient failures with exponential backoff.
-
-    Retries 429/5xx, connection errors, and timeouts; re-raises 404/other-4xx immediately so
-    the caller can map them (a 404 hour = no file). The final attempt's error propagates.
-    ``sleep``/``base`` are injectable so tests run without real delay.
-    """
-    for attempt in range(tries):
-        try:
-            return call()
-        except (urllib.error.URLError, TimeoutError) as e:  # HTTPError subclasses URLError
-            if attempt == tries - 1 or not _is_transient(e):
-                raise
-            sleep(base * (2 ** attempt))
+    """Dukascopy's transient-retry policy: retry 429/5xx, connection errors and timeouts; re-raise
+    404/other-4xx immediately so the caller can map them (a 404 hour = no file). A thin partial
+    application of the shared retry.with_backoff (one place owns the backoff loop)."""
+    return with_backoff(call, tries=tries, sleep=sleep, base=base,
+                        retry_on=(urllib.error.URLError, TimeoutError), is_transient=_is_transient)
 
 
 def _fetch_hour(symbol: str, hour_start_ms: int, timeout: int = 30) -> bytes | None:

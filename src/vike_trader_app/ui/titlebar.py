@@ -107,9 +107,8 @@ class TitleBar(QtWidgets.QWidget):
         else:
             self._win.showMaximized()
         if self._win_buttons:
-            maxed = self._is_maxed()
-            self._max_btn.setText("❐" if maxed else "□")
-            self._max_btn.setToolTip("Restore" if maxed else "Maximize")
+            from .unifiedbar import update_max_button_state
+            update_max_button_state(self._max_btn, self._is_maxed())
 
     # Fallback paths (non-frameless platforms / tests): plain Qt drag + double-click maximize.
     def mousePressEvent(self, e):  # noqa: N802

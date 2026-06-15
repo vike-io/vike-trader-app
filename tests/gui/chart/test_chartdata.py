@@ -9,10 +9,44 @@ from vike_trader_app.ui.chartdata import (
     bar_spacing,
     equity_points,
     ohlc_legend_text,
+    oscillator_reveal,
+    series_slice,
     trade_markers,
     ts_to_x,
     x_to_ts,
 )
+
+
+class _Ind:
+    def __init__(self, uid, series, shown=True, bands=()):
+        self.uid, self.series, self.shown, self.bands = uid, series, shown, bands
+
+
+def test_series_slice_drops_none_and_caps_at_index():
+    assert series_slice([1.0, None, 3.0, 4.0], 2) == ([0, 2], [1.0, 3.0])
+    assert series_slice([1.0, 2.0], 10) == ([0, 1], [1.0, 2.0])   # index beyond len is capped
+    assert series_slice([], 5) == ([], [])
+
+
+def test_oscillator_reveal_plots_last_and_window_yrange():
+    ind = _Ind("u1", {"RSI": [10.0, 20.0, 80.0, 90.0]}, shown=True, bands=[("ob", 70.0)])
+    plots, lasts, y_range = oscillator_reveal(
+        [ind], {"u1": ["RSI"]}, index=3, win_lo=2, win_hi=3)
+    assert plots["u1"]["RSI"] == ([0, 1, 2, 3], [10.0, 20.0, 80.0, 90.0])
+    assert lasts["u1"] == 90.0                       # last revealed base value
+    assert y_range == (70.0, 90.0)                   # window [2,3] = {80,90} + band 70 -> (70, 90)
+
+
+def test_oscillator_reveal_ma_label_not_used_for_last():
+    ind = _Ind("u", {"MACD": [1.0, 2.0], "MA": [9.0, 9.0]})
+    _plots, lasts, _yr = oscillator_reveal([ind], {"u": ["MACD", "MA"]}, index=1, win_lo=0, win_hi=1)
+    assert lasts["u"] == 2.0                          # legend value stays on the base output, not MA
+
+
+def test_oscillator_reveal_hidden_indicator_excluded_from_yrange():
+    ind = _Ind("u", {"X": [5.0, 500.0]}, shown=False)
+    _plots, _lasts, y_range = oscillator_reveal([ind], {"u": ["X"]}, index=1, win_lo=0, win_hi=1)
+    assert y_range is None                            # hidden -> contributes nothing to the range
 
 
 def test_trade_markers_emit_entry_then_exit():

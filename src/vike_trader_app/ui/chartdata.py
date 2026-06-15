@@ -55,6 +55,55 @@ def y_bounds(bars, lo: int, hi: int):
     return (min(b.low for b in visible), max(b.high for b in visible))
 
 
+def series_slice(series, index: int) -> tuple[list[int], list]:
+    """An indicator/overlay series revealed up to (and including) bar ``index``: the x indices with
+    a non-None value and their y values. Shared by every chart reveal path so the None-filter +
+    index-cap logic lives in one Qt-free, unit-testable place."""
+    xs = [k for k in range(min(index + 1, len(series))) if series[k] is not None]
+    return xs, [series[k] for k in xs]
+
+
+def oscillator_reveal(inds, labels_by_uid, index: int, win_lo: int, win_hi: int, ma_key: str = "MA"):
+    """Pure compute for an OscillatorPane reveal (the Qt-free seam under OscillatorPane.reveal).
+
+    For each indicator (objects exposing ``.uid``, ``.series`` {label: list}, ``.shown`` bool,
+    ``.bands`` [(label, value)]) and the curve labels active for it (``labels_by_uid[uid]``):
+    the revealed ``(xs, ys)`` per label, the legend "last" value (the base output's last y, NOT the
+    smoothing-MA ``ma_key``), and the y-range fitted to the visible ``[win_lo, win_hi]`` window
+    (falling back to the full revealed series when nothing is in-window yet). Band threshold values
+    extend the range (extend-only, like the dashed guides). Returns
+    ``(plots {uid: {label: (xs, ys)}}, lasts {uid: last|None}, y_range (lo, hi)|None)``.
+    """
+    plots, lasts = {}, {}
+    win_ys: list = []
+    full_ys: list = []
+    for ind in inds:
+        per = {}
+        last = None
+        for label in labels_by_uid.get(ind.uid, []):
+            series = ind.series.get(label, [])
+            xs, ys = series_slice(series, index)
+            per[label] = (xs, ys)
+            if ind.shown:
+                full_ys += ys
+                win_ys += [series[k] for k in xs if win_lo <= k <= win_hi]
+            if ys and label != ma_key:   # legend value stays on the base output, not the MA
+                last = ys[-1]
+        if ind.shown:
+            band_vals = [float(val) for _lbl, val in getattr(ind, "bands", [])]
+            win_ys += band_vals
+            full_ys += band_vals
+        plots[ind.uid] = per
+        lasts[ind.uid] = last
+    all_ys = win_ys or full_ys   # fall back to the full series if nothing is in-window yet
+    y_range = None
+    if all_ys:
+        lo, hi = min(all_ys), max(all_ys)
+        if hi > lo:
+            y_range = (lo, hi)
+    return plots, lasts, y_range
+
+
 # --- timestamp <-> bar-index mapping + axis/legend formatting (TradingView-style chrome) ---
 
 def bar_spacing(bars) -> int:

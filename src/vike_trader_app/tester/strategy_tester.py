@@ -1,6 +1,7 @@
 """StrategyTester — the MT5-style facade: .run() single backtest, .optimize() grid/genetic/Bayesian sweep."""
 
 from ..analysis import samplers
+from ..analysis.metrics import returns
 from ..analysis.overfit import effective_n_trials
 from .backtester import Backtester
 from .config import TesterConfig
@@ -51,7 +52,7 @@ class StrategyTester:
         )
         trials = [OptimizeTrial(params=s.params, score=s.score, report=reports[tuple(sorted(s.params.items()))])
                   for s in sampled]
-        return_series = [_returns(t.report.equity_curve) for t in trials]
+        return_series = [returns(t.report.equity_curve) for t in trials]
         return OptimizeReport(
             best=trials[0], ranked=trials, trial_scores=[t.score for t in trials],
             n_trials=len(trials), effective_n=effective_n_trials(return_series), criterion=criterion,
@@ -70,11 +71,8 @@ class StrategyTester:
         Returns a ``WalkForwardReport`` (per-window IS vs OOS scores + ``wf_efficiency``) whose
         stitched ``oos_report.verdict`` is an ``analysis.overfit.Verdict``.
         """
-        from ..analysis import metrics as m
-        from ..analysis.overfit import deflated_sharpe_with_effective_n, overfit_verdict
         from ..analysis.validation import walk_forward_splits
-        from ..core.engine import Result
-        from .walkforward import WalkForwardReport, WalkForwardWindow, _pbo_from_curves
+        from .walkforward import WalkForwardWindow
 
         cash = self.config.cash
         equity = cash
@@ -97,24 +95,7 @@ class StrategyTester:
             equity = start * (oos.final_equity / cash)
             concat_trades.extend(oos.trades)
 
-        oos_report = TesterReport.from_result(
-            Result(concat_trades, stitched or [cash], stitched[-1] if stitched else cash),
-            periods_per_year=self.config.periods_per_year,
-        )
-        wf_consistency = (
-            sum(1 for w in windows if w.oos_report.total_return > 0) / len(windows) if windows else 0.0
-        )
-        observed_sr = m.sharpe(stitched, 1) if len(stitched) > 1 else 0.0
-        trial_sharpes = [m.sharpe(c, 1) for c in final_curves] or [observed_sr]
-        # Verdict is scoped to the final (largest-train) window's trials for coherent DSR/PBO/effective-N.
-        final_returns = [_returns(c) for c in final_curves]
-        dsr = deflated_sharpe_with_effective_n(
-            observed_sr, trial_sharpes, final_returns, max(len(stitched) - 1, 2)
-        )
-        oos_report.verdict = overfit_verdict(_pbo_from_curves(final_curves), dsr, wf_consistency)
-        return WalkForwardReport(windows=windows, oos_report=oos_report,
-                                 wf_consistency=wf_consistency, n_windows=len(windows),
-                                 wf_efficiency=wf_efficiency(windows))
+        return assemble_walk_forward(windows, final_curves, stitched, concat_trades, self.config)
 
 
 def wf_efficiency(windows) -> float:
@@ -132,7 +113,36 @@ def wf_efficiency(windows) -> float:
     return mean_oos / mean_is if mean_is > 1e-9 else 0.0
 
 
-def _returns(equity_curve) -> list:
-    """Per-step simple returns of an equity curve (for trial-correlation / effective-N)."""
-    return [equity_curve[i] / equity_curve[i - 1] - 1.0
-            for i in range(1, len(equity_curve)) if equity_curve[i - 1] != 0]
+def assemble_walk_forward(windows, final_curves, stitched, concat_trades, config):
+    """Build the final WalkForwardReport from the per-window results: stitch the OOS curves into one
+    report, then the consistency -> observed-Sharpe -> DSR/PBO -> verdict overfit assessment. The
+    window LOOP differs (single-symbol vs portfolio), but this tail must stay IDENTICAL across both,
+    so it lives here once. Verdict is scoped to the final (largest-train) window's trials for
+    coherent DSR/PBO/effective-N."""
+    from ..analysis import metrics as m
+    from ..analysis.metrics import returns
+    from ..analysis.overfit import deflated_sharpe_with_effective_n, overfit_verdict
+    from ..core.engine import Result
+    from .report import TesterReport
+    from .walkforward import WalkForwardReport, _pbo_from_curves
+
+    cash = config.cash
+    oos_report = TesterReport.from_result(
+        Result(concat_trades, stitched or [cash], stitched[-1] if stitched else cash),
+        periods_per_year=config.periods_per_year,
+    )
+    wf_consistency = (
+        sum(1 for w in windows if w.oos_report.total_return > 0) / len(windows) if windows else 0.0
+    )
+    observed_sr = m.sharpe(stitched, 1) if len(stitched) > 1 else 0.0
+    trial_sharpes = [m.sharpe(c, 1) for c in final_curves] or [observed_sr]
+    final_returns = [returns(c) for c in final_curves]
+    dsr = deflated_sharpe_with_effective_n(
+        observed_sr, trial_sharpes, final_returns, max(len(stitched) - 1, 2)
+    )
+    oos_report.verdict = overfit_verdict(_pbo_from_curves(final_curves), dsr, wf_consistency)
+    return WalkForwardReport(windows=windows, oos_report=oos_report,
+                             wf_consistency=wf_consistency, n_windows=len(windows),
+                             wf_efficiency=wf_efficiency(windows))
+
+

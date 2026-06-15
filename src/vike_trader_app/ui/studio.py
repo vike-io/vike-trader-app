@@ -92,6 +92,24 @@ def _range_str(rng) -> str:
     return f"{int(lo)}–{int(hi)}"
 
 
+def _readonly_table(labels, *, stretch_all: bool = True, resize: dict | None = None):
+    """A no-edit, row-select, alternating-row QTableWidget with the vertical header hidden — the
+    shared config every results tab repeated. ``labels`` sets the columns; by default every column
+    stretches, and ``resize`` overrides specific ones, e.g. ``{0: QHeaderView.ResizeToContents}``."""
+    t = QtWidgets.QTableWidget(0, len(labels))
+    t.setHorizontalHeaderLabels(list(labels))
+    t.verticalHeader().setVisible(False)
+    t.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+    t.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+    t.setAlternatingRowColors(True)
+    hdr = t.horizontalHeader()
+    if stretch_all:
+        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+    for col, mode in (resize or {}).items():
+        hdr.setSectionResizeMode(col, mode)
+    return t
+
+
 # ---------------------------------------------------------------------------
 # ResultsPanel
 # ---------------------------------------------------------------------------
@@ -260,38 +278,17 @@ class ResultsPanel(QtWidgets.QWidget):
         self._tabs.addTab(scroll, "Performance")
 
     def _build_trades_tab(self) -> None:
-        self._trades = QtWidgets.QTableWidget(0, len(self._TRADE_COLS))
-        self._trades.setHorizontalHeaderLabels(self._TRADE_COLS)
-        self._trades.verticalHeader().setVisible(False)
-        self._trades.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._trades.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._trades.setAlternatingRowColors(True)
-        hdr = self._trades.horizontalHeader()
-        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        self._trades.cellClicked.connect(self._on_trade_clicked)
+        self._trades = _readonly_table(
+            self._TRADE_COLS, resize={0: QtWidgets.QHeaderView.ResizeToContents})
         self._tabs.addTab(self._trades, "Trades")
 
     def _build_by_symbol_tab(self) -> None:
-        self._by_symbol_table = QtWidgets.QTableWidget(0, len(self._BY_SYMBOL_COLS))
-        self._by_symbol_table.setHorizontalHeaderLabels(self._BY_SYMBOL_COLS)
-        self._by_symbol_table.verticalHeader().setVisible(False)
-        self._by_symbol_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._by_symbol_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._by_symbol_table.setAlternatingRowColors(True)
-        hdr = self._by_symbol_table.horizontalHeader()
-        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
+        self._by_symbol_table = _readonly_table(
+            self._BY_SYMBOL_COLS, resize={0: QtWidgets.QHeaderView.ResizeToContents})
         self._tabs.addTab(self._by_symbol_table, "By Symbol")
 
     def _build_runs_tab(self) -> None:
-        self._runs_table = QtWidgets.QTableWidget(0, len(self._RUN_COLS))
-        self._runs_table.setHorizontalHeaderLabels(self._RUN_COLS)
-        self._runs_table.verticalHeader().setVisible(False)
-        self._runs_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._runs_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._runs_table.setAlternatingRowColors(True)
-        self._runs_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self._runs_table = _readonly_table(self._RUN_COLS)
         self._runs_table.cellClicked.connect(self._on_run_clicked)
         self._tabs.addTab(self._runs_table, "Runs")
 
@@ -306,28 +303,17 @@ class ResultsPanel(QtWidgets.QWidget):
         self._dist.setLabel("left", "count")
         self._tabs.addTab(self._dist, "Distribution")
 
+    _METRIC_VALUE_RESIZE = {0: QtWidgets.QHeaderView.ResizeToContents,
+                            1: QtWidgets.QHeaderView.Stretch}
+
     def _build_robustness_tab(self) -> None:
-        self._robust_table = QtWidgets.QTableWidget(0, 2)
-        self._robust_table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self._robust_table.verticalHeader().setVisible(False)
-        self._robust_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._robust_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._robust_table.setAlternatingRowColors(True)
-        hdr = self._robust_table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._robust_table = _readonly_table(
+            ["Metric", "Value"], stretch_all=False, resize=self._METRIC_VALUE_RESIZE)
         self._tabs.addTab(self._robust_table, "Robustness")
 
     def _build_montecarlo_tab(self) -> None:
-        self._mc_table = QtWidgets.QTableWidget(0, 2)
-        self._mc_table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self._mc_table.verticalHeader().setVisible(False)
-        self._mc_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._mc_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._mc_table.setAlternatingRowColors(True)
-        hdr = self._mc_table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._mc_table = _readonly_table(
+            ["Metric", "Value"], stretch_all=False, resize=self._METRIC_VALUE_RESIZE)
         self._tabs.addTab(self._mc_table, "Monte Carlo")
 
     def _build_periods_tab(self) -> None:
@@ -337,15 +323,9 @@ class ResultsPanel(QtWidgets.QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(_GAP)
 
-        self._periods_table = QtWidgets.QTableWidget(0, 14)  # Year + Jan..Dec + Year-total = 14 cols
-        self._periods_table.setHorizontalHeaderLabels(
+        self._periods_table = _readonly_table(  # Year + Jan..Dec + Year-total = 14 cols
             ["Year", "Jan", "Feb", "Mar", "Apr", "May", "Jun",
              "Jul", "Aug", "Sep", "Oct", "Nov", "Dec", "Annual"])
-        self._periods_table.verticalHeader().setVisible(False)
-        self._periods_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._periods_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._periods_table.setAlternatingRowColors(True)
-        self._periods_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
         layout.addWidget(self._periods_table, 2)
 
         dd_label = QtWidgets.QLabel("TOP DRAWDOWNS")
@@ -354,27 +334,14 @@ class ResultsPanel(QtWidgets.QWidget):
         )
         layout.addWidget(dd_label)
 
-        self._dd_table = QtWidgets.QTableWidget(0, 4)
-        self._dd_table.setHorizontalHeaderLabels(["Depth", "Peak", "Trough", "Length (bars)"])
-        self._dd_table.verticalHeader().setVisible(False)
-        self._dd_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._dd_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._dd_table.setAlternatingRowColors(True)
-        self._dd_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self._dd_table = _readonly_table(["Depth", "Peak", "Trough", "Length (bars)"])
         layout.addWidget(self._dd_table, 1)
 
         self._tabs.addTab(container, "Periods")
 
     def _build_benchmark_tab(self) -> None:
-        self._bench_table = QtWidgets.QTableWidget(0, 2)
-        self._bench_table.setHorizontalHeaderLabels(["Metric", "Value"])
-        self._bench_table.verticalHeader().setVisible(False)
-        self._bench_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._bench_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._bench_table.setAlternatingRowColors(True)
-        hdr = self._bench_table.horizontalHeader()
-        hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.ResizeToContents)
-        hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self._bench_table = _readonly_table(
+            ["Metric", "Value"], stretch_all=False, resize=self._METRIC_VALUE_RESIZE)
         self._tabs.addTab(self._bench_table, "Benchmark")
 
     _WF_COLS = ["Window", "Train", "Test", "Best params", "IS", "OOS", "Result"]
@@ -394,15 +361,8 @@ class ResultsPanel(QtWidgets.QWidget):
         self._wf_summary.setStyleSheet(f"color:{theme.TEXT2};font-size:12px;")
         layout.addWidget(self._wf_summary)
 
-        self._wf_table = QtWidgets.QTableWidget(0, len(self._WF_COLS))
-        self._wf_table.setHorizontalHeaderLabels(self._WF_COLS)
-        self._wf_table.verticalHeader().setVisible(False)
-        self._wf_table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        self._wf_table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._wf_table.setAlternatingRowColors(True)
-        hdr = self._wf_table.horizontalHeader()
-        hdr.setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
-        hdr.setSectionResizeMode(3, QtWidgets.QHeaderView.ResizeToContents)
+        self._wf_table = _readonly_table(
+            self._WF_COLS, resize={3: QtWidgets.QHeaderView.ResizeToContents})
         layout.addWidget(self._wf_table, 1)
         self._tabs.addTab(container, "WF Matrix")
 
@@ -996,10 +956,6 @@ class ResultsPanel(QtWidgets.QWidget):
                                       z=znorm.T)  # GLSurfacePlotItem z is z[x][y]
         self._surface_gl.setCameraPosition(distance=max(nx, ny) * 2.2)
         self._surface_stack.setCurrentWidget(self._surface_gl)
-
-    def _on_trade_clicked(self, row: int, _col: int) -> None:
-        """Trade-row click — selection only; price-chart focus lives in the Chart space now."""
-        return
 
     def _on_run_clicked(self, row: int, _col: int) -> None:
         """Run-row click -> re-display that stored run (iterate-and-compare loop)."""
