@@ -21,6 +21,7 @@ _EDGE = 6          # resize-border thickness (frame edges)
 _MIN_W, _MIN_H = 320, 160
 _SNAP_M = 28       # drag-to-edge snap zone thickness (attached frames; detached use OS snap)
 _STUB_W = 230      # width of a rolled-up window's title stub on the left rail (AmiBroker-style)
+_TILE_GAP = 4      # px breathing room between tiled windows + as the outer margin (Arrange)
 
 
 class ChartWindowFrame(QtWidgets.QFrame):
@@ -465,8 +466,13 @@ def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) 
             cols, rows = n, 1
         else:                   # "rows"
             cols, rows = 1, n
-        cw, ch = r.width() // cols, r.height() // rows
-        geos = [QtCore.QRect((i % cols) * cw, (i // cols) * ch, cw, ch) for i in range(n)]
+        # Leave a uniform _TILE_GAP between tiles AND as an outer margin, so adjacent windows'
+        # 1px borders don't butt into a doubled-up line (the "borders overlay" the user saw).
+        g = _TILE_GAP
+        cw = max(_MIN_W, (r.width() - (cols + 1) * g) // cols)
+        ch = max(_MIN_H, (r.height() - (rows + 1) * g) // rows)
+        geos = [QtCore.QRect(g + (i % cols) * (cw + g), g + (i // cols) * (ch + g), cw, ch)
+                for i in range(n)]
     for f, g in zip(live, geos):
         f._maxed = False
         f.setUpdatesEnabled(False)
