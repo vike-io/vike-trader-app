@@ -179,3 +179,52 @@ def test_tool_window_redock_detach_close_lifecycle(app):
     assert "screener" not in win._tool_docks
     assert win.screener is None
     win.close()
+
+
+def test_panel_detach_redock_close_lifecycle(app):
+    """A side panel (Market watch) floats out into a clean ToolWindowFrame hosting the SAME live
+    widget; unlike a tool, the panel dock is NOT DeleteOnClose, so the SAME (emptied, hidden) dock
+    is reused on every round-trip. 'Dock into workspace' re-homes the widget; the window ✕ also
+    re-homes it (never orphaned) and shows the panel closed on the rail. Guards the panel reparent
+    trio (_detach_panel / _redock_panel / _on_panel_window_closed) dispatched only from
+    dockshell.py — previously the one lifecycle path in the shell with no direct test."""
+    from vike_trader_app.ui.chartwin import ToolWindowFrame
+
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    app.processEvents()                          # let the panels' singleShot(0) auto-detect run
+
+    dock = win._panel_dock_map["market"]
+    widget = dock.widget()
+    assert widget is not None
+
+    # ⧉ detach -> a clean tool window hosting the SAME widget; the reused dock is emptied + hidden
+    frame = win._detach_panel(dock)
+    app.processEvents()
+    assert isinstance(frame, ToolWindowFrame)
+    assert win._panel_frames.get("market") is frame
+    assert frame.doc is widget
+    assert dock.widget() is None and dock.isClosed()
+
+    # detaching the SAME panel again is a no-op that just raises the existing window
+    assert win._detach_panel(dock) is frame
+    assert win._panel_frames.get("market") is frame
+
+    # 'Dock into workspace' -> the SAME widget back in the reused dock, dock re-shown, frame gone
+    win._redock_panel("market")
+    app.processEvents()
+    assert "market" not in win._panel_frames
+    assert dock.widget() is widget
+    assert not dock.isClosed()
+
+    # detach once more, then close the WINDOW (✕) -> widget re-homed (not orphaned) + dock shown closed
+    frame2 = win._detach_panel(dock)
+    app.processEvents()
+    assert dock.widget() is None
+    frame2.close_window()
+    app.processEvents()
+    assert "market" not in win._panel_frames
+    assert dock.widget() is widget               # re-homed into the reused dock, never orphaned
+    assert dock.isClosed()                        # the rail reflects the panel closed
+    win.close()
