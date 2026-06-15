@@ -332,15 +332,19 @@ class ResultsPanel(QtWidgets.QWidget):
     _METRIC_VALUE_RESIZE = {0: QtWidgets.QHeaderView.ResizeToContents,
                             1: QtWidgets.QHeaderView.Stretch}
 
-    def _build_robustness_tab(self) -> None:
-        self._robust_table = _readonly_table(
+    def _build_metric_tab(self, label: str):
+        """Build (and tab-add) a 2-column Metric|Value table — robustness / monte-carlo / benchmark
+        all share this exact shape; only the tab label and stored attribute differ."""
+        table = _readonly_table(
             ["Metric", "Value"], stretch_all=False, resize=self._METRIC_VALUE_RESIZE)
-        self._tabs.addTab(self._robust_table, "Robustness")
+        self._tabs.addTab(table, label)
+        return table
+
+    def _build_robustness_tab(self) -> None:
+        self._robust_table = self._build_metric_tab("Robustness")
 
     def _build_montecarlo_tab(self) -> None:
-        self._mc_table = _readonly_table(
-            ["Metric", "Value"], stretch_all=False, resize=self._METRIC_VALUE_RESIZE)
-        self._tabs.addTab(self._mc_table, "Monte Carlo")
+        self._mc_table = self._build_metric_tab("Monte Carlo")
 
     def _build_periods_tab(self) -> None:
         # Periods tab: a vertical splitter with the monthly heatmap on top and the drawdown table below.
@@ -366,9 +370,7 @@ class ResultsPanel(QtWidgets.QWidget):
         self._tabs.addTab(container, "Periods")
 
     def _build_benchmark_tab(self) -> None:
-        self._bench_table = _readonly_table(
-            ["Metric", "Value"], stretch_all=False, resize=self._METRIC_VALUE_RESIZE)
-        self._tabs.addTab(self._bench_table, "Benchmark")
+        self._bench_table = self._build_metric_tab("Benchmark")
 
     _WF_COLS = ["Window", "Train", "Test", "Best params", "IS", "OOS", "Result"]
 
@@ -588,20 +590,14 @@ class ResultsPanel(QtWidgets.QWidget):
                 f"{mfe * 100:.2f}%" if mfe is not None else "—",
                 f"{mae * 100:.2f}%" if mae is not None else "—",
             ]
-            up = t.pnl >= 0
-            for c, text in enumerate(cells):
-                item = QtWidgets.QTableWidgetItem(text)
-                if c == 1:
-                    item.setForeground(QtGui.QColor(theme.UP if t.size >= 0 else theme.DOWN))
-                elif c in (5, 6):
-                    item.setForeground(QtGui.QColor(theme.UP if up else theme.DOWN))
-                elif c == 7:                                  # MFE = best excursion -> green
-                    item.setForeground(QtGui.QColor(theme.UP))
-                elif c == 8:                                  # MAE = worst excursion -> red
-                    item.setForeground(QtGui.QColor(theme.DOWN))
-                if c >= 2:
-                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                self._trades.setItem(r, c, item)
+            pnl_col = theme.UP if t.pnl >= 0 else theme.DOWN
+            colors = {
+                1: theme.UP if t.size >= 0 else theme.DOWN,
+                5: pnl_col, 6: pnl_col,
+                7: theme.UP,    # MFE = best excursion -> green
+                8: theme.DOWN,  # MAE = worst excursion -> red
+            }
+            self._set_row(self._trades, r, cells, colors=colors, align_from=2)
 
     def _fill_by_symbol(self, report) -> None:
         from ..analysis import metrics as _m
@@ -640,13 +636,8 @@ class ResultsPanel(QtWidgets.QWidget):
                 mdd_str = "—"
                 sharpe_str = "—"
             cells = [sym, str(n), win_pct, self._money(pnl), mdd_str, sharpe_str]
-            for c, text in enumerate(cells):
-                item = QtWidgets.QTableWidgetItem(text)
-                if c == 3:
-                    item.setForeground(QtGui.QColor(theme.UP if up else theme.DOWN))
-                if c >= 1:
-                    item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-                self._by_symbol_table.setItem(r, c, item)
+            self._set_row(self._by_symbol_table, r, cells,
+                          colors={3: theme.UP if up else theme.DOWN})
 
     # --- analytics tab fill helpers ---
 
@@ -668,6 +659,20 @@ class ResultsPanel(QtWidgets.QWidget):
         table.setRowCount(len(rows))
         for r, (lbl, val, col) in enumerate(rows):
             self._table_row(table, r, lbl, val, col)
+
+    @staticmethod
+    def _set_row(table, row: int, cells, *, colors=None, align_from: int = 1) -> None:
+        """Populate one table row from ``cells`` (column strings). ``colors`` maps a column index to a
+        foreground colour; columns at/after ``align_from`` are right-aligned. The shared body of the
+        trades / by-symbol / runs-history fills (each differs only in cells + which columns colour)."""
+        for c, text in enumerate(cells):
+            item = QtWidgets.QTableWidgetItem(text)
+            col = colors.get(c) if colors else None
+            if col:
+                item.setForeground(QtGui.QColor(col))
+            if c >= align_from:
+                item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+            table.setItem(row, c, item)
 
     def _fill_robustness(self, report) -> None:
         from ..analysis.overfit import probabilistic_sharpe_ratio
@@ -1060,15 +1065,11 @@ class ResultsPanel(QtWidgets.QWidget):
             str(report.n_trades),
             self._fmt("sharpe", report.sharpe),
         ]
-        for c, text in enumerate(cells):
-            item = QtWidgets.QTableWidgetItem(text)
-            if c == 1:
-                item.setForeground(QtGui.QColor(theme.UP if report.total_return >= 0 else theme.DOWN))
-            elif c == 2:
-                item.setForeground(QtGui.QColor(theme.DOWN if report.max_drawdown > 0 else theme.TEXT))
-            if c >= 1:
-                item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-            self._runs_table.setItem(row, c, item)
+        colors = {
+            1: theme.UP if report.total_return >= 0 else theme.DOWN,
+            2: theme.DOWN if report.max_drawdown > 0 else theme.TEXT,
+        }
+        self._set_row(self._runs_table, row, cells, colors=colors)
         self.show_report(report, bars, overlays)
         self.toast(f"✓ Backtest complete · run {n}")
 
