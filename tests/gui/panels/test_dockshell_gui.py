@@ -309,6 +309,49 @@ def test_panel_close_button_closes_via_real_click(app):
     win.close()
 
 
+def test_panel_titlebar_has_no_native_chrome_leak(app):
+    """Regression: ADS re-shows its native dockAreaCloseButton on a deferred tick AFTER our
+    refresh_native_hidden() child.hide() ran, leaking a 2nd ✕ onto the Market-Watch bar next to our
+    own ─ □ ✕ (measured: fresh panel had dockAreaCloseButton VISIBLE). _set_native_hidden() now
+    drives ADS's setShowInTitleBar(False) so the hide sticks — NO native title-bar button visible."""
+    win = MainWindow(session_path=None)
+    win.show()
+    win._panel_btns["market"].setChecked(True)
+    app.processEvents()
+    app.processEvents()
+    tb = win._market_dock.dockAreaWidget().titleBar()
+    leaking = [b.objectName() for b in tb.findChildren(QtAds.CTitleBarButton) if b.isVisible()]
+    assert leaking == [], f"native title-bar chrome leaked onto the panel: {leaking}"
+    win.close()
+
+
+def test_chart_header_recovers_after_autohide_reveal(app):
+    """Regression: minimizing the central chart to the left rail then revealing it rebuilt the dock
+    area with a fresh title bar whose _header was None — SpaceDeck only (re)marks the chart header on
+    an area-CHANGE, which the un-pin-from-edge path misses — so the header was permanently lost and
+    native ADS chrome (the ▼ tabs-menu + auto-hide pin) leaked through. _auto_detect_panel now
+    re-marks the 'space:' central dock as the chart header on the heal/relayout pass."""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    ch = win.tabs.dock(0)
+    tb = ch.dockAreaWidget().titleBar()
+    assert tb._header is not None and tb._header.button("max") is not None   # fresh: header marked
+    tb._header.button("min").click()                                         # ─ -> auto-hide left
+    app.processEvents()
+    assert ch.isAutoHide() and ch.autoHideLocation() == QtAds.SideBarLeft
+    ch.setAutoHide(False)                                                    # reveal back in-layout
+    for _ in range(4):
+        app.processEvents()
+    tb2 = ch.dockAreaWidget().titleBar()
+    assert tb2._header is not None, "chart header lost after auto-hide reveal"
+    for key in ("min", "max", "close"):
+        assert tb2._header.button(key) is not None, f"chart header missing {key} after reveal"
+    leaking = [b.objectName() for b in tb2.findChildren(QtAds.CTitleBarButton) if b.isVisible()]
+    assert leaking == [], f"native chrome leaked after reveal: {leaking}"
+    win.close()
+
+
 # --- Arrange (MultiCharts Window->Arrange parity) + keep-on-top pin -------------------------
 
 
