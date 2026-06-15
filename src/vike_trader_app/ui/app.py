@@ -2217,32 +2217,40 @@ class MainWindow(QtWidgets.QMainWindow):
         return w
 
     def _update_account(self) -> None:
-        """Refresh the Trades & Positions summary strip from the current result."""
+        """Refresh the Trades & Positions summary strip from the current result.
+
+        Wrapped against RuntimeError: a result update can land after the Trades panel was torn down
+        (workspace swap / window close) — the ``_acct`` dict still holds the now-deleted QLabel C++
+        objects, and setText on them raised mid-slot and could escalate to a worker crash under
+        parallel teardown (test_controls_survive_studio_close on CI)."""
         if not hasattr(self, "_acct"):
             return
-        res = self._result
-        if res is None or not res.equity_curve:
-            for v in self._acct.values():
-                v.setText("—")
-            self._pnl_tile.set_result([])
-            return
-        self._pnl_tile.set_result(res.equity_curve, res.final_equity)
-        eq = res.equity_curve
-        initial, final = eq[0], res.final_equity
-        pnl = final - initial
-        ret = metrics.total_return(eq) * 100
-        self._acct["balance"].setText(f"${initial:,.2f}")
-        self._acct["equity"].setText(f"${final:,.2f}")
-        sign = "+" if pnl >= 0 else "−"
-        color = theme.UP if pnl >= 0 else theme.DOWN
-        self._acct["pnl"].setText(f"{sign}${abs(pnl):,.2f}")
-        self._acct["pnl"].setStyleSheet(
-            f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
-        )
-        self._acct["ret"].setText(f"{ret:+.2f}%")
-        self._acct["ret"].setStyleSheet(
-            f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
-        )
+        try:
+            res = self._result
+            if res is None or not res.equity_curve:
+                for v in self._acct.values():
+                    v.setText("—")
+                self._pnl_tile.set_result([])
+                return
+            self._pnl_tile.set_result(res.equity_curve, res.final_equity)
+            eq = res.equity_curve
+            initial, final = eq[0], res.final_equity
+            pnl = final - initial
+            ret = metrics.total_return(eq) * 100
+            self._acct["balance"].setText(f"${initial:,.2f}")
+            self._acct["equity"].setText(f"${final:,.2f}")
+            sign = "+" if pnl >= 0 else "−"
+            color = theme.UP if pnl >= 0 else theme.DOWN
+            self._acct["pnl"].setText(f"{sign}${abs(pnl):,.2f}")
+            self._acct["pnl"].setStyleSheet(
+                f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
+            )
+            self._acct["ret"].setText(f"{ret:+.2f}%")
+            self._acct["ret"].setStyleSheet(
+                f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
+            )
+        except RuntimeError:
+            pass   # Trades panel torn down mid-update — drop this refresh
 
     def _wire_panels_toggle(self) -> None:
         """Wire each rail PANELS toggle (+ its Ctrl shortcut) to its dock — independently.
