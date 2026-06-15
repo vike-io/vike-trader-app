@@ -40,10 +40,14 @@ def test_window_chrome_config_flags(app):
     win.close()
 
 
-def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
-    """MC-style live layout: open 4 floating chart WINDOWS, tile them 2x2 with the arrange
-    verb (geometry math, no docking — the user rejected dock-tiling), auto-hide Market watch
-    to the LEFT edge and Trades to the BOTTOM edge, then reveal one again."""
+def test_four_charts_tile_2x2(app, monkeypatch):
+    """MC-style live layout: open 4 floating chart WINDOWS and tile them 2x2 with the arrange verb
+    (geometry math, no docking — the user rejected dock-tiling).
+
+    (The old version also exercised ADS ``setAutoHide`` to pin panels to the edges. That path is
+    retired — minimize is the custom left rail now (ui/minrail.py), covered by the rail tests — and
+    ADS auto-hide with several containers is exactly the unstable mechanism the rail replaced, so
+    those direct setAutoHide calls were a CI flake source. Dropped.)"""
     bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + i)
             for i in range(30)]
     monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(list(bars)))
@@ -63,20 +67,6 @@ def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
     for i in range(4):
         for j in range(i + 1, 4):
             assert not geos[i].intersects(geos[j])
-
-    # auto-hide the panels to edges (the AmiBroker side-rail)
-    win._market_dock.setAutoHide(True, QtAds.SideBarLeft)
-    win._trades_dock.setAutoHide(True, QtAds.SideBarBottom)
-    app.processEvents()
-    assert win._market_dock.isAutoHide()
-    assert win._market_dock.autoHideLocation() == QtAds.SideBarLeft
-    assert win._trades_dock.isAutoHide()
-    assert win._trades_dock.autoHideLocation() == QtAds.SideBarBottom
-
-    # reveal the Market watch again (un-pin back into the layout)
-    win._market_dock.setAutoHide(False)
-    app.processEvents()
-    assert not win._market_dock.isAutoHide()
     win.close()
 
 
