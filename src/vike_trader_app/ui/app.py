@@ -627,20 +627,24 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue
 
     def _toggle_chart_maximize(self) -> None:
-        """Chart header □ : maximize the chart to fill the workspace by hiding the side panels,
-        remembering which were open so the toggle restores exactly those. Pairs with the chart
-        header ─ roll-up (VikeDockTitleBar._toggle_chart_rollup) for AmiBroker-style window verbs
-        that act on the chart, never on the whole OS window."""
+        """Chart header □ : maximize the chart to fill the workspace by hiding the OPEN side panels,
+        remembering which so the toggle restores exactly those. If nothing is open to hide (the chart
+        already fills its area — e.g. the panels were minimized to the rail), this is a no-op and the
+        chart stays UN-maxed, so the button never lands in a false 'maximized' state with no visible
+        effect. Decoupled from minimize: restoring the chart or any panel from the rail clears this."""
         if not getattr(self, "_chart_maxed", False):
-            self._chart_maxed = True
-            self._chart_max_hidden = []
+            hidden = []
             for key, dock in getattr(self, "_panel_dock_map", {}).items():
                 try:
                     if not dock.isClosed():
-                        self._chart_max_hidden.append(key)
+                        hidden.append(key)
                         self._set_dock_open(dock, False)
                 except RuntimeError:        # dock torn down mid-relayout — skip
                     continue
+            if not hidden:
+                return                      # nothing open to hide -> not maximized; leave □
+            self._chart_maxed = True
+            self._chart_max_hidden = hidden
         else:
             self._chart_maxed = False
             for key in getattr(self, "_chart_max_hidden", []):
@@ -648,6 +652,26 @@ class MainWindow(QtWidgets.QMainWindow):
                 if dock is not None:
                     self._set_dock_open(dock, True)
             self._chart_max_hidden = []
+        self._refresh_chart_max_icon()
+
+    def _refresh_chart_max_icon(self) -> None:
+        """Sync the chart header's maximize glyph (□ / ❐) to _chart_maxed — called whenever the
+        state changes outside the button's own click (rail restore of the chart or a panel)."""
+        h = self.tabs.header_widget()
+        if h is None:
+            return
+        b = h.button("max") if hasattr(h, "button") else None
+        if b is not None:
+            maxed = getattr(self, "_chart_maxed", False)
+            b.setText("❐" if maxed else "□")
+            b.setToolTip("Restore" if maxed else "Maximize / restore")
+
+    def _clear_chart_maxed(self) -> None:
+        """Drop the chart-maximized state (chart back to a normal docked share) + sync the icon.
+        Used when the chart or a panel is restored from the rail, so maximize never fights minimize."""
+        self._chart_maxed = False
+        self._chart_max_hidden = []
+        self._refresh_chart_max_icon()
 
     def _frame_of(self, doc) -> "object | None":
         for f in self._chart_frames:
@@ -814,6 +838,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tabs.dock(0).raise_()
         except (RuntimeError, AttributeError, IndexError):
             pass
+        self._clear_chart_maxed()   # chart back to a normal share; maximize state can't be stale
 
     def _minimize_panel_to_rail(self, dock):
         """A side panel's ─ : hide the dock and park a restore tab on the left rail (AmiBroker)."""
@@ -829,6 +854,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def _restore_panel_from_rail(self, dock):
         try:
             self._min_rail.remove(dock.objectName())
+            # A restored panel must coexist with the chart — if the chart was 'maximized' (panels
+            # hidden), clear that state first so the panel isn't immediately re-hidden / leaving a
+            # stale ❐ on the chart header.
+            if getattr(self, "_chart_maxed", False):
+                self._clear_chart_maxed()
             self._set_dock_open(dock, True)
             dock.raise_()
         except RuntimeError:
