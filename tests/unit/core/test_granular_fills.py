@@ -64,7 +64,7 @@ def test_granular_dip_first_stop_wins():
     result = eng.run()
     assert len(result.trades) == 1
     assert result.trades[0].exit_price == 95.0  # stop, not TP
-    assert eng._pos["S"].size == 0
+    assert eng._sym["S"].pos.size == 0
 
 
 def test_granular_rally_first_tp_wins():
@@ -81,7 +81,7 @@ def test_granular_rally_first_tp_wins():
     result = eng.run()
     assert len(result.trades) == 1
     assert result.trades[0].exit_price == 110.0  # TP, not stop
-    assert eng._pos["S"].size == 0
+    assert eng._sym["S"].pos.size == 0
 
 
 class _GranularLimitEntry(PortfolioStrategy):
@@ -110,8 +110,8 @@ def test_granular_limit_entry_fills_at_dipping_sub_bar():
     eng = PortfolioEngine(coarse, _GranularLimitEntry(), cash=10_000.0,
                           granular_by_symbol=granular)
     eng.run()
-    assert eng._pos["S"].size == 1.0
-    assert eng._pos["S"].avg_price == 100.0  # filled at the limit price
+    assert eng._sym["S"].pos.size == 1.0
+    assert eng._sym["S"].pos.avg_price == 100.0  # filled at the limit price
 
 
 class _GranularStopNeverHit(PortfolioStrategy):
@@ -137,6 +137,6 @@ def test_granular_order_that_never_triggers_stays_pending():
     eng = PortfolioEngine(coarse, _GranularStopNeverHit(), cash=10_000.0,
                           granular_by_symbol=granular)
     eng.run()
-    assert eng._pos["S"].size == 0
-    assert len(eng._pending["S"]) == 1  # the limit_buy@50 never triggered, still resting
-    assert eng._pending["S"][0].kind == "limit"
+    assert eng._sym["S"].pos.size == 0
+    assert len(eng._sym["S"].pending) == 1  # the limit_buy@50 never triggered, still resting
+    assert eng._sym["S"].pending[0].kind == "limit"
