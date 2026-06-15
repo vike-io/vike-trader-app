@@ -10,6 +10,7 @@ import time
 
 from ..core.model import Bar
 from .rest import get_json
+from .rows import rows_to_bars
 
 KRAKEN_API = "https://api.kraken.com"
 
@@ -25,10 +26,8 @@ def market_symbol(symbol: str) -> str:
 
 def to_bars(rows: list[list]) -> list[Bar]:
     """``[time_s, o, h, l, c, vwap, vol, count]`` rows -> ascending ``Bar``s (volume = col 6)."""
-    bars = [Bar(ts=int(r[0]) * 1000, open=float(r[1]), high=float(r[2]), low=float(r[3]),
-                close=float(r[4]), volume=float(r[6])) for r in rows]
-    bars.sort(key=lambda b: b.ts)
-    return bars
+    return rows_to_bars(rows, {"ts": 0, "open": 1, "high": 2, "low": 3, "close": 4, "volume": 6},
+                        ts_scale=1000)
 
 
 def parse_response(resp: dict) -> list[Bar]:
