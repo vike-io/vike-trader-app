@@ -48,6 +48,19 @@ class _TileBody(QtWidgets.QWidget):
     def _show_empty(self, on: bool) -> None:
         self._empty.setVisible(on)
 
+    def _alive(self) -> bool:
+        """False once this tile's C++ object has been torn down. Background updaters (a finishing
+        backtest's set_result, a quote chunk's merge_prices, a news refresh) can fire after the
+        dashboard dock was closed / the window torn down — touching the dead QLabel/layout then
+        raised RuntimeError mid-slot and could escalate to a worker crash under parallel teardown.
+        Each update is one synchronous pass (no event loop turn deletes it mid-method), so a single
+        check at entry is sufficient."""
+        try:
+            self.isVisible()
+            return True
+        except RuntimeError:
+            return False
+
 
 class MoversTile(_TileBody):
     """Top movers by 24h change, fed from the same quote stream as the watchlist."""
@@ -58,6 +71,8 @@ class MoversTile(_TileBody):
 
     def merge_prices(self, prices: dict) -> None:
         """Fold a quote chunk (symbol -> (last, chg_frac)) in and re-render."""
+        if not self._alive():
+            return
         self._prices.update({k: v for k, v in prices.items() if v})
         self._render()
 
@@ -95,6 +110,8 @@ class PnLTile(_TileBody):
         super().__init__("Run a backtest (or start the forward tester) to see P&L.", parent)
 
     def set_result(self, equity_curve, final_equity: float | None = None) -> None:
+        if not self._alive():
+            return
         self._clear_rows()
         s = pnl_summary(equity_curve, final_equity)
         self._show_empty(s is None)
@@ -133,6 +150,8 @@ class CalendarTile(_TileBody):
                          parent)
 
     def set_events(self, events) -> None:
+        if not self._alive():
+            return
         self._clear_rows()
         self._show_empty(not events)
         for ev in events:
@@ -167,6 +186,8 @@ class NewsTile(_TileBody):
         super().__init__("Open this tile with the news feed running to see headlines.", parent)
 
     def set_items(self, items) -> None:
+        if not self._alive():
+            return
         self._clear_rows()
         rows = latest_headlines(items)
         self._show_empty(not rows)

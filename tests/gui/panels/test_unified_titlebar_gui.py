@@ -54,7 +54,7 @@ def test_central_area_gets_single_title_chart_header(app):
     assert tb.is_chart_header()          # single-title header, NOT a 9-tab strip
     assert not tb._is_panel
     assert tb._header is not None
-    assert {"detach", "min", "max", "close"} <= set(tb._header._buttons)
+    assert {"min", "max", "close"} <= set(tb._header._buttons)   # ⧉ dropped (float by drag)
     # the live-ticker title flows through the persistent model + header widget
     win.tabs.set_header_title("Chart · BTCUSDT · 1m")
     assert win.tabs._header_title == "Chart · BTCUSDT · 1m"
@@ -118,15 +118,14 @@ def test_panel_area_gets_unified_bar(app):
     assert isinstance(tb, VikeDockTitleBar)
     assert tb._is_panel                  # detected the 'panel:' dock
     assert tb._header is not None
-    # Unified title bar: every panel (side panels too) carries the same ⧉ ─ □ ✕ as the chart and
-    # the tool/chart windows — ⧉ floats it to a window, □ maximizes, ─ auto-hides, ✕ closes.
-    assert {"detach", "min", "max", "close"} == set(tb._header._buttons)
+    # Unified title bar: ─ □ ✕ (MC/VS). ⧉ dropped — float a panel by dragging its title bar out.
+    assert {"min", "max", "close"} == set(tb._header._buttons)
     win.close()
 
 
 def test_tool_opens_as_window_with_unified_bar(app):
-    """MT-style (the user's choice): a tool opens as its OWN window (ToolWindowFrame), and that
-    window carries the unified ⧉ ─ □ ✕ title bar (no chart-only ＋)."""
+    """MT-style: a tool opens as its OWN window (ToolWindowFrame) with the unified ─ □ ✕ bar
+    (⧉ dropped, no chart-only ＋ — float/attach via the right-click menu or dragging the bar)."""
     from vike_trader_app.ui.chartwin import ToolWindowFrame
 
     win = MainWindow(session_path=None)
@@ -136,7 +135,7 @@ def test_tool_opens_as_window_with_unified_bar(app):
     app.processEvents()
     assert isinstance(frame, ToolWindowFrame)
     assert win._tool_frames.get("screener") is frame
-    assert {"detach", "min", "max", "close"} == set(frame._bar._buttons)
+    assert {"min", "max", "close"} == set(frame._bar._buttons)
     win.close()
 
 

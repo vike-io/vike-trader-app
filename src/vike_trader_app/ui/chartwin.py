@@ -30,6 +30,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
     activated = QtCore.Signal(object)     # self (clicked/raised)
     cloneRequested = QtCore.Signal(object)   # self — duplicate this window (MainWindow handles)
     redockRequested = QtCore.Signal(object)  # self — dock this window into the workspace (charts + tools)
+    minimizeRequested = QtCore.Signal(object)  # self — minimize via the host (tools: AmiBroker left auto-hide tab)
 
     def __init__(self, doc, host: QtWidgets.QWidget, *, title: "str | None" = None,
                  icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = False):
@@ -90,9 +91,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
         if clone:
             self._bar.add_button("clone", "＋", "Clone this window",
                                  lambda: self.cloneRequested.emit(self))
-        self._detach_btn = self._bar.add_button(
-            "detach", "⧉", "Detach to its own window", self.toggle_detach)
-        self._bar.add_button("min", "─", "Minimize (roll up)", self.toggle_rollup)
+        # ⧉ dropped (MC/VS model): detach/attach is via the right-click menu, and you float a
+        # docked panel by dragging its title bar out. No dedicated detach BUTTON on the bar.
+        self._detach_btn = None
+        self._bar.add_button("min", "─", "Minimize (hide to left edge)", self.toggle_rollup)
         self._max_btn = self._bar.add_button("max", "□", "Maximize", self.toggle_max)
         self._bar.add_button("close", "✕", "Close", self.close_window, danger=True)
         self._bar.set_menu(self._show_menu)
@@ -117,7 +119,6 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self.move(60, 60)
             self.resize(geo.size())
             self.show()
-            self._detach_btn.setToolTip("Detach to its own window")
             if hasattr(self.doc, "set_floating"):
                 self.doc.set_floating(False)
         else:
@@ -126,27 +127,16 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self.setWindowFlags(QtCore.Qt.Window | QtCore.Qt.FramelessWindowHint)
             self.move(global_pos)
             self.show()
-            self._detach_btn.setToolTip("Attach back into the workspace")
             if hasattr(self.doc, "set_floating"):
                 self.doc.set_floating(True)
         self.raise_()
         self.activated.emit(self)
 
     def toggle_rollup(self) -> None:
-        self._rolled = not self._rolled
-        body = self.doc
-        body.setVisible(not self._rolled)
-        if self._rolled:
-            self._roll_geo = self.geometry()
-            self.resize(_STUB_W, TITLE_H + 2)        # collapse to a narrow title stub
-        else:
-            self.setGeometry(self._roll_geo)         # restore position AND size
-        # AmiBroker-style hide: attached rolled windows park as stubs stacked down the LEFT edge of
-        # the workspace; restoring one re-stacks the rest. Detached (OS) windows roll up in place.
-        w = self.window()
-        if hasattr(w, "_restack_left_rail"):
-            w._restack_left_rail()
-        self.raise_()
+        # Minimize (─) routes to the host, which docks this window and auto-hides it to the LEFT
+        # edge as a vertical tab (AmiBroker-style, consistent across charts + tools) — NOT an
+        # in-place roll-up. The host wiring differs (chart vs tool), so it owns the behaviour.
+        self.minimizeRequested.emit(self)
 
     def toggle_max(self) -> None:
         if self._rolled:
@@ -246,6 +236,44 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 return True
         return super().eventFilter(obj, ev)
 
+    def _set_resize_frozen(self, frozen: bool) -> None:
+        """During an edge-resize drag, freeze the EXPENSIVE content repaints across the workspace.
+
+        Measured: the dominant resize cost is NOT the dragged window's own border — it's the other
+        widgets repainting as the window moves over them. The central chart (and any pyqtgraph view)
+        replays a ~10k-candle QPicture (~130ms each); the OTHER open windows' tables/panels repaint
+        on reveal. With 6 overlapping windows a single resize frame hit ~300ms-1.2s, so the drag
+        stuck. We freeze, for the duration of the drag: every chart view (pyqtgraph PlotWidget is a
+        QGraphicsView — matched on the base class, no pyqtgraph import) AND every other window's body
+        content (each frame's .doc). The window borders still resize live (cheap); one clean repaint
+        of everything follows on release. Resolved off the top-level window so it covers the central
+        chart + all sibling frames; tolerant of a frame torn down mid-drag."""
+        top = self.window()
+        if top is None:
+            return
+        targets: list = []
+        try:
+            targets.extend(top.findChildren(QtWidgets.QGraphicsView))   # all charts (central + windows)
+        except RuntimeError:
+            return
+        frames = list(getattr(top, "_chart_frames", []) or [])
+        frames += list(getattr(top, "_tool_frames", {}).values())
+        for f in frames:
+            body = getattr(f, "doc", None)
+            if body is not None:
+                targets.append(body)            # tool/chart body content (tables, panels, etc.)
+        seen = set()
+        for w in targets:
+            if id(w) in seen:
+                continue
+            seen.add(id(w))
+            try:
+                w.setUpdatesEnabled(not frozen)
+                if not frozen:
+                    w.update()
+            except RuntimeError:
+                pass
+
     def mousePressEvent(self, ev):  # noqa: N802 - edge-resize start + activate
         self.raise_()
         self.activated.emit(self)
@@ -255,6 +283,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 self._resize_edge = e
                 self._press_geo = self.geometry()
                 self._press_pos = ev.globalPosition().toPoint()
+                self._set_resize_frozen(True)        # stop per-frame chart repaints for the drag
                 return
         super().mousePressEvent(ev)
 
@@ -299,11 +328,14 @@ class ChartWindowFrame(QtWidgets.QFrame):
 
     def mouseReleaseEvent(self, ev):  # noqa: N802
         # apply the final geometry exactly (don't lose the last sub-tick move) and stop ticking
+        was_resizing = self._resize_edge is not None
         if self._pending_geo is not None:
             self.setGeometry(self._pending_geo)
             self._pending_geo = None
         self._resize_timer.stop()
         self._resize_edge = None
+        if was_resizing:
+            self._set_resize_frozen(False)           # unfreeze + one clean repaint at final size
         super().mouseReleaseEvent(ev)
 
     def _edge_at(self, p: QtCore.QPoint):
@@ -414,7 +446,9 @@ def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) 
     columns / rows. Geometries are computed first, then applied with each frame's painting
     disabled — so the bulk re-tile costs ONE repaint/relayout per frame instead of letting
     intermediate FullViewportUpdate repaints stack up (a cold 4-window grid went ~2.4s→~0.3s)."""
-    live = [f for f in frames if not f.is_detached() and not f._rolled]
+    # Skip hidden frames: a minimized window is hidden + parked on the left rail (not destroyed),
+    # so it stays in the frame list — but Arrange must tile only what's actually on screen.
+    live = [f for f in frames if not f.is_detached() and not f._rolled and f.isVisible()]
     if not live:
         return
     r = host.rect()
@@ -440,6 +474,9 @@ def arrange(frames: list[ChartWindowFrame], host: QtWidgets.QWidget, mode: str) 
     for f in live:
         f.setUpdatesEnabled(True)
         f.update()
-    if mode == "cascade":
-        for f in live:
-            f.raise_()
+    # Raise every tiled frame above the workspace so a tile can't sink behind the central chart
+    # area or a sibling. Was cascade-ONLY; grid/rows/columns left tiles un-raised, so a window
+    # overlapping the chart could hide behind it. Iterating in `live` order keeps cascade's
+    # last-on-top stack.
+    for f in live:
+        f.raise_()

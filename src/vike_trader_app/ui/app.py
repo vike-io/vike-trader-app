@@ -501,6 +501,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.activated.connect(self._on_chart_window_activated)
         frame.cloneRequested.connect(self._clone_window)
         frame.redockRequested.connect(self._redock_chart)
+        frame.minimizeRequested.connect(self._minimize_chart_window_to_left)
         self._chart_frames.append(frame)
         # cascade placement: each new window steps down-right from the last
         n = len(self._chart_frames) - 1
@@ -690,11 +691,14 @@ class MainWindow(QtWidgets.QMainWindow):
         window, not a dock — independent, multi-monitor friendly, and free of the ADS dock-area
         split/collapse teardown race that was silently deleting docked tools.
         """
-        # The tool may already be open as a floating WINDOW — focus it.
+        # The tool may already be open as a floating WINDOW — focus it (and un-minimize it from the
+        # left rail if it was parked there: the frame is just hidden, so show + drop its rail tab).
         frame = self._tool_frames.get(key)
         if frame is not None:
+            frame.show()
             frame.raise_()
             frame.activated.emit(frame)
+            self._min_rail.remove(key)
             return frame
         existing = self._tool_docks.get(key)
         if existing is not None:
@@ -739,8 +743,90 @@ class MainWindow(QtWidgets.QMainWindow):
                                 icon=self._tool_icon(key).pixmap(16, 16))
         frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
         frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
+        frame.minimizeRequested.connect(lambda _f, k=key: self._minimize_tool_to_left(k))
         self._tool_frames[key] = frame
         return frame
+
+    def _minimize_tool_to_left(self, key: str):
+        """A tool's ─ : HIDE its window and park a vertical restore tab on the left rail (AmiBroker
+        style); click the tab to restore it full-size. The frame stays alive (hidden) so there is no
+        rebuild / state loss. Replaces ADS auto-hide (which deleted docks + left an empty-space
+        flyout once several were minimized)."""
+        frame = self._tool_frames.get(key)
+        if frame is None:
+            return
+        frame.hide()
+        self._min_rail.add(key, toolreg.TOOL_LABELS.get(key, key), self._tool_icon(key),
+                           lambda k=key: self._restore_tool_from_rail(k))
+
+    def _restore_tool_from_rail(self, key: str):
+        self._min_rail.remove(key)      # idempotent — also drops the tab when called programmatically
+        frame = self._tool_frames.get(key)
+        if frame is None:               # closed while minimized — reopen fresh
+            self.open_tool(key)
+            return
+        try:
+            frame.show(); frame.raise_(); frame.activated.emit(frame)
+        except RuntimeError:
+            self._tool_frames.pop(key, None)
+
+    def _minimize_chart_window_to_left(self, frame):
+        """A chart WINDOW's ─ : hide it and park a restore tab on the left rail (like the tools)."""
+        key = f"chartwin:{id(frame)}"
+        doc = getattr(frame, "doc", None)
+        label = doc.title() if (doc is not None and hasattr(doc, "title")) else "Chart"
+        frame.hide()
+        self._min_rail.add(key, label, self._tool_icon("chart"),
+                           lambda f=frame: self._restore_chart_window(f))
+
+    def _restore_chart_window(self, frame):
+        self._min_rail.remove(f"chartwin:{id(frame)}")
+        try:
+            frame.show(); frame.raise_(); frame.activated.emit(frame)
+        except RuntimeError:
+            pass
+
+    def _minimize_chart_to_left(self):
+        """Chart header ─ : hide the central chart space and park a restore tab on the left rail."""
+        try:
+            dock = self.tabs.dock(0)
+        except (RuntimeError, AttributeError, IndexError):
+            dock = None
+        if dock is None:
+            return
+        try:
+            dock.toggleView(False)
+        except RuntimeError:
+            return
+        self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
+                           self._restore_central_chart)
+
+    def _restore_central_chart(self):
+        self._min_rail.remove("__central_chart__")
+        try:
+            self.tabs.dock(0).toggleView(True)
+            self.tabs.dock(0).raise_()
+        except (RuntimeError, AttributeError, IndexError):
+            pass
+
+    def _minimize_panel_to_rail(self, dock):
+        """A side panel's ─ : hide the dock and park a restore tab on the left rail (AmiBroker)."""
+        key = dock.objectName() or f"panel:{id(dock)}"
+        label = dock.windowTitle() or key
+        try:
+            self._set_dock_open(dock, False)
+        except RuntimeError:
+            return
+        self._min_rail.add(key, label, dock.icon(),
+                           lambda d=dock: self._restore_panel_from_rail(d))
+
+    def _restore_panel_from_rail(self, dock):
+        try:
+            self._min_rail.remove(dock.objectName())
+            self._set_dock_open(dock, True)
+            dock.raise_()
+        except RuntimeError:
+            pass
 
     def _tool_icon(self, key: str):
         """The colourful per-tool launcher icon (rail + dock + tool window), one place."""
@@ -857,10 +943,17 @@ class MainWindow(QtWidgets.QMainWindow):
             out.append(spec)
         return out
 
-    def _redock_tool(self, key: str):
+    def _redock_tool(self, key: str, auto_hide_side=None):
         """'Dock into workspace' on a tool window — reparent the LIVE widget back into a fresh
         ADS dock (state preserved; signals stay connected, so no re-wire). The frame is disposed
-        WITHOUT its close handler (the widget has been re-homed)."""
+        WITHOUT its close handler (the widget has been re-homed).
+
+        ``auto_hide_side`` (a QtAds.SideBar* value) lands the dock straight on that auto-hide rail
+        via addAutoHideDockWidget — used by the ─ minimize. The old path (addDockWidget to the
+        CENTER, then setAutoHide) tabbed each tool into the central area first, then yanked it to
+        the sidebar; with several tools that center-tab-then-yank dance corrupted ADS's auto-hide
+        bookkeeping and DELETED earlier tool docks wholesale (measured: minimizing the 4th tool
+        destroyed all four). addAutoHideDockWidget never touches the center, so it's safe."""
         from .toolreg import make_tool_dock
 
         frame = self._tool_frames.pop(key, None)
@@ -871,13 +964,17 @@ class MainWindow(QtWidgets.QMainWindow):
         if widget is None:
             return None
         dock = make_tool_dock(self.dock_manager, key, widget, icon=self._tool_icon(key))
-        self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
+        if auto_hide_side is not None:
+            self.dock_manager.addAutoHideDockWidget(auto_hide_side, dock)
+        else:
+            self.dock_manager.addDockWidget(QtAds.CenterDockWidgetArea, dock)
         self._tool_docks[key] = dock
         # Re-arm the close handler for the new dock (signals/alias from the first open still hold,
         # so _wire_tool is NOT re-run — that would double-connect).
         dock.closed.connect(self._make_tool_close_handler(key, widget))
-        dock.toggleView(True)
-        dock.raise_()
+        if auto_hide_side is None:
+            dock.toggleView(True)
+            dock.raise_()
         return dock
 
     def _on_tool_window_closed(self, key: str) -> None:
@@ -1111,6 +1208,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._backtester = container
         configure_dock_manager_defaults()  # static config — must precede CDockManager()
         self.dock_manager = QtAds.CDockManager(self)  # installs itself as the central widget
+        # Custom MINIMIZE rail (left of the central widget). The ─ verb hides a window/panel and
+        # parks a vertical tab here; clicking restores it. Replaces ADS auto-hide (unstable with
+        # several auto-hide containers — deleted docks + empty-space flyout). See ui/minrail.py.
+        from .minrail import MinimizedRail
+        self._min_rail = MinimizedRail(self)
+        self.addToolBar(QtCore.Qt.LeftToolBarArea, self._min_rail)
+        self._restore_cbs: dict[str, "callable"] = {}
         # Unified title bar (stage 1): our factory renders every dock-area title bar — the
         # central spaces area carries the single-title MC chart header; panels keep MC chrome.
         # Per-manager install (not the global setFactory) so offscreen tests + any future
@@ -2113,32 +2217,40 @@ class MainWindow(QtWidgets.QMainWindow):
         return w
 
     def _update_account(self) -> None:
-        """Refresh the Trades & Positions summary strip from the current result."""
+        """Refresh the Trades & Positions summary strip from the current result.
+
+        Wrapped against RuntimeError: a result update can land after the Trades panel was torn down
+        (workspace swap / window close) — the ``_acct`` dict still holds the now-deleted QLabel C++
+        objects, and setText on them raised mid-slot and could escalate to a worker crash under
+        parallel teardown (test_controls_survive_studio_close on CI)."""
         if not hasattr(self, "_acct"):
             return
-        res = self._result
-        if res is None or not res.equity_curve:
-            for v in self._acct.values():
-                v.setText("—")
-            self._pnl_tile.set_result([])
-            return
-        self._pnl_tile.set_result(res.equity_curve, res.final_equity)
-        eq = res.equity_curve
-        initial, final = eq[0], res.final_equity
-        pnl = final - initial
-        ret = metrics.total_return(eq) * 100
-        self._acct["balance"].setText(f"${initial:,.2f}")
-        self._acct["equity"].setText(f"${final:,.2f}")
-        sign = "+" if pnl >= 0 else "−"
-        color = theme.UP if pnl >= 0 else theme.DOWN
-        self._acct["pnl"].setText(f"{sign}${abs(pnl):,.2f}")
-        self._acct["pnl"].setStyleSheet(
-            f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
-        )
-        self._acct["ret"].setText(f"{ret:+.2f}%")
-        self._acct["ret"].setStyleSheet(
-            f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
-        )
+        try:
+            res = self._result
+            if res is None or not res.equity_curve:
+                for v in self._acct.values():
+                    v.setText("—")
+                self._pnl_tile.set_result([])
+                return
+            self._pnl_tile.set_result(res.equity_curve, res.final_equity)
+            eq = res.equity_curve
+            initial, final = eq[0], res.final_equity
+            pnl = final - initial
+            ret = metrics.total_return(eq) * 100
+            self._acct["balance"].setText(f"${initial:,.2f}")
+            self._acct["equity"].setText(f"${final:,.2f}")
+            sign = "+" if pnl >= 0 else "−"
+            color = theme.UP if pnl >= 0 else theme.DOWN
+            self._acct["pnl"].setText(f"{sign}${abs(pnl):,.2f}")
+            self._acct["pnl"].setStyleSheet(
+                f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
+            )
+            self._acct["ret"].setText(f"{ret:+.2f}%")
+            self._acct["ret"].setStyleSheet(
+                f"color:{color};font-family:{theme.FONT_MONO};font-size:14px;font-weight:700;border:none;"
+            )
+        except RuntimeError:
+            pass   # Trades panel torn down mid-update — drop this refresh
 
     def _wire_panels_toggle(self) -> None:
         """Wire each rail PANELS toggle (+ its Ctrl shortcut) to its dock — independently.

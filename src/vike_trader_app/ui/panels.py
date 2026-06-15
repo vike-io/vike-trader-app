@@ -393,20 +393,23 @@ class WatchlistPanel(QtWidgets.QListWidget):
             cl = self._chg_labels.get(sym)
             if pl is None or close is None:
                 continue
-            if self._is_forex(sym):
-                pip = 0.01 if sym.upper().endswith("JPY") else 0.0001
-                dp = 3 if pip == 0.01 else 5
-                bid, ask = close - pip, close + pip
-                pl.setText(
-                    f"<span style='color:{theme.DOWN}'>{bid:.{dp}f}</span>"
-                    f"<span style='color:{theme.TEXT3}'> / </span>"
-                    f"<span style='color:{theme.UP}'>{ask:.{dp}f}</span>"
-                )
-            else:
-                pl.setText(f"{close:,.2f}")
-            if cl is not None and chg is not None:
-                col = theme.UP if chg >= 0 else theme.DOWN
-                cl.setText(f"<span style='color:{col}'>{chg * 100:+.2f}%</span>")
+            try:    # the label's C++ object may be torn down mid-tick (panel closed / workspace swap)
+                if self._is_forex(sym):
+                    pip = 0.01 if sym.upper().endswith("JPY") else 0.0001
+                    dp = 3 if pip == 0.01 else 5
+                    bid, ask = close - pip, close + pip
+                    pl.setText(
+                        f"<span style='color:{theme.DOWN}'>{bid:.{dp}f}</span>"
+                        f"<span style='color:{theme.TEXT3}'> / </span>"
+                        f"<span style='color:{theme.UP}'>{ask:.{dp}f}</span>"
+                    )
+                else:
+                    pl.setText(f"{close:,.2f}")
+                if cl is not None and chg is not None:
+                    col = theme.UP if chg >= 0 else theme.DOWN
+                    cl.setText(f"<span style='color:{col}'>{chg * 100:+.2f}%</span>")
+            except RuntimeError:
+                continue
 
     def _add_header(self, text: str) -> None:
         item = QtWidgets.QListWidgetItem(self)

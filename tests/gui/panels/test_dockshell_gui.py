@@ -40,10 +40,14 @@ def test_window_chrome_config_flags(app):
     win.close()
 
 
-def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
-    """MC-style live layout: open 4 floating chart WINDOWS, tile them 2x2 with the arrange
-    verb (geometry math, no docking — the user rejected dock-tiling), auto-hide Market watch
-    to the LEFT edge and Trades to the BOTTOM edge, then reveal one again."""
+def test_four_charts_tile_2x2(app, monkeypatch):
+    """MC-style live layout: open 4 floating chart WINDOWS and tile them 2x2 with the arrange verb
+    (geometry math, no docking — the user rejected dock-tiling).
+
+    (The old version also exercised ADS ``setAutoHide`` to pin panels to the edges. That path is
+    retired — minimize is the custom left rail now (ui/minrail.py), covered by the rail tests — and
+    ADS auto-hide with several containers is exactly the unstable mechanism the rail replaced, so
+    those direct setAutoHide calls were a CI flake source. Dropped.)"""
     bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + i)
             for i in range(30)]
     monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(list(bars)))
@@ -63,20 +67,6 @@ def test_four_charts_tile_and_autohide_to_edges(app, monkeypatch):
     for i in range(4):
         for j in range(i + 1, 4):
             assert not geos[i].intersects(geos[j])
-
-    # auto-hide the panels to edges (the AmiBroker side-rail)
-    win._market_dock.setAutoHide(True, QtAds.SideBarLeft)
-    win._trades_dock.setAutoHide(True, QtAds.SideBarBottom)
-    app.processEvents()
-    assert win._market_dock.isAutoHide()
-    assert win._market_dock.autoHideLocation() == QtAds.SideBarLeft
-    assert win._trades_dock.isAutoHide()
-    assert win._trades_dock.autoHideLocation() == QtAds.SideBarBottom
-
-    # reveal the Market watch again (un-pin back into the layout)
-    win._market_dock.setAutoHide(False)
-    app.processEvents()
-    assert not win._market_dock.isAutoHide()
     win.close()
 
 
@@ -210,10 +200,10 @@ def test_vike_dock_titlebar_attrs_exist_before_init():
 # --- chart-header window verbs: ─ roll-up + □ maximize (AmiBroker-style, never the OS window) ---
 
 
-def test_chart_header_min_rolls_up_not_minimizes_window(app):
-    """Chart header ─ rolls the central chart area up to its title strip (the AmiBroker
-    minimize-to-stub) — it must NOT minimize the whole OS window (the reported bug). A second
-    click restores the area's height."""
+def test_chart_header_min_parks_on_left_rail_not_os_minimize(app):
+    """Chart header ─ HIDES the central chart and parks a vertical restore tab on the custom left
+    rail (AmiBroker-style) — it must NOT minimize the whole OS window (the reported bug) nor roll up
+    into an empty workspace. (Replaces ADS auto-hide, which deleted docks + left an empty flyout.)"""
     from vike_trader_app.ui.dockshell import VikeDockTitleBar
     win = MainWindow(session_path=None)
     win.show()
@@ -222,15 +212,15 @@ def test_chart_header_min_rolls_up_not_minimizes_window(app):
     tb = next((t for t in win.findChildren(VikeDockTitleBar)
                if getattr(t, "_deck", None) is not None and t._header is not None), None)
     assert tb is not None
-    area = tb.dockAreaWidget()
-    full = area.maximumHeight()
     tb._header.button("min").click()
     app.processEvents()
-    assert not win.isMinimized()                          # the bug: must NOT minimize the app
-    assert tb._rolled and area.maximumHeight() <= 40      # rolled to the title strip
-    tb._header.button("min").click()
+    assert not win.isMinimized()                          # the bug: must NOT minimize the OS window
+    d = win.tabs.dock(0)
+    assert not d.toggleViewAction().isChecked()           # central chart hidden
+    assert win._min_rail.has("__central_chart__")         # parked on the left rail
+    win._restore_central_chart()                          # restore via the rail tab
     app.processEvents()
-    assert not tb._rolled and area.maximumHeight() == full   # restored
+    assert d.toggleViewAction().isChecked()               # chart back, no empty space
     win.close()
 
 
@@ -272,24 +262,27 @@ def test_tool_launcher_opens_dock_despite_checked_arg(app):
     win.close()
 
 
-def test_panel_min_button_autohides_via_real_click(app):
-    """Regression: the panel ─ button was a DEAD no-op. _panel_min -> _cur_dock() read the cached
-    self._area_w, which ADS had swapped out (stale C++ ref) -> currentDockWidget() None -> nothing
-    happened (clicking Market Watch ─ did nothing on the live app). Resolving the live area fixes
-    it: a real ─ click auto-hides the dock to its edge tab."""
+def test_panel_min_button_parks_on_left_rail_via_real_click(app):
+    """The panel ─ button HIDES the dock and parks a vertical restore tab on the custom left rail
+    (AmiBroker-style). Replaces ADS auto-hide (whose fixed-width slide-out flyout left empty space on
+    restore). A real ─ click must hide + rail; restoring brings the panel back full-size.
+    (Regression-keeper: _panel_min once read a stale cached area and did nothing on a real click.)"""
     win = MainWindow(session_path=None)
     win.show()
     win._panel_btns["market"].setChecked(True)
     app.processEvents()
     app.processEvents()
-    assert not win._market_dock.isAutoHide()
+    assert not win._market_dock.isClosed()
+    key = win._market_dock.objectName()
     tb = win._market_dock.dockAreaWidget().titleBar()
     tb._header.button("min").click()             # the real ─ click path (used to be a no-op)
     app.processEvents()
-    assert win._market_dock.isAutoHide()         # now actually collapses to the edge
-    win._market_dock.setAutoHide(False)          # and un-pins back into the layout
+    assert win._market_dock.isClosed()           # hidden
+    assert win._min_rail.has(key)                # parked on the left rail
+    win._restore_panel_from_rail(win._market_dock)
     app.processEvents()
-    assert not win._market_dock.isAutoHide()
+    assert not win._market_dock.isClosed()       # restored full-size (no empty space)
+    assert not win._min_rail.has(key)            # rail tab dropped
     win.close()
 
 
@@ -306,6 +299,51 @@ def test_panel_close_button_closes_via_real_click(app):
     tb._header.button("close").click()
     app.processEvents()
     assert win._trades_dock.isClosed()
+    win.close()
+
+
+def test_panel_titlebar_has_no_native_chrome_leak(app):
+    """Regression: ADS re-shows its native dockAreaCloseButton on a deferred tick AFTER our
+    refresh_native_hidden() child.hide() ran, leaking a 2nd ✕ onto the Market-Watch bar next to our
+    own ─ □ ✕ (measured: fresh panel had dockAreaCloseButton VISIBLE). _set_native_hidden() now
+    drives ADS's setShowInTitleBar(False) so the hide sticks — NO native title-bar button visible."""
+    win = MainWindow(session_path=None)
+    win.show()
+    win._panel_btns["market"].setChecked(True)
+    app.processEvents()
+    app.processEvents()
+    tb = win._market_dock.dockAreaWidget().titleBar()
+    leaking = [b.objectName() for b in tb.findChildren(QtAds.CTitleBarButton) if b.isVisible()]
+    assert leaking == [], f"native title-bar chrome leaked onto the panel: {leaking}"
+    win.close()
+
+
+def test_chart_header_recovers_after_autohide_reveal(app):
+    """Regression: auto-hiding the central chart then revealing it rebuilds the dock area with a fresh
+    title bar whose _header is None — SpaceDeck only (re)marks the chart header on an area-CHANGE,
+    which the un-pin path misses — so the header was permanently lost and native ADS chrome (the ▼
+    tabs-menu + auto-hide pin) leaked through. _auto_detect_panel now re-marks the 'space:' central
+    dock as the chart header on the heal/relayout pass. (Minimize no longer uses auto-hide, but ADS
+    can still auto-hide the central dock via other paths, so the recovery must hold.)"""
+    win = MainWindow(session_path=None)
+    win.show()
+    app.processEvents()
+    ch = win.tabs.dock(0)
+    tb = ch.dockAreaWidget().titleBar()
+    assert tb._header is not None and tb._header.button("max") is not None   # fresh: header marked
+    ch.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
+    ch.setAutoHide(True, QtAds.SideBarLeft)                                  # auto-hide directly
+    app.processEvents()
+    assert ch.isAutoHide() and ch.autoHideLocation() == QtAds.SideBarLeft
+    ch.setAutoHide(False)                                                    # reveal back in-layout
+    for _ in range(4):
+        app.processEvents()
+    tb2 = ch.dockAreaWidget().titleBar()
+    assert tb2._header is not None, "chart header lost after auto-hide reveal"
+    for key in ("min", "max", "close"):
+        assert tb2._header.button(key) is not None, f"chart header missing {key} after reveal"
+    leaking = [b.objectName() for b in tb2.findChildren(QtAds.CTitleBarButton) if b.isVisible()]
+    assert leaking == [], f"native chrome leaked after reveal: {leaking}"
     win.close()
 
 

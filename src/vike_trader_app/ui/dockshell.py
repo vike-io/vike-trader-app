@@ -129,7 +129,11 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 except RuntimeError:
                     pass
                 return
-            self._toggle_chart_rollup()            # docked -> roll the chart up to its title strip
+            # docked -> auto-hide the chart to the LEFT edge as a vertical tab (AmiBroker-style,
+            # consistent with the tools), NOT an in-place roll-up that left an empty workspace.
+            w = win if win is not None else _resolve_window()
+            if w is not None and hasattr(w, "_minimize_chart_to_left"):
+                w._minimize_chart_to_left()
 
         def _win_max():
             c = _floating_container()
@@ -157,11 +161,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                               icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
                               parent=self)
         # Unified title bar (the user's MC-style choice): every title bar is ⧉ ─ □ ✕. The old ＋
-        # "clone" was redundant here — it called the SAME _open_as_window as ⧉ — so it's dropped
-        # (a brand-new chart window is still on the top-bar launcher + Ctrl+N).
-        # ⧉ opens the chart as a clean chartwin window (NOT a broken ADS float — ADS floating is
-        # disabled wholesale; charts float via chartwin).
-        bar.add_button("detach", "⧉", "Open this chart as a window", _open_as_window)
+        # ⧉ and the redundant ＋ are BOTH dropped (MC/VS model): float by dragging the title bar
+        # out; a brand-new chart window is on the top-bar launcher + Ctrl+N. (_open_as_window stays
+        # for the drag-to-float path + Window-menu verbs.)
         bar.add_button("min", "─", "Minimize", _win_min)
         bar.add_button("max", "□", "Maximize / restore", _win_max)
         bar.add_button("close", "✕", "Close the current chart",
@@ -255,11 +257,27 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                     hidden = child.objectName() in self._MULTI_HIDE_OBJNAMES or (
                         isinstance(child, QtAds.CElidingLabel) and child.parent() is self
                     )
-                    child.setVisible(not hidden)
+                    self._set_native_hidden(child, hidden)
                 else:
-                    child.hide()
+                    self._set_native_hidden(child, True)
         except (RuntimeError, AttributeError):
             pass
+
+    @staticmethod
+    def _set_native_hidden(child, hidden: bool) -> None:
+        """Hide/show one native ADS title-bar child. For a CTitleBarButton we ALSO drive ADS's own
+        setShowInTitleBar(): ADS re-runs updateTitleBarButtonVisibility() on a later tick after the
+        area is created and calls setVisible(True) on the close button — which WON the race against a
+        plain child.hide() and leaked the native ✕ onto the Market-Watch bar (measured: fresh panel
+        had dockAreaCloseButton VISIBLE while the chart header, which gets more relayouts, did not).
+        setShowInTitleBar(False) makes every later setVisible(True) a no-op inside ADS, so the hide
+        is permanent regardless of ADS's deferred re-show."""
+        if isinstance(child, QtAds.CTitleBarButton):
+            try:
+                child.setShowInTitleBar(not hidden)
+            except (RuntimeError, AttributeError):
+                pass
+        child.setVisible(not hidden)
 
     def resizeEvent(self, ev):  # noqa: N802 - Qt override
         super().resizeEvent(ev)
@@ -326,11 +344,27 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
                 dw = area.dockWidget(i)
             except (RuntimeError, AttributeError):
                 continue
-            if dw is not None and dw.objectName().startswith(("panel:", "tool:", "chart:")):
+            if dw is None:
+                continue
+            name = dw.objectName()
+            if name.startswith("space:"):
+                # The central chart SPACE rebuilt after an auto-hide reveal / float relayout: ADS
+                # makes a fresh title bar with _header=None, and SpaceDeck only (re)marks the header
+                # on an area-CHANGE — which the un-pin-from-edge path misses. So the chart header was
+                # lost and native ADS chrome (the ▼ tabs-menu + auto-hide pin) leaked through (the
+                # measured "minimize chart to left then reveal" defect). Re-mark it as the chart
+                # header here; the deck lives on the MainWindow as .tabs, and mark_as_chart_header is
+                # idempotent (a no-op once _header is set).
+                win = self._resolve_main_window()
+                deck = getattr(win, "tabs", None)
+                if deck is not None and hasattr(deck, "dock"):
+                    self.mark_as_chart_header(deck)
+                return
+            if name.startswith(("panel:", "tool:", "chart:")):
                 # tool + docked-chart docks get the SAME unified bar as panels (no native ADS
                 # chrome — the stray ▼ tabs-menu + duplicate close icon) PLUS a ⧉ "open as window"
                 # verb; side panels stay dock-only (no ⧉ — they're chart companions, not tear-outs).
-                self.mark_as_panel(is_tool=dw.objectName().startswith(("tool:", "chart:")))
+                self.mark_as_panel(is_tool=name.startswith(("tool:", "chart:")))
                 return
 
     def mark_as_panel(self, is_tool: bool = False) -> None:
@@ -347,9 +381,8 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
 
         self._is_panel = True
         bar = UnifiedTitleBar(parent=self)
-        # Unified title bar: EVERY panel (side panels too, not just tools) carries the same
-        # ⧉ ─ □ ✕ as the chart + tool/chart windows.
-        bar.add_button("detach", "⧉", "Open this panel as a window", self._panel_detach)
+        # Unified title bar: ─ □ ✕ (MC/VS). ⧉ is dropped — float a panel by DRAGGING its title bar
+        # out (wired below via the bar's drag eventFilter -> _panel_detach), not a button.
         bar.add_button("min", "─", "Minimize (collapse to edge)", self._panel_min)
         bar.add_button("max", "□", "Maximize / restore", self._panel_max)
         bar.add_button("close", "✕", "Close", self._panel_close, danger=True)
@@ -432,11 +465,13 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             win._toggle_panel_maximize(d)
 
     def _panel_min(self) -> None:
-        """─ — the docked "minimize": collapse the panel to its edge (auto-hide pin). Stage A1:
-        panels can't float, so this is unconditionally the edge-pin toggle."""
+        """─ — minimize: hide the panel and park a vertical restore tab on the MainWindow's custom
+        left rail (AmiBroker-style, consistent with the tools + chart). Replaces ADS auto-hide,
+        whose fixed-width slide-out flyout left empty space on restore."""
         d = self._cur_dock()
-        if d is not None:
-            d.toggleAutoHide()
+        win = self._resolve_main_window()
+        if d is not None and win is not None and hasattr(win, "_minimize_panel_to_rail"):
+            win._minimize_panel_to_rail(d)
 
     def _panel_close(self) -> None:
         d = self._cur_dock()

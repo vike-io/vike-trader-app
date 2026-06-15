@@ -215,22 +215,50 @@ def test_closing_window_unregisters(app, _synthetic_load):
     win.close()
 
 
-def test_window_verbs_rollup_max_arrange(app, _synthetic_load):
+def test_window_verbs_minimize_max_arrange(app, _synthetic_load):
     win = MainWindow(session_path=None)
     win.show()
     QtWidgets.QApplication.processEvents()
     win._new_chart_document("ETHUSDT", "1h")
     win._new_chart_document("SOLUSDT", "1h")
-    f1, f2 = win._chart_frames
-    f1.toggle_rollup()
-    assert f1.height() <= 40                        # rolled up to its title bar
-    f1.toggle_rollup()
+    win._new_chart_document("ADAUSDT", "1h")
+    f1, f2, f3 = win._chart_frames
+    f1.toggle_rollup()                              # minimize -> hide + park a tab on the left rail
+    QtWidgets.QApplication.processEvents()
+    assert not f1.isVisible()                       # hidden (not destroyed; still tracked)
+    assert win._min_rail.has(f"chartwin:{id(f1)}")  # parked on the custom left rail
     f2.toggle_max()
     assert f2.size() == win.dock_manager.size()     # maximize fills the workspace
     f2.toggle_max()
-    win._arrange_chart_windows("grid")
-    geos = [f.geometry() for f in win._chart_frames]
-    assert geos[0] != geos[1] and not geos[0].intersects(geos[1])   # tiled, no overlap
+    win._arrange_chart_windows("grid")              # tiles only the VISIBLE windows (f2, f3)
+    geos = [f.geometry() for f in win._chart_frames if f.isVisible()]
+    assert len(geos) == 2 and geos[0] != geos[1] and not geos[0].intersects(geos[1])
+    win.close()
+
+
+def test_resize_drag_freezes_chart_repaints(app, _synthetic_load):
+    """Perf regression: an edge-resize drag must FREEZE chart-view + body repaints for the duration.
+
+    The central chart (and any chart window) replays a ~10k-candle QPicture (~130ms) on every
+    paint, and other open windows' tables repaint on reveal — so repainting per resize frame stuck
+    the drag at ~300ms-2s with several windows open (measured). _set_resize_frozen disables every
+    QGraphicsView + each frame's body content during the drag and restores them on release."""
+    win = MainWindow(session_path=None)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win._new_chart_document("ETHUSDT", "1h")
+    win.open_tool("journal")
+    QtWidgets.QApplication.processEvents()
+    frame = win._chart_frames[-1]
+    views = win.findChildren(QtWidgets.QGraphicsView)
+    assert views, "no chart views to freeze"
+    assert all(v.updatesEnabled() for v in views)          # live before a drag
+
+    frame._set_resize_frozen(True)                         # simulate drag start
+    assert all(not v.updatesEnabled() for v in views), "chart views not frozen during resize"
+
+    frame._set_resize_frozen(False)                        # simulate drag release
+    assert all(v.updatesEnabled() for v in views), "chart views not restored after resize"
     win.close()
 
 

@@ -434,19 +434,25 @@ class NewsTab(QtWidgets.QWidget):
 
     # ---- slots ----
     def on_items_received(self, items) -> None:
-        self._items = merge(self._items, list(items))
-        self._last_update = time.strftime("%H:%M:%S")
-        self._refresh_list()
-        self.itemsUpdated.emit()
+        try:
+            self._items = merge(self._items, list(items))
+            self._last_update = time.strftime("%H:%M:%S")
+            self._refresh_list()
+            self.itemsUpdated.emit()
+        except RuntimeError:
+            return   # the tab was torn down (tool closed) while a worker batch was in flight
 
     def _on_failed(self, message: str) -> None:
         self._status.setText(f"Feed error: {message}")     # status line, never a modal
 
     def _on_logos_updated(self) -> None:
-        self._list.viewport().update()                     # repaint rows with freshly-cached logos
-        it = self._current_item()
-        if it is not None:
-            self._reader_av.setPixmap(self._badge(it.source, 30))
+        try:
+            self._list.viewport().update()                 # repaint rows with freshly-cached logos
+            it = self._current_item()
+            if it is not None:
+                self._reader_av.setPixmap(self._badge(it.source, 30))
+        except RuntimeError:
+            return   # the tab was torn down while the logo fetcher was still running
 
     def _on_follow_toggled(self, on: bool) -> None:
         if self._worker is not None:
