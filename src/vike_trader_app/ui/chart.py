@@ -17,6 +17,7 @@ from .chartdata import (
     bar_spacing,
     fmt_price,
     follow_window,
+    oscillator_reveal,
     series_slice,
     ts_to_x,
     x_to_ts,
@@ -1460,37 +1461,27 @@ class OscillatorPane(pg.PlotWidget):
         # (so panning back shows history); only the y-RANGE keys off the visible window.
         (vx0, vx1), _ = self.getViewBox().viewRange()
         win_lo, win_hi = max(0, int(vx0) - 1), int(vx1) + 1
-        win_ys, full_ys = [], []
+        # Qt-free compute (data slices + legend values + visible y-range); this binding loop only
+        # applies the result to the pyqtgraph items. Band lines live in _band_lines (ignoreBounds),
+        # so they never autoscale on their own — their threshold values extend the range in compute.
+        labels_by_uid = {ind.uid: list(self._curves.get(ind.uid, {}).keys()) for ind in self._inds}
+        plots, lasts, y_range = oscillator_reveal(
+            self._inds, labels_by_uid, index, win_lo, win_hi, _MA_SERIES_KEY)
         for ind in self._inds:
-            last = None
             for label, curve in self._curves.get(ind.uid, {}).items():
-                series = ind.series.get(label, [])
-                xs, ys = series_slice(series, index)
+                xs, ys = plots[ind.uid].get(label, ([], []))
                 if isinstance(curve, pg.BarGraphItem):
                     curve.setOpts(x=xs, height=ys, width=0.8, brushes=_hist_brushes(ys), pen=None)
                 else:
                     curve.setData(xs, ys)
                 curve.setVisible(ind.shown)
-                if ind.shown:
-                    full_ys += ys
-                    win_ys += [series[k] for k in xs if win_lo <= k <= win_hi]
-                if ys and label != _MA_SERIES_KEY:  # legend value stays on the base output, not the MA
-                    last = ys[-1]
-            # union the threshold guide values (extend-only) so the dashed lines stay on-screen;
-            # band lines live in _band_lines (ignoreBounds), so they never autoscale on their own.
-            if ind.shown:
-                band_vals = [float(val) for _lbl, val in getattr(ind, "bands", [])]
-                win_ys += band_vals
-                full_ys += band_vals
             for ln in self._band_lines.get(ind.uid, []):
                 ln.setVisible(ind.shown)
             if ind.uid in self._rows:
+                last = lasts.get(ind.uid)
                 self._rows[ind.uid].set_value(f"{last:,.2f}" if last is not None else "")
-        all_ys = win_ys or full_ys  # fall back to the full series if nothing is in-window yet
-        if all_ys:
-            lo, hi = min(all_ys), max(all_ys)
-            if hi > lo:
-                self.setYRange(lo, hi, padding=0.12)
+        if y_range:
+            self.setYRange(y_range[0], y_range[1], padding=0.12)
 
     def refresh_legend(self):
         for ind in self._inds:
