@@ -205,6 +205,36 @@ def test_arrange_tiles_docked_chart_and_panels(app):
     win.close()
 
 
+def test_arrange_tiles_docked_tool_with_chart(app):
+    """Window>Arrange must tile the chart together with a docked TOOL (Data/Screener/…), the same
+    as a side panel — a docked tool next to the chart used to be ignored entirely (the chart was a
+    privileged anchor; tools tiled only among themselves). Vertically (columns) puts the tool RIGHT
+    of the chart; Horizontally (rows) stacks it BELOW."""
+    win = MainWindow(session_path=None)
+    win.resize(1200, 800)
+    win.show()
+    QtWidgets.QApplication.processEvents()
+    win.open_tool("screener")                      # opens as a window
+    QtWidgets.QApplication.processEvents()
+    win._redock_tool("screener")                   # dock it into the workspace
+    QtWidgets.QApplication.processEvents()
+    tool = win._tool_docks.get("screener")
+    chart = win._chart_space_dock()
+    assert tool is not None
+
+    def tl(dock):
+        return dock.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
+
+    win._arrange_chart_windows("columns")          # Tile Vertically -> side by side
+    QtWidgets.QApplication.processEvents()
+    assert tl(tool).x() > tl(chart).x() + 50       # tool now RIGHT of the chart (was a no-op before)
+
+    win._arrange_chart_windows("rows")             # Tile Horizontally -> stacked
+    QtWidgets.QApplication.processEvents()
+    assert tl(tool).y() > tl(chart).y() + 50       # tool now BELOW the chart
+    win.close()
+
+
 def test_on_tab_changed_is_non_reentrant(app):
     """A re-entrant _on_tab_changed call bails instead of looping (stack-overflow guard)."""
     win = MainWindow()
