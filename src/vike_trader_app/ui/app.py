@@ -831,18 +831,23 @@ class MainWindow(QtWidgets.QMainWindow):
         live_frames = [f for f in frames
                        if not f.is_detached() and f.isVisible() and not getattr(f, "_rolled", False)]
         chartwin.arrange(frames, self.dock_manager, mode)
-        docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values())
-                 if d is not None and not d.isClosed()]
-        if docks:
-            self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
-        # Tile the docked central chart + side panels ONLY when there are no floating windows being
-        # tiled. When floating chart/tool windows exist (e.g. Go > New chart), THEY are the
-        # arrangement and cover the workspace — re-docking the panels behind them just churns the
-        # hidden background layout (and was hitting a deleted-dock crash). With no floating windows
-        # this is the docked-layout tiling from #149.
-        if not live_frames:
-            self.tabs.arrange_workspace(self._chart_space_dock(),
-                                        list(self._panel_dock_map.values()), mode)
+        if live_frames:
+            # Floating windows ARE the arrangement and cover the workspace; just tidy any docked
+            # tools behind them (re-tiling the chart+panels would churn the hidden background layout
+            # and once hit a deleted-dock crash).
+            docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values())
+                     if d is not None and not d.isClosed()]
+            if docks:
+                self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
+            return
+        # No floating windows: tile the chart together with EVERY docked thing — side panels, tool
+        # docks (Data/Screener/…) AND docked chart windows — as ONE uniform layout. The chart is just
+        # another tile, not a privileged anchor that tools tile separately around (which is why a
+        # docked Data tool next to the chart used to ignore Arrange entirely).
+        docked = (list(self._panel_dock_map.values())
+                  + list(self._tool_docks.values())
+                  + list(self._chart_docks.values()))
+        self.tabs.arrange_workspace(self._chart_space_dock(), docked, mode)
 
     def open_tool(self, key: str):
         """Open the tool for ``key`` as its own floating window, or focus it if already open.
