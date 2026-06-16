@@ -588,6 +588,7 @@ class SpaceDeck(QtCore.QObject):
         self._header_title = "Chart"
         self._fit_cb = None   # MainWindow-supplied: cap the header to the panel's left edge
         self._status_provider = None   # MainWindow-supplied: add the header's link dots
+        self._closing = False          # set by detach() at teardown — gates currentChanged forward
 
     def _resolve_area(self):
         """The spaces' CENTRAL CDockAreaWidget. CDockManager.restoreState() can REBUILD the
@@ -620,7 +621,8 @@ class SpaceDeck(QtCore.QObject):
                     self._area.currentChanged.disconnect(self._emit_current)
                 except (RuntimeError, TypeError):  # old area torn down / not connected
                     pass
-            area.currentChanged.connect(self._emit_current)
+            if not self._closing:   # teardown: never re-arm the forward (detach() killed it)
+                area.currentChanged.connect(self._emit_current)
             self._area = area
             tb = area.titleBar()
             if hasattr(tb, "mark_as_chart_header"):   # VikeDockTitleBar (factory installed)
@@ -641,7 +643,20 @@ class SpaceDeck(QtCore.QObject):
         so the shell is driven only by real space indices and never by a stray tab. -1 is still
         emitted (unlike before) so the shell can react to a document becoming current (title,
         panel visibility) — consumers must tolerate index -1."""
+        if self._closing:
+            return
         self.currentChanged.emit(self.currentIndex())
+
+    def detach(self) -> None:
+        """Teardown seam (MainWindow.shutdown): stop forwarding the central area's currentChanged
+        and suppress any reconnect, so the close sweep can't drive _emit_current -> _on_tab_changed
+        relayout into a half-freed dock. Idempotent + guarded."""
+        self._closing = True
+        if self._area is not None:
+            try:
+                self._area.currentChanged.disconnect(self._emit_current)
+            except (RuntimeError, TypeError):
+                pass
 
     # --- chart documents (runtime, tear-out) ---------------------------------------------
 
@@ -670,8 +685,9 @@ class SpaceDeck(QtCore.QObject):
     def _on_document_closed(self, dock, widget) -> None:
         if dock in self._documents:
             self._documents.remove(dock)
-        self.documentClosed.emit(widget)
-        self.hide_space_tabs()   # closing one rebuilds the tab bar too
+        self.documentClosed.emit(widget)   # ref-drop (LiveHub unregister + deleteLater) — keep at teardown
+        if not self._closing:
+            self.hide_space_tabs()   # closing one rebuilds the tab bar too (skip the relayout at teardown)
 
     def documents(self) -> list:
         """Live chart-document widgets, in tab order (for session save)."""

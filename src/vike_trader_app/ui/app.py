@@ -223,6 +223,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._session_path = session_path
         self._session = load_session(session_path) if session_path else None
 
+        # Teardown gate. Set True the instant shutdown() begins (closeEvent OR the test harness).
+        # Every dock-touching slot that a Qt signal / deferred callback can fire DURING teardown
+        # checks it and no-ops, so the ordered shutdown can close the ADS graph without a stray
+        # toggleView / relayout re-entering a half-freed dock (the CDockWidget-already-deleted +
+        # heap-corruption race). Set FIRST in __init__ so every later-connected slot sees it.
+        self._closing = False
+
         self._bars = []
         self._result = None
         self._replay = Replay(0)
@@ -481,6 +488,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
         Indicators only re-attach when the load actually produced bars (add_indicator
         no-ops on an empty chart) — a failed load just leaves a clean chart."""
+        if self._closing:
+            return
         self._load_symbol(self._symbol, self._interval)
         if self._session and self._bars and self.price is not None:
             apply_indicator_states(self.price, self._session.chart_indicators)
@@ -1177,6 +1186,34 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:        # frame mid-teardown — skip
                 pass
 
+    def _close_all_tool_docks(self) -> None:
+        """Close every DOCKED tool (calendars/screener/journal/news/options/data/studio). Each
+        closeDockWidget fires _on_tool_closed -> _teardown_tool (stop_feed/shutdown/worker-join) +
+        clears _tool_docks + the legacy alias. Without this, a tool DOCK (the default open path)
+        survives teardown and its background timers/workers run on into manager destruction."""
+        for dock in list(self._tool_docks.values()):
+            try:
+                dock.closeDockWidget()
+            except RuntimeError:        # dock mid-teardown — skip
+                pass
+
+    def _close_all_frames_and_docks(self) -> None:
+        """The ONE ordered sweep that closes every torn-out window + docked surface so NOTHING is
+        left as an orphan top-level for an arbitrary-order GC/deleteLater to free (the teardown-race
+        source). Order is the proven workspace-swap order: chart windows -> docked charts -> tool
+        windows -> floated panels -> tool docks -> chart-document docks. Each close runs its handler's
+        unregister/teardown. ONLY safe once shutdown() has set _closing + disconnected the re-entrant
+        signals (a bare sweep heap-corrupts — see the closed PR #170)."""
+        self._close_all_chart_windows()
+        self._close_all_chart_docks()
+        self._close_all_tool_windows()
+        self._close_all_panel_windows()
+        self._close_all_tool_docks()
+        try:
+            self.tabs.close_all_documents()
+        except (RuntimeError, AttributeError):
+            pass
+
     def _detach_panel(self, dock):
         """⧉ on a side panel (Market watch / Trades) — float its widget into a clean window. Panels
         are NOT DeleteOnClose, so the SAME dock is reused: take the widget out + hide the empty dock
@@ -1770,6 +1807,8 @@ class MainWindow(QtWidgets.QMainWindow):
         (News is now an on-demand dock, not a space, so the old news lazy-start below is inert —
         a space widget never equals the live News tab; kept getattr-guarded, removed by a later
         sub-project. News arms its feed in _wire_tool when its dock opens.)"""
+        if self._closing:
+            return
         self._update_chart_header()
         if index < 0:        # a chart document (not a space) became current — nothing to do
             return
@@ -1883,6 +1922,8 @@ class MainWindow(QtWidgets.QMainWindow):
         title bar's own width is useless here — instead measure where the right-hand panels
         actually start (their global left edge) and cap to that. Re-run on resize / panel
         toggle / space change / header recreation."""
+        if self._closing:
+            return
         h = self.tabs.header_widget()
         if h is None:
             return
@@ -2132,7 +2173,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_live_fetched(self, fetched) -> None:
         """Main thread: merge the fetched bars and repaint the live edge (if we're viewing it)."""
         # Discard if state moved on while the fetch ran (symbol/interval switched, or Forward began).
-        if self._forward is not None or not self._bars:
+        if self._forward is not None or not self._bars or self._closing:
             return
         if self._live_fetch_for != (self._symbol, self._interval):
             return
@@ -2449,6 +2490,8 @@ class MainWindow(QtWidgets.QMainWindow):
         signal from feeding back into the rail toggle bookkeeping. The guard SAVES/RESTORES its
         prior value rather than hard-clearing it, so a nested call (e.g. inside the restoreState
         guarded region) can't drop an outer guard on unwind."""
+        if self._closing:
+            return   # teardown: never toggleView a dock while ADS is destroying the graph
         prev = self._syncing_docks
         self._syncing_docks = True
         try:
@@ -2463,7 +2506,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_dock_view_toggled(self, key: str, on: bool) -> None:
         """The user closed/opened a panel via its own chrome (title-bar X, pin, tab) —
         mirror it into the rail toggle + remembered intent so the two never fight."""
-        if self._syncing_docks:
+        if self._syncing_docks or self._closing:
             return
         self._panel_visible[key] = on
         btn = self._panel_btns.get(key)
@@ -2473,6 +2516,8 @@ class MainWindow(QtWidgets.QMainWindow):
             btn.blockSignals(False)
 
     def _toggle_panel(self, key: str, on: bool) -> None:
+        if self._closing:
+            return
         self._panel_visible[key] = on
         if self.tabs.currentWidget() is not self._backtester:
             return
@@ -2514,7 +2559,7 @@ class MainWindow(QtWidgets.QMainWindow):
         No-ops in forward mode (that owns the network); pure no-op when nothing is pinned.
         Errors are swallowed (no modal in a timer path — see the headless-CI hang note).
         """
-        if self._forward is not None:
+        if self._forward is not None or self._closing:
             return
         try:
             refresh_pinned(DEFAULT_ROOT, load_pins(_PINS_PATH))
@@ -2530,7 +2575,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Re-entrancy guard: toggling a panel dock here can drive ADS to re-emit the center
         # area's currentChanged synchronously and re-enter this slot — an unbounded close/reopen
         # loop (a verified stack overflow when a panel is dropped onto the spaces tab strip).
-        if getattr(self, "_in_tab_change", False):
+        if getattr(self, "_in_tab_change", False) or self._closing:
             return
         self._in_tab_change = True
         try:
@@ -3024,6 +3069,8 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --- replay wiring ---
     def _render_frame(self):
+        if self._closing:
+            return
         i = self._replay.index
         for ch in self._pipeline_charts():
             ch.show_upto(i)
@@ -3034,6 +3081,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.slider.blockSignals(False)
 
     def _on_tick(self):
+        if self._closing:
+            return
         for _ in range(self.speed.currentData()):
             self._replay.tick()
         if not self._replay.playing:
@@ -3210,6 +3259,8 @@ class MainWindow(QtWidgets.QMainWindow):
         leaves empty space when the main window grows / OS-maximizes — the reported bug), and a
         floating one is clamped back in-bounds. host_resized() existed for exactly this but was
         never wired to MainWindow.resizeEvent."""
+        if self._closing:
+            return
         for f in (self._chart_frames + list(self._tool_frames.values())
                   + list(self._panel_frames.values())):
             try:
@@ -3223,6 +3274,8 @@ class MainWindow(QtWidgets.QMainWindow):
         Skipped when a window is MAXIMIZED (it already fills via host_resized — re-tiling would
         un-maximize it) or in cascade (free-overlap) mode. arrange() itself skips detached /
         minimized / hidden frames, so only the live tiled set is touched."""
+        if self._closing:
+            return
         if self._last_arrange_mode == "cascade":
             return
         frames = self._chart_frames + list(self._tool_frames.values())
@@ -3622,43 +3675,126 @@ class MainWindow(QtWidgets.QMainWindow):
             self._ai_generate_layout(text.strip())
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
-        self._save_session()  # snapshot before teardown so the next launch resumes here
-        # Dispose any torn-out tool windows first — runs each tool's teardown (stop_feed /
-        # studio.shutdown / options disconnect) and nils its alias, so the guarded alias-based
-        # teardown further down skips it instead of double-stopping. Also stops a detached OS
-        # window lingering as a stray top-level after the main window closes.
-        self._close_all_tool_windows()
+        self.shutdown()
+        super().closeEvent(event)
+
+    def shutdown(self) -> None:
+        """ONE deterministic, idempotent teardown — called by closeEvent AND the test harness. Runs
+        in STRICT order so no signal / timer / callback can touch a freed dock, and ADS tears its C++
+        graph down only once everything is quiescent (the source of the CDockWidget-already-deleted +
+        heap-corruption races). See docs/research/2026-06-16-deterministic-teardown-plan.md."""
+        if getattr(self, "_closing", False):
+            return
+        self._closing = True   # every dock-touching slot now early-returns (the gates above)
+        # 1. Reclaim native floats BEFORE save, so saveState() can't serialize a CFloatingDockContainer
+        #    into the next launch's blob (which would resurrect it and re-open the C++ destructor race).
+        self._drain_floats()
+        self._save_session()   # snapshot (touches no dock now that floats are reclaimed)
+        # 2. Disconnect the re-entrant ADS / watchlist signals so the close sweep can't trigger a
+        #    currentChanged -> _on_tab_changed -> toggleView relayout into a half-freed dock.
+        self._disconnect_teardown_signals()
+        # 3. Stop EVERY timer (closeEvent used to miss _rollup/_timer/_clock/_retile).
+        self._stop_all_timers()
+        # 4. Join EVERY worker / feed.
         if getattr(self, "_link_bus", None) is not None:
             self._link_bus.remove_member(self)   # leave the bus: no apply_link after teardown
-        self._stop_forward()  # never leave a feed thread running
-        # Halt the live chart auto-updater AND wait out any in-flight fetch worker. Without
-        # this a closed window keeps its _live_timer firing _live_tick -> _LiveFetchWorker
-        # (real network) -> _on_live_fetched render; in the offscreen test process that leaked
-        # work bleeds into later, unrelated tests (e.g. a bare NewsTab test pumping
-        # processEvents), stalling the suite. The other long-lived timers/threads below were
-        # already stopped here — _live_timer/_live_worker were simply missed.
+        self._stop_forward()
         if getattr(self, "_live_hub", None) is not None:
-            self._live_hub.shutdown()  # stop the chart-document live round-robin + its worker
+            self._live_hub.shutdown()            # chart-document live round-robin + its worker
         self._stop_live_updates()
         if getattr(self, "_live_worker", None) is not None:
             self._live_worker.wait(2000)
             self._live_worker = None
         for w in list(getattr(self, "_layout_workers", [])):
-            w.wait(5000)  # wait out any in-flight layout-agent API call (no QThread-destroyed)
+            w.wait(5000)                         # in-flight layout-agent API call
         self._layout_workers = []
         if getattr(self, "news", None) is not None:
-            self.news.stop_feed()  # halt the news poller thread (only if the News dock is open)
+            self.news.stop_feed()
         if self.studio is not None:
-            self.studio.shutdown()  # wait out any in-flight AI worker (only if the Studio dock is open)
+            self.studio.shutdown()               # wait out the AI worker (if Studio open)
         if getattr(self, "_options_svc", None) is not None:
-            self._options_svc.shutdown()  # stop the poll + wait out any options fetch worker
-        if getattr(self, "_price_timer", None) is not None:
-            self._price_timer.stop()  # halt the watchlist price-fill ticks
-        if getattr(self, "_refresh_timer", None) is not None:
-            self._refresh_timer.stop()  # halt the live quote refresh
-        super().closeEvent(event)
+            self._options_svc.shutdown()
+        # 5. Close EVERY frame + dock (safe now: re-entrant signals disconnected + _closing gates the
+        #    rest, so each close handler only drops refs / runs its tool teardown — no ADS re-entry).
+        self._close_all_frames_and_docks()
+        # 6. Drain any float that materialized during the sweep, then tear the manager down while
+        #    quiescent so ADS's C++ destructors run with nothing Python-side able to touch a dock.
+        self._drain_floats()
+        mgr = getattr(self, "dock_manager", None)
+        if mgr is not None:
+            try:
+                mgr.deleteLater()
+            except RuntimeError:
+                pass
+            QtWidgets.QApplication.processEvents()
+
+    def _stop_all_timers(self) -> None:
+        """Stop every MainWindow QTimer so no tick fires during/after teardown. (The live/forward/hub
+        timers are stopped by _stop_live_updates / _stop_forward / _live_hub.shutdown in shutdown.)"""
+        for name in ("_rollup_timer", "_timer", "_clock", "_retile_timer",
+                     "_price_timer", "_refresh_timer"):
+            t = getattr(self, name, None)
+            if t is not None:
+                try:
+                    t.stop()
+                except RuntimeError:
+                    pass
+
+    def _drain_floats(self) -> None:
+        """Re-home + dispose every native ADS floating container synchronously, so none survives for
+        ADS's racing C++ destructor at manager teardown. Bounded (ADS can materialize a restored float
+        on a deferred tick); _reclaim_floating_docks re-homes, processEvents drains the deleteLater."""
+        mgr = getattr(self, "dock_manager", None)
+        if mgr is None:
+            return
+        for _ in range(5):
+            try:
+                if not list(mgr.floatingWidgets()):
+                    return
+            except (RuntimeError, AttributeError):
+                return
+            try:
+                self._reclaim_floating_docks()
+            except (RuntimeError, AttributeError):
+                pass
+            QtWidgets.QApplication.processEvents()
+
+    def _disconnect_teardown_signals(self) -> None:
+        """Disconnect the ADS-fired / watchlist signals whose slots re-enter ADS or relayout (the
+        close sweep would otherwise fire them on a half-freed graph). The ref-drop slots
+        (documentClosed -> _on_document_closed, frame.closed) stay connected — the sweep NEEDS them to
+        unregister + deleteLater. Each disconnect fully guarded (the signal may already be gone)."""
+        def _dc(sig):
+            try:
+                sig.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+        tabs = getattr(self, "tabs", None)
+        if tabs is not None:
+            try:
+                _dc(tabs.currentChanged)     # -> _on_tab_changed + _on_space_changed (toggleView re-entry)
+            except (RuntimeError, AttributeError):
+                pass
+            if hasattr(tabs, "detach"):
+                try:
+                    tabs.detach()            # SpaceDeck: drop area.currentChanged + suppress reconnect
+                except (RuntimeError, AttributeError):
+                    pass
+        wl = getattr(self, "watchlist", None)
+        if wl is not None:
+            try:
+                _dc(wl.symbolChosen)         # -> _load_symbol / _broadcast / open_in_new_chart
+            except (RuntimeError, AttributeError):
+                pass
+        for dock in list(getattr(self, "_panel_dock_map", {}).values()):
+            try:
+                _dc(dock.viewToggled)        # -> _on_dock_view_toggled
+            except (RuntimeError, AttributeError):
+                pass
 
     def _tick_clock(self):
+        if self._closing:
+            return
         self.clock.setText(QtCore.QTime.currentTime().toString("HH:mm:ss"))
 
 
