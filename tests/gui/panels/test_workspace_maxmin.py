@@ -12,8 +12,8 @@ Post chart-unify keystone: there is NO docked central chart any more (``_chart_s
 the surviving max/min behaviour lives entirely on the SIDE PANELS: ``_maximize_dock(panel_dock)``
 fills the workspace by hiding the OTHER panels (no chart is ever parked on the rail), and a panel's
 ─ parks it on the left rail under its OWN key. The old central-chart maximize/minimize/rail-park
-tests (and the ``__central_chart__`` rail tab) describe behaviour that no longer exists and were
-dropped; the panel equivalents below carry the intent forward.
+tests describe behaviour that no longer exists and were dropped; the panel equivalents below carry
+the intent forward.
 """
 import os
 
@@ -94,7 +94,6 @@ def test_panel_maximize_hides_other_panels_fills_and_restores(app, panels):
     _click(_panel_btn(mkt, "max"))
     assert _panel_btn(mkt, "max").text() == "❐"               # glyph -> restore
     assert _fills(mkt, win)                                   # panel fills the workspace
-    assert not win._min_rail.has("__central_chart__")         # NO central-chart rail tab any more
     for k in panels:
         if k != "market":
             assert win._panel_dock_map[k].isClosed()          # other panels hidden

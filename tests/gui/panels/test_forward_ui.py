@@ -81,14 +81,13 @@ def test_forward_locks_backtest_controls(app):
 def test_main_window_has_no_chart_space(app):
     """Chart-unify keystone: the docked central 'Chart' space is GONE. The SpaceDeck facade
     survives (tools/Studio still dock through it) but it hosts ZERO spaces, the icon rail's SPACE
-    group is empty, and there is no central chart container (`_backtester` is a None sentinel)."""
+    group is empty, and the central chart-space dock seam returns None."""
     from vike_trader_app.ui.dockshell import SpaceDeck
 
     win = MainWindow()
     assert isinstance(win.tabs, SpaceDeck)
     assert win.tabs.count() == 0                 # no Chart space (no spaces at all)
     assert win._SPACE_ITEMS == []
-    assert win._backtester is None               # the central chart container is gone
     assert win._chart_space_dock() is None
     # the icon rail's SPACE group mirrors the (now empty) space set one-for-one
     assert len(win._rail_group.buttons()) == win.tabs.count() == 0

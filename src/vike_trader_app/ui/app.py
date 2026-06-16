@@ -333,17 +333,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._watchlist_link = self._session.watchlist_link if self._session else 0
         if self._watchlist_link not in LINK_COLOR:   # hand-edited / stale session -> unlinked
             self._watchlist_link = 0
-        # The CENTRAL chart space is itself a link-group member (symbol ● + interval ◆ channels,
-        # set via the dots on its header). The MainWindow proxies it: apply_link loads a received
-        # symbol/interval; _broadcast_central_link pushes its own changes. Restored from session.
-        self.link_group = getattr(self._session, "central_link", 0) if self._session else 0
-        if self.link_group not in LINK_COLOR:
-            self.link_group = 0
-        _ivl = getattr(self._session, "central_interval_link", -1) if self._session else -1
-        self.interval_link_group = None if _ivl < 0 else _ivl   # -1 sentinel = follow symbol
-        self._link_bus.add_member(self)
-        self._feed_state = "idle"        # current feed-health state; the header badge reads it
-        self._header_feed = None         # the header's FeedBadge (recreated with the header)
 
         # named workspaces (Phase 4): persisted next to the session file; in-memory when the
         # session is disabled (offscreen tests) so a save never touches real storage.
@@ -356,9 +345,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # _build_studio_widget when the Studio dock is built.
 
         # Header crumb removed — it duplicated the chart's OHLC legend + the status bar.
-        # Keep the labels as hidden status sinks so existing setText() calls (and tests) work.
-        self._mode_tag = QtWidgets.QLabel("CHART", self)
-        self._mode_tag.hide()
+        # Keep the label as a hidden status sink so existing setText() calls (and tests) work.
         self.crumb = QtWidgets.QLabel("No data loaded", self)
         self.crumb.hide()
         self._build_central()
@@ -635,16 +622,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._new_chart_document(st.get("symbol", frame.doc.symbol),
                                  st.get("interval", frame.doc.interval), state=st)
 
-    def _open_central_as_window(self) -> None:
-        """The chart-space header's ＋ : open the central chart's current view as a floating
-        window (same symbol / interval / indicators / link group)."""
-        self._new_chart_document(self._symbol, self._interval, state={
-            "symbol": self._symbol, "interval": self._interval,
-            "indicators": indicator_states(self.price) if self.price is not None else [],
-            "link_group": self.link_group,
-            "interval_link_group": self.interval_link_group,
-        })
-
     def _restack_left_rail(self) -> None:
         """AmiBroker-style hide: lay out every rolled-up (attached) window as a title stub stacked
         down the LEFT edge of the workspace. Called by ChartWindowFrame.toggle_rollup so clicking ─
@@ -661,18 +638,12 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:        # frame mid-teardown — skip
                 continue
 
-    def _toggle_chart_maximize(self) -> None:
-        """Chart header □ : maximize the chart to fill the workspace (MultiCharts/AmiBroker-style),
-        toggling back. Thin wrapper over the unified _maximize_dock."""
-        self._maximize_dock(self._chart_space_dock())
-
     def _maximize_dock(self, target) -> None:
-        """Unified maximize/restore for the chart header AND any side panel: make ``target`` fill
-        the workspace by hiding every OTHER live dock (chart space, side panels, docked charts /
-        tools), keeping the app chrome; the central chart, when hidden, is parked as a 'Chart' tab
-        on the left rail. Toggling the same target's □ (or that rail tab) restores everything. If
-        there is nothing to hide (the target already fills the workspace) it is a deliberate no-op,
-        so the button never lands in a false maximized state."""
+        """Unified maximize/restore for any side panel: make ``target`` fill the workspace by hiding
+        every OTHER live dock (side panels, docked charts / tools), keeping the app chrome. Toggling
+        the same target's □ (or Esc) restores everything. If there is nothing to hide (the target
+        already fills the workspace) it is a deliberate no-op, so the button never lands in a false
+        maximized state."""
         if target is None:
             return
         if self._maximized is target:                  # same target -> toggle off
@@ -680,7 +651,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self._maximized is not None:                # a different dock is maximized -> undo first
             self._restore_maximized()
-        chart_dock = self._chart_space_dock()
         to_hide = [d for d in self._all_live_docks()
                    if d is not target and not self._dock_closed(d)]
         if not to_hide:
@@ -693,19 +663,15 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_dock_open(d, False)
             except RuntimeError:
                 continue
-            if d is chart_dock:                        # park the central chart on the left rail
-                self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
-                                   self._restore_maximized)
-        self._chart_maxed = (target is chart_dock)     # compat flags (dockshell glyph readers)
-        self._panel_maxed = None if target is chart_dock else target.objectName()
+        self._chart_maxed = False                      # compat flags (dockshell glyph readers)
+        self._panel_maxed = target.objectName()
         self._sync_max_glyph(target, True)
         self._fit_chart_header()
 
     def _restore_maximized(self) -> None:
-        """Undo _maximize_dock: re-show every hidden dock, drop the chart rail tab, reset glyph+flags."""
+        """Undo _maximize_dock: re-show every hidden dock, reset glyph+flags."""
         if self._maximized is None:
             return
-        self._min_rail.remove("__central_chart__")
         for d in self._max_hidden:
             try:
                 self._set_dock_open(d, True)
@@ -819,18 +785,6 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:
                 pass
         return None
-
-    def eventFilter(self, obj, ev):  # noqa: N802 - Qt override
-        """Clicking the central chart re-targets the symbol box to IT (clears the focused floating
-        chart window). Stage 1 of chart unification — observe-only, never consumes the event."""
-        try:
-            if (self._active_frame is not None
-                    and ev.type() == QtCore.QEvent.MouseButtonPress
-                    and obj is self.price.viewport()):
-                self._set_active_frame(None)
-        except (RuntimeError, AttributeError):
-            pass
-        return super().eventFilter(obj, ev)
 
     def _close_all_chart_windows(self) -> None:
         for f in list(self._chart_frames):
@@ -971,30 +925,6 @@ class MainWindow(QtWidgets.QMainWindow):
             frame.show(); frame.raise_(); frame.activated.emit(frame)
         except RuntimeError:
             pass
-
-    def _minimize_chart_to_left(self):
-        """Chart header ─ : hide the central chart space and park a restore tab on the left rail."""
-        try:
-            dock = self.tabs.dock(0)
-        except (RuntimeError, AttributeError, IndexError):
-            dock = None
-        if dock is None:
-            return
-        try:
-            dock.toggleView(False)
-        except RuntimeError:
-            return
-        self._min_rail.add("__central_chart__", "Chart", self._tool_icon("chart"),
-                           self._restore_central_chart)
-
-    def _restore_central_chart(self):
-        self._min_rail.remove("__central_chart__")
-        try:
-            self.tabs.dock(0).toggleView(True)
-            self.tabs.dock(0).raise_()
-        except (RuntimeError, AttributeError, IndexError):
-            pass
-        self._clear_chart_maxed()   # chart back to a normal share; maximize state can't be stale
 
     def _minimize_panel_to_rail(self, dock):
         """A side panel's ─ : hide the dock and park a restore tab on the left rail (AmiBroker)."""
@@ -1341,28 +1271,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.move(frame.topLeft())
 
     # --- header ---
-    def _build_header(self) -> QtWidgets.QWidget:
-        bar = QtWidgets.QWidget()
-        bar.setStyleSheet(f"background:{theme.PANEL};border-bottom:1px solid {theme.BORDER};")
-        row = QtWidgets.QHBoxLayout(bar)
-        row.setContentsMargins(12, 7, 12, 7)
-        row.setSpacing(14)
-
-        # Brand + active space both live in the OS title bar now ("vike-trader-app — Studio"),
-        # and the V is the window/taskbar icon — so the header carries only the data crumb.
-        # (The clock is in the status bar, bottom-right.)
-        self._mode_tag = QtWidgets.QLabel("CHART")
-        self._mode_tag.setStyleSheet(
-            f"color:{theme.TEXT3};font-size:10px;font-weight:700;letter-spacing:1px;"
-        )
-        self.crumb = QtWidgets.QLabel("No data loaded")
-        self.crumb.setStyleSheet(f"color:{theme.TEXT2};")
-
-        row.addWidget(self._mode_tag)
-        row.addWidget(self.crumb)
-        row.addStretch(1)
-        return bar
-
     # --- central charts + replay ---
     def _build_central(self):
         # Chart-unify keystone: NO docked central chart. The center ADS area hosts only the side
@@ -1393,13 +1301,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # The factory recreates the chart-space header on relayout; each time it asks us to
         # re-cap its width to the panel edge (forced far-right ⧉ ─ □ ✕).
         self.tabs.set_fit_callback(self._fit_chart_header)
-        # the header is recreated on relayout; each time, repopulate its ● symbol + ◆ interval
-        # link dots (state lives on the MainWindow, the dot WIDGETS are recreated with the header)
-        self.tabs.set_header_status_provider(self._populate_header_status)
         # Chart-unify keystone: NO "Chart" space is added — SpaceDeck holds ZERO spaces. The
         # center hosts only side panels + any chart docked via "Dock into workspace". Charts open
         # as floating ChartWindowFrame peers (topbar "New chart" / Ctrl+N), so they all tile under
-        # Window>Arrange. (set_fit_callback/set_header_status_provider stay wired for a docked chart.)
+        # Window>Arrange. (set_fit_callback stays wired as the seam for a future docked chart.)
         # Bots panel (Active Bots / Historic Runs / Launch Bot) intentionally NOT mounted in
         # Studio for now — pending a refactor. self.bots stays alive so self.strategy /
         # self.history (its sub-widgets) keep serving show_strategy()/update_runs() calls.
@@ -1801,9 +1706,9 @@ class MainWindow(QtWidgets.QMainWindow):
             news.start_feed(self._symbol)
 
     def _update_chart_header(self) -> None:
-        """Drive the chart-space header title (the single MC-style line). For chart-bearing
-        spaces it reads SPACE · SYMBOL · INTERVAL; other spaces show just their name. The live
-        price (· 62,403 ▲0.18%) is appended by _header_price_html — the overcome-MC win."""
+        """Drive the chart-space header title (the single MC-style line) to the current space's
+        name. SpaceDeck holds zero spaces post-keystone, so this early-returns (currentIndex==-1)
+        unless a chart is ever docked via "Dock into workspace"; kept as the live seam for that."""
         if not hasattr(self, "tabs"):
             return
         idx = self.tabs.currentIndex()
@@ -1812,15 +1717,7 @@ class MainWindow(QtWidgets.QMainWindow):
         name = (self._SPACE_ITEMS[idx][1] if idx < len(self._SPACE_ITEMS)
                 else self.tabs.tabText(idx))
         icon_name = name.lower()
-        if name == "Chart":   # Studio is a dock now, not a space — only Chart bears the ticker
-            base = f"{name} · {self._symbol} · {self._interval}"
-            html = self._header_price_html(base)
-            if html is not None:
-                self.tabs.set_header_title_rich(html)
-            else:
-                self.tabs.set_header_title(base)
-        else:
-            self.tabs.set_header_title(name)
+        self.tabs.set_header_title(name)
         try:
             self.tabs.set_header_icon(
                 icons.rail_icon(icon_name, theme.ACCENT, theme.ACCENT, theme.ACCENT)
@@ -1828,77 +1725,6 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception:  # noqa: BLE001 - icon is cosmetic; never block the header on it
             pass
         self._fit_chart_header()
-
-    def _header_price_html(self, base: str) -> "str | None":
-        """The overcome-MC ticker: append the live last price + change% to the chart-space
-        header (MC's title is static text). Reuses self._bars — no new data path, main-thread.
-        Change is last close vs the prior bar's close, coloured green/red (theme UP/DOWN)."""
-        bars = getattr(self, "_bars", None)
-        if not bars:
-            return None
-        try:
-            last = bars[-1].close
-            prev = bars[-2].close if len(bars) >= 2 else bars[-1].open
-        except (AttributeError, IndexError):
-            return None
-        chg = last - prev
-        pct = (chg / prev * 100.0) if prev else 0.0
-        col = theme.UP if chg >= 0 else theme.DOWN
-        arrow = "▲" if chg >= 0 else "▼"
-        return (f"<span style='color:{theme.TEXT};'>{base} · {last:,.2f} </span>"
-                f"<span style='color:{col};'>{arrow}{abs(pct):.2f}%</span>")
-
-    # --- central-chart symbol link (the header's ● / ◆ dots) --------------------------------
-
-    def _populate_header_status(self, bar) -> None:
-        """Add the chart-space header's ● symbol + ◆ interval link dots (called by the factory
-        each time the header is (re)created — state lives on the MainWindow, dots are fresh)."""
-        from .panels import LinkDot
-
-        sym = LinkDot(self.link_group, label="Symbol")
-        sym.groupChanged.connect(self._set_central_link_group)
-        bar.add_status(sym)
-        ivl = LinkDot(-1 if self.interval_link_group is None else self.interval_link_group,
-                      label="Interval", glyph=("◇", "◆"), follow=True)
-        ivl.groupChanged.connect(self._set_central_interval_link_group)
-        bar.add_status(ivl)
-        from .unifiedbar import FeedBadge
-
-        self._header_feed = FeedBadge()
-        bar.add_status(self._header_feed)
-        self._render_header_feed()
-
-    def _render_header_feed(self) -> None:
-        """Paint the header's feed badge from the current feed state (compact: '● LIVE')."""
-        badge = getattr(self, "_header_feed", None)
-        if badge is None:
-            return
-        color, prefix = _FEED_STATES.get(self._feed_state, _FEED_STATES["idle"])
-        try:
-            badge.set_state(color, prefix.replace(" · ", "").strip() or "●")
-        except RuntimeError:        # header was recreated — the old badge is gone
-            self._header_feed = None
-
-    def _set_central_link_group(self, gid: int) -> None:
-        self.link_group = gid
-        self._broadcast_central_link()
-
-    def _set_central_interval_link_group(self, gid: int) -> None:
-        self.interval_link_group = None if gid < 0 else gid
-        self._broadcast_central_link()
-
-    def _broadcast_central_link(self) -> None:
-        """Push the central chart's (symbol, interval) to linked members. The bus re-entrancy
-        guard makes this a no-op while we're applying a received broadcast (no ping-pong)."""
-        bus = getattr(self, "_link_bus", None)
-        if bus is not None:
-            bus.broadcast(self.link_group, self, self._symbol, self._interval,
-                          interval_group=self.interval_link_group)
-
-    def apply_link(self, symbol: "str | None", interval: "str | None") -> None:
-        """Bus receiver: a linked member changed — load it into the central chart. _load_symbol's
-        own broadcast is suppressed by the bus guard, so this can't echo back."""
-        self._load_symbol(symbol or self._symbol, interval or self._interval)
 
     def _fit_chart_header(self) -> None:
         """Cap the chart-space header to the VISIBLE chart width so its ⧉ ─ □ ✕ sit at the
@@ -2060,8 +1886,6 @@ class MainWindow(QtWidgets.QMainWindow):
             f"color:{color};font-size:10px;background:transparent;border:none;"
             f"padding:3px 6px;margin-right:6px;"
         )
-        self._feed_state = state            # mirror onto the chart-space header badge
-        self._render_header_feed()
         if not self._live_timer.isActive():
             return
         if state == "live":
@@ -2927,8 +2751,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.load_bars(bars)
         self._push_watch_quote(symbol, bars)
         self._arm_live_updates()
-        self._update_chart_header()
-        self._broadcast_central_link()   # propagate to linked charts/watchlist (bus-guarded)
 
     def _on_interval_chosen(self, interval: str):
         """Timeframe dropdown -> reload the current symbol at the chosen interval."""
@@ -3322,7 +3144,6 @@ class MainWindow(QtWidgets.QMainWindow):
             dock_state_hex=bytes(self.dock_manager.saveState().toHex()).decode("ascii"),
             maximized=self.isMaximized(),
             panels=dict(self._panel_visible),
-            chart_indicators=indicator_states(self.price) if self.price is not None else [],
             # Studio chart only exists while its dock is open; capture its indicators when present.
             studio_indicators=(indicator_states(self.studio_price)
                                if self.studio_price is not None else []),
@@ -3330,9 +3151,6 @@ class MainWindow(QtWidgets.QMainWindow):
             open_tools=list(self._tool_docks.keys()),          # tools open as docks
             tool_windows=self._tool_window_states(),           # Stage A3: tools open as windows
             watchlist_link=self._watchlist_link,
-            central_link=self.link_group,
-            central_interval_link=(-1 if self.interval_link_group is None
-                                   else self.interval_link_group),
         )
 
     def _doc_state_with_geometry(self, doc) -> dict:
@@ -3401,9 +3219,9 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self._watchlist_dot.set_group(self._watchlist_link)
         except RuntimeError:
-            # the chart header (and its link dots) is recreated on relayout, so _watchlist_dot can
-            # be a stale/deleted LinkDot here — the freshly-rebuilt dot picks up _watchlist_link via
-            # _populate_header_status, so skipping this stale one is safe (workspace still applies).
+            # _watchlist_dot can be a stale/deleted LinkDot here (e.g. the watchlist panel was torn
+            # down) — _watchlist_link is still recorded, so skipping the repaint is safe (the
+            # workspace still applies and a rebuilt dot reads the stored group).
             pass
 
         if state.dock_state_hex:                 # a saved layout; built-ins use default positions
@@ -3674,8 +3492,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # 3. Stop EVERY timer (closeEvent used to miss _rollup/_timer/_clock/_retile).
         self._stop_all_timers()
         # 4. Join EVERY worker / feed.
-        if getattr(self, "_link_bus", None) is not None:
-            self._link_bus.remove_member(self)   # leave the bus: no apply_link after teardown
         self._stop_forward()
         if getattr(self, "_live_hub", None) is not None:
             self._live_hub.shutdown()            # chart-document live round-robin + its worker

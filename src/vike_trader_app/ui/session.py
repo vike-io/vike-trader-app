@@ -49,7 +49,6 @@ class SessionState:
     dock_state_hex: str = ""       # CDockManager.saveState() as hex — panel layout/pins/sizes
     maximized: bool = True
     panels: dict = field(default_factory=dict)              # panel key -> shown
-    chart_indicators: list = field(default_factory=list)    # Chart space (price)
     studio_indicators: list = field(default_factory=list)   # Studio chart (studio_price)
     documents: list = field(default_factory=list)           # open chart documents (Phase 2)
     open_tools: list = field(default_factory=list)   # tool keys open as docks (empty-workspace re-arch)
@@ -57,8 +56,6 @@ class SessionState:
     # geometry omitted for a tool detached to its own OS window (screen coords; cascades on restore).
     tool_windows: list = field(default_factory=list)
     watchlist_link: int = 0                                  # watchlist symbol-link group (Phase 3)
-    central_link: int = 0                                    # central chart symbol-link group
-    central_interval_link: int = -1                          # central chart interval-link (-1=follow)
 
     def to_dict(self) -> dict:
         return {"version": _VERSION, **asdict(self)}
@@ -114,11 +111,12 @@ def load_session(path) -> SessionState | None:
         state.dock_state_hex = ""
     if stored_version < 4:
         # v3 -> v4: the docked "Chart" space ("space:Chart") was removed (chart-unify keystone).
-        # Drop the layout blob so restoreState can't reference the dead space; drop the central
-        # chart's indicators (no central chart to host them). The saved symbol/interval still
-        # seed the fresh chart frame on launch, and any chart documents reopen from `documents`.
+        # Drop the layout blob so restoreState can't reference the dead space. The old central
+        # chart's indicators / link groups (central_link, central_interval_link, chart_indicators)
+        # were also dropped — from_dict simply ignores those now-unknown keys. The saved
+        # symbol/interval still seed the fresh chart frame on launch, and any chart documents
+        # reopen from `documents`.
         state.dock_state_hex = ""
-        state.chart_indicators = []
     return state
 
 

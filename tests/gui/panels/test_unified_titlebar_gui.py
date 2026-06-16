@@ -92,18 +92,6 @@ def test_chart_frame_is_link_member_with_header_dots(app):
     win.close()
 
 
-def test_central_link_survives_session_roundtrip(app, tmp_path):
-    path = tmp_path / "s.json"
-    w1 = MainWindow(session_path=str(path))
-    w1._set_central_link_group(4)
-    w1._set_central_interval_link_group(5)
-    w1.close()                                       # persists on close
-    w2 = MainWindow(session_path=str(path))
-    assert w2.link_group == 4
-    assert w2.interval_link_group == 5
-    w2.close()
-
-
 def test_chart_frame_feed_badge_tracks_feed_health(app):
     """Keystone: the feed badge lived on the gone central-chart header — it now lives on each
     chart FRAME's bar. The frame carries a FeedBadge that the host paints via frame.set_feed

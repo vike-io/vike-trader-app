@@ -81,7 +81,6 @@ def test_spacedeck_has_no_eager_spaces(app):
     assert win._SPACE_ITEMS == []                   # no eager spaces after the keystone
     assert deck.count() == 0                         # ...so the deck is empty
     assert deck.currentIndex() == -1                 # nothing is current
-    assert win._backtester is None                   # the old central-chart container is gone
     assert win.price is None                         # no focused chart frame on a bare window
     assert not deck.isAncestorOf(win.watchlist)      # panels are NOT in the spaces area
     win.close()
@@ -117,27 +116,6 @@ def test_user_closing_panel_syncs_rail_toggle(app):
     win.tabs.setCurrentIndex(0)
     win._on_tab_changed(0)
     assert win._market_dock.isClosed()
-    win.close()
-
-
-def test_chart_maximize_is_noop_without_a_central_chart(app):
-    """Chart-unify keystone: there is no central chart dock, so ``_toggle_chart_maximize`` (still a
-    thin wrapper over the unified ``_maximize_dock``) targets ``None`` and is a deliberate no-op —
-    it must NOT raise, must NOT flip the compat flag, and must leave any open side panel untouched.
-    (The unified maximize itself is exercised on a real PANEL target below.)"""
-    win = MainWindow(session_path=None)
-    win.resize(1200, 800)
-    win.show()
-    QtWidgets.QApplication.processEvents()
-    win._panel_btns["market"].setChecked(True)
-    QtWidgets.QApplication.processEvents()
-    mkt = win._panel_dock_map["market"]
-    assert win._chart_space_dock() is None
-    win._toggle_chart_maximize()                           # target is None -> no-op
-    QtWidgets.QApplication.processEvents()
-    assert win._chart_maxed is False
-    assert win._maximized is None
-    assert not mkt.isClosed()                              # panel untouched
     win.close()
 
 
