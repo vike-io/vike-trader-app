@@ -482,7 +482,7 @@ class MainWindow(QtWidgets.QMainWindow):
         Indicators only re-attach when the load actually produced bars (add_indicator
         no-ops on an empty chart) — a failed load just leaves a clean chart."""
         self._load_symbol(self._symbol, self._interval)
-        if self._session and self._bars:
+        if self._session and self._bars and self.price is not None:
             apply_indicator_states(self.price, self._session.chart_indicators)
             # Studio chart only exists while its dock is open: a restored "studio" tool recreates
             # it (open_tools restore runs before this), otherwise studio_price is None — skip it.
@@ -621,7 +621,7 @@ class MainWindow(QtWidgets.QMainWindow):
         window (same symbol / interval / indicators / link group)."""
         self._new_chart_document(self._symbol, self._interval, state={
             "symbol": self._symbol, "interval": self._interval,
-            "indicators": indicator_states(self.price),
+            "indicators": indicator_states(self.price) if self.price is not None else [],
             "link_group": self.link_group,
             "interval_link_group": self.interval_link_group,
         })
@@ -2648,10 +2648,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def _pipeline_charts(self):
         """Charts that the data/replay/live pipeline feeds: the Chart space always, plus the
         Studio chart only while the Studio dock is open (studio_price is None when it's closed)."""
-        charts = [self.price]
-        if self.studio_price is not None:
-            charts.append(self.studio_price)
-        return charts
+        # None-safe: the central chart becomes optional as it is demoted to an ordinary closable
+        # dock (chart unification) — feed only the charts that currently exist.
+        return [c for c in (self.price, self.studio_price) if c is not None]
 
     # --- data / strategy loading ---
     def load_bars(self, bars, strategy_factory=None, *, record=True):
@@ -3307,7 +3306,7 @@ class MainWindow(QtWidgets.QMainWindow):
             dock_state_hex=bytes(self.dock_manager.saveState().toHex()).decode("ascii"),
             maximized=self.isMaximized(),
             panels=dict(self._panel_visible),
-            chart_indicators=indicator_states(self.price),
+            chart_indicators=indicator_states(self.price) if self.price is not None else [],
             # Studio chart only exists while its dock is open; capture its indicators when present.
             studio_indicators=(indicator_states(self.studio_price)
                                if self.studio_price is not None else []),
@@ -3522,7 +3521,7 @@ class MainWindow(QtWidgets.QMainWindow):
             payload = self._doc_state_with_geometry(self._active_frame.doc)
         else:
             payload = {"symbol": self._symbol, "interval": self._interval,
-                       "indicators": indicator_states(self.price)}
+                       "indicators": indicator_states(self.price) if self.price is not None else []}
         QtWidgets.QApplication.clipboard().setText(
             json.dumps({"vike_window": payload}))
         self.statusBar().showMessage("Window copied — paste with Ctrl+Shift+V", 4000)
@@ -3560,6 +3559,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def _export_chart_image(self) -> None:
         """Save the active chart (document or Chart space) as a PNG. Interactive path only."""
         chart = getattr(self.tabs.currentWidget(), "chart", None) or self.price
+        if chart is None:                      # no chart open -> nothing to export
+            return
         path, _f = QtWidgets.QFileDialog.getSaveFileName(
             self, "Export chart image", f"{self._symbol}.png", "PNG image (*.png)")
         if path:
