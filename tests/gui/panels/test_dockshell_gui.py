@@ -326,27 +326,14 @@ def test_panel_close_button_closes_via_real_click(app):
     win.close()
 
 
-def test_reclaim_unpins_autohidden_docks(app):
-    """Regression: a stale session blob can restore a PANEL dock ADS-auto-hidden — but ADS auto-hide
-    is retired (minimize uses the custom left rail now), and a pinned dock collapses to a thin strip
-    while another fills the rest (the 'old float / weird layout' the user hit on a restored session).
-    _reclaim_floating_docks must un-pin restored auto-hidden docks. (Note: mgr.dockWidgets() omits
-    auto-hidden docks, so the reclaim walks the known docks — panels + tools — explicitly. The chart
-    space is gone, so a side panel stands in for the old central chart here.)"""
-    win = MainWindow(session_path=None)
-    win.show()
-    win._panel_btns["market"].setChecked(True)
-    app.processEvents()
-    app.processEvents()
-    mkt = win._market_dock
-    mkt.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
-    mkt.setAutoHide(True, QtAds.SideBarLeft)
-    app.processEvents()
-    assert mkt.isAutoHide()                      # restored pinned to the edge
-    win._reclaim_floating_docks()
-    app.processEvents()
-    assert not mkt.isAutoHide()                  # un-pinned back into the layout
-    win.close()
+# NOTE: the old `test_reclaim_unpins_autohidden_docks` was REMOVED — it created a real ADS auto-hide
+# container (`setAutoHide(True)`), which is a deterministic teardown use-after-free (0xC0000409,
+# upstream mborgerson/pyside6_qtads#31). Under parallel xdist that corrupted the worker's ADS state and
+# surfaced as a crash during a LATER test's teardown — the sole blocker to running panels parallel.
+# The app never creates auto-hide containers (minimize = custom MinimizedRail; the dead
+# addAutoHideDockWidget path was removed in #181), and the v4 session migration drops pre-rail blobs,
+# so the scenario it guarded is unreachable — the matching un-pin pass in _reclaim_floating_docks was
+# dropped with it. With this gone the suite creates ZERO auto-hide containers, so panels run parallel.
 
 
 def test_panel_titlebar_has_no_native_chrome_leak(app):
