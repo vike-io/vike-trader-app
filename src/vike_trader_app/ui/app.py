@@ -478,15 +478,17 @@ class MainWindow(QtWidgets.QMainWindow):
         QtCore.QTimer.singleShot(200, self._startup_load)
 
     def _startup_load(self) -> None:
-        """Load the session symbol/interval into the focused chart (if any), then re-apply the
-        Studio chart's saved indicators when it's open. There is no central chart to seed — each
-        restored chart document loads + restores its OWN indicators in _new_chart_document.
+        """Re-apply the Studio chart's saved indicators when its dock is open.
 
-        Indicators only re-attach when the load actually produced bars (add_indicator
-        no-ops on an empty chart) — a failed load just leaves a clean chart."""
+        Post-keystone there is NO central chart to seed: each restored chart document loads +
+        restores its OWN symbol/indicators in _new_chart_document, and a fresh start stays empty.
+        We must NOT drive `_load_symbol(self._symbol)` here — with a chart focused that would
+        OVERWRITE the focused doc with the default symbol. (In production no doc is focused at this
+        200ms tick — restored docs use make_current=False — so the old call was a silent no-op; but
+        under slow parallel test load it fired mid-test and clobbered a just-focused doc to the
+        default 'BTCUSDT' — a real latent bug that surfaced as a panels-suite flake.)"""
         if self._closing:
             return
-        self._load_symbol(self._symbol, self._interval)
         if self._session and self._bars and self.studio_price is not None:
             # Studio chart only exists while its dock is open: a restored "studio" tool recreates
             # it (open_tools restore runs before this), otherwise studio_price is None — skip it.
