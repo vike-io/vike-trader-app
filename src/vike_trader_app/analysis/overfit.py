@@ -5,12 +5,10 @@
   non-normality, and the number of strategy configurations tried?
 - ``pbo_cscv``: Probability of Backtest Overfitting via Combinatorially Symmetric
   Cross-Validation — how often the in-sample best is below the out-of-sample median.
-- ``monte_carlo_drawdowns``: trade-order resampling to gauge drawdown luck.
 - ``overfit_verdict``: a plain-language Low/Medium/High risk label.
 """
 
 import math
-import random
 from dataclasses import dataclass
 from itertools import combinations
 from statistics import NormalDist, variance
@@ -86,24 +84,6 @@ def pbo_cscv(matrix, n_splits: int) -> float:
     if not logits:
         return 0.0
     return sum(1 for lam in logits if lam <= 0.0) / len(logits)
-
-
-def monte_carlo_drawdowns(trade_pnls, n_sims: int, seed: int = 0):
-    """Distribution of max drawdown (in PnL units) over ``n_sims`` shuffles of trade order."""
-    rng = random.Random(seed)
-    pnls = list(trade_pnls)
-    out = []
-    for _ in range(n_sims):
-        rng.shuffle(pnls)
-        equity = 0.0
-        peak = 0.0
-        mdd = 0.0
-        for p in pnls:
-            equity += p
-            peak = max(peak, equity)
-            mdd = max(mdd, peak - equity)
-        out.append(mdd)
-    return out
 
 
 @dataclass

@@ -1,11 +1,10 @@
-"""Anti-overfitting statistics: PSR, deflated Sharpe, PBO (CSCV), Monte Carlo, verdict."""
+"""Anti-overfitting statistics: PSR, deflated Sharpe, PBO (CSCV), verdict."""
 
 import pytest
 
 from vike_trader_app.analysis.overfit import (
     deflated_sharpe_ratio,
     expected_max_sharpe,
-    monte_carlo_drawdowns,
     overfit_verdict,
     pbo_cscv,
     probabilistic_sharpe_ratio,
@@ -80,27 +79,6 @@ def test_pbo_in_unit_interval():
 def test_pbo_requires_even_splits():
     with pytest.raises(ValueError):
         pbo_cscv([[1.0, 0.0] for _ in range(6)], n_splits=3)
-
-
-# --- Monte Carlo drawdowns ---
-
-
-def test_monte_carlo_returns_requested_count():
-    assert len(monte_carlo_drawdowns([1, -2, 3, -1], n_sims=50, seed=1)) == 50
-
-
-def test_monte_carlo_is_deterministic_with_seed():
-    a = monte_carlo_drawdowns([1, -2, 3, -1, 2], 100, seed=7)
-    b = monte_carlo_drawdowns([1, -2, 3, -1, 2], 100, seed=7)
-    assert a == b
-
-
-def test_monte_carlo_all_positive_pnls_have_zero_drawdown():
-    assert max(monte_carlo_drawdowns([1, 2, 3, 4], 50, seed=3)) == 0.0
-
-
-def test_monte_carlo_drawdowns_nonnegative():
-    assert all(d >= 0 for d in monte_carlo_drawdowns([5, -3, 2, -4, 6], 100, seed=2))
 
 
 # --- Verdict ---
