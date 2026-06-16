@@ -89,6 +89,19 @@ def _cleanup_qt_widgets():
     app = qtw.QApplication.instance()
     if app is None:
         return
+    # Run the SAME ordered teardown production uses on any leaked MainWindow FIRST: shutdown() is
+    # idempotent (a test that already did win.close() is a no-op) and deterministically closes every
+    # frame/dock + disconnects signals + stops timers/workers + drains floats + deletes the dock
+    # manager while quiescent. So the deleteLater pass below becomes a near-no-op over empty wrappers
+    # instead of freeing a live ADS graph in arbitrary order — the CDockWidget-already-deleted race.
+    for w in list(app.topLevelWidgets()):
+        sd = getattr(w, "shutdown", None)
+        if callable(sd) and getattr(w, "_closing", None) is not None:   # a MainWindow
+            try:
+                sd()
+            except Exception:  # noqa: BLE001 - teardown must never raise out of the fixture
+                pass
+    app.processEvents()
     for w in list(app.topLevelWidgets()):
         try:
             w.deleteLater()
