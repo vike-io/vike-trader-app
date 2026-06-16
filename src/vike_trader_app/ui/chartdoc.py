@@ -22,8 +22,9 @@ from ..data.binance_source import interval_ms
 from ..data.live_update import live_fetch_window, merge_live_bars
 from ..data.sources import select_source
 from . import theme
-from .dataload import load_symbol_bars
+from .dataload import FRESH_MS, load_symbol_bars, lookback_start
 from .session import apply_indicator_states, indicator_states
+from .watchlist_data import is_stale
 
 _LIVE_LOOKBACK = 5          # bars (incl. forming candle) pulled per live tick
 _HUB_TICK_MS = 5_000        # round-robin cadence: each tick serves ONE visible document
@@ -84,6 +85,7 @@ class ChartDocument(QtWidgets.QWidget):
     """A clean, standalone chart viewer document (PriceChart + oscillator pane host)."""
 
     symbolChanged = QtCore.Signal(str, str)   # (symbol, interval) — feeds tab title + link groups
+    loadFinished = QtCore.Signal(int, bool)   # (load_gen, ok) — async network top-up landed/failed
 
     def __init__(self, symbol: str = "BTCUSDT", interval: str = "1h", parent=None):
         super().__init__(parent)
@@ -93,6 +95,13 @@ class ChartDocument(QtWidgets.QWidget):
         self._interval = interval
         self._bars: list = []
         self._loaded = False         # becomes True after the first real load attempt
+        # Async load (off-thread gap top-up via LiveHub): _hub is set by LiveHub.register; _load_gen
+        # is bumped per load() so a late worker result for a since-superseded symbol is discarded;
+        # _topup_prev holds the rollback identity for a bad symbol; _topup_pending gates re-kicks.
+        self._hub = None
+        self._load_gen = 0
+        self._topup_prev: tuple | None = None
+        self._topup_pending = False
 
         self.chart = PriceChart()
         # same rounded-card treatment as the Chart space — built by the shared make_chart_card.
@@ -156,31 +165,95 @@ class ChartDocument(QtWidgets.QWidget):
 
     def load(self, symbol: str | None = None, interval: str | None = None, *,
              network: bool = True) -> bool:
-        """(Re)load this document's series (cache-first, MAIN THREAD). Returns success."""
+        """(Re)load this document's series. NON-BLOCKING when ``network=True``.
+
+        Phase 1 (MAIN THREAD): a cache-only read paints instantly — the Parquet/Catalog read is
+        the thread-unsafe path, so it stays here, and it's fast (partition-pruned tail). Phase 2:
+        if the cached tail is stale/cold AND ``network``, the gap fetch runs OFF-THREAD via the
+        LiveHub worker and merges back on the main thread (``apply_topup``) — so a cold-symbol
+        switch no longer freezes the UI on the inline REST pagination. ``network=False`` is a pure
+        cache read (restore path). Returns whether cache bars were painted synchronously."""
+        now = int(time.time() * 1000)
         prev_symbol, prev_interval = self._symbol, self._interval
         self._symbol = (symbol or self._symbol).upper()
         self._interval = interval or self._interval
-        res = load_symbol_bars(self._symbol, self._interval, int(time.time() * 1000),
-                               network=network)
-        if not res.ok:
-            # Roll back identity on a failed load so the doc keeps showing its real series —
-            # otherwise a failed apply_link (bad symbol via a link broadcast) would corrupt
-            # _symbol, mislabel the tab, and re-broadcast the bad symbol to linked peers.
-            self._symbol, self._interval = prev_symbol, prev_interval
-            return False
-        # Mark "loaded" only after a SUCCESSFUL network round-trip — otherwise a failed
-        # network "+New chart" (bad symbol / offline) would latch _loaded=True and ensure_loaded
-        # would never retry, leaving the doc stuck empty. A cache-only (network=False) load
-        # never latches, so restored docs always top up on first focus.
-        self._loaded = self._loaded or network
-        self._bars = res.bars
+        self._load_gen += 1  # supersede any in-flight top-up for the old symbol
+
+        # Phase 1 — cache-only paint (main thread, fast). Never blocks on the network.
+        res = load_symbol_bars(self._symbol, self._interval, now, network=False)
+        switched = self._symbol != prev_symbol or self._interval != prev_interval
+        if res.bars:
+            self._bars = res.bars
+            self._paint()
+        elif switched:
+            # Switched to a symbol/interval with NO cache: clear the stale view so the old series
+            # isn't shown under the new label. The async top-up fills it (apply_topup), or a failed
+            # fetch rolls back to the previous symbol (topup_failed).
+            self._bars = []
+            self._paint()
+        self.symbolChanged.emit(self._symbol, self._interval)
+
+        if not network:
+            return bool(res.bars)
+        # Fresh cached tail -> done, zero network (the common path).
+        if res.bars and not is_stale(res.bars[-1].ts, now, FRESH_MS):
+            self._loaded = True
+            return True
+        # Phase 2 — stale or cold: top up the gap OFF-THREAD via the hub (no UI freeze). The hub's
+        # worker is network-only + waited on by shutdown(); the merge/persist land on the main
+        # thread in apply_topup. No hub (bare doc, e.g. a unit test) -> stay cache-only.
+        if self._hub is not None:
+            self._topup_prev = (prev_symbol, prev_interval)
+            self._topup_pending = True
+            self._hub.request_topup(self, self._load_gen)
+        return bool(res.bars)
+
+    def _paint(self) -> None:
+        """Push the current bars to the chart (shared by load + apply_topup)."""
         self.chart.set_data(self._bars, [])
         self.chart.set_overlays({})
         self.chart.set_title(self._symbol)
         self.chart.set_timeframe(self._interval)
-        self.chart.show_upto(len(self._bars) - 1)
-        self.symbolChanged.emit(self._symbol, self._interval)
-        return True
+        if self._bars:
+            self.chart.show_upto(len(self._bars) - 1)
+
+    def apply_topup(self, gen: int, bars: list) -> None:
+        """MAIN THREAD: merge the off-thread gap fetch in, persist, repaint. A generation guard
+        drops a result the user already superseded (switched symbol/interval mid-fetch)."""
+        if gen != self._load_gen:
+            return  # superseded — discard
+        self._topup_pending = False
+        if not bars:
+            if self._bars:
+                self._loaded = True  # cache was already showing; nothing new to merge
+            self.loadFinished.emit(gen, bool(self._bars))
+            return
+        from ..data.cache import DEFAULT_ROOT, append_series, merge_bars
+        try:
+            append_series(bars, DEFAULT_ROOT, self._symbol, self._interval)  # persist (main thread)
+        except Exception:  # noqa: BLE001 - a persist failure must not lose the in-memory merge
+            pass
+        self._bars = merge_bars(self._bars, bars) if self._bars else list(bars)
+        self._loaded = True
+        self._paint()
+        self.loadFinished.emit(gen, True)
+
+    def topup_failed(self, gen: int, _msg: str) -> None:
+        """MAIN THREAD: the off-thread fetch failed. If this load produced NO bars at all (a bad
+        symbol typed into the box), roll back to the previous symbol's cached view; otherwise keep
+        the stale cache (a transient network error — ensure_loaded retries on next focus)."""
+        if gen != self._load_gen:
+            return
+        self._topup_pending = False
+        if not self._bars and self._topup_prev is not None:
+            self._symbol, self._interval = self._topup_prev
+            res = load_symbol_bars(self._symbol, self._interval, int(time.time() * 1000),
+                                   network=False)
+            if res.bars:
+                self._bars = res.bars
+                self._paint()
+            self.symbolChanged.emit(self._symbol, self._interval)
+        self.loadFinished.emit(gen, False)
 
     def ensure_loaded(self) -> None:
         """Top up over the network the first time the document is actually shown — restored
@@ -188,8 +261,11 @@ class ChartDocument(QtWidgets.QWidget):
 
         This is a focus-triggered top-up of THIS doc, not a user symbol change, so it must NOT
         broadcast to link peers: a restored doc carries the saved link group by now, and without
-        the guard, simply focusing it would overwrite same-group peers with its stale symbol."""
-        if not self._loaded:
+        the guard, simply focusing it would overwrite same-group peers with its stale symbol.
+
+        Guarded on _topup_pending too: the network top-up is now async, so a second focus while
+        the first fetch is still in flight must NOT kick a duplicate (it lands via apply_topup)."""
+        if not self._loaded and not self._topup_pending:
             self._suppress_broadcast = True
             try:
                 self.load()
@@ -293,7 +369,9 @@ class LiveHub(QtCore.QObject):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._docs: list[ChartDocument] = []
-        self._worker = None
+        self._worker = None              # round-robin LIVE-edge worker
+        self._topup_worker = None        # one-shot INITIAL/STALE-load worker (a SECOND slot)
+        self._pending_topup = None       # (doc, gen) deferred while _topup_worker is busy (latest-wins)
         self._cursor = 0
         self._timer = QtCore.QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -301,6 +379,7 @@ class LiveHub(QtCore.QObject):
     def register(self, doc: ChartDocument) -> None:
         if doc not in self._docs:
             self._docs.append(doc)
+        doc._hub = self   # so doc.load() can request an off-thread top-up
         # Same test kill-switch as MainWindow._arm_live_updates: the offscreen suite must do no
         # real network I/O, and the hub's _LiveFetchWorker hits Binance/Yahoo. Never start the
         # round-robin timer under it (the merge logic is unit-tested in test_live_update.py).
@@ -310,8 +389,54 @@ class LiveHub(QtCore.QObject):
     def unregister(self, doc: ChartDocument) -> None:
         if doc in self._docs:
             self._docs.remove(doc)
+        doc._hub = None
+        if self._pending_topup is not None and self._pending_topup[0] is doc:
+            self._pending_topup = None
         if not self._docs:
             self._timer.stop()
+
+    def request_topup(self, doc: ChartDocument, gen: int) -> None:
+        """Off-thread top-up of ``doc``'s gap (initial/stale load), so a cold-symbol switch doesn't
+        freeze the UI on inline REST pagination. Uses a SECOND worker slot that ``shutdown()`` waits
+        on — it can't outlive the window and race the final GC (the 0xC0000409 teardown class). The
+        worker is network-ONLY; the cache read + persist stay on the main thread (doc.load /
+        apply_topup). Gated by VIKE_DISABLE_LIVE so the offscreen suite does no real network."""
+        if os.environ.get("VIKE_DISABLE_LIVE"):
+            return
+        if self._topup_worker is not None:
+            self._pending_topup = (doc, gen)   # latest-wins; fired when the slot frees
+            return
+        self._start_topup(doc, gen)
+
+    def _start_topup(self, doc: ChartDocument, gen: int) -> None:
+        from .app import _LiveFetchWorker  # late import: avoids an app<->chartdoc cycle
+
+        now = int(time.time() * 1000)
+        # Gap from the last cached bar (stale tail) or the full lookback window (cold) — MAIN thread.
+        start = doc._bars[-1].ts if doc._bars else lookback_start(doc.interval, now)
+        worker = self._topup_worker = _LiveFetchWorker(
+            select_source(doc.symbol).fetch_bars_range, doc.symbol, doc.interval, start, now
+        )
+        worker.fetched.connect(lambda bars, d=doc, g=gen: self._on_topup_fetched(d, g, bars))
+        worker.failed.connect(lambda msg, d=doc, g=gen: self._on_topup_failed(d, g, msg))
+        worker.finished.connect(self._clear_topup_worker)
+        worker.start()
+
+    def _clear_topup_worker(self) -> None:
+        self._topup_worker = None
+        if self._pending_topup is not None:
+            doc, gen = self._pending_topup
+            self._pending_topup = None
+            if doc in self._docs:
+                self._start_topup(doc, gen)
+
+    def _on_topup_fetched(self, doc: ChartDocument, gen: int, bars: list) -> None:
+        if doc in self._docs:
+            doc.apply_topup(gen, bars)
+
+    def _on_topup_failed(self, doc: ChartDocument, gen: int, msg: str) -> None:
+        if doc in self._docs:
+            doc.topup_failed(gen, msg)
 
     def is_live(self) -> bool:
         """The round-robin poller is running — windows are being live-topped-up (honest LIVE
@@ -350,6 +475,11 @@ class LiveHub(QtCore.QObject):
 
     def shutdown(self) -> None:
         self._timer.stop()
-        if self._worker is not None:
-            self._worker.wait(2000)
-            self._worker = None
+        self._pending_topup = None
+        # Wait BOTH worker slots: a top-up worker left running would race the interpreter's final
+        # GC during teardown — the native 0xC0000409 class. This is the mandatory hardening.
+        for attr in ("_worker", "_topup_worker"):
+            w = getattr(self, attr)
+            if w is not None:
+                w.wait(2000)
+                setattr(self, attr, None)

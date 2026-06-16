@@ -88,39 +88,59 @@ def test_document_merge_live_appends(app, _synthetic_load):
     assert len(doc._bars) == n0 + 1
 
 
-def test_ensure_loaded_tops_up_cache_only_once(app, monkeypatch):
-    """A cache-only (restore) load leaves the doc un-"loaded", so the first ensure_loaded does
-    one NETWORK top-up; subsequent calls (and a network load) no-op."""
-    calls = []
-    monkeypatch.setattr(chartdoc, "load_symbol_bars",
-                        lambda *a, **k: calls.append(k.get("network")) or LoadResult(_bars()))
-    doc = ChartDocument("BTCUSDT", "1m")
-    doc.load(network=False)          # restore-style cache-only load -> _loaded stays False
-    doc.ensure_loaded()              # first focus -> one network top-up
-    doc.ensure_loaded()              # now loaded -> no-op
-    assert calls == [False, True]
+def test_ensure_loaded_requests_one_async_topup_then_no_ops(app, monkeypatch):
+    """Async load: a cache-only (restore) load leaves the doc un-"loaded"; the first ensure_loaded
+    kicks ONE off-thread top-up (request_topup), further calls no-op while it's pending, and once
+    the worker lands (apply_topup) the doc is loaded and ensure_loaded stays a no-op."""
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
+    monkeypatch.setattr("vike_trader_app.data.cache.append_series", lambda *a, **k: None)
+    doc = ChartDocument("BTCUSDT", "1m"); hub = LiveHub(); hub.register(doc)
+    requests = []
+    monkeypatch.setattr(hub, "request_topup", lambda d, gen: requests.append(gen))
+    doc.load(network=False)          # restore-style cache-only -> not loaded, no top-up
+    assert doc._loaded is False and requests == []
+    doc.ensure_loaded()              # first focus -> exactly one top-up requested
+    assert len(requests) == 1 and doc._topup_pending is True
+    doc.ensure_loaded()              # still pending -> NO duplicate request
+    assert len(requests) == 1
+    doc.apply_topup(doc._load_gen, _bars())   # the worker result lands -> loaded
+    assert doc._loaded is True and doc._topup_pending is False
+    doc.ensure_loaded()              # loaded -> no-op
+    assert len(requests) == 1
+    hub.shutdown()
 
 
-def test_network_load_marks_loaded(app, monkeypatch):
-    calls = []
-    monkeypatch.setattr(chartdoc, "load_symbol_bars",
-                        lambda *a, **k: calls.append(k.get("network")) or LoadResult(_bars()))
-    doc = ChartDocument("BTCUSDT", "1m")
-    doc.load()                       # network load (the "+New chart" path) -> _loaded True
-    doc.ensure_loaded()              # must NOT reload
-    assert calls == [True]
+def test_network_load_marks_loaded_when_topup_lands(app, monkeypatch):
+    """A network load kicks an async top-up (not yet loaded); _loaded latches when apply_topup
+    lands, after which ensure_loaded must NOT re-request."""
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
+    monkeypatch.setattr("vike_trader_app.data.cache.append_series", lambda *a, **k: None)
+    doc = ChartDocument("BTCUSDT", "1m"); hub = LiveHub(); hub.register(doc)
+    requests = []
+    monkeypatch.setattr(hub, "request_topup", lambda d, gen: requests.append(gen))
+    doc.load()                       # stale cache -> top-up pending, not yet loaded
+    assert doc._loaded is False and doc._topup_pending is True and len(requests) == 1
+    doc.apply_topup(doc._load_gen, _bars())   # network top-up lands
+    assert doc._loaded is True
+    doc.ensure_loaded()              # loaded -> no re-request
+    assert len(requests) == 1
+    hub.shutdown()
 
 
-def test_failed_network_load_does_not_latch_loaded(app, monkeypatch):
-    """A network load that returns no bars (bad symbol / offline, res.ok False) must NOT latch
-    _loaded — otherwise the doc is stuck empty forever and ensure_loaded never retries."""
-    results = [LoadResult([]), LoadResult(_bars())]   # 1st load fails, retry succeeds
-    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: results.pop(0))
-    doc = ChartDocument("BADSYM", "1m")
-    assert doc.load() is False
-    assert doc._loaded is False                       # not latched -> retry stays possible
-    doc.ensure_loaded()                               # retries, now succeeds
-    assert doc._bars and doc._loaded is True
+def test_failed_async_topup_does_not_latch_loaded(app, monkeypatch):
+    """A failed async top-up (bad symbol / offline) must NOT latch _loaded — so the doc isn't
+    stuck empty and a later focus retries."""
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult([]))  # no cache
+    doc = ChartDocument("BADSYM", "1m"); hub = LiveHub(); hub.register(doc)
+    monkeypatch.setattr(hub, "request_topup", lambda d, gen: None)  # worker stubbed (DISABLE_LIVE)
+    doc.load()                       # no cache -> top-up pending
+    assert doc._loaded is False and doc._topup_pending is True
+    doc.topup_failed(doc._load_gen, "offline")        # the fetch fails
+    assert doc._loaded is False and doc._topup_pending is False    # not latched -> retry possible
+    # a later successful top-up latches
+    doc.load(); doc.apply_topup(doc._load_gen, _bars())
+    assert doc._loaded is True
+    hub.shutdown()
 
 
 # --- LiveHub --------------------------------------------------------------------------------
@@ -496,13 +516,22 @@ def test_focusing_restored_linked_doc_does_not_broadcast(app, monkeypatch):
 
 
 def test_failed_link_load_rolls_back_symbol(app, monkeypatch):
-    """A failed apply_link (bad symbol) must leave the doc on its real symbol, not corrupt it."""
+    """A failed link load to a bad symbol must roll the doc back to its real symbol (async path):
+    load() clears the view + kicks an off-thread fetch; the fetch fails -> topup_failed restores
+    the previous symbol's cached view, so the doc never gets stuck mislabeled."""
     monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))
-    doc = ChartDocument("ETHUSDT", "1h")
-    doc.load()
-    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult([]))  # now fails
-    assert doc.apply_link("BADSYM", "1h") is None      # apply_link calls load (returns False)
+    monkeypatch.setattr("vike_trader_app.data.cache.append_series", lambda *a, **k: None)
+    doc = ChartDocument("ETHUSDT", "1h"); hub = LiveHub(); hub.register(doc)
+    monkeypatch.setattr(hub, "request_topup", lambda d, gen: None)  # worker stubbed (DISABLE_LIVE)
+    doc.load(); doc.apply_topup(doc._load_gen, _bars())            # ETHUSDT loaded with bars
+    assert doc.symbol == "ETHUSDT"
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult([]))  # BADSYM uncached
+    doc.apply_link("BADSYM", "1h")                                 # switch -> view cleared, fetch pending
+    assert doc.symbol == "BADSYM" and doc._bars == []
+    monkeypatch.setattr(chartdoc, "load_symbol_bars", lambda *a, **k: LoadResult(_bars()))  # prev cache
+    doc.topup_failed(doc._load_gen, "bad symbol")                  # fetch fails -> roll back
     assert doc.symbol == "ETHUSDT" and doc.title() == "ETHUSDT · 1h"
+    hub.shutdown()
 
 
 def test_out_of_range_link_group_clamps_to_unlinked(app, _synthetic_load):
