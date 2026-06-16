@@ -53,6 +53,33 @@ def _set_topmost(window_id: int, on: bool) -> bool:
     return bool(set_window_pos(wintypes.HWND(int(window_id)), hwnd_topmost, 0, 0, 0, 0, swp))
 
 
+def make_chart_card(chart) -> QtWidgets.QWidget:
+    """Build the rounded 'card' that frames a PriceChart: a transparent viewport over a CHART_BG
+    card whose rounded corners show through (anti-aliased), with a vertical splitter hosting the
+    oscillator panes below the price chart. Shared by the Chart space (MainWindow._build_central)
+    AND every ChartDocument so the chart frame is constructed ONE way (chart unification)."""
+    chart.setBackground(None)
+    vp = chart.viewport()
+    vp.setAutoFillBackground(False)
+    vp.setStyleSheet("background:transparent;")
+    chart.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
+    card = QtWidgets.QWidget()
+    card.setObjectName("chartCard")
+    card.setStyleSheet(
+        f"#chartCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
+        f"border-radius:16px;}}"
+    )
+    card_lay = QtWidgets.QVBoxLayout(card)
+    card_lay.setContentsMargins(0, 0, 0, 0)
+    split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+    split.setHandleWidth(6)
+    split.addWidget(chart)
+    split.setStretchFactor(0, 1)
+    chart.set_pane_host(split)
+    card_lay.addWidget(split)
+    return card
+
+
 class ChartDocument(QtWidgets.QWidget):
     """A clean, standalone chart viewer document (PriceChart + oscillator pane host)."""
 
@@ -68,26 +95,8 @@ class ChartDocument(QtWidgets.QWidget):
         self._loaded = False         # becomes True after the first real load attempt
 
         self.chart = PriceChart()
-        # same rounded-card treatment as the Chart space (transparent viewport on a card)
-        self.chart.setBackground(None)
-        vp = self.chart.viewport()
-        vp.setAutoFillBackground(False)
-        vp.setStyleSheet("background:transparent;")
-        self.chart.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
-        card = QtWidgets.QWidget()
-        card.setObjectName("chartCard")
-        card.setStyleSheet(
-            f"#chartCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
-            f"border-radius:16px;}}"
-        )
-        card_lay = QtWidgets.QVBoxLayout(card)
-        card_lay.setContentsMargins(0, 0, 0, 0)
-        split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        split.setHandleWidth(6)
-        split.addWidget(self.chart)
-        split.setStretchFactor(0, 1)
-        self.chart.set_pane_host(split)
-        card_lay.addWidget(split)
+        # same rounded-card treatment as the Chart space — built by the shared make_chart_card.
+        card = make_chart_card(self.chart)
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(6)

@@ -1319,34 +1319,12 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --- central charts + replay ---
     def _build_central(self):
-        # Chart space shows price candles only — equity moved to Studio's results.
-        # Rounded chart "card": pyqtgraph fills its viewport as a square rect, so we paint the
-        # chart on a TRANSPARENT scene/viewport inside a rounded card whose CHART_BG shows
-        # through at the corners (anti-aliased). FullViewportUpdate avoids any repaint trails
-        # from the translucent viewport.
-        self.price.setBackground(None)
-        _vp = self.price.viewport()
-        _vp.setAutoFillBackground(False)
-        _vp.setStyleSheet("background:transparent;")
-        _vp.installEventFilter(self)   # click the central chart -> it becomes the symbol target
-        self.price.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
-        chart_card = QtWidgets.QWidget()
-        chart_card.setObjectName("chartCard")
-        # subtle border so the rounded corners read against the near-black canvas (the chart
-        # bg and canvas are both near-black, so without an outline the curve is invisible).
-        chart_card.setStyleSheet(
-            f"#chartCard{{background:{theme.CHART_BG};border:1px solid {theme.BORDER};"
-            f"border-radius:16px;}}"
-        )
-        _card_lay = QtWidgets.QVBoxLayout(chart_card)
-        _card_lay.setContentsMargins(0, 0, 0, 0)
-        # vertical splitter inside the card: price chart on top, oscillator panes stacked below
-        _price_split = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        _price_split.setHandleWidth(6)
-        _price_split.addWidget(self.price)
-        _price_split.setStretchFactor(0, 1)
-        self.price.set_pane_host(_price_split)
-        _card_lay.addWidget(_price_split)
+        # Chart space shows price candles only — equity moved to Studio's results. The rounded chart
+        # "card" (transparent viewport over a CHART_BG card, oscillator-pane splitter) is built by the
+        # SHARED make_chart_card so the Chart space + every ChartDocument frame their chart ONE way.
+        from .chartdoc import make_chart_card
+        chart_card = make_chart_card(self.price)
+        self.price.viewport().installEventFilter(self)  # click the chart -> it becomes the symbol target
 
         charts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
         charts.addWidget(chart_card)
