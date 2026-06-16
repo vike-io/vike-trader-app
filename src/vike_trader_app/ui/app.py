@@ -1996,8 +1996,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._replay.n_bars = len(merged)
                 self.slider.setMaximum(self._replay.last_index)
                 overlays = self._strategy_factory().chart_overlays([b.close for b in merged])
-                for ch in self._pipeline_charts():  # Chart space stays clean (no auto overlays)
-                    ch.apply_live(merged, overlays if ch is self.studio_price else None, repaint=False)
+                for ch in self._pipeline_charts():  # pipeline is Studio-only (no central chart)
+                    ch.apply_live(merged, overlays, repaint=False)
                 self._update_chart_header()   # live ticker: header last price + change% (overcome MC)
                 if was_at_end:  # following the live edge -> advance the cursor and repaint
                     self._replay.seek(self._replay.last_index)
@@ -2496,11 +2496,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self._replay.seek(self._replay.last_index)
         overlays = self._strategy_factory().chart_overlays([b.close for b in bars])
         for ch in self._pipeline_charts():
-            # The Chart space is a CLEAN viewer — no auto strategy markers OR overlays (those belong
-            # to the Studio/backtest chart). Trades + the SMA legend go to Studio only; indicators on
-            # the Chart space come only from ƒx Indicators — matching a plain TradingView chart.
-            ch.set_data(bars, self._result.trades if ch is self.studio_price else [])
-            ch.set_overlays(overlays if ch is self.studio_price else {})
+            # The pipeline is Studio-only (no central chart after the chart-unify keystone), so the
+            # backtest's trades + overlays go straight to the Studio chart. Trades + the SMA legend
+            # are Studio-only; floating ChartWindowFrame peers keep their own clean view.
+            ch.set_data(bars, self._result.trades)
+            ch.set_overlays(overlays)
             ch.set_title(self._symbol)  # symbol-only; far-left toolbar label (no "· interval")
             ch.set_timeframe(self._interval)
         self.trades.update_trades(self._result.trades)
@@ -3006,7 +3006,7 @@ class MainWindow(QtWidgets.QMainWindow):
         overlays = self._strategy_factory().chart_overlays([b.close for b in self._fwd_bars])
         for ch in self._pipeline_charts():
             ch.set_data(self._fwd_bars, res.trades)
-            ch.set_overlays(overlays if ch is self.studio_price else {})  # Chart space stays clean
+            ch.set_overlays(overlays)  # pipeline is Studio-only (no central chart)
             ch.show_upto(len(self._fwd_bars) - 1)
         self.trades.update_trades(res.trades)
         if self._fwd_bars:
