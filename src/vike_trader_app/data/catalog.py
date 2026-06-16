@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .cache import DEFAULT_ROOT, slice_bars
-from .parquet_source import read_series
+from .parquet_source import read_series, read_series_since
 
 
 @dataclass
@@ -69,8 +69,18 @@ class Catalog:
         return out
 
     def query(self, symbol: str, interval: str, start: int | None = None, end: int | None = None):
-        """Bars for ``symbol``/``interval`` in ``[start, end]`` (inclusive); ``[]`` if absent."""
-        bars = read_series(str(self.root), symbol, interval)
+        """Bars for ``symbol``/``interval`` in ``[start, end]`` (inclusive); ``[]`` if absent.
+
+        When a lower bound ``start`` is given we read only the month partitions that can contain
+        ``ts >= start`` (``read_series_since``) instead of decoding the entire multi-year series
+        just to slice the tail — the live quote tick / startup price fill / doc load all pass a
+        recent ``start``, so this is the hot path. The result is identical: ``slice_bars`` drops
+        ``ts < start`` anyway, so pre-pruning those partitions changes nothing. Falls back to the
+        full read when ``start is None`` (an end-only or unbounded query can't lower-prune)."""
+        if start is not None:
+            bars = read_series_since(str(self.root), symbol, interval, start)
+        else:
+            bars = read_series(str(self.root), symbol, interval)
         if not bars:
             return []
         if start is None and end is None:
