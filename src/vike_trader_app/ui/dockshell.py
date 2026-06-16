@@ -24,12 +24,10 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
     ALWAYS calls super().__init__(area) so ADS's built-in dock-area behaviour keeps its C++
     wiring — we render our own UnifiedTitleBar over the row and hide the native chrome.
 
-    Two flavours, both pixel-identical UnifiedTitleBar chrome ([icon] NAME … ⧉ ─ □ ✕):
-      * the central SPACES area -> mark_as_chart_header(deck): a single live MC-style title
-        (CHART · BTCUSDT · 5m), buttons wired to float-space / win-min / win-max / close-doc.
-      * a side PANEL area (objectName 'panel:…') -> mark_as_panel(): title from the dock,
-        buttons wired to ADS undock / auto-hide / float-max / close.
-    NOT a tab strip (rejected design)."""
+    Post chart-unify keystone there is ONE flavour (the central docked-chart header was removed
+    with the central chart): a side PANEL / docked-tool area (objectName 'panel:'/'tool:'/'chart:')
+    -> mark_as_panel(): title from the dock, buttons wired to ADS undock / auto-hide / float-max /
+    close (tools also get the ⧉ "open as window" verb). NOT a tab strip (rejected design)."""
 
     # Class-level defaults so these attrs ALWAYS exist. Qt's C++ base (CDockAreaTitleBar) can
     # fire resizeEvent DURING super().__init__() — before the instance assignments below run —
@@ -52,14 +50,11 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         self._area_w = area
         self._rolled = False
         self._roll_maxh = None
-        # Panels self-detect (covers creation AND restoreState recreations); the central
-        # spaces area is marked explicitly by SpaceDeck.mark_as_chart_header before this fires.
+        # Panels self-detect (covers creation AND restoreState recreations). Post chart-unify
+        # keystone there is no central chart space to mark, so this is the only detection path.
         # Tie the one-shot to `self`: if ADS destroys this title bar before it fires, the timer
         # is cancelled instead of calling into a dead C++ object (segfault on teardown/fast-close).
         QtCore.QTimer.singleShot(0, self, self._auto_detect_panel)
-
-    def is_chart_header(self) -> bool:
-        return self._header is not None
 
     def _live_area(self):
         """The CURRENT dock area for this title bar. ADS swaps a dock area out across relayouts /
@@ -72,120 +67,6 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         except (RuntimeError, AttributeError):
             a = None
         return a if a is not None else self._area_w
-
-    def mark_as_chart_header(self, deck) -> None:
-        """Render the single-title chart-space header into this bar (idempotent — the title
-        text is refreshed separately via set_header_title)."""
-        from .unifiedbar import UnifiedTitleBar, update_max_button_state
-        from .style_icons import style_icon
-
-        if self._header is not None:
-            self.refresh_native_hidden()
-            return
-        self._deck = deck
-
-        def _resolve_window():
-            """The MainWindow hosting this header. The title bar is NOT a CDockWidget, so it has
-            no dockManager() — walk up via the area's manager, falling back to the Qt top-level
-            (self.window()). Resolved lazily because ADS recreates the header on relayout, when
-            the parent chain may not be wired yet."""
-            try:
-                a = self.dockAreaWidget()
-                m = a.dockManager() if a is not None else None
-                w = m.window() if m is not None else None
-            except (RuntimeError, AttributeError):
-                w = None
-            if w is None or not hasattr(w, "_open_central_as_window"):
-                try:
-                    w = self.window()
-                except (RuntimeError, AttributeError):
-                    w = None
-            return w if (w is not None and hasattr(w, "_open_central_as_window")) else None
-
-        win = _resolve_window()
-
-        def _floating_container():
-            """The CFloatingDockContainer this chart header lives in, or None when docked in the
-            main window. Lets the ─/□ buttons target the FLOAT (not the main window) when the
-            chart space has been torn out."""
-            try:
-                d = deck.dock(max(0, deck.currentIndex()))
-            except (RuntimeError, AttributeError, IndexError):
-                return None
-            if d is None:
-                return None
-            try:
-                if d.isFloating():
-                    return d.floatingDockContainer()
-            except (RuntimeError, AttributeError):
-                return None
-            return None
-
-        def _win_min():
-            c = _floating_container()
-            if c is not None:                      # floated chart space -> minimize the float window
-                try:
-                    c.showMinimized()
-                except RuntimeError:
-                    pass
-                return
-            # docked -> auto-hide the chart to the LEFT edge as a vertical tab (AmiBroker-style,
-            # consistent with the tools), NOT an in-place roll-up that left an empty workspace.
-            w = win if win is not None else _resolve_window()
-            if w is not None and hasattr(w, "_minimize_chart_to_left"):
-                w._minimize_chart_to_left()
-
-        def _set_max_icon(maxed: bool):
-            # Flip the maximize glyph the same way every title bar does (shared helper). `bar` is
-            # assigned below but resolved at call time (this only runs after the bar exists).
-            update_max_button_state(bar.button("max"), maxed)
-
-        def _win_max():
-            c = _floating_container()
-            if c is not None:                      # floated chart space -> max/restore the float
-                try:
-                    c.showNormal() if c.isMaximized() else c.showMaximized()
-                    _set_max_icon(c.isMaximized())
-                except RuntimeError:
-                    pass
-                return
-            if self._rolled:                       # un-roll before maximizing (mirrors chartwin)
-                self._toggle_chart_rollup()
-            w = win if win is not None else _resolve_window()   # docked -> maximize chart in workspace
-            if w is not None and hasattr(w, "_toggle_chart_maximize"):
-                w._toggle_chart_maximize()
-                _set_max_icon(getattr(w, "_chart_maxed", False))
-
-        def _open_as_window():
-            """Open the central chart as a clean chartwin window. Resolves the MainWindow lazily
-            (the header is recreated on relayout, so a construction-time ref can be stale or None)
-            and is a no-op if it can't be reached or lacks the chartwin opener."""
-            w = win if (win is not None) else _resolve_window()
-            if w is not None and hasattr(w, "_open_central_as_window"):
-                w._open_central_as_window()
-
-        bar = UnifiedTitleBar(title=getattr(deck, "_header_title", "Chart"),
-                              icon=style_icon("Candles", theme.ACCENT).pixmap(16, 16),
-                              parent=self)
-        # Unified title bar (the user's MC-style choice): every title bar is ⧉ ─ □ ✕. The old ＋
-        # ⧉ and the redundant ＋ are BOTH dropped (MC/VS model): float by dragging the title bar
-        # out; a brand-new chart window is on the top-bar launcher + Ctrl+N. (_open_as_window stays
-        # for the drag-to-float path + Window-menu verbs.)
-        bar.add_button("min", "─", "Minimize", _win_min)
-        bar.add_button("max", "□", "Maximize / restore", _win_max)
-        bar.add_button("close", "✕", "Close the current chart",
-                       deck.close_current_document, danger=True)
-        bar.set_active(True)
-        _set_max_icon(bool(getattr(win, "_chart_maxed", False)))   # header rebuilt while maxed -> ❐
-        if getattr(deck, "_status_provider", None) is not None:   # header link dots (● / ◆)
-            deck._status_provider(bar)
-        self._header = bar
-        # Grow the header to fill the row; the MainWindow then caps its max width to the
-        # right-panel's left edge (the dock area itself extends BEHIND the panels), so the
-        # ⧉ ─ □ ✕ land at the visible chart's right edge — never under the watchlist.
-        self._install_header_widget(bar)
-        self.refresh_native_hidden()
-        deck._request_fit()
 
     def _toggle_chart_rollup(self) -> None:
         """Chart header ─ : roll the central chart area up to its title strip (the AmiBroker
@@ -355,19 +236,6 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             if dw is None:
                 continue
             name = dw.objectName()
-            if name.startswith("space:"):
-                # The central chart SPACE rebuilt after an auto-hide reveal / float relayout: ADS
-                # makes a fresh title bar with _header=None, and SpaceDeck only (re)marks the header
-                # on an area-CHANGE — which the un-pin-from-edge path misses. So the chart header was
-                # lost and native ADS chrome (the ▼ tabs-menu + auto-hide pin) leaked through (the
-                # measured "minimize chart to left then reveal" defect). Re-mark it as the chart
-                # header here; the deck lives on the MainWindow as .tabs, and mark_as_chart_header is
-                # idempotent (a no-op once _header is set).
-                win = self._resolve_main_window()
-                deck = getattr(win, "tabs", None)
-                if deck is not None and hasattr(deck, "dock"):
-                    self.mark_as_chart_header(deck)
-                return
             if name.startswith(("panel:", "tool:", "chart:")):
                 # tool + docked-chart docks get the SAME unified bar as panels (no native ADS
                 # chrome — the stray ▼ tabs-menu + duplicate close icon) PLUS a ⧉ "open as window"
@@ -624,9 +492,6 @@ class SpaceDeck(QtCore.QObject):
             if not self._closing:   # teardown: never re-arm the forward (detach() killed it)
                 area.currentChanged.connect(self._emit_current)
             self._area = area
-            tb = area.titleBar()
-            if hasattr(tb, "mark_as_chart_header"):   # VikeDockTitleBar (factory installed)
-                tb.mark_as_chart_header(self)
         # restoreState / float relayouts can leave self._area pointing at a C++-DELETED area; probe
         # liveness so every caller gets None (they all guard `area is None`) instead of crashing on
         # the stale ref (e.g. _hide_space_tabs_now / _header_bar / currentIndex calling area.X()).

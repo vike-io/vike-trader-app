@@ -21,7 +21,7 @@ from vike_trader_app.ui.session import (
 def test_state_roundtrip():
     state = SessionState(symbol="ETHUSDT", interval="4h", space=3, geometry_hex="01ff",
                          maximized=False, panels={"market": True, "trades": False},
-                         chart_indicators=[{"name": "sma", "params": {"length": 20}}])
+                         studio_indicators=[{"name": "sma", "params": {"length": 20}}])
     again = SessionState.from_dict(state.to_dict())
     assert again == state
 
