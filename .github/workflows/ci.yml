@@ -91,17 +91,14 @@ jobs:
           uv run pytest -q --timeout=120 --timeout-method=thread -n auto
           tests/gui/chart tests/gui/studio -m "not network"
 
-      - name: Run GUI test suite — panels (serial, native-teardown isolation)
-        shell: bash
-        run: |
-          for attempt in 1 2; do
-            echo "::group::GUI panels attempt $attempt"
-            uv run pytest -q --timeout=120 --timeout-method=thread -p no:xdist tests/gui/panels -m "not network" \
-              && { echo "::endgroup::"; exit 0; }
-            echo "::endgroup::"
-            echo "GUI panels attempt $attempt failed — retrying (rare native Qt-teardown flake)"
-          done
-          exit 1
+      # EXPERIMENT (branch only): run panels PARALLEL with NO retry, after skipping the one test
+      # that creates an ADS auto-hide container (the deterministic teardown crash). If this stays
+      # green across repeated runs, the auto-hide test was the blocker and parallel is viable; if it
+      # crashes (the non-auto-hide #177 general-teardown class), revert to serial. NOT for merge as-is.
+      - name: Run GUI test suite — panels (parallel, EXPERIMENT)
+        run: >
+          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
+          tests/gui/panels -m "not network"
 
   bench:
     name: benchmarks (ubuntu · py3.12)

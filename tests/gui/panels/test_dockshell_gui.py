@@ -326,6 +326,11 @@ def test_panel_close_button_closes_via_real_click(app):
     win.close()
 
 
+@pytest.mark.skip(reason="EXPERIMENT: this is the only test that creates an ADS auto-hide container "
+                  "(setAutoHide True), which is a deterministic teardown use-after-free (0xC0000409, "
+                  "upstream mborgerson/pyside6_qtads#31). Skipped to test whether removing the suite's "
+                  "only auto-hide trigger lets tests/gui/panels run PARALLEL. Revert if the general "
+                  "teardown crash (the non-auto-hide #177 class) still occurs under -n auto.")
 def test_reclaim_unpins_autohidden_docks(app):
     """Regression: a stale session blob can restore a PANEL dock ADS-auto-hidden — but ADS auto-hide
     is retired (minimize uses the custom left rail now), and a pinned dock collapses to a thin strip
