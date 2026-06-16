@@ -25,6 +25,12 @@ INTERVAL_LOOKBACK = {"1m": 7, "3m": 7, "5m": 10, "15m": 21, "30m": 30,
 _DEFAULT_LOOKBACK_DAYS = 7
 
 
+def lookback_start(interval: str, now_ms: int) -> int:
+    """The default history-window start (ms) for ``interval`` — the cache-first lookback used by
+    load_symbol_bars, exposed so an off-thread top-up (LiveHub) can size a cold-load gap range."""
+    return now_ms - INTERVAL_LOOKBACK.get(interval, _DEFAULT_LOOKBACK_DAYS) * _DAY_MS
+
+
 @dataclass
 class LoadResult:
     """Outcome of a symbol load. ``bars`` may be cached data even on error (stale fallback)."""
