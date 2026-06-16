@@ -1,6 +1,6 @@
 import math
 
-from .base import Param, indicator
+from .base import Param, indicator, smooth_defined
 
 
 @indicator(category="overlap", inputs=["close"], params=[Param("period", "int", 20, 2, 400, 1)], outputs=["sma"])
@@ -47,13 +47,8 @@ def wma(values, period: int):
 def dema(values, period: int = 20):
     """Double EMA: ``2*EMA(p) - EMA(EMA(p))``, reducing lag versus a plain EMA."""
     e1 = ema(values, period)
-    # compute EMA of the defined e1 tail, mapped back to aligned positions
-    defined = [(i, v) for i, v in enumerate(e1) if v is not None]
-    e2: list[float | None] = [None] * len(values)
-    if len(defined) >= period:
-        e2_vals = ema([v for _, v in defined], period)
-        for (i, _), ev in zip(defined, e2_vals, strict=True):
-            e2[i] = ev
+    # EMA of the defined e1 tail, mapped back to aligned positions
+    e2 = smooth_defined(e1, ema, period)
     out: list[float | None] = [None] * len(values)
     for i in range(len(values)):
         if e1[i] is not None and e2[i] is not None:
@@ -65,18 +60,8 @@ def dema(values, period: int = 20):
 def tema(values, period: int = 20):
     """Triple EMA: ``3*EMA - 3*EMA(EMA) + EMA(EMA(EMA))``, minimal lag."""
     e1 = ema(values, period)
-    defined1 = [(i, v) for i, v in enumerate(e1) if v is not None]
-    e2: list[float | None] = [None] * len(values)
-    if len(defined1) >= period:
-        e2_vals = ema([v for _, v in defined1], period)
-        for (i, _), ev in zip(defined1, e2_vals, strict=True):
-            e2[i] = ev
-    defined2 = [(i, v) for i, v in enumerate(e2) if v is not None]
-    e3: list[float | None] = [None] * len(values)
-    if len(defined2) >= period:
-        e3_vals = ema([v for _, v in defined2], period)
-        for (i, _), ev in zip(defined2, e3_vals, strict=True):
-            e3[i] = ev
+    e2 = smooth_defined(e1, ema, period)
+    e3 = smooth_defined(e2, ema, period)
     out: list[float | None] = [None] * len(values)
     for i in range(len(values)):
         if e1[i] is not None and e2[i] is not None and e3[i] is not None:
@@ -91,12 +76,7 @@ def trima(values, period: int = 20):
     p2 = math.floor(period / 2) + 1
     inner = sma(values, p1)
     # pass only the defined portion to the outer SMA, mapped back
-    defined = [(i, v) for i, v in enumerate(inner) if v is not None]
-    out: list[float | None] = [None] * len(values)
-    if len(defined) >= p2:
-        outer_vals = sma([v for _, v in defined], p2)
-        for (i, _), ov in zip(defined, outer_vals, strict=True):
-            out[i] = ov
+    out = smooth_defined(inner, sma, p2)
     return out
 
 
@@ -180,18 +160,8 @@ def t3(values, period: int = 20, v: float = 0.7):
     """Tillson T3: GD(GD(GD(x))) where GD(x) = EMA(x)*(1+v) - EMA(EMA(x))*v."""
     def _gd(series):
         """One GD pass: (1+v)*EMA - v*EMA(EMA)."""
-        defined = [(i, val) for i, val in enumerate(series) if val is not None]
-        e1_inner: list[float | None] = [None] * len(series)
-        if len(defined) >= period:
-            e1_vals = ema([val for _, val in defined], period)
-            for (i, _), ev in zip(defined, e1_vals, strict=True):
-                e1_inner[i] = ev
-        defined2 = [(i, val) for i, val in enumerate(e1_inner) if val is not None]
-        e2_inner: list[float | None] = [None] * len(series)
-        if len(defined2) >= period:
-            e2_vals = ema([val for _, val in defined2], period)
-            for (i, _), ev in zip(defined2, e2_vals, strict=True):
-                e2_inner[i] = ev
+        e1_inner = smooth_defined(series, ema, period)
+        e2_inner = smooth_defined(e1_inner, ema, period)
         result: list[float | None] = [None] * len(series)
         for i in range(len(series)):
             if e1_inner[i] is not None and e2_inner[i] is not None:

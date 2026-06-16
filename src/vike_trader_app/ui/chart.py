@@ -2006,14 +2006,19 @@ class PriceChart(pg.PlotWidget):
         dlg.activateWindow()
         dlg.raise_()
 
+    def _exit_pane_maximize(self):
+        """Clear the maximized-pane state (flag + saved-sizes snapshot) and un-maximize the pane.
+        No-op when no pane is maximized. Shared by the splitter-drag and pane-reorder handlers."""
+        pane = self._maximized_pane
+        if pane is None:
+            return
+        self._maximized_pane = None
+        self._saved_sizes = None
+        pane.set_maximized(False)
+
     def _on_splitter_moved(self, *_):
         """A manual splitter drag exits maximize (like TV) and re-tags the pane toolbars."""
-        if self._maximized_pane is not None:
-            pane = self._maximized_pane
-            self._maximized_pane = None
-            self._saved_sizes = None
-            if pane is not None:
-                pane.set_maximized(False)
+        self._exit_pane_maximize()
         self._refresh_pane_toolbars()
 
     def set_pane_host(self, splitter):
@@ -2155,11 +2160,7 @@ class PriceChart(pg.PlotWidget):
             ctr = up.mapToGlobal(QtCore.QPoint(0, up.height() // 2)).y()
             if global_y < ctr:
                 # exit maximize before reordering so _resize_panes can re-lay-out freely
-                if self._maximized_pane is not None:
-                    prev_max = self._maximized_pane
-                    self._maximized_pane = None
-                    self._saved_sizes = None
-                    prev_max.set_maximized(False)
+                self._exit_pane_maximize()
                 host.insertWidget(cur - 1, pane)
                 self._resize_panes()
                 self._align_panes()
@@ -2170,11 +2171,7 @@ class PriceChart(pg.PlotWidget):
             ctr = down.mapToGlobal(QtCore.QPoint(0, down.height() // 2)).y()
             if global_y > ctr:
                 # exit maximize before reordering so _resize_panes can re-lay-out freely
-                if self._maximized_pane is not None:
-                    prev_max = self._maximized_pane
-                    self._maximized_pane = None
-                    self._saved_sizes = None
-                    prev_max.set_maximized(False)
+                self._exit_pane_maximize()
                 host.insertWidget(cur + 1, pane)
                 self._resize_panes()
                 self._align_panes()

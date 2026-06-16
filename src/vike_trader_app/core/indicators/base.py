@@ -52,6 +52,24 @@ def indicator(name: str | None = None, *, category: str, inputs, params=(), outp
     return deco
 
 
+def smooth_defined(src, ma_fn, period):
+    """Smooth the non-``None`` tail of ``src`` with ``ma_fn(tail, period)`` and scatter the
+    results back into a full-length list aligned to ``src``.
+
+    Positions that were ``None`` in ``src`` (warm-up / undefined) stay ``None``, as do positions
+    inside ``ma_fn``'s own warm-up. Returns ``[None] * len(src)`` if fewer than ``period`` defined
+    values exist. This is the shared form of the ~15 "smooth the defined tail, map back to aligned
+    positions" sites across the indicator modules.
+    """
+    defined = [(i, v) for i, v in enumerate(src) if v is not None]
+    out: list[float | None] = [None] * len(src)
+    if len(defined) >= period:
+        smoothed = ma_fn([v for _, v in defined], period)
+        for (i, _), sv in zip(defined, smoothed, strict=True):
+            out[i] = sv
+    return out
+
+
 def get(name: str) -> IndicatorSpec:
     """Return the spec for ``name`` (raises ``KeyError`` if unknown)."""
     if name not in REGISTRY:
