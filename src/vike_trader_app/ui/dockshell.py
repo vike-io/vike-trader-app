@@ -656,8 +656,17 @@ class SpaceDeck(QtCore.QObject):
         seeded on the first dock's area so they tidy up among THEMSELVES without being merged
         into the central chart space. ``tabs`` gathers them into one stack. Mirrors
         arrange_documents' splitter pattern + equalisation. Returns the count arranged."""
-        docks = [d for d in docks
-                 if d is not None and not d.isClosed() and d.widget() is not None]
+        def _live(d):
+            # isClosed()/widget() RAISE on a dock whose C++ object was already freed (a teardown
+            # race deleting it between collection and arrange) — not just return True. Treat a
+            # raising dock as dead so a deleted sibling can't take the whole arrange down (the
+            # `CDockWidget already deleted` flake). Mirrors _arrange_chart_windows._alive.
+            try:
+                return d is not None and not d.isClosed() and d.widget() is not None
+            except RuntimeError:
+                return False
+
+        docks = [d for d in docks if _live(d)]
         if not docks:
             return 0
         n = len(docks)

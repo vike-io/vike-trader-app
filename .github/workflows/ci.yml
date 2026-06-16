@@ -77,20 +77,29 @@ jobs:
       # The offscreen Qt tree (tests/gui/{chart,studio,panels}) — counterpart to the unit run above.
       # `not network` drops the live data-manager test; new GUI tests auto-collected by directory.
       #
-      # The WHOLE GUI tree runs PARALLEL (`-n auto`). The parallel-panels native ADS dock-teardown
-      # crash (`worker crashed` / `Fatal Python error: Aborted` / 0xC0000409) was ROOT-CAUSED to ADS
-      # AUTO-HIDE containers: the only test that created one (`setAutoHide(True)`) seeded a
-      # use-after-free that, under xdist, surfaced during a LATER test's teardown (it had looked like
-      # a non-auto-hide crash in test_each_tool_opens_and_closes_as_window — cross-test contamination).
-      # The app never creates auto-hide containers (minimize = custom rail; #181 removed the dead path),
-      # so that test + its unreachable un-pin handling were removed. A 6x parallel-CI stress soak then
-      # ran clean (vs the prior ~1-in-4 crash). The deterministic MainWindow.shutdown() (#171) covers the
-      # rest. Upstream bug: mborgerson/pyside6_qtads#31. (If the crash ever returns, the prior serial
-      # `-p no:xdist` block — see git history — is the fallback.)
-      - name: Run GUI test suite (parallel)
-        run: >
-          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
-          tests/gui -m "not network"
+      # The WHOLE GUI tree runs PARALLEL (`-n auto`). The DOMINANT parallel teardown crash was
+      # ROOT-CAUSED to ADS AUTO-HIDE containers: the one test that created one (`setAutoHide(True)`)
+      # seeded a use-after-free that, under xdist, surfaced during a LATER test's teardown (it looked
+      # like a non-auto-hide crash in test_each_tool_opens_and_closes_as_window — cross-test
+      # contamination). The app never creates auto-hide containers (minimize = custom rail; #181
+      # removed the dead path), so that test + its unreachable un-pin handling were removed — dropping
+      # the crash rate from ~1-in-4 to ~1-in-60. A RARE native worker-crash residual REMAINS in the
+      # general ADS dock teardown (test_each_tool_opens_and_closes_as_window) — #171's deterministic
+      # shutdown reduced but can't eliminate it (it's inside ADS C++, upstream #31). A single retry
+      # (2 attempts) absorbs that ~1-2% residual on a required gate; the parallel run is fast enough
+      # that even a retry beats the old serial. (Fallback if it ever worsens: the serial `-p no:xdist`
+      # block in git history.)
+      - name: Run GUI test suite (parallel, 1x retry for the rare ADS-teardown residual)
+        shell: bash
+        run: |
+          for attempt in 1 2; do
+            echo "::group::GUI attempt $attempt"
+            uv run pytest -q --timeout=120 --timeout-method=thread -n auto tests/gui -m "not network" \
+              && { echo "::endgroup::"; exit 0; }
+            echo "::endgroup::"
+            echo "GUI attempt $attempt failed — retrying (rare native ADS-teardown flake, upstream #31)"
+          done
+          exit 1
 
   bench:
     name: benchmarks (ubuntu · py3.12)
@@ -119,6 +128,7 @@ jobs:
 # were dropped (2026-06-16): being a BUNDLED desktop app (Python baked into the installer, users don't
 # bring their own), testing other interpreters tested a config we never run — and py3.12/3.13 were the
 # ONLY versions that exposed a parallel ADS/PySide6 dock-teardown C++ crash (unfixable from Python; see
-# git-merge-workflow memory). On py3.14 the residual teardown crash was root-caused to ADS auto-hide
-# containers (upstream #31) — removing the one test that created one let the WHOLE GUI tree run parallel
-# (6x CI stress clean). macOS/Linux paused per user directive (2026-06-11).
+# git-merge-workflow memory). On py3.14 the DOMINANT teardown crash was root-caused to ADS auto-hide
+# containers (upstream #31) — removing the one test that created one dropped the crash rate ~1-in-4 ->
+# ~1-in-60, letting the WHOLE GUI tree run parallel with a single retry for the rare general-teardown
+# residual. macOS/Linux paused per user directive (2026-06-11).
