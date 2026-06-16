@@ -70,38 +70,27 @@ def test_four_charts_tile_2x2(app, monkeypatch):
     win.close()
 
 
-def test_spacedeck_mirrors_qtabwidget_api(app):
+def test_spacedeck_has_no_eager_spaces(app):
+    """Chart-unify keystone: there is NO docked central chart space. SpaceDeck holds ZERO eager
+    spaces (``_SPACE_ITEMS == []``), so ``count() == 0`` and there is no current space; the chart
+    surface is the set of floating ChartWindowFrame peers instead. The deck is still a SpaceDeck
+    and panels are still NOT hosted in the (now-empty) spaces area."""
     win = MainWindow()
     deck = win.tabs
     assert isinstance(deck, SpaceDeck)
-    assert deck.count() == len(win._SPACE_ITEMS)   # only Chart remains a space — Studio + the 7
-    # tools open on demand as docks now, not eager SpaceDeck spaces
-    assert deck.count() == 1
-    # construction leaves the CHART space current
-    assert deck.currentIndex() == 0
-    assert deck.currentWidget() is win._backtester
-    # identity round-trips for the one remaining space
-    assert deck.widget(0) is win._backtester
-    assert deck.tabText(0) == "Chart"
-    assert deck.isAncestorOf(win._backtester)
-    assert not deck.isAncestorOf(win.watchlist)  # panels are NOT in the spaces area
-    win.close()
-
-
-def test_spacedeck_current_changed_drives_rail(app):
-    # Re-selecting the one Chart SPACE drives the rail + title bar. (Studio and the other tools are
-    # docks now, so they no longer participate in space navigation.)
-    win = MainWindow()
-    win.tabs.setCurrentIndex(0)
-    win._on_tab_changed(0)
-    assert win._rail_group.button(0).isChecked()            # rail mirrors the deck
-    assert win.windowTitle().endswith("Chart")              # title bar tracks the space
+    assert win._SPACE_ITEMS == []                   # no eager spaces after the keystone
+    assert deck.count() == 0                         # ...so the deck is empty
+    assert deck.currentIndex() == -1                 # nothing is current
+    assert win._backtester is None                   # the old central-chart container is gone
+    assert win.price is None                         # no focused chart frame on a bare window
+    assert not deck.isAncestorOf(win.watchlist)      # panels are NOT in the spaces area
     win.close()
 
 
 def test_panel_docks_are_dock_only(app):
     """Stage A1: panels are dock-only — closable / movable (tile+tab) / pinnable (auto-hide edge
-    tabs), but NOT floatable (ADS tear-out floating is disabled; it produced broken chrome)."""
+    tabs), but NOT floatable (ADS tear-out floating is disabled; it produced broken chrome). With
+    the central chart gone there is no pinned-in-place space dock to contrast against."""
     win = MainWindow()
     for dock in win._docks:
         assert isinstance(dock, QtAds.CDockWidget)
@@ -110,8 +99,9 @@ def test_panel_docks_are_dock_only(app):
         assert feats & QtAds.CDockWidget.DockWidgetMovable
         assert feats & QtAds.CDockWidget.DockWidgetPinnable  # auto-hide pin (edge tabs)
         assert not (feats & QtAds.CDockWidget.DockWidgetFloatable)  # no tear-out float (A1)
-    # spaces, by contrast, are pinned in place (stable rail indices until Phase 2)
-    assert win.tabs.dock(0).features() == QtAds.CDockWidget.NoDockWidgetFeatures
+    # no central chart space exists any more
+    assert win.tabs.count() == 0
+    assert win._chart_space_dock() is None
     win.close()
 
 
@@ -130,10 +120,11 @@ def test_user_closing_panel_syncs_rail_toggle(app):
     win.close()
 
 
-def test_chart_maximize_fills_workspace_and_restores(app):
-    """LOCK current behavior (guards the maximize-unification refactor): chart header box hides the
-    side panels so the chart fills the workspace (chrome stays), flips box->restore glyph, and
-    toggling brings the panels back."""
+def test_chart_maximize_is_noop_without_a_central_chart(app):
+    """Chart-unify keystone: there is no central chart dock, so ``_toggle_chart_maximize`` (still a
+    thin wrapper over the unified ``_maximize_dock``) targets ``None`` and is a deliberate no-op —
+    it must NOT raise, must NOT flip the compat flag, and must leave any open side panel untouched.
+    (The unified maximize itself is exercised on a real PANEL target below.)"""
     win = MainWindow(session_path=None)
     win.resize(1200, 800)
     win.show()
@@ -141,97 +132,73 @@ def test_chart_maximize_fills_workspace_and_restores(app):
     win._panel_btns["market"].setChecked(True)
     QtWidgets.QApplication.processEvents()
     mkt = win._panel_dock_map["market"]
-    hb = win.tabs.header_widget().button("max")
-    win._toggle_chart_maximize()
+    assert win._chart_space_dock() is None
+    win._toggle_chart_maximize()                           # target is None -> no-op
     QtWidgets.QApplication.processEvents()
-    assert mkt.isClosed()                                  # side panel hidden
-    assert win._chart_maxed is True
-    assert hb.text() == "❐"                                # restore glyph
-    win._toggle_chart_maximize()
-    QtWidgets.QApplication.processEvents()
-    assert not mkt.isClosed()                              # panel back
     assert win._chart_maxed is False
-    assert hb.text() == "□"                                # maximize glyph
+    assert win._maximized is None
+    assert not mkt.isClosed()                              # panel untouched
     win.close()
 
 
-def test_panel_maximize_fills_and_parks_chart_on_rail(app):
-    """LOCK current behavior: a side panel's box maximizes it to FILL the workspace (chart + every
-    other dock hidden) and parks the chart as a left-rail tab; toggling restores chart + panel."""
+def test_panel_maximize_fills_and_restores_other_panels(app):
+    """LOCK current behavior on the unified maximize: a side panel's □ maximizes it to FILL the
+    workspace by hiding every OTHER live dock, and toggling restores them. With the central chart
+    gone the 'other' dock is a second panel (there is nothing to park on the rail), so this also
+    guards that a panel-maximize works with no chart present (was: chart parked on the rail)."""
     win = MainWindow(session_path=None)
     win.resize(1200, 800)
     win.show()
     QtWidgets.QApplication.processEvents()
     win._panel_btns["market"].setChecked(True)
+    win._panel_btns["trades"].setChecked(True)
     QtWidgets.QApplication.processEvents()
     mkt = win._panel_dock_map["market"]
+    trd = win._panel_dock_map["trades"]
     win._toggle_panel_maximize(mkt)
     QtWidgets.QApplication.processEvents()
     assert win._panel_maxed == mkt.objectName()
-    assert win._chart_space_dock().isClosed()              # chart hidden
-    assert win._min_rail.has("__central_chart__")          # chart parked on the left rail
-    assert mkt.dockAreaWidget().width() >= win.dock_manager.width() - 40   # panel fills workspace
+    assert win._maximized is mkt
+    assert trd.isClosed()                                  # the other panel hidden
+    assert not mkt.isClosed()                              # the maximized panel stays open
     win._toggle_panel_maximize(mkt)
     QtWidgets.QApplication.processEvents()
     assert win._panel_maxed is None
-    assert not win._chart_space_dock().isClosed()          # chart back
-    assert not win._min_rail.has("__central_chart__")      # rail tab cleared
+    assert win._maximized is None
+    assert not trd.isClosed()                              # other panel back
     win.close()
 
 
-def test_arrange_tiles_docked_chart_and_panels(app):
-    """Window>Arrange must tile the central chart + open side panels (the docked layout), not just
-    floating windows — it was a dead no-op on a plain chart+Market-Watch layout. Horizontally
-    (rows) stacks the panel BELOW the chart; Vertically (columns) puts it to the RIGHT."""
+def test_arrange_docks_tiles_two_docked_tools(app):
+    """Chart-unify keystone: there is no privileged central-chart anchor any more, so the docked
+    layout is tiled among the docks THEMSELVES via SpaceDeck.arrange_docks. Two docked tools tile
+    Vertically (columns) with the second RIGHT of the first, Horizontally (rows) stacked BELOW it —
+    each gets a distinct, non-overlapping cell. (This is the primitive the Window>Arrange verb
+    delegates to for the docked layer now that the chart is no longer the anchor.)"""
     win = MainWindow(session_path=None)
     win.resize(1200, 800)
     win.show()
     QtWidgets.QApplication.processEvents()
-    win._panel_btns["market"].setChecked(True)
-    QtWidgets.QApplication.processEvents()
-    mkt = win._panel_dock_map["market"]
-    chart = win._chart_space_dock()
+    # two DOCKED tools (open as windows, then dock into the workspace)
+    for k in ("screener", "journal"):
+        win.open_tool(k)
+        QtWidgets.QApplication.processEvents()
+        win._redock_tool(k)
+        QtWidgets.QApplication.processEvents()
+    a = win._tool_docks.get("screener")
+    b = win._tool_docks.get("journal")
+    assert a is not None and b is not None
 
     def tl(dock):
         return dock.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
 
-    win._arrange_chart_windows("rows")            # Tile Horizontally -> stacked
+    win.tabs.arrange_docks([a, b], "columns")      # Tile Vertically -> side by side
     QtWidgets.QApplication.processEvents()
-    assert tl(mkt).y() > tl(chart).y() + 50       # Market watch now BELOW the chart
+    assert tl(b).x() > tl(a).x() + 50              # journal now RIGHT of screener
 
-    win._arrange_chart_windows("columns")          # Tile Vertically -> side by side
+    win.tabs.arrange_docks([a, b], "rows")         # Tile Horizontally -> stacked
     QtWidgets.QApplication.processEvents()
-    assert tl(mkt).x() > tl(chart).x() + 50        # Market watch now RIGHT of the chart
-    win.close()
-
-
-def test_arrange_tiles_docked_tool_with_chart(app):
-    """Window>Arrange must tile the chart together with a docked TOOL (Data/Screener/…), the same
-    as a side panel — a docked tool next to the chart used to be ignored entirely (the chart was a
-    privileged anchor; tools tiled only among themselves). Vertically (columns) puts the tool RIGHT
-    of the chart; Horizontally (rows) stacks it BELOW."""
-    win = MainWindow(session_path=None)
-    win.resize(1200, 800)
-    win.show()
-    QtWidgets.QApplication.processEvents()
-    win.open_tool("screener")                      # opens as a window
-    QtWidgets.QApplication.processEvents()
-    win._redock_tool("screener")                   # dock it into the workspace
-    QtWidgets.QApplication.processEvents()
-    tool = win._tool_docks.get("screener")
-    chart = win._chart_space_dock()
-    assert tool is not None
-
-    def tl(dock):
-        return dock.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
-
-    win._arrange_chart_windows("columns")          # Tile Vertically -> side by side
-    QtWidgets.QApplication.processEvents()
-    assert tl(tool).x() > tl(chart).x() + 50       # tool now RIGHT of the chart (was a no-op before)
-
-    win._arrange_chart_windows("rows")             # Tile Horizontally -> stacked
-    QtWidgets.QApplication.processEvents()
-    assert tl(tool).y() > tl(chart).y() + 50       # tool now BELOW the chart
+    assert tl(b).y() > tl(a).y() + 50              # journal now BELOW screener
     win.close()
 
 
@@ -246,45 +213,38 @@ def test_on_tab_changed_is_non_reentrant(app):
     win.close()
 
 
-def test_panel_drop_into_spaces_area_does_not_crash(app):
-    """Regression: tabbing a floatable panel into the spaces area used to recurse to a stack
-    overflow. With the central-widget area + the re-entrancy guard it must stay alive."""
-    import PySide6QtAds as QtAds
-
+def test_tab_changed_after_panel_open_does_not_crash(app):
+    """Regression-keeper for the re-entrancy guard: tabbing a panel used to recurse to a stack
+    overflow via the center area's currentChanged. The central spaces area is gone (no chart
+    space), but the guard + an inert _on_tab_changed must still keep the shell alive after a panel
+    is opened and the deck is poked."""
     win = MainWindow()
-    win._panel_btns["market"].setChecked(True)  # open Market watch on the Chart space
-    # force the exact insertion the drag path performs (verified crash repro in review)
-    QtAds.CDockManager  # noqa: B018 - ensure import side effects
-    try:
-        win.dock_manager.addDockWidgetTabToArea(
-            win._market_dock, win.tabs.dock(0).dockAreaWidget()
-        )
-    except Exception:  # noqa: BLE001 - ADS may itself reject the drop; either way: no crash
-        pass
-    win.tabs.setCurrentIndex(0)        # re-select the Chart space after the drop
-    win._on_tab_changed(0)
-    assert win.tabs.count() == len(win._SPACE_ITEMS)  # still alive, the Chart space intact
+    win._panel_btns["market"].setChecked(True)  # open Market watch
+    app.processEvents()
+    win.tabs.setCurrentIndex(0)        # no-op on the empty deck
+    win._on_tab_changed(0)             # must not recurse / crash
+    assert win.tabs.count() == 0       # still alive, deck still empty
+    assert not win._market_dock.isClosed()
     win.close()
 
 
-def test_out_of_range_saved_space_clamps_and_resyncs(app, tmp_path):
-    """A saved space index past the end (e.g. an old session saved on a now-removed tool space)
-    clamps to Chart (0) and still re-syncs the rail/title, rather than leaving the shell
-    disconnected. (Empty-workspace re-arch: out-of-range lands on Chart, not the last space.)"""
+def test_out_of_range_saved_space_does_not_crash_startup(app, tmp_path):
+    """Chart-unify keystone: there are no spaces, so a saved (legacy) space index can no longer
+    select anything. A stale ``space`` value in the session blob — from an old session saved when
+    spaces still existed — must NOT crash startup; the deck simply comes up empty (no current
+    space, count 0)."""
     import json
 
     path = tmp_path / "session.json"
     first = MainWindow(session_path=str(path))
     first.close()
     raw = json.loads(path.read_text(encoding="utf-8"))
-    raw["space"] = 999                      # simulate a removed/reordered space
+    raw["space"] = 999                      # simulate a removed/reordered space from an old session
     path.write_text(json.dumps(raw), encoding="utf-8")
 
-    second = MainWindow(session_path=str(path))
-    idx = second.tabs.currentIndex()
-    assert idx == 0                         # out-of-range (old tool-space index) clamps to Chart
-    assert second._rail_group.button(idx).isChecked()       # rail re-synced (not stuck/disconnected)
-    assert second.windowTitle().endswith(second._SPACE_ITEMS[idx][1])
+    second = MainWindow(session_path=str(path))    # must not raise
+    assert second.tabs.count() == 0                # no spaces exist to clamp to
+    assert second.tabs.currentIndex() == -1        # nothing current
     second.close()
 
 
@@ -302,36 +262,14 @@ def test_vike_dock_titlebar_attrs_exist_before_init():
     assert VikeDockTitleBar._roll_maxh is None
 
 
-# --- chart-header window verbs: ─ roll-up + □ maximize (AmiBroker-style, never the OS window) ---
+# --- panel window verbs: ─ minimize-to-rail + □ maximize (AmiBroker-style, never the OS window) ---
 
 
-def test_chart_header_min_parks_on_left_rail_not_os_minimize(app):
-    """Chart header ─ HIDES the central chart and parks a vertical restore tab on the custom left
-    rail (AmiBroker-style) — it must NOT minimize the whole OS window (the reported bug) nor roll up
-    into an empty workspace. (Replaces ADS auto-hide, which deleted docks + left an empty flyout.)"""
-    from vike_trader_app.ui.dockshell import VikeDockTitleBar
-    win = MainWindow(session_path=None)
-    win.show()
-    app.processEvents()
-    app.processEvents()
-    tb = next((t for t in win.findChildren(VikeDockTitleBar)
-               if getattr(t, "_deck", None) is not None and t._header is not None), None)
-    assert tb is not None
-    tb._header.button("min").click()
-    app.processEvents()
-    assert not win.isMinimized()                          # the bug: must NOT minimize the OS window
-    d = win.tabs.dock(0)
-    assert not d.toggleViewAction().isChecked()           # central chart hidden
-    assert win._min_rail.has("__central_chart__")         # parked on the left rail
-    win._restore_central_chart()                          # restore via the rail tab
-    app.processEvents()
-    assert d.toggleViewAction().isChecked()               # chart back, no empty space
-    win.close()
-
-
-def test_chart_header_max_hides_then_restores_panels(app):
-    """Chart header □ maximizes the chart by hiding the open side panels (it must NOT minimize the
-    OS window), and toggling again restores exactly the panels that were open."""
+def test_panel_max_hides_then_restores_other_panels_not_os_minimize(app):
+    """Chart-unify keystone successor to the old chart-header □ test: maximizing one panel hides the
+    OTHER open panels (it must NOT minimize the OS window), and toggling again restores exactly the
+    panels that were open. (The central-chart header is gone; the unified maximize now anchors on a
+    panel.)"""
     win = MainWindow(session_path=None)
     win.show()
     win._panel_btns["market"].setChecked(True)
@@ -339,11 +277,14 @@ def test_chart_header_max_hides_then_restores_panels(app):
     app.processEvents()
     open_before = {k for k, d in win._panel_dock_map.items() if not d.isClosed()}
     assert {"market", "trades"} <= open_before
-    win._toggle_chart_maximize()
+    mkt = win._panel_dock_map["market"]
+    others = open_before - {"market"}
+    win._toggle_panel_maximize(mkt)
     app.processEvents()
     assert not win.isMinimized()
-    assert all(win._panel_dock_map[k].isClosed() for k in open_before)
-    win._toggle_chart_maximize()
+    assert all(win._panel_dock_map[k].isClosed() for k in others)
+    assert not mkt.isClosed()
+    win._toggle_panel_maximize(mkt)
     app.processEvents()
     assert {k for k, d in win._panel_dock_map.items() if not d.isClosed()} >= open_before
     win.close()
@@ -408,22 +349,25 @@ def test_panel_close_button_closes_via_real_click(app):
 
 
 def test_reclaim_unpins_autohidden_docks(app):
-    """Regression: a stale session blob can restore the chart (or a panel) ADS-auto-hidden — but
-    ADS auto-hide is retired (minimize uses the custom left rail now), and a pinned chart collapses
-    to a thin strip while a panel fills the rest (the 'old float / weird layout' the user hit on a
-    restored session). _reclaim_floating_docks must un-pin restored auto-hidden docks. (Note:
-    mgr.dockWidgets() omits auto-hidden docks, so the reclaim walks the known docks explicitly.)"""
+    """Regression: a stale session blob can restore a PANEL dock ADS-auto-hidden — but ADS auto-hide
+    is retired (minimize uses the custom left rail now), and a pinned dock collapses to a thin strip
+    while another fills the rest (the 'old float / weird layout' the user hit on a restored session).
+    _reclaim_floating_docks must un-pin restored auto-hidden docks. (Note: mgr.dockWidgets() omits
+    auto-hidden docks, so the reclaim walks the known docks — panels + tools — explicitly. The chart
+    space is gone, so a side panel stands in for the old central chart here.)"""
     win = MainWindow(session_path=None)
     win.show()
+    win._panel_btns["market"].setChecked(True)
     app.processEvents()
-    ch = win.tabs.dock(0)
-    ch.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
-    ch.setAutoHide(True, QtAds.SideBarLeft)
     app.processEvents()
-    assert ch.isAutoHide()                       # restored pinned to the edge
+    mkt = win._market_dock
+    mkt.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
+    mkt.setAutoHide(True, QtAds.SideBarLeft)
+    app.processEvents()
+    assert mkt.isAutoHide()                      # restored pinned to the edge
     win._reclaim_floating_docks()
     app.processEvents()
-    assert not ch.isAutoHide()                   # un-pinned back into the layout
+    assert not mkt.isAutoHide()                  # un-pinned back into the layout
     win.close()
 
 
@@ -440,35 +384,6 @@ def test_panel_titlebar_has_no_native_chrome_leak(app):
     tb = win._market_dock.dockAreaWidget().titleBar()
     leaking = [b.objectName() for b in tb.findChildren(QtAds.CTitleBarButton) if b.isVisible()]
     assert leaking == [], f"native title-bar chrome leaked onto the panel: {leaking}"
-    win.close()
-
-
-def test_chart_header_recovers_after_autohide_reveal(app):
-    """Regression: auto-hiding the central chart then revealing it rebuilds the dock area with a fresh
-    title bar whose _header is None — SpaceDeck only (re)marks the chart header on an area-CHANGE,
-    which the un-pin path misses — so the header was permanently lost and native ADS chrome (the ▼
-    tabs-menu + auto-hide pin) leaked through. _auto_detect_panel now re-marks the 'space:' central
-    dock as the chart header on the heal/relayout pass. (Minimize no longer uses auto-hide, but ADS
-    can still auto-hide the central dock via other paths, so the recovery must hold.)"""
-    win = MainWindow(session_path=None)
-    win.show()
-    app.processEvents()
-    ch = win.tabs.dock(0)
-    tb = ch.dockAreaWidget().titleBar()
-    assert tb._header is not None and tb._header.button("max") is not None   # fresh: header marked
-    ch.setFeature(QtAds.CDockWidget.DockWidgetPinnable, True)
-    ch.setAutoHide(True, QtAds.SideBarLeft)                                  # auto-hide directly
-    app.processEvents()
-    assert ch.isAutoHide() and ch.autoHideLocation() == QtAds.SideBarLeft
-    ch.setAutoHide(False)                                                    # reveal back in-layout
-    for _ in range(4):
-        app.processEvents()
-    tb2 = ch.dockAreaWidget().titleBar()
-    assert tb2._header is not None, "chart header lost after auto-hide reveal"
-    for key in ("min", "max", "close"):
-        assert tb2._header.button(key) is not None, f"chart header missing {key} after reveal"
-    leaking = [b.objectName() for b in tb2.findChildren(QtAds.CTitleBarButton) if b.isVisible()]
-    assert leaking == [], f"native chrome leaked after reveal: {leaking}"
     win.close()
 
 
@@ -612,52 +527,32 @@ def test_pin_appears_on_detach_and_sets_stays_on_top(app, _synthetic_load, monke
 # --- spaces never become native floats (title-bar / float re-arch) --------------------------
 
 
-def test_space_cannot_float_natively(app):
-    """Native ADS floating is retired: float_space is removed, no space is DockWidgetFloatable, and
-    setCurrentIndex no longer floats. Navigating to the Chart space keeps it DOCKED (never a native
-    CFloatingDockContainer) — charts float only via chartwin."""
+def test_no_native_space_float_entry_points(app):
+    """Native ADS floating is retired AND the central chart space is gone: ``float_space`` is
+    removed, the deck holds zero spaces, and a bare empty workspace has NO native floating
+    containers — charts float only via chartwin frames."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
     assert not hasattr(win.tabs, "float_space")          # the native-float entry point is gone
-    win.tabs.setCurrentIndex(0)                          # the Go-menu / palette nav path
-    app.processEvents()
-    assert not win.tabs.dock(0).isFloating()             # docked, never a native float
+    assert win.tabs.count() == 0                          # no spaces to float
     assert len(list(win.dock_manager.floatingWidgets())) == 0
     win.close()
 
 
-def test_show_space_reshows_a_hidden_space_docked(app):
-    """Hiding the Chart space (header ✕) then re-showing it (rail/menu launcher) brings it back
-    DOCKED and current — no native float involved."""
+def test_empty_deck_nav_is_inert_and_strip_stays_hidden(app):
+    """Chart-unify keystone: with zero spaces, navigating the deck is inert and never raises —
+    setCurrentIndex on the empty deck no-ops, hide_space_tabs is a safe no-op, and no native
+    space tab strip exists (there are no space docks to carry one)."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    win.tabs.close_current_document()                    # hide the Chart space
-    app.processEvents()
-    assert win.tabs.dock(0).isClosed()
-    win.tabs.show_space(0)                               # the launcher counterpart
-    app.processEvents()
-    assert not win.tabs.dock(0).isClosed()
-    assert not win.tabs.dock(0).isFloating()
-    assert len(list(win.dock_manager.floatingWidgets())) == 0
-    win.close()
-
-
-def test_nav_keeps_space_strip_hidden(app):
-    """Navigating to the Chart space keeps the native space TAB strip hidden (the unified chart
-    HEADER replaces it), verified after a setCurrentIndex nav."""
-    win = MainWindow(session_path=None)
-    win.show()
-    app.processEvents()
-    win.tabs.setCurrentIndex(0)
+    win.tabs.setCurrentIndex(0)               # no-op on an empty deck (no dock at index 0)
+    win.tabs.hide_space_tabs()                # safe no-op with no spaces
     app.processEvents()
     app.processEvents()                       # the singleShot(0) re-hide
-    area = win.tabs._resolve_area()
-    assert area is not None
-    assert all(not d.tabWidget().isVisible() for d in win.tabs._docks)
-    tb = area.titleBar()
-    assert getattr(tb, "is_chart_header", lambda: False)()   # header, not the raw tab strip
+    assert win.tabs._docks == []              # no space docks
+    assert win.tabs.currentIndex() == -1
     win.close()
 
 
@@ -725,14 +620,17 @@ def test_chart_dock_undock_round_trip(app):
 
 def test_reclaim_unfloats_a_restored_native_float(app, tmp_path):
     """A stale/legacy session blob can describe a dock as a native ADS float; restoreState
-    resurrects it. _reclaim_floating_docks must pull it back so NO visible native float survives
-    (covers spaces AND tools — the user's 'avoid the same issue for other tools')."""
+    resurrects it. _reclaim_floating_docks must pull it back so NO visible native float survives.
+    (The central chart space is gone, so a side PANEL dock stands in here — the reclaim must still
+    cover panels AND tools, the user's 'avoid the same issue for other tools'.)"""
     import PySide6QtAds as QtAds
     from vike_trader_app.ui.session import SessionState, save_session
 
-    # 1) simulate a legacy blob: force the Chart space into a native float, capture the layout.
-    w1 = MainWindow(session_path=None); w1.show(); app.processEvents()
-    d = w1.tabs.dock(0)
+    # 1) simulate a legacy blob: force a PANEL dock into a native float, capture the layout.
+    w1 = MainWindow(session_path=None); w1.show()
+    w1._panel_btns["market"].setChecked(True)
+    app.processEvents(); app.processEvents()
+    d = w1._market_dock
     d.setFeatures(QtAds.CDockWidget.DockWidgetMovable | QtAds.CDockWidget.DockWidgetFloatable
                   | QtAds.CDockWidget.DockWidgetClosable)
     d.setFloating(); app.processEvents()
@@ -749,7 +647,7 @@ def test_reclaim_unfloats_a_restored_native_float(app, tmp_path):
     visible_floats = [c for c in w2.dock_manager.floatingWidgets()
                       if c.isVisible() and list(c.dockWidgets())]
     assert visible_floats == []                                 # reclaim un-floated it
-    assert not w2.tabs.dock(0).isFloating()                     # Chart space is back, docked
+    assert not w2._market_dock.isFloating()                     # panel is back, docked
     w2.close()
 
 

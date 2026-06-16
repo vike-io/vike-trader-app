@@ -44,10 +44,13 @@ def test_main_window_uses_bots_panel(app):
     assert not hasattr(win, "equity")  # equity lives in Studio now, not the Chart space
 
 
-def test_first_space_is_chart(app):
+def test_no_chart_space(app):
+    """Chart-unify keystone: there is no docked 'Chart' space anymore — `_SPACE_ITEMS` is empty
+    and the SpaceDeck hosts zero spaces. Charts open as floating ChartWindowFrame peers instead."""
     win = MainWindow()
-    assert win._SPACE_ITEMS[0][1] == "Chart"
-    assert win._mode_tag.text() == "CHART"
+    assert win._SPACE_ITEMS == []
+    assert win.tabs.count() == 0
+    assert win._chart_space_dock() is None
 
 
 def test_feed_badge_shows_cached_not_live_when_no_feed_armed(app):
@@ -67,11 +70,16 @@ def test_feed_badge_shows_cached_not_live_when_no_feed_armed(app):
     assert txt.startswith("● CACHED"), f"expected CACHED state, got: {txt!r}"
 
 
-def test_launch_bot_records_run_and_populates_price_chart(app):
-    """Launch Bot: records a new Historic Run and puts bars on the price chart."""
+def test_launch_bot_records_run_and_populates_backtest_chart(app):
+    """Launch Bot: records a new Historic Run and puts bars on the backtest (Studio) chart.
+
+    Chart-unify keystone: the backtest pipeline no longer feeds a docked central chart — it feeds
+    the Studio/backtest chart (`studio_price`) when the Studio dock is open. The floating chart
+    windows are independent viewers, so a backtest must NOT inject into the focused window."""
     win = MainWindow()
     # Use an in-memory store so the test is self-contained and never pollutes storage/db/.
     win.store = Store(":memory:")
+    win.open_tool("studio"); app.processEvents()      # Studio is an on-demand dock now -> build it
 
     bars = _bars()
     # load_bars runs the backtest and records (record=True by default)
@@ -84,19 +92,22 @@ def test_launch_bot_records_run_and_populates_price_chart(app):
     runs_after = len(win.store.list_runs())
     assert runs_after == runs_before + 1  # a new Historic Run was recorded
 
-    # The price chart received the bars data.
-    assert win.price._bars  # PriceChart._bars is set by set_data()
+    # The backtest (Studio) chart received the bars data.
+    assert win.studio_price._bars  # PriceChart._bars is set by set_data()
 
     win.close()
 
 
-def test_chart_space_is_clean_no_auto_overlays(app):
-    """The Chart space is a clean viewer: the default strategy's overlays go to the Studio/backtest
-    chart only, never the Chart-space chart (indicators there come from the ƒx Indicators picker)."""
+def test_chart_windows_are_clean_no_auto_overlays(app):
+    """A chart WINDOW is a clean viewer: the default strategy's overlays go to the Studio/backtest
+    chart only, never a chart-document chart (indicators there come from the ƒx Indicators picker).
+    Chart-unify keystone: the old docked Chart space is now a floating ChartWindowFrame peer."""
     win = MainWindow()
     win.store = Store(":memory:")
     win.open_tool("studio"); app.processEvents()      # Studio is an on-demand dock now -> build it
+    # open a chart window (network=False -> cache-only; no chart in this hermetic test is fine)
+    doc = win._new_chart_document("BTCUSDT", "1h", network=False, make_current=True)
     win.load_bars(_bars(40), strategy_factory=_OverlayStrat)
-    assert win.price._overlay_curves == {}            # Chart space: no auto strategy overlays
+    assert doc.chart._overlay_curves == {}            # chart window: no auto strategy overlays
     assert "MA" in win.studio_price._overlay_curves    # Studio/backtest chart: keeps them
     win.close()

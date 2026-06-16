@@ -45,40 +45,50 @@ def test_bar_button_and_unified_bar(app):
     assert "#unifiedBar" in bar.styleSheet()             # scoped — never bare background
 
 
-def test_central_area_gets_single_title_chart_header(app):
+def test_chart_frame_gets_single_title_unified_bar(app):
+    """Keystone: the docked central chart header is GONE — there's no chart space anymore
+    (win.tabs.count() == 0). The chart-header chrome now lives on each chart FRAME's own
+    UnifiedTitleBar: a single MC-style title (NOT a tab strip) with the ─ □ ✕ window controls
+    (⧉ dropped — float/attach via the right-click menu)."""
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    tb = win.tabs._resolve_area().titleBar()
-    assert isinstance(tb, VikeDockTitleBar)
-    assert tb.is_chart_header()          # single-title header, NOT a 9-tab strip
-    assert not tb._is_panel
-    assert tb._header is not None
-    assert {"min", "max", "close"} <= set(tb._header._buttons)   # ⧉ dropped (float by drag)
-    # the live-ticker title flows through the persistent model + header widget
-    win.tabs.set_header_title("Chart · BTCUSDT · 1m")
-    assert win.tabs._header_title == "Chart · BTCUSDT · 1m"
+    assert win.tabs.count() == 0                     # no chart space / no central chart header
+    assert win.price is None                          # nothing focused on a bare window
+
+    doc = win._new_chart_document("BTCUSDT", "1m", network=False, make_current=True)
+    app.processEvents()
+    frame = win._chart_frames[-1]
+    assert isinstance(frame._bar, UnifiedTitleBar)
+    assert {"min", "max", "close"} <= set(frame._bar._buttons)   # ⧉ dropped (float by menu)
+    # the live-ticker title flows through the frame's own bar (one MC title, not a 9-tab strip)
+    assert frame._bar._title.text() == doc.title() == "BTCUSDT · 1m"
     win.close()
 
 
-def test_central_chart_is_link_member_with_header_dots(app):
-    """Stage 2: the central chart space joins the symbol-link bus and its header carries the
-    ● symbol + ◆ interval link dots; recolouring via the setters updates the model."""
+def test_chart_frame_is_link_member_with_header_dots(app):
+    """Keystone: there's no central chart link-bus member with header dots anymore. Each chart
+    FRAME's bar adopts the doc's ● symbol + ◆ interval link dots, and the doc is the bus member;
+    recolouring via the doc's setters updates the model."""
     from vike_trader_app.ui.panels import LinkDot
 
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    assert win in win._link_bus._members            # bus member (duck-typed link_group/apply_link)
-    assert hasattr(win, "link_group") and callable(win.apply_link)
-    bar = win.tabs.header_widget()
-    assert len(bar._statusbox.findChildren(LinkDot)) >= 2   # ● + ◆
-    win._set_central_link_group(2)
-    assert win.link_group == 2
-    win._set_central_interval_link_group(3)
-    assert win.interval_link_group == 3
-    win._set_central_interval_link_group(-1)        # -1 = follow symbol
-    assert win.interval_link_group is None
+    doc = win._new_chart_document("BTCUSDT", "1m", network=False, make_current=True)
+    app.processEvents()
+    frame = win._chart_frames[-1]
+
+    assert doc in win._link_bus._members            # the DOC is the bus member (not the window)
+    assert hasattr(doc, "link_group") and callable(doc.apply_link)
+    # the frame's title bar carries the doc's ● symbol + ◆ interval link dots
+    assert len(frame._bar._statusbox.findChildren(LinkDot)) >= 2   # ● + ◆
+    doc._set_link_group(2)
+    assert doc.link_group == 2
+    doc._set_interval_link_group(3)
+    assert doc.interval_link_group == 3
+    doc._set_interval_link_group(-1)                # -1 = follow symbol
+    assert doc.interval_link_group is None
     win.close()
 
 
@@ -94,18 +104,23 @@ def test_central_link_survives_session_roundtrip(app, tmp_path):
     w2.close()
 
 
-def test_header_feed_badge_tracks_feed_health(app):
-    """Stage 2: the chart-space header carries a feed badge that mirrors _set_feed_health."""
+def test_chart_frame_feed_badge_tracks_feed_health(app):
+    """Keystone: the feed badge lived on the gone central-chart header — it now lives on each
+    chart FRAME's bar. The frame carries a FeedBadge that the host paints via frame.set_feed
+    (the live/cached state -> colour + text mapping)."""
     from vike_trader_app.ui.unifiedbar import FeedBadge
 
     win = MainWindow(session_path=None)
     win.show()
     app.processEvents()
-    assert isinstance(win._header_feed, FeedBadge)
-    win._set_feed_health("live")
-    assert win._feed_state == "live" and "LIVE" in win._header_feed.text()
-    win._set_feed_health("cached")
-    assert "CACHED" in win._header_feed.text()
+    doc = win._new_chart_document("BTCUSDT", "1m", network=False, make_current=True)
+    app.processEvents()
+    frame = win._chart_frames[-1]
+    assert isinstance(frame._feed_badge, FeedBadge)
+    frame.set_feed("#26a69a", "LIVE")
+    assert "LIVE" in frame._feed_badge.text()
+    frame.set_feed("#787b86", "CACHED")
+    assert "CACHED" in frame._feed_badge.text()
     win.close()
 
 

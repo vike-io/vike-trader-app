@@ -27,7 +27,7 @@ def test_state_roundtrip():
 
 
 def test_to_dict_carries_version():
-    assert SessionState().to_dict()["version"] == 3
+    assert SessionState().to_dict()["version"] == 4
 
 
 def test_from_dict_is_pure_parse_no_migration():

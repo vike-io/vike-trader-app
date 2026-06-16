@@ -65,20 +65,32 @@ def test_topbar_exists_with_menu_and_launchers(app):
     win.close()
 
 
-def test_topbar_symbol_and_interval_route(app, monkeypatch):
-    """The bar routes to the SHELL's load/interval entry points (the data outcome itself is
-    environment-dependent — CI has no parquet cache — so assert the routing contract)."""
+def test_topbar_symbol_and_interval_route_to_focused_frame(app):
+    """Keystone: there's no Chart space to switch to anymore — the bar routes the symbol/interval
+    to the FOCUSED chart FRAME's document. With a frame focused, a typed symbol then interval both
+    land on that doc."""
+    win = MainWindow(session_path=None)
+    doc = win._new_chart_document("BTCUSDT", "1h", network=False, make_current=True)
+    win._set_active_frame(win._chart_frames[-1])      # focus it (the bar drives the focused frame)
+    win.topbar.box.setText("ETHUSDT")
+    win.topbar._submit()
+    assert doc.symbol == "ETHUSDT"                     # symbol routed to the focused doc
+    win.topbar.box.setText("5m")
+    win.topbar._submit()
+    assert doc.interval == "5m"                        # interval routed to the same focused doc
+    win.close()
+
+
+def test_topbar_no_chart_open_is_noop(app, monkeypatch):
+    """Keystone: with NO chart open/focused, the symbol box no-ops (no central chart to fall back
+    to) — it routes to _load_symbol, which itself no-ops without a chart, and opens no frame."""
     win = MainWindow(session_path=None)
     calls = []
     monkeypatch.setattr(win, "_load_symbol", lambda sym, interval=None: calls.append(sym))
-    monkeypatch.setattr(win, "_on_interval_chosen", lambda iv: calls.append(iv))
     win.topbar.box.setText("ETHUSDT")
     win.topbar._submit()
-    assert calls == ["ETHUSDT"]
-    assert win.tabs.currentIndex() == 0               # routed to (and showed) the Chart space
-    win.topbar.box.setText("5m")
-    win.topbar._submit()
-    assert calls == ["ETHUSDT", "5m"]
+    assert calls == ["ETHUSDT"]                        # routed to the shell's load entry point
+    assert win._chart_frames == []                     # but no chart was forced open
     win.close()
 
 
@@ -99,22 +111,21 @@ def test_menus_populate_on_show(app):
     win.close()
 
 
-def test_space_tabs_and_strip_hidden_windows_float(app):
-    """S7 + unified title bar: no space TAB strip — space tabs stay hidden, and the area title
-    bar is now the single-title chart HEADER (not the raw tabs). Charts float as windows over
-    the workspace instead of tabbing."""
+def test_no_space_strip_and_charts_float(app):
+    """Keystone: the docked central chart space is GONE — there are no spaces (no TAB strip, no
+    central chart header). win.tabs is empty and charts float as their own windows over the
+    workspace instead of tabbing."""
     win = MainWindow(session_path=None)
     win.show()
     QtWidgets.QApplication.processEvents()
-    win._new_chart_document("ETHUSDT", "1h")
+    assert win.tabs.count() == 0                       # no space strip / no central area
+    assert win.tabs._resolve_area() is None            # no central dock area to host a header
+    win._new_chart_document("ETHUSDT", "1h", network=False)
     QtWidgets.QApplication.processEvents()
-    QtWidgets.QApplication.processEvents()            # the singleShot(0) re-hide
-    assert all(not d.tabWidget().isVisible() for d in win.tabs._docks)
-    area = win.tabs._resolve_area()
-    tb = area.titleBar()
-    assert getattr(tb, "is_chart_header", lambda: False)()   # header replaces the tab strip
+    QtWidgets.QApplication.processEvents()
+    assert win.tabs.count() == 0                       # opening a chart does NOT create a space
     assert len(win._chart_frames) == 1
-    assert win._chart_frames[0].isVisible()
+    assert win._chart_frames[0].isVisible()            # it floats over the workspace
     win.close()
 
 
