@@ -35,6 +35,18 @@ def _bars(n=60, base=100.0):
                 close=base + i) for i in range(n)]
 
 
+def _focus_and_load(win, frame, symbol):
+    """Focus ``frame`` then immediately drive the symbol box, with NO intervening processEvents().
+
+    ``_active_chart_doc`` gates on the frame's ``isVisible()`` (already True after the frame's
+    post-creation processEvents()). We must NOT pump events between setting the active frame and the
+    load: under offscreen+xdist a stray activation from a sibling test's leaked window can otherwise
+    steal focus mid-pump (flaky, not behavioral). Set-active + load are kept atomic here."""
+    win._set_active_frame(frame)
+    assert win._active_chart_doc() is frame.doc   # the frame is the symbol-box target
+    win._load_symbol(symbol)
+
+
 @pytest.fixture
 def _synthetic_load(monkeypatch):
     """Make ChartDocument.load deterministic + offline (synthetic bars, no cache/network)."""
@@ -552,59 +564,54 @@ def test_documents_persist_and_restore(app, _synthetic_load, tmp_path):
     second.close()
 
 
-def test_symbol_box_drives_focused_chart(app, _synthetic_load, monkeypatch):
-    """Stage 1 of chart unification: the symbol box / watchlist drive the FOCUSED chart WINDOW,
-    not the central chart; with nothing focused they fall back to the central chart."""
-    import vike_trader_app.data.catalog as catalog_mod
-    import vike_trader_app.ui.app as app_mod
-    # central-path load is cache-first -> feed it synthetic bars and treat them as fresh so it
-    # paints offline (no network) instead of falling through to get_bars.
-    monkeypatch.setattr(catalog_mod.Catalog, "query", lambda self, *a, **k: _bars(), raising=False)
-    monkeypatch.setattr(app_mod, "is_stale", lambda *a, **k: False, raising=False)
-
+def test_symbol_box_drives_focused_chart(app, _synthetic_load):
+    """Chart-unify keystone: the symbol box / watchlist drive the FOCUSED chart WINDOW. There is no
+    central chart to fall back to, so with nothing focused the symbol box is a no-op."""
     win = MainWindow(session_path=None)
     win.show(); app.processEvents()
 
-    # (1) nothing focused -> central chart is the target
+    # (1) nothing focused + no central chart -> symbol box does nothing (no resurrected chart)
     win._set_active_frame(None)
     win._load_symbol("ADAUSDT"); app.processEvents()
-    assert win._symbol == "ADAUSDT"
+    assert win._active_chart_doc() is None
+    assert win.price is None                   # no focused chart -> price tracks nothing
 
-    # (2) focus a chart window -> the symbol box drives THAT doc; the central chart is untouched
-    doc = win._new_chart_document("SOLUSDT", "1h"); app.processEvents()
-    win._set_active_frame(win._chart_frames[-1])
-    win._load_symbol("ETHUSDT"); app.processEvents()
+    # (2) focus a chart window -> the symbol box drives THAT doc
+    doc = win._new_chart_document("SOLUSDT", "1h", make_current=True); app.processEvents()
+    _focus_and_load(win, win._chart_frames[-1], "ETHUSDT"); app.processEvents()
     assert doc.symbol == "ETHUSDT"
-    assert win._symbol == "ADAUSDT"            # central NOT changed by a focused-window load
+    assert win.price is doc.chart              # the focused doc IS the active chart
 
-    # (3) clear focus (e.g. the central chart was clicked) -> central is the target again
-    win._set_active_frame(None)
-    win._load_symbol("XRPUSDT"); app.processEvents()
-    assert win._symbol == "XRPUSDT"
-    assert doc.symbol == "ETHUSDT"             # the focused doc is left alone
+    # (3) open a SECOND chart and focus it -> the symbol box drives the new doc; the first is left alone
+    doc2 = win._new_chart_document("XRPUSDT", "1h", make_current=True); app.processEvents()
+    _focus_and_load(win, win._chart_frames[-1], "BNBUSDT"); app.processEvents()
+    assert doc2.symbol == "BNBUSDT"
+    assert doc.symbol == "ETHUSDT"             # the unfocused doc is untouched
     win.close()
 
 
-def test_symbol_box_no_op_when_chart_closed(app, monkeypatch):
-    """Chart unification: with the chart dock CLOSED and no chart window focused, the symbol box does
-    NOTHING — it never auto-opens/resurrects the chart. (This also makes an empty saved workspace stay
-    empty: a session that restored the chart closed means the startup auto-load no-ops.)"""
-    import vike_trader_app.data.catalog as catalog_mod
-    import vike_trader_app.ui.app as app_mod
-    monkeypatch.setattr(catalog_mod.Catalog, "query", lambda self, *a, **k: _bars(), raising=False)
-    monkeypatch.setattr(app_mod, "is_stale", lambda *a, **k: False, raising=False)
+def test_symbol_box_no_op_when_no_chart_open(app, _synthetic_load):
+    """Chart-unify keystone: with NO chart window open/focused the symbol box does NOTHING — there is
+    no central chart to auto-open/resurrect. (This is what keeps an empty saved workspace empty: the
+    startup auto-load no-ops here instead of forcing a chart back open.) Focusing a chart re-arms it."""
     win = MainWindow(session_path=None)
     win.show(); app.processEvents()
 
+    # no chart open at all (fresh bare window) -> the symbol box no-ops, nothing is created
     win._load_symbol("ADAUSDT"); app.processEvents()
-    assert win._symbol == "ADAUSDT"            # chart open -> loads normally
+    assert win._chart_frames == []             # no chart auto-opened
+    assert win.price is None
 
-    win.tabs.dock(0).toggleView(False); app.processEvents()   # close the chart
-    assert win._chart_space_dock().isClosed()
-    win._load_symbol("XRPUSDT"); app.processEvents()
-    assert win._symbol == "ADAUSDT"            # CLOSED -> no-op, no auto-open (symbol unchanged)
+    # open + focus a chart -> the symbol box now drives it
+    doc = win._new_chart_document("SOLUSDT", "1h", make_current=True); app.processEvents()
+    _focus_and_load(win, win._chart_frames[-1], "XRPUSDT"); app.processEvents()
+    assert doc.symbol == "XRPUSDT"             # focused chart -> loads
 
-    win.tabs.dock(0).toggleView(True); app.processEvents()    # reopen
-    win._load_symbol("SOLUSDT"); app.processEvents()
-    assert win._symbol == "SOLUSDT"            # open again -> loads
+    # close the chart frame -> back to no-op (no resurrection on the next symbol)
+    win._chart_frames[-1].close_window(); app.processEvents()
+    assert win._chart_frames == []
+    assert win._active_chart_doc() is None      # nothing focused after the close
+    win._load_symbol("ETHUSDT"); app.processEvents()
+    assert win._chart_frames == []             # CLOSED -> no-op, no auto-open
+    assert win._active_chart_doc() is None
     win.close()

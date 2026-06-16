@@ -20,13 +20,17 @@ import os
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
-_VERSION = 3  # v2: empty-workspace re-arch moved Studio + the tools from pinned SPACES to
+_VERSION = 4  # v2: empty-workspace re-arch moved Studio + the tools from pinned SPACES to
               # on-demand docks (a pre-v2 dock_state_hex is wholly incompatible -> dropped).
               # v3: a v2 dock_state blob can still carry a dock (space/tool/panel) saved as a
               # NATIVE ADS CFloatingDockContainer (the retired float_space path); restoreState
               # would resurrect that native float on every launch. On v2->v3 we drop ONLY the
               # layout blob so it isn't replayed (open tools/windows reopen from open_tools/
               # tool_windows; panels fall back to default positions). See load_session migration.
+              # v4: chart-unify keystone removed the docked "Chart" space — a v3 blob carries a
+              # "space:Chart" dock that no longer exists. Drop the layout blob (panels fall back to
+              # default) so restoreState can't reference the dead space; the old central chart's
+              # symbol/interval still seed the fresh chart frame, and chart_indicators is dropped.
 
 # Pairs indicators need a 2nd symbol's closes aligned to the loaded bars — that benchmark
 # isn't ours to persist (it's re-fetched per load), so they're dropped across sessions,
@@ -108,6 +112,13 @@ def load_session(path) -> SessionState | None:
         # v2 -> v3: drop ONLY the layout blob so a dock saved as a native float can't be replayed;
         # open tools/windows still reopen from open_tools/tool_windows, panels fall back to default.
         state.dock_state_hex = ""
+    if stored_version < 4:
+        # v3 -> v4: the docked "Chart" space ("space:Chart") was removed (chart-unify keystone).
+        # Drop the layout blob so restoreState can't reference the dead space; drop the central
+        # chart's indicators (no central chart to host them). The saved symbol/interval still
+        # seed the fresh chart frame on launch, and any chart documents reopen from `documents`.
+        state.dock_state_hex = ""
+        state.chart_indicators = []
     return state
 
 

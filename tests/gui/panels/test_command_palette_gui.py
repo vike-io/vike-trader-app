@@ -61,7 +61,7 @@ def test_palette_empty_query_shows_all(app):
 def test_mainwindow_commands_cover_spaces_and_workspaces(app):
     win = MainWindow(session_path=None)
     labels = [label for label, _cb in win._commands()]
-    assert "Go to Chart" in labels                 # Chart is the only space now
+    assert "Go to Chart" not in labels             # no central Chart space — charts are windows
     assert "Open Studio" in labels                 # Studio is an on-demand tool dock
     assert any(l.startswith("Open workspace: Trading") for l in labels)
     assert any(l.startswith("New chart:") for l in labels)

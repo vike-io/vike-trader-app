@@ -78,26 +78,31 @@ def test_forward_locks_backtest_controls(app):
     win.close()
 
 
-def test_main_window_has_chart_space(app):
+def test_main_window_has_no_chart_space(app):
+    """Chart-unify keystone: the docked central 'Chart' space is GONE. The SpaceDeck facade
+    survives (tools/Studio still dock through it) but it hosts ZERO spaces, the icon rail's SPACE
+    group is empty, and there is no central chart container (`_backtester` is a None sentinel)."""
     from vike_trader_app.ui.dockshell import SpaceDeck
 
     win = MainWindow()
-    # the spaces live as ADS center-area tabs behind the QTabWidget-compatible facade. After the
-    # empty-workspace re-arch only Chart remains a space; Studio + the 7 tools open as docks.
     assert isinstance(win.tabs, SpaceDeck)
-    assert win.tabs.isAncestorOf(win._backtester)
-    titles = [win.tabs.tabText(i) for i in range(win.tabs.count())]
-    assert titles == ["Chart"]
-    # the icon rail's SPACE group mirrors the space tabs one-for-one (tool buttons are separate)
-    assert len(win._rail_group.buttons()) == win.tabs.count()
+    assert win.tabs.count() == 0                 # no Chart space (no spaces at all)
+    assert win._SPACE_ITEMS == []
+    assert win._backtester is None               # the central chart container is gone
+    assert win._chart_space_dock() is None
+    # the icon rail's SPACE group mirrors the (now empty) space set one-for-one
+    assert len(win._rail_group.buttons()) == win.tabs.count() == 0
     win.close()
 
 
 def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
+    """Cache-first lives in the per-document load path now (chart-unify keystone). With no chart
+    open the symbol box no-ops, so open a chart FRAME and assert ITS doc loads from a fresh cache
+    WITHOUT touching the network. The doc loads via ui.dataload (Catalog + get_bars there)."""
     import time
 
     import vike_trader_app.data.catalog as cat_mod
-    import vike_trader_app.ui.app as app_mod
+    import vike_trader_app.ui.dataload as dataload_mod
     now = int(time.time() * 1000)
     base = now - 50 * 60_000
     fresh = [_bar(base + i * 60_000, 100.0) for i in range(50)]  # last bar = now-60s -> "fresh"
@@ -116,11 +121,13 @@ def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
     def _boom(*a, **k):
         raise AssertionError("get_bars (network) called despite a fresh cache")
 
-    monkeypatch.setattr(app_mod, "get_bars", _boom)
+    monkeypatch.setattr(dataload_mod, "get_bars", _boom)
     win = MainWindow()
-    win._load_symbol("EURUSD")          # fresh cache -> must load WITHOUT touching the network
-    assert win._symbol == "EURUSD"
-    assert len(win._bars) == 50
+    # open a chart window (network=True): a fresh cache must paint it WITHOUT a network fetch.
+    doc = win._new_chart_document("EURUSD", "1m", network=True, make_current=True)
+    assert doc.symbol == "EURUSD"
+    assert len(doc._bars) == 50
+    assert win.price is doc.chart        # the focused frame's chart tracks as self.price
     win.close()
 
 

@@ -63,8 +63,8 @@ def test_apply_backtesting_opens_studio_window(app):
     win._apply_workspace("Backtesting")
     app.processEvents()
     # Studio opens as its own window now (MT-style): the Backtesting workspace opens it via its
-    # open_tools, on the Chart space, rather than switching to a (retired) Studio space.
-    assert win.tabs.currentIndex() == 0
+    # open_tools. After the chart-unify keystone there is no central Chart space to switch to.
+    assert win.tabs.count() == 0          # no docked spaces at all (central chart retired)
     assert win.studio is not None
     assert "studio" in win._tool_frames
     win.close()

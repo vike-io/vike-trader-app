@@ -46,9 +46,13 @@ def test_keys_match_factories(app):
     assert set(ToolRegistry.keys()) == set(ToolRegistry.factories())
 
 
-def test_only_chart_remains_a_space(app):
+def test_no_spaces_after_chart_unify(app):
+    # chart-unify keystone: the central Chart space is GONE — there are now ZERO docked spaces.
+    # Charts are floating ChartWindowFrame peers; every tool (incl. Studio) is an on-demand window.
     win = MainWindow(session_path=None); win.show(); app.processEvents()
-    assert win.tabs.count() == 1                       # Chart only — Studio is a dock now
+    assert win.tabs.count() == 0                        # no spaces at all (central chart retired)
+    assert win._SPACE_ITEMS == []
+    assert win._chart_space_dock() is None
     for attr in ("screener", "journal", "alerts", "datamanager",
                  "news", "calendar_space", "options", "studio"):
         assert getattr(win, attr, None) is None        # all 8 tools no longer eager
@@ -72,7 +76,7 @@ def test_each_tool_opens_and_closes_as_window(app):
 def test_studio_opens_and_closes_as_window(app):
     win = MainWindow(session_path=None); win.show(); app.processEvents()
     assert win.studio is None and win.studio_price is None      # not eager anymore
-    assert win.tabs.count() == 1                                 # only Chart remains a space
+    assert win.tabs.count() == 0                                 # no spaces (central chart retired)
     frame = win.open_tool("studio"); app.processEvents()
     assert win._tool_frames.get("studio") is frame
     assert win.studio is not None and win.studio_price is not None
@@ -82,15 +86,17 @@ def test_studio_opens_and_closes_as_window(app):
 
 
 def test_backtest_pipeline_safe_when_studio_closed(app):
-    # load_bars / replay must not crash when Studio is closed (studio_price is None)
+    # load_bars / replay must not crash when Studio is closed (studio_price is None).
+    # chart-unify keystone: there is NO central chart in the pipeline, so with Studio closed the
+    # pipeline is EMPTY (_pipeline_charts() == []) — the backtest runs and feeds nothing, no crash.
     from vike_trader_app.core.model import Bar
     win = MainWindow(session_path=None); win.show(); app.processEvents()
     bars = [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
             for i in range(40)]
-    win.load_bars(bars, record=False)   # studio_price is None -> _pipeline_charts() drops it
+    win.load_bars(bars, record=False)   # studio_price is None -> _pipeline_charts() is empty
     app.processEvents()                 # must not raise
     win._render_frame()                 # replay render with Studio closed
-    assert len(win._pipeline_charts()) == 1   # just the Chart space chart
+    assert win._pipeline_charts() == []   # no central chart; Studio closed -> empty pipeline
     win.close()
 
 

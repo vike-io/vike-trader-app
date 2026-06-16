@@ -206,7 +206,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def __init__(self, session_path: str | None = _SESSION_PATH):
         super().__init__()
-        self.setWindowTitle(f"vike-trader-app   {self._SPACE_ITEMS[0][1]}")  # space name updated on tab change
+        self.setWindowTitle("vike-trader-app")  # updated to the focused chart's title on activation
         self.setWindowIcon(icons.brand_icon(theme.ACCENT, theme.BG))  # brand V in the title bar
         self.resize(1440, 900)
         self.setDockNestingEnabled(True)
@@ -253,7 +253,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_fetch_for = None     # (symbol, interval) the in-flight fetch is for
 
         # widgets
-        self.price = PriceChart()         # Chart space — clean standalone viewer
+        # Chart-unify keystone: there is NO docked central chart anymore. Every chart is a
+        # floating ChartWindowFrame peer (so Window>Arrange tiles them all uniformly, no overlap).
+        # `self.price` is no longer an owned PriceChart — it TRACKS the focused frame's chart
+        # (set in _set_active_frame), or None when no chart is focused. Every read is None-safe
+        # (made so in #166); writes happen only via _set_active_frame.
+        self.price = None                 # -> focused chart frame's PriceChart, or None
         # Studio is now a closable/hideable on-demand DOCK (the 8th tool), not an eager space:
         # self.studio (StudioTab) + self.studio_price (its lockstep PriceChart) are built lazily by
         # _build_studio_widget when the Studio dock opens, and re-nilled when it closes. Every
@@ -346,12 +351,9 @@ class MainWindow(QtWidgets.QMainWindow):
             str(Path(self._session_path).with_name("workspaces.json"))
             if self._session_path else None
         )
-        # timeframe dropdown on the Chart chart -> reload the current symbol at that interval.
-        # (The Studio chart's intervalChosen/pairsRequested are wired in _build_studio_widget when
-        # the Studio dock is built, since self.studio_price doesn't exist until then.)
-        self.price.intervalChosen.connect(self._on_interval_chosen)
-        # pairs indicators need a 2nd symbol the app fetches (the chart can't reach the data layer)
-        self.price.pairsRequested.connect(lambda n: self._add_pairs(self.price, n))
+        # No central chart to wire: each ChartDocument wires its own intervalChosen (chartdoc.py)
+        # and _make_chart_frame wires its pairsRequested. The Studio chart's signals are wired in
+        # _build_studio_widget when the Studio dock is built.
 
         # Header crumb removed — it duplicated the chart's OHLC legend + the status bar.
         # Keep the labels as hidden status sinks so existing setText() calls (and tests) work.
@@ -479,24 +481,29 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tabs.setCurrentIndex(space)
         self._on_tab_changed(self.tabs.currentIndex())
 
-        # Open the last session's symbol (default BTCUSDT) cache-first, on the main thread
-        # per the data-layer thread-safety constraint, so the app starts on a populated chart.
+        # NO auto-created chart. A returning user's charts are recreated from session.documents
+        # above; a fresh start / explicitly-emptied workspace stays EMPTY (the user's "if no chart
+        # open don't open one" / "if workspace saved empty don't autocreate chart"). Charts open
+        # on demand via the topbar "New chart" launcher / Ctrl+N.
+
+        # Top up whatever chart frames were restored (cache-first, main thread per the data-layer
+        # constraint). No central chart to seed — _startup_load now just re-applies per-doc state.
         QtCore.QTimer.singleShot(200, self._startup_load)
 
     def _startup_load(self) -> None:
-        """Load the session symbol/interval, then re-apply each chart's saved indicators.
+        """Load the session symbol/interval into the focused chart (if any), then re-apply the
+        Studio chart's saved indicators when it's open. There is no central chart to seed — each
+        restored chart document loads + restores its OWN indicators in _new_chart_document.
 
         Indicators only re-attach when the load actually produced bars (add_indicator
         no-ops on an empty chart) — a failed load just leaves a clean chart."""
         if self._closing:
             return
         self._load_symbol(self._symbol, self._interval)
-        if self._session and self._bars and self.price is not None:
-            apply_indicator_states(self.price, self._session.chart_indicators)
+        if self._session and self._bars and self.studio_price is not None:
             # Studio chart only exists while its dock is open: a restored "studio" tool recreates
             # it (open_tools restore runs before this), otherwise studio_price is None — skip it.
-            if self.studio_price is not None:
-                apply_indicator_states(self.studio_price, self._session.studio_indicators)
+            apply_indicator_states(self.studio_price, self._session.studio_indicators)
 
     # --- chart documents (multi-instance, tear-out) -----------------------------------------
     def _new_chart_document(self, symbol: str, interval: str | None = None, *,
@@ -533,6 +540,9 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.cloneRequested.connect(self._clone_window)
         frame.redockRequested.connect(self._redock_chart)
         frame.minimizeRequested.connect(self._minimize_chart_window_to_left)
+        # pairs indicators need a 2nd symbol the app fetches (the chart can't reach the data
+        # layer). The central chart used to wire this; now each peer frame's chart does.
+        doc.chart.pairsRequested.connect(lambda n, ch=doc.chart: self._add_pairs(ch, n))
         self._chart_frames.append(frame)
         # cascade placement: each new window steps down-right from the last
         n = len(self._chart_frames) - 1
@@ -784,10 +794,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _set_active_frame(self, frame) -> None:
         """Track the FOCUSED chart window. The symbol box / watchlist drive whichever chart is
-        focused; ``None`` means the central chart is the target. Stage 1 of chart unification —
-        once the central chart is itself an ordinary dock (Stage 3) this becomes the ONE focus
-        model for every chart."""
+        focused; ``None`` means no chart is focused (so the symbol box no-ops). There is no
+        central chart — `self.price` simply IS the focused frame's chart, so every chart-state
+        read (export, copy, indicator capture, header ticker) follows the focused window."""
         self._active_frame = frame
+        try:
+            self.price = frame.doc.chart if frame is not None else None
+        except (RuntimeError, AttributeError):
+            self.price = None
         for f in self._chart_frames:
             try:
                 f.set_active(f is frame)
@@ -823,40 +837,35 @@ class MainWindow(QtWidgets.QMainWindow):
             f.close_window()
 
     def _arrange_chart_windows(self, mode: str) -> None:
-        """Window ▸ Arrange: tidy EVERYTHING the user has open.
+        """Window ▸ Arrange: tidy EVERY chart/tool the user has open.
 
-        - Floating windows (chart windows + torn-out tool windows, all chartwin frames) are
-          geometry-tiled by chartwin.arrange (grid / rows / columns / cascade).
-        - Docked tools are ADS-tiled by SpaceDeck.arrange_docks (docking has no cascade, so
-          cascade falls back to grid for them).
-        - The central chart + open side panels (the common docked layout) are tiled by
-          SpaceDeck.arrange_workspace — previously Arrange ignored these entirely, so on a plain
-          chart+Market-Watch layout every Arrange item was a dead no-op.
+        - Floating chart windows + torn-out tool windows (all chartwin frames) are geometry-tiled
+          by chartwin.arrange (grid / rows / columns / cascade).
+        - Any tool/chart docked INTO the workspace ("Dock into workspace") is ADS-tiled by
+          SpaceDeck.arrange_docks (docking has no cascade, so cascade falls back to grid).
+        There is no central chart anymore — every chart is a floating peer, so a uniform tile is
+        exactly what the user expects.
         """
         from . import chartwin
 
         self._last_arrange_mode = mode      # remember it so a workspace resize re-applies it
         frames = self._chart_frames + list(self._tool_frames.values())
-        live_frames = [f for f in frames
-                       if not f.is_detached() and f.isVisible() and not getattr(f, "_rolled", False)]
+        def _alive(d):
+            # isClosed() raises if the C++ dock was already freed (a leaked dock under xdist, or a
+            # close racing the arrange) — treat a dead/raising dock as not-live.
+            try:
+                return d is not None and not d.isClosed()
+            except RuntimeError:
+                return False
+
+        # Tile the floating chart/tool WINDOWS (the common case — the user's primary charts).
         chartwin.arrange(frames, self.dock_manager, mode)
-        if live_frames:
-            # Floating windows ARE the arrangement and cover the workspace; just tidy any docked
-            # tools behind them (re-tiling the chart+panels would churn the hidden background layout
-            # and once hit a deleted-dock crash).
-            docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values())
-                     if d is not None and not d.isClosed()]
-            if docks:
-                self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
-            return
-        # No floating windows: tile the chart together with EVERY docked thing — side panels, tool
-        # docks (Data/Screener/…) AND docked chart windows — as ONE uniform layout. The chart is just
-        # another tile, not a privileged anchor that tools tile separately around (which is why a
-        # docked Data tool next to the chart used to ignore Arrange entirely).
-        docked = (list(self._panel_dock_map.values())
-                  + list(self._tool_docks.values())
-                  + list(self._chart_docks.values()))
-        self.tabs.arrange_workspace(self._chart_space_dock(), docked, mode)
+        # AND tidy any tool/chart "windows" docked INTO the workspace ("Dock into workspace") —
+        # same grid. There's no central chart anchor anymore, so this uses arrange_docks (which
+        # needs no anchor); the side panels (Market watch/Trades) keep their natural dock edges.
+        docks = [d for d in (*self._tool_docks.values(), *self._chart_docks.values()) if _alive(d)]
+        if docks:
+            self.tabs.arrange_docks(docks, "grid" if mode == "cascade" else mode)
 
     def open_tool(self, key: str):
         """Open the tool for ``key`` as its own floating window, or focus it if already open.
@@ -1356,33 +1365,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # --- central charts + replay ---
     def _build_central(self):
-        # Chart space shows price candles only — equity moved to Studio's results. The rounded chart
-        # "card" (transparent viewport over a CHART_BG card, oscillator-pane splitter) is built by the
-        # SHARED make_chart_card so the Chart space + every ChartDocument frame their chart ONE way.
-        from .chartdoc import make_chart_card
-        chart_card = make_chart_card(self.price)
-        self.price.viewport().installEventFilter(self)  # click the chart -> it becomes the symbol target
-
-        charts = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        charts.addWidget(chart_card)
-        charts.setStretchFactor(0, 1)
-
-        container = QtWidgets.QWidget()
-        outer = QtWidgets.QVBoxLayout(container)
-        # generous padding so the chart "floats" with gaps to the rail / docks / edges (vike.io look)
-        outer.setContentsMargins(14, 14, 14, 14)
-        outer.setSpacing(10)
-        outer.addWidget(charts, 1)
-
-        # The Chart space (clean price chart) and the Studio (AI strategy dev) are sibling
-        # tabs of one window. The replay/data control bar and the Bots panel now live in the
-        # Studio workspace (moved out of the Chart space and the right dock respectively).
-        #
-        # The spaces are CDockWidget tabs of an ADS (Qt-Advanced-Docking-System) center area,
-        # behind a QTabWidget-compatible facade (SpaceDeck) so all existing tab wiring holds.
-        # ADS also hosts the side panels (dockable/floatable/pinnable) and provides the
-        # save/restoreState used for layout persistence (and Phase 4's named workspaces).
-        self._backtester = container
+        # Chart-unify keystone: NO docked central chart. The center ADS area hosts only the side
+        # panels + any chart docked via "Dock into workspace"; the primary charts are floating
+        # ChartWindowFrame peers. So there's no chart "card"/space to build here — just the dock
+        # manager, the minimize rail, the unified-titlebar factory and the SpaceDeck facade.
+        self._backtester = None   # was the central chart container; kept as a None sentinel
         configure_dock_manager_defaults()  # static config — must precede CDockManager()
         self.dock_manager = QtAds.CDockManager(self)  # installs itself as the central widget
         # Custom MINIMIZE rail (left of the central widget). The ─ verb hides a window/panel and
@@ -1409,10 +1396,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # the header is recreated on relayout; each time, repopulate its ● symbol + ◆ interval
         # link dots (state lives on the MainWindow, the dot WIDGETS are recreated with the header)
         self.tabs.set_header_status_provider(self._populate_header_status)
-        self.tabs.addTab(container, "Chart")
-        # Studio is the 8th on-demand DOCK now (not an eager space): its StudioTab + lockstep chart
-        # are built by _build_studio_widget the first time the Studio dock opens. Only the Chart
-        # space is added here, so SpaceDeck holds exactly ONE space and the app opens on Chart.
+        # Chart-unify keystone: NO "Chart" space is added — SpaceDeck holds ZERO spaces. The
+        # center hosts only side panels + any chart docked via "Dock into workspace". Charts open
+        # as floating ChartWindowFrame peers (topbar "New chart" / Ctrl+N), so they all tile under
+        # Window>Arrange. (set_fit_callback/set_header_status_provider stay wired for a docked chart.)
         # Bots panel (Active Bots / Historic Runs / Launch Bot) intentionally NOT mounted in
         # Studio for now — pending a refactor. self.bots stays alive so self.strategy /
         # self.history (its sub-widgets) keep serving show_strategy()/update_runs() calls.
@@ -1431,10 +1418,9 @@ class MainWindow(QtWidgets.QMainWindow):
         # LONGER eager SpaceDeck spaces — they open on-demand as dock widgets via open_tool(key)
         # (empty-workspace re-arch). Their legacy attributes (self.screener/.datamanager/.news/…)
         # are set by open_tool ONLY while the tool dock is open, and cleared on close, so code that
-        # reads them keeps working when the tool is live and stays guarded otherwise. With Studio
-        # now an on-demand dock too, SpaceDeck holds exactly ONE space: Chart (index 0). Per-tool
-        # signal wiring that used to live here moved to _wire_tool(); the OptionsService stays
-        # app-level (eager).
+        # reads them keeps working when the tool is live and stays guarded otherwise. SpaceDeck now
+        # holds ZERO spaces (the central chart is gone). Per-tool signal wiring that used to live
+        # here moved to _wire_tool(); the OptionsService stays app-level (eager).
         self._options_svc = OptionsService(parent=self)
         self._options_started = False
         # Eagerly nil the legacy tool attrs so any reader site fails the getattr(...) guard until
@@ -1631,12 +1617,11 @@ class MainWindow(QtWidgets.QMainWindow):
         elif self._options_expiry is not None:
             self._options_svc.start_polling()  # resume the selected expiry's poll on re-open
 
-    # Navigation splits into two kinds after the empty-workspace re-arch:
-    #  * SPACES — the eager SpaceDeck tabs (just Chart now). Selected via tabs.setCurrentIndex.
-    #    The space_index MUST match the addTab() order in _build_central.
+    # Navigation after the chart-unify keystone:
+    #  * SPACES — NONE. The central chart is gone; SpaceDeck holds zero eager spaces.
     #  * TOOLS — the 8 on-demand docks (studio/screener/…/options). Opened via open_tool(tool_key).
-    # Keep both in sync with _build_central (spaces) and ToolRegistry (tool keys).
-    _SPACE_ITEMS = [("▤", "Chart", 0)]                              # (glyph, name, space_index)
+    #  * CHARTS — floating ChartWindowFrame peers, opened via the topbar "New chart" / Ctrl+N.
+    _SPACE_ITEMS: list = []                                         # (glyph, name, space_index)
     _TOOL_ITEMS = [("✦", "Studio", "studio"),
                    ("⊞", "Screener", "screener"), ("☰", "Journal", "journal"),
                    ("◉", "Alerts", "alerts"), ("◈", "Data", "data"),
@@ -1644,10 +1629,9 @@ class MainWindow(QtWidgets.QMainWindow):
                    ("⊗", "Options", "options")]                      # (glyph, name, tool_key)
 
     # PANELS section of the rail: independent show/hide toggles (TradeLocker style).
-    # (key, icon_name, tooltip, shortcut). "backtester" toggles the centre chart; the others
-    # map to docks in _panel_dock_map.
+    # (key, icon_name, tooltip, shortcut). All map to docks in _panel_dock_map. (The old
+    # "backtester" entry that toggled the central chart is gone — there is no central chart.)
     _PANELS = [
-        ("backtester", "chart", "Chart", "Ctrl+G"),
         ("market", "market", "Market watch", "Ctrl+M"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
         # Dashboard info tiles (Phase 6): small dockable widgets — arrange + pin + save a named
@@ -2516,16 +2500,14 @@ class MainWindow(QtWidgets.QMainWindow):
             btn.blockSignals(False)
 
     def _toggle_panel(self, key: str, on: bool) -> None:
+        # Panels are independent dock toggles now (no central chart to gate them on). Each just
+        # opens/closes its own dock; the remembered visibility persists to the session.
         if self._closing:
             return
         self._panel_visible[key] = on
-        if self.tabs.currentWidget() is not self._backtester:
-            return
-        if key == "backtester":
-            # Hide the centre (the spaces dock area); ADS expands the panel docks to fill.
-            self.tabs.setVisible(on)
-        else:
-            self._set_dock_open(self._panel_dock_map[key], on)
+        dock = self._panel_dock_map.get(key)
+        if dock is not None:
+            self._set_dock_open(dock, on)
 
     def _ensure_dock_usable_width(self, dock) -> None:
         """A dock restored from a session saved BEFORE it existed (e.g. the dashboard tiles
@@ -2567,10 +2549,12 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
     def _on_tab_changed(self, index: int) -> None:
-        """Show the Chart docks only on the Chart tab (internally still keyed `backtester`); Studio/Tools are full-width.
+        """Reconcile the center area + panels after a center-tab change.
 
-        ``index`` is -1 when a chart DOCUMENT (not a space) is current — panels hide (a clean
-        chart context, like a non-Chart space) and the title shows the document's symbol.
+        There are no spaces now; the center hosts only docked charts (rare; "Dock into workspace")
+        or is empty. Side panels are INDEPENDENT toggles — always shown per their remembered
+        visibility, never gated on a (gone) central chart. ``index`` is -1 when nothing/ a chart
+        DOCUMENT is current.
         """
         # Re-entrancy guard: toggling a panel dock here can drive ADS to re-emit the center
         # area's currentChanged synchronously and re-enter this slot — an unbounded close/reopen
@@ -2580,25 +2564,18 @@ class MainWindow(QtWidgets.QMainWindow):
         self._in_tab_change = True
         try:
             current = self.tabs.currentWidget()
-            on_backtester = current is self._backtester
             on_document = isinstance(current, ChartDocument)
-            # The centre must be visible to show any non-Backtester space; on the Backtester
-            # space itself, honor the "backtester" hide toggle.
-            self.tabs.setVisible(
-                self._panel_visible.get("backtester", True) if on_backtester else True
-            )
-            # Panels show only on the Chart space, and there per each panel's remembered toggle.
+            self.tabs.setVisible(True)   # center always visible (docked charts / empty)
+            # Panels honor their own remembered toggle, regardless of center content.
             for key, dock in getattr(self, "_panel_dock_map", {}).items():
-                self._set_dock_open(dock, on_backtester and self._panel_visible.get(key, True))
+                self._set_dock_open(dock, self._panel_visible.get(key, True))
             btn = self._rail_group.button(index)  # keep the icon rail in sync with the tabs
             if btn is not None:
                 btn.setChecked(True)
-            # the OS title bar is the active-space indicator (tab strip + header chip are gone)
+            # the OS title bar follows the focused docked chart document (if any)
             if on_document:
                 current.ensure_loaded()  # restored docs are cache-only until first focused
                 self.setWindowTitle(f"vike-trader-app   {current.title()}")
-            elif 0 <= index < len(self._SPACE_ITEMS):
-                self.setWindowTitle(f"vike-trader-app   {self._SPACE_ITEMS[index][1]}")
             # Options is now an on-demand DOCK, not a space: it starts/stops in _wire_tool /
             # the dock-close handler, not on a space switch. This block is intentionally inert
             # (options is never the current space widget), kept getattr-guarded; a later
@@ -2669,11 +2646,12 @@ class MainWindow(QtWidgets.QMainWindow):
                                           bars_by_symbol=bars_by_symbol, ranges=ranges)
 
     def _pipeline_charts(self):
-        """Charts that the data/replay/live pipeline feeds: the Chart space always, plus the
-        Studio chart only while the Studio dock is open (studio_price is None when it's closed)."""
-        # None-safe: the central chart becomes optional as it is demoted to an ordinary closable
-        # dock (chart unification) — feed only the charts that currently exist.
-        return [c for c in (self.price, self.studio_price) if c is not None]
+        """Charts the backtest/replay/live pipeline feeds: ONLY the Studio chart (when its dock is
+        open). After the chart-unify keystone there is no central chart in the pipeline — the
+        floating ChartWindowFrame peers are independent (their OWN symbol/data, fed by the LiveHub),
+        so a backtest must never inject trades/overlays into whatever chart happens to be focused.
+        ``self.price`` (the focused frame's chart) is used for state reads only, never the pipeline."""
+        return [c for c in (self.studio_price,) if c is not None]
 
     # --- data / strategy loading ---
     def load_bars(self, bars, strategy_factory=None, *, record=True):

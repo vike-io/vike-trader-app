@@ -5,6 +5,15 @@ outcomes — maximize glyph (□/❐), dock visibility, left-rail tabs, fill geo
 internal flags. That makes it the safety net for the max/min state-machine unification: whatever the
 internals become, clicking the buttons must keep producing these outcomes. Run offscreen (CI-safe);
 geometry is computed by ADS so fill/position assertions are meaningful even without a display.
+
+Post chart-unify keystone: there is NO docked central chart any more (``_chart_space_dock()`` is
+``None``, ``tabs.count() == 0``, ``win.price`` starts ``None``). Every chart is a floating
+``ChartWindowFrame`` opened via ``_new_chart_document`` and tiled by ``_arrange_chart_windows``. So
+the surviving max/min behaviour lives entirely on the SIDE PANELS: ``_maximize_dock(panel_dock)``
+fills the workspace by hiding the OTHER panels (no chart is ever parked on the rail), and a panel's
+─ parks it on the left rail under its OWN key. The old central-chart maximize/minimize/rail-park
+tests (and the ``__central_chart__`` rail tab) describe behaviour that no longer exists and were
+dropped; the panel equivalents below carry the intent forward.
 """
 import os
 
@@ -45,11 +54,6 @@ def _win(*open_panels, size=(1200, 800)):
     return w
 
 
-def _chart_btn(win, key):
-    h = win.tabs.header_widget()
-    return h.button(key) if (h is not None and hasattr(h, "button")) else None
-
-
 def _panel_btn(dock, key):
     try:
         h = dock.dockAreaWidget().titleBar()._header
@@ -78,87 +82,43 @@ def _fills(dock, win, tol=44):
             and a.height() >= win.dock_manager.height() - tol)
 
 
-# ---------------------------------------------------------------- chart maximize
-
-@pytest.mark.parametrize("panels", [("market",), ("market", "trades")])
-def test_chart_maximize_hides_panels_fills_and_restores(app, panels):
-    win = _win(*panels)
-    chart = win._chart_space_dock()
-    mb = _chart_btn(win, "max")
-    _click(mb)
-    assert mb.text() == "❐"                                   # glyph -> restore
-    assert _fills(chart, win)                                 # chart fills the workspace
-    for k in panels:
-        assert win._panel_dock_map[k].isClosed()              # every side panel hidden
-    _click(_chart_btn(win, "max"))
-    assert _chart_btn(win, "max").text() == "□"               # glyph -> maximize
-    for k in panels:
-        assert not win._panel_dock_map[k].isClosed()          # panels back
-    win.close()
-
-
-def test_chart_maximize_is_noop_with_no_panels(app):
-    """LOCK current behavior: with no side panel open the docked chart already fills the workspace,
-    so the box is a deliberate no-op (stays □) rather than a false maximized state."""
-    win = _win()                                              # no panels
-    chart = win._chart_space_dock()
-    mb = _chart_btn(win, "max")
-    assert _fills(chart, win)                                 # already full
-    _click(mb)
-    assert mb.text() == "□"                                   # no-op: glyph unchanged
-    win.close()
-
-
 # ---------------------------------------------------------------- panel maximize
 
-@pytest.mark.parametrize("panels", [("market",), ("market", "trades")])
-def test_panel_maximize_fills_parks_chart_on_rail_and_restores(app, panels):
+@pytest.mark.parametrize("panels", [("market", "trades"), ("market", "trades", "movers")])
+def test_panel_maximize_hides_other_panels_fills_and_restores(app, panels):
+    """A panel's □ fills the workspace by hiding every OTHER live panel (there is no central chart to
+    park on the rail any more), and toggling it back (□↔❐) restores them all. Needs ≥2 panels open —
+    with a single panel the box is a deliberate no-op (covered below)."""
     win = _win(*panels)
     mkt = win._panel_dock_map["market"]
     _click(_panel_btn(mkt, "max"))
     assert _panel_btn(mkt, "max").text() == "❐"               # glyph -> restore
     assert _fills(mkt, win)                                   # panel fills the workspace
-    assert win._chart_space_dock().isClosed()                 # chart hidden
-    assert win._min_rail.has("__central_chart__")             # chart parked on the rail
+    assert not win._min_rail.has("__central_chart__")         # NO central-chart rail tab any more
     for k in panels:
         if k != "market":
-            assert win._panel_dock_map[k].isClosed()          # other panels hidden too
+            assert win._panel_dock_map[k].isClosed()          # other panels hidden
     _click(_panel_btn(mkt, "max"))
     assert _panel_btn(mkt, "max").text() == "□"               # glyph -> maximize
-    assert not win._chart_space_dock().isClosed()             # chart back
-    assert not win._min_rail.has("__central_chart__")         # rail cleared
     for k in panels:
         assert not win._panel_dock_map[k].isClosed()          # all panels back
     win.close()
 
 
-def test_panel_maximize_restore_via_rail_chart_tab(app):
-    """The parked 'Chart' rail tab un-maximizes the panel (brings chart + panel back)."""
-    win = _win("market")
+def test_panel_maximize_is_noop_with_single_panel(app):
+    """LOCK current behavior: with only one panel open it already fills the workspace, so the box is
+    a deliberate no-op (stays □) rather than landing in a false maximized state."""
+    win = _win("market")                                      # one panel
     mkt = win._panel_dock_map["market"]
-    _click(_panel_btn(mkt, "max"))
-    assert win._min_rail.has("__central_chart__")
-    _click_rail(win, "__central_chart__")                     # click the parked Chart tab
-    assert not win._chart_space_dock().isClosed()             # chart restored
-    assert not mkt.isClosed()                                 # panel restored
-    assert not win._min_rail.has("__central_chart__")
-    assert _panel_btn(mkt, "max").text() == "□"               # glyph synced back
+    mb = _panel_btn(mkt, "max")
+    assert _fills(mkt, win)                                   # already full
+    _click(mb)
+    assert _panel_btn(mkt, "max").text() == "□"               # no-op: glyph unchanged
+    assert not mkt.isClosed()                                 # still open
     win.close()
 
 
 # ---------------------------------------------------------------- minimize -> rail
-
-@pytest.mark.parametrize("panels", [("market",), ("market", "trades")])
-def test_chart_minimize_parks_on_rail_and_restores(app, panels):
-    win = _win(*panels)
-    _click(_chart_btn(win, "min"))
-    assert win._chart_space_dock().isClosed()                 # chart hidden
-    assert win._min_rail.has("__central_chart__")             # parked on rail
-    _click_rail(win, "__central_chart__")
-    assert not win._chart_space_dock().isClosed()             # restored
-    assert not win._min_rail.has("__central_chart__")
-    win.close()
-
 
 def test_panel_minimize_parks_on_rail_and_restores(app):
     win = _win("market")
@@ -173,26 +133,30 @@ def test_panel_minimize_parks_on_rail_and_restores(app):
     win.close()
 
 
-# ---------------------------------------------------------------- arrange (docked)
+# ---------------------------------------------------------------- arrange (rows vs columns)
 
-def test_arrange_horizontally_then_vertically_retiles_docked(app):
+def test_arrange_horizontally_then_vertically_retiles_charts(app):
+    """Charts are floating windows now (no docked central chart), so 'Tile Horizontally' (rows)
+    stacks them vertically (shared x, marching y) and 'Tile Vertically' (columns) lays them side by
+    side (shared y, marching x). Re-arranging re-tiles in place."""
     win = _win("market")
-    mkt = win._panel_dock_map["market"]
-    chart = win._chart_space_dock()
-
-    def tl(d):
-        return d.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))
+    for _ in range(2):
+        win._new_chart_document("BTCUSDT", "1m", network=False)
+    _pe(8)
+    fr = [f for f in win._chart_frames if not f.is_detached() and f.isVisible()]
+    assert len(fr) == 2
 
     win._arrange_chart_windows("rows")                        # Horizontally -> stacked
     _pe()
-    assert tl(mkt).y() > tl(chart).y() + 50                   # MW below the chart
+    g = [f.geometry() for f in fr]
+    assert g[0].x() == g[1].x()                               # same column
+    assert g[1].y() > g[0].y() + 50                           # second BELOW the first
+
     win._arrange_chart_windows("columns")                     # Vertically -> side by side
     _pe()
-    assert tl(mkt).x() > tl(chart).x() + 50                   # MW right of the chart
-    win._arrange_chart_windows("grid")                        # All -> still side by side (grid of 2)
-    _pe()
-    assert not chart.dockAreaWidget().geometry().intersects(mkt.dockAreaWidget().geometry()) or \
-        tl(mkt) != tl(chart)
+    g = [f.geometry() for f in fr]
+    assert g[0].y() == g[1].y()                               # same row
+    assert g[1].x() > g[0].x() + 50                           # second RIGHT of the first
     win.close()
 
 
@@ -201,7 +165,7 @@ def test_arrange_horizontally_then_vertically_retiles_docked(app):
 def test_arrange_tiles_floating_windows_without_overlap(app):
     win = _win("market")
     for _ in range(3):
-        win._new_chart_document("BTCUSDT", "1m")
+        win._new_chart_document("BTCUSDT", "1m", network=False)
     _pe(8)
     win._arrange_chart_windows("grid")
     _pe()
@@ -223,7 +187,7 @@ def test_arrange_with_floating_charts_leaves_docked_panels_alone(app):
     deleted panel dock. The panel layout must be untouched and Arrange must not raise."""
     win = _win("market")
     for _ in range(3):
-        win._new_chart_document("BTCUSDT", "1m")
+        win._new_chart_document("BTCUSDT", "1m", network=False)
     _pe(8)
     mkt = win._panel_dock_map["market"]
     before = mkt.dockAreaWidget().mapTo(win.dock_manager, QtCore.QPoint(0, 0))

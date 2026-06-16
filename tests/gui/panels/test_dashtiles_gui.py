@@ -42,8 +42,10 @@ def test_tiles_default_closed_on_fresh_run(app):
     win = MainWindow(session_path=None)
     for key in _TILE_KEYS:
         assert win._panel_btns[key].isChecked() is False
-    # the original panels keep their defaults (chart on, market/trades closed)
-    assert win._panel_btns["backtester"].isChecked() is True
+    # chart-unify keystone: there is no central chart/backtester panel anymore; the remaining
+    # side panels (market / trades) also default CLOSED on a fresh, empty workspace.
+    assert win._panel_btns["market"].isChecked() is False
+    assert win._panel_btns["trades"].isChecked() is False
     win.close()
 
 
