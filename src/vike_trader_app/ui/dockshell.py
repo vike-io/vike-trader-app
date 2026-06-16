@@ -39,8 +39,11 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
     _header = None
     _is_panel = False
     _area_w = None
-    _rolled = False        # chart header ─ : is the central chart area rolled up to its strip?
-    _roll_maxh = None      # the area's maxHeight to restore on un-roll
+    # Vestigial class-level defaults (the chart-rollup verb was dropped with the central chart in the
+    # chart-unify keystone). Kept only so the resize-before-init regression guard
+    # (test_vike_dock_titlebar_attrs_exist_before_init) stays green; no live code reads them.
+    _rolled = False
+    _roll_maxh = None
 
     def __init__(self, area):
         super().__init__(area)
@@ -48,8 +51,6 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
         self._header = None   # UnifiedTitleBar (chart-space header OR a unified panel bar)
         self._is_panel = False
         self._area_w = area
-        self._rolled = False
-        self._roll_maxh = None
         # Panels self-detect (covers creation AND restoreState recreations). Post chart-unify
         # keystone there is no central chart space to mark, so this is the only detection path.
         # Tie the one-shot to `self`: if ADS destroys this title bar before it fires, the timer
@@ -68,30 +69,9 @@ class VikeDockTitleBar(QtAds.CDockAreaTitleBar):
             a = None
         return a if a is not None else self._area_w
 
-    def _toggle_chart_rollup(self) -> None:
-        """Chart header ─ : roll the central chart area up to its title strip (the AmiBroker
-        minimize-to-stub) instead of minimizing the whole window. The neighbouring panels expand
-        into the freed space; click ─ again to restore. The central area can't pin-to-edge like a
-        tool dock, so capping the dock AREA's maxHeight to the title-bar height is what collapses
-        it — verified to leave the 30px strip and hand the space to the splitter's neighbours."""
-        area = self.dockAreaWidget()
-        if area is None:
-            return
-        if not self._rolled:
-            self._rolled = True
-            self._roll_maxh = area.maximumHeight()
-            area.setMaximumHeight(max(self.height(), 30))
-        else:
-            self._rolled = False
-            area.setMaximumHeight(self._roll_maxh or 16777215)
-
     def set_header_title(self, text: str) -> None:
         if self._header is not None:
             self._header.set_title(text)
-
-    def set_header_title_rich(self, html: str) -> None:
-        if self._header is not None:
-            self._header.set_title_rich(html)
 
     def set_header_icon(self, pixmap) -> None:
         if self._header is not None:
@@ -455,7 +435,6 @@ class SpaceDeck(QtCore.QObject):
         # STATELESS (state lives here in the model): a freshly-created header re-reads this.
         self._header_title = "Chart"
         self._fit_cb = None   # MainWindow-supplied: cap the header to the panel's left edge
-        self._status_provider = None   # MainWindow-supplied: add the header's link dots
         self._closing = False          # set by detach() at teardown — gates currentChanged forward
 
     def _resolve_area(self):
@@ -612,27 +591,11 @@ class SpaceDeck(QtCore.QObject):
     def set_fit_callback(self, fn) -> None:
         self._fit_cb = fn
 
-    def set_header_status_provider(self, fn) -> None:
-        """fn(unified_bar) populates the chart-space header's status cluster (link dots). Called
-        on every header (re)creation so the dots survive ADS relayouts."""
-        self._status_provider = fn
-
-    def _request_fit(self) -> None:
-        """Ask the MainWindow to re-cap the header width once the layout settles (the header
-        was just (re)created by ADS; geometry isn't final until the next event-loop turn)."""
-        if self._fit_cb is not None:
-            QtCore.QTimer.singleShot(0, self, self._fit_cb)   # tied to the deck's lifetime
-
     def set_header_title(self, text: str) -> None:
         self._header_title = text   # remembered so a recreated header re-shows it
         tb = self._header_bar()
         if tb is not None:
             tb.set_header_title(text)
-
-    def set_header_title_rich(self, html: str) -> None:
-        tb = self._header_bar()
-        if tb is not None:
-            tb.set_header_title_rich(html)
 
     def set_header_icon(self, pixmap) -> None:
         tb = self._header_bar()
