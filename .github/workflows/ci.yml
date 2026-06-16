@@ -77,21 +77,31 @@ jobs:
       # The offscreen Qt tree (tests/gui/{chart,studio,panels}) — counterpart to the unit run above.
       # `not network` drops the live data-manager test; new GUI tests auto-collected by directory.
       #
-      # ALL THREE run PARALLEL (`-n auto`). tests/gui/panels (MainWindow/dock-lifecycle) used to need a
-      # SERIAL run (#169) because the ADS/PySide6 native dock-teardown crash (`CDockWidget already
-      # deleted` / worker crash / 0xC0000409) surfaced under parallel xdist. The deterministic
-      # MainWindow.shutdown() (#171) fixed that root cause: a 20x local parallel soak hit ZERO teardown
-      # crashes, and the one residual TEST flake (a 200ms _startup_load timer overwriting a focused doc)
-      # was fixed at the source — so panels run parallel with NO retry now.
+      # SPLIT: tests/gui/{chart,studio} run PARALLEL (`-n auto`, stable). tests/gui/panels runs SERIALLY
+      # (`-p no:xdist`). The deterministic MainWindow.shutdown() (#171) made the native ADS dock-teardown
+      # crash (`worker crashed` / `Fatal Python error: Aborted` / 0xC0000409) RARE — a 40x local parallel
+      # soak hit zero — but NOT absent: a parallel-panels CI run still hit it (worker crash in
+      # test_each_tool_opens_and_closes_as_window), exactly the #169 lesson that the slow 4-core CI VM
+      # exposes the cross-worker teardown race a fast local box hides. Serial has NO xdist workers, so
+      # that cross-worker class CANNOT occur. (Local dev still runs panels `-n auto` for speed.)
+      # A 2x retry (down from 3x — the dominant _startup_load timing flake is fixed at the source now)
+      # absorbs any single-process residual.
       - name: Run GUI test suite — chart + studio (parallel)
         run: >
           uv run pytest -q --timeout=120 --timeout-method=thread -n auto
           tests/gui/chart tests/gui/studio -m "not network"
 
-      - name: Run GUI test suite — panels (parallel)
-        run: >
-          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
-          tests/gui/panels -m "not network"
+      - name: Run GUI test suite — panels (serial, native-teardown isolation)
+        shell: bash
+        run: |
+          for attempt in 1 2; do
+            echo "::group::GUI panels attempt $attempt"
+            uv run pytest -q --timeout=120 --timeout-method=thread -p no:xdist tests/gui/panels -m "not network" \
+              && { echo "::endgroup::"; exit 0; }
+            echo "::endgroup::"
+            echo "GUI panels attempt $attempt failed — retrying (rare native Qt-teardown flake)"
+          done
+          exit 1
 
   bench:
     name: benchmarks (ubuntu · py3.12)
@@ -120,6 +130,6 @@ jobs:
 # were dropped (2026-06-16): being a BUNDLED desktop app (Python baked into the installer, users don't
 # bring their own), testing other interpreters tested a config we never run — and py3.12/3.13 were the
 # ONLY versions that exposed a parallel ADS/PySide6 dock-teardown C++ crash (unfixable from Python; see
-# git-merge-workflow memory). The remaining py3.14 teardown race was then fixed at the root by the
-# deterministic MainWindow.shutdown() (#171), so the WHOLE GUI suite (incl. panels) runs fully parallel.
-# macOS/Linux paused per user directive (2026-06-11) — re-add the OS axis to re-enable.
+# git-merge-workflow memory). The deterministic MainWindow.shutdown() (#171) made the py3.14 teardown
+# race RARE but not absent, so chart+studio run parallel while PANELS stay serial (a parallel-panels CI
+# run still hit the cross-worker crash). macOS/Linux paused per user directive (2026-06-11).
