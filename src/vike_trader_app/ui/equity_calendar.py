@@ -7,6 +7,7 @@ latest navigation wins, and fetch threads are waited on at app quit (no shutdown
 """
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -207,8 +208,12 @@ class EquityCalendarTab(QtWidgets.QWidget):
     eventsChanged = QtCore.Signal()   # emitted after a week's events land (for day-card counts)
 
     def __init__(self, *, fetch, columns, row_fn, date_of, stretch_col=1,
-                 sort_key=None, covered_of=None, color_of=None, right_cols=(), parent=None):
+                 sort_key=None, covered_of=None, color_of=None, right_cols=(), live=False, parent=None):
         super().__init__(parent)
+        # ``live`` marks a real-network tab (CalendarSpace sets it) — the only case the headless
+        # VIKE_DISABLE_LIVE gate suppresses (a running fetch QThread destroyed at teardown crashes
+        # the process). Tests inject a fake ``fetch`` and leave live=False so their worker runs.
+        self._live = live
         self._fetch, self._row_fn, self._date_of = fetch, row_fn, date_of
         self._sort_key = sort_key          # within-date ordering (e.g. biggest first)
         self._covered_of = covered_of      # predicate -> enables a "Covered only" toggle
@@ -332,6 +337,11 @@ class EquityCalendarTab(QtWidgets.QWidget):
             self._start_worker()
 
     def _start_worker(self) -> None:
+        # See EconomicCalendarTab._start_worker: headless suite must not start a LIVE fetch QThread
+        # (destroyed-while-running = 0xC0000409 at teardown). A test's injected fetch (live=False)
+        # still runs. Production close joins via CalendarSpace.stop_feed.
+        if os.environ.get("VIKE_DISABLE_LIVE") and self._live:
+            return
         self._loading_week = self._week_start
         frm, to = _week_dates(self._week_start)
         w = _EquityFetchWorker(self._fetch, frm, to)
@@ -437,9 +447,9 @@ class CalendarSpace(QtWidgets.QWidget):
         from ..data.calendar.equity import Ipo, fetch_dividends_enriched, fetch_earnings_enriched
 
         self.economic = economic_tab or EconomicCalendarTab()
-        self.earnings = EquityCalendarTab(fetch=fetch_earnings_enriched, **_earnings_cfg())
-        self.dividends = EquityCalendarTab(fetch=fetch_dividends_enriched, **_dividends_cfg())
-        self.ipo = EquityCalendarTab(fetch=Ipo().fetch, **_ipo_cfg())
+        self.earnings = EquityCalendarTab(fetch=fetch_earnings_enriched, live=True, **_earnings_cfg())
+        self.dividends = EquityCalendarTab(fetch=fetch_dividends_enriched, live=True, **_dividends_cfg())
+        self.ipo = EquityCalendarTab(fetch=Ipo().fetch, live=True, **_ipo_cfg())
 
         self._stack = QtWidgets.QStackedWidget()
         self._pages = [("Economic", self.economic), ("Earnings", self.earnings),
@@ -533,6 +543,18 @@ class CalendarSpace(QtWidgets.QWidget):
         self.economic.eventsChanged.connect(self._on_economic_changed)
         for tab in (self.earnings, self.dividends, self.ipo):
             tab.eventsChanged.connect(self.refresh_day_counts)
+
+    def stop_feed(self) -> None:
+        """Join every embedded calendar tab's fetch QThread. Called by MainWindow._teardown_tool on
+        Calendar-tool close (it invokes any tool widget's stop_feed, like the News poller). Without
+        this, closing JUST the Calendar tool — not the whole app — left a running fetch QThread whose
+        C++ object got destroyed at the widget teardown → 0xC0000409 (the tabs only auto-stop on
+        QApplication.aboutToQuit). Best-effort + idempotent; never blocks the close."""
+        for tab in (self.economic, self.earnings, self.dividends, self.ipo):
+            try:
+                tab._stop_workers()
+            except (RuntimeError, AttributeError):
+                pass
 
     def set_page(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)

@@ -204,6 +204,10 @@ class EconomicCalendarTab(QtWidgets.QWidget):
 
     def __init__(self, repository=None, parent=None, tz=None):
         super().__init__(parent)
+        # A None repository means the DEFAULT live (ForexFactory) one — the only case the headless
+        # VIKE_DISABLE_LIVE gate suppresses. An injected repository (tests / fakes) is NOT live, so
+        # its worker still runs (the load tests need it; a fast fake finishes before teardown).
+        self._live_repo = repository is None
         if repository is None:
             from ..data.calendar.repository import default_repository
             repository = default_repository()
@@ -545,6 +549,15 @@ class EconomicCalendarTab(QtWidgets.QWidget):
             self._start_worker()
 
     def _start_worker(self) -> None:
+        # Headless kill-switch: a live calendar fetch QThread that is still running when its widget
+        # tree is torn down crashes the process (~QThread qFatal / 0xC0000409). The offscreen test
+        # suite must not start the LIVE (default-repo) fetch (the only stop hook is
+        # QApplication.aboutToQuit, which never fires there). chart feeds + options already honour
+        # this; the calendar didn't — that gap was the rare CI teardown crash. An INJECTED repo (a
+        # test fake) is not live, so its worker still runs (the load tests need it). Production close
+        # is joined via CalendarSpace.stop_feed.
+        if os.environ.get("VIKE_DISABLE_LIVE") and self._live_repo:
+            return
         self._loading_week = self._week_start
         worker = _CalendarFetchWorker(self._repo, self._week_start, force=getattr(self, "_force", False))
         worker.eventsReady.connect(self._on_events)

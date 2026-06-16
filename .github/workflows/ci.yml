@@ -77,29 +77,26 @@ jobs:
       # The offscreen Qt tree (tests/gui/{chart,studio,panels}) — counterpart to the unit run above.
       # `not network` drops the live data-manager test; new GUI tests auto-collected by directory.
       #
-      # The WHOLE GUI tree runs PARALLEL (`-n auto`). The DOMINANT parallel teardown crash was
-      # ROOT-CAUSED to ADS AUTO-HIDE containers: the one test that created one (`setAutoHide(True)`)
-      # seeded a use-after-free that, under xdist, surfaced during a LATER test's teardown (it looked
-      # like a non-auto-hide crash in test_each_tool_opens_and_closes_as_window — cross-test
-      # contamination). The app never creates auto-hide containers (minimize = custom rail; #181
-      # removed the dead path), so that test + its unreachable un-pin handling were removed — dropping
-      # the crash rate from ~1-in-4 to ~1-in-60. A RARE native worker-crash residual REMAINS in the
-      # general ADS dock teardown (test_each_tool_opens_and_closes_as_window) — #171's deterministic
-      # shutdown reduced but can't eliminate it (it's inside ADS C++, upstream #31). A single retry
-      # (2 attempts) absorbs that ~1-2% residual on a required gate; the parallel run is fast enough
-      # that even a retry beats the old serial. (Fallback if it ever worsens: the serial `-p no:xdist`
-      # block in git history.)
-      - name: Run GUI test suite (parallel, 1x retry for the rare ADS-teardown residual)
-        shell: bash
-        run: |
-          for attempt in 1 2; do
-            echo "::group::GUI attempt $attempt"
-            uv run pytest -q --timeout=120 --timeout-method=thread -n auto tests/gui -m "not network" \
-              && { echo "::endgroup::"; exit 0; }
-            echo "::endgroup::"
-            echo "GUI attempt $attempt failed — retrying (rare native ADS-teardown flake, upstream #31)"
-          done
-          exit 1
+      # The WHOLE GUI tree runs PARALLEL (`-n auto`), NO retry. The parallel teardown crash class was
+      # ROOT-CAUSED in two stages and FULLY fixed:
+      #   1. DOMINANT (~1-in-4): ADS AUTO-HIDE containers. The one test that created one
+      #      (`setAutoHide(True)`) seeded a use-after-free that, under xdist, surfaced during a LATER
+      #      test's teardown (it masqueraded as a non-auto-hide crash in
+      #      test_each_tool_opens_and_closes_as_window — cross-test contamination). The app never
+      #      creates auto-hide containers (minimize = custom rail; #181 removed the dead path), so that
+      #      test + its unreachable un-pin handling were removed → ~1-in-4 to ~1-in-60.
+      #   2. RESIDUAL (~1-in-60): NOT ADS C++ — a calendar fetch-QThread leak. EconomicCalendarTab /
+      #      EquityCalendarTab start network QThread workers on show and only stopped on
+      #      QApplication.aboutToQuit (never fires under the module-scoped-QApplication suite), so a
+      #      running QThread was destroyed at teardown → ~QThread qFatal (0xC0000409). Fixed: a
+      #      LIVE-only VIKE_DISABLE_LIVE gate skips the default-network worker headless (injected-fake
+      #      load tests still run their workers), plus CalendarSpace.stop_feed() joins workers on close.
+      #      Reproduced deterministically with ZERO ADS and regression-tested
+      #      (tests/gui/panels/test_ads_teardown_repro_gui.py). 50x parallel panels soak post-fix:
+      #      0 crashes, 0 failures. Retry removed — the residual is fixed, not absorbed.
+      # (Fallback if a new race ever appears: the serial `-p no:xdist` block is in git history.)
+      - name: Run GUI test suite (parallel)
+        run: uv run pytest -q --timeout=120 --timeout-method=thread -n auto tests/gui -m "not network"
 
   bench:
     name: benchmarks (ubuntu · py3.12)
