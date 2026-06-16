@@ -1767,9 +1767,7 @@ class MainWindow(QtWidgets.QMainWindow):
             floats = list(mgr.floatingWidgets())
         except (RuntimeError, AttributeError):
             floats = []
-        # NOTE: do NOT early-return when there are no floats — the un-pin-auto-hide pass at the end
-        # must still run (a stale blob can restore an auto-hidden chart with no float at all). The
-        # float loops below are simply no-ops when `floats` is empty.
+        # The loops below are no-ops when `floats` is empty.
         # a docked area to re-home into (prefer one that isn't itself floating)
         central = None
         for d in mgr.dockWidgets():
@@ -1804,24 +1802,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     container.deleteLater()
             except (RuntimeError, AttributeError):
                 pass
-        # ADS auto-hide is ALSO retired — minimize uses the custom left rail now. A stale blob can
-        # restore a dock pinned to an edge (e.g. the chart as a left auto-hide tab, collapsed to a
-        # thin strip while a panel fills the rest), so un-pin restored auto-hidden docks back into
-        # the layout. mgr.dockWidgets() does NOT list auto-hidden docks, so walk the KNOWN docks
-        # (chart space + panels + tools) explicitly.
-        known = []
-        try:
-            known.append(self.tabs.dock(0))
-        except (RuntimeError, AttributeError, IndexError):
-            pass
-        known += list(getattr(self, "_panel_dock_map", {}).values())
-        known += list(getattr(self, "_tool_docks", {}).values())
-        for d in known:
-            try:
-                if d is not None and not d.isClosed() and d.isAutoHide():
-                    d.setAutoHide(False)
-            except (RuntimeError, AttributeError):
-                continue
+        # (An auto-hide un-pin pass used to live here for a stale blob that restored an edge-pinned
+        # dock. Removed: the app never creates ADS auto-hide containers — minimize is the custom left
+        # rail, the dead addAutoHideDockWidget path went in #181 — and the v4 migration drops pre-rail
+        # blobs, so the scenario is unreachable. It also could not be tested without creating a real
+        # auto-hide container, which is the ADS teardown crash 0xC0000409 / upstream #31.)
 
     def _build_statusbar(self) -> QtWidgets.QStatusBar:
         sb = QtWidgets.QStatusBar()
