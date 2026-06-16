@@ -550,3 +550,36 @@ def test_documents_persist_and_restore(app, _synthetic_load, tmp_path):
     sol = second._doc_widgets[1]
     assert [i.name for i in sol.chart._indicators.values()] == ["rsi"]
     second.close()
+
+
+def test_symbol_box_drives_focused_chart(app, _synthetic_load, monkeypatch):
+    """Stage 1 of chart unification: the symbol box / watchlist drive the FOCUSED chart WINDOW,
+    not the central chart; with nothing focused they fall back to the central chart."""
+    import vike_trader_app.data.catalog as catalog_mod
+    import vike_trader_app.ui.app as app_mod
+    # central-path load is cache-first -> feed it synthetic bars and treat them as fresh so it
+    # paints offline (no network) instead of falling through to get_bars.
+    monkeypatch.setattr(catalog_mod.Catalog, "query", lambda self, *a, **k: _bars(), raising=False)
+    monkeypatch.setattr(app_mod, "is_stale", lambda *a, **k: False, raising=False)
+
+    win = MainWindow(session_path=None)
+    win.show(); app.processEvents()
+
+    # (1) nothing focused -> central chart is the target
+    win._set_active_frame(None)
+    win._load_symbol("ADAUSDT"); app.processEvents()
+    assert win._symbol == "ADAUSDT"
+
+    # (2) focus a chart window -> the symbol box drives THAT doc; the central chart is untouched
+    doc = win._new_chart_document("SOLUSDT", "1h"); app.processEvents()
+    win._set_active_frame(win._chart_frames[-1])
+    win._load_symbol("ETHUSDT"); app.processEvents()
+    assert doc.symbol == "ETHUSDT"
+    assert win._symbol == "ADAUSDT"            # central NOT changed by a focused-window load
+
+    # (3) clear focus (e.g. the central chart was clicked) -> central is the target again
+    win._set_active_frame(None)
+    win._load_symbol("XRPUSDT"); app.processEvents()
+    assert win._symbol == "XRPUSDT"
+    assert doc.symbol == "ETHUSDT"             # the focused doc is left alone
+    win.close()
