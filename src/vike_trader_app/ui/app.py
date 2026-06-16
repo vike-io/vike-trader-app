@@ -2878,6 +2878,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if getattr(self, "news", None) is not None:   # forward to the News tool only while open
             self.news.set_symbol(symbol)
+        # No chart is open (central chart closed AND no focused window): the symbol box does NOTHING
+        # — the chart is an ordinary dock now, not auto-opened/resurrected (chart unification). This
+        # also makes an empty saved workspace stay empty: a session that restored the chart closed
+        # means the startup auto-load no-ops here instead of forcing the chart back open.
+        cs = self._chart_space_dock()
+        if cs is None or cs.isClosed():
+            return
         interval = interval or getattr(self, "_interval", None) or "1m"
         now = int(time.time() * 1000)
         start = now - _INTERVAL_LOOKBACK.get(interval, _WATCHLIST_DAYS) * _DAY_MS

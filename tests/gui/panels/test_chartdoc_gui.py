@@ -583,3 +583,28 @@ def test_symbol_box_drives_focused_chart(app, _synthetic_load, monkeypatch):
     assert win._symbol == "XRPUSDT"
     assert doc.symbol == "ETHUSDT"             # the focused doc is left alone
     win.close()
+
+
+def test_symbol_box_no_op_when_chart_closed(app, monkeypatch):
+    """Chart unification: with the chart dock CLOSED and no chart window focused, the symbol box does
+    NOTHING — it never auto-opens/resurrects the chart. (This also makes an empty saved workspace stay
+    empty: a session that restored the chart closed means the startup auto-load no-ops.)"""
+    import vike_trader_app.data.catalog as catalog_mod
+    import vike_trader_app.ui.app as app_mod
+    monkeypatch.setattr(catalog_mod.Catalog, "query", lambda self, *a, **k: _bars(), raising=False)
+    monkeypatch.setattr(app_mod, "is_stale", lambda *a, **k: False, raising=False)
+    win = MainWindow(session_path=None)
+    win.show(); app.processEvents()
+
+    win._load_symbol("ADAUSDT"); app.processEvents()
+    assert win._symbol == "ADAUSDT"            # chart open -> loads normally
+
+    win.tabs.dock(0).toggleView(False); app.processEvents()   # close the chart
+    assert win._chart_space_dock().isClosed()
+    win._load_symbol("XRPUSDT"); app.processEvents()
+    assert win._symbol == "ADAUSDT"            # CLOSED -> no-op, no auto-open (symbol unchanged)
+
+    win.tabs.dock(0).toggleView(True); app.processEvents()    # reopen
+    win._load_symbol("SOLUSDT"); app.processEvents()
+    assert win._symbol == "SOLUSDT"            # open again -> loads
+    win.close()
