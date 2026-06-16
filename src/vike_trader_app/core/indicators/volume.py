@@ -1,4 +1,4 @@
-from .base import Param, indicator
+from .base import Param, indicator, smooth_defined
 from .overlap import ema, sma
 
 
@@ -128,12 +128,7 @@ def efi(closes, volumes, period: int = 13):
     raw: list[float | None] = [None] * n
     for i in range(1, n):
         raw[i] = (closes[i] - closes[i - 1]) * volumes[i]
-    defined = [(i, v) for i, v in enumerate(raw) if v is not None]
-    out: list[float | None] = [None] * n
-    if len(defined) >= period:
-        e = ema([v for _, v in defined], period)
-        for (i, _), ev in zip(defined, e, strict=True):
-            out[i] = ev
+    out = smooth_defined(raw, ema, period)
     return out
 
 
@@ -162,12 +157,7 @@ def eom(highs, lows, volumes, period: int = 14):
         else:
             raw[i] = 0.0
     # SMA of defined raw tail
-    defined = [(i, v) for i, v in enumerate(raw) if v is not None]
-    out: list[float | None] = [None] * n
-    if len(defined) >= period:
-        sm = sma([v for _, v in defined], period)
-        for (i, _), sv in zip(defined, sm, strict=True):
-            out[i] = sv
+    out = smooth_defined(raw, sma, period)
     return out
 
 
@@ -304,12 +294,6 @@ def kvo(highs, lows, closes, volumes, fast: int = 34, slow: int = 55, signal: in
             kvo_raw[i] = f - s
 
     # Step 4: signal = EMA(kvo, signal_period) over defined kvo tail
-    kvo_defined = [(i, v) for i, v in enumerate(kvo_raw) if v is not None]
-    signal_full: list[float | None] = [None] * n
-    if len(kvo_defined) >= signal:
-        kvo_vals = [v for _, v in kvo_defined]
-        sig_ema = ema(kvo_vals, signal)
-        for (idx, _), sv in zip(kvo_defined, sig_ema, strict=True):
-            signal_full[idx] = sv
+    signal_full = smooth_defined(kvo_raw, ema, signal)
 
     return kvo_raw, signal_full

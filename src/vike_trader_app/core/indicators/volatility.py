@@ -1,6 +1,6 @@
 import math
 
-from .base import Param, indicator
+from .base import Param, indicator, smooth_defined
 from .overlap import ema, sma
 
 
@@ -319,13 +319,8 @@ def mass(highs, lows, period: int = 25, ema_period: int = 9):
     n = len(highs)
     hl = [highs[i] - lows[i] for i in range(n)]
     ema1 = ema(hl, ema_period)
-    # compute EMA of ema1 (defined portion only, mapped back)
-    defined = [(i, v) for i, v in enumerate(ema1) if v is not None]
-    ema2: list[float | None] = [None] * n
-    if len(defined) >= ema_period:
-        ema2_vals = ema([v for _, v in defined], ema_period)
-        for (i, _), ev in zip(defined, ema2_vals, strict=True):
-            ema2[i] = ev
+    # EMA of ema1 (defined portion only, mapped back)
+    ema2 = smooth_defined(ema1, ema, ema_period)
     # ratio series
     ratio: list[float | None] = [None] * n
     for i in range(n):

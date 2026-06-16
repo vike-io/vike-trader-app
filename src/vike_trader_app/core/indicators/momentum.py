@@ -1,6 +1,6 @@
 import math
 
-from .base import Param, indicator
+from .base import Param, indicator, smooth_defined
 from .overlap import ema, sma, wma
 
 
@@ -34,12 +34,7 @@ def macd(values, fast: int = 12, slow: int = 26, signal: int = 9):
         for f, s in zip(ema_fast, ema_slow, strict=True)
     ]
     # signal = EMA of the defined MACD-line tail, mapped back to aligned positions
-    defined = [(i, v) for i, v in enumerate(line) if v is not None]
-    sig: list[float | None] = [None] * len(values)
-    if len(defined) >= signal:
-        sig_vals = ema([v for _, v in defined], signal)
-        for (i, _), sv in zip(defined, sig_vals, strict=True):
-            sig[i] = sv
+    sig = smooth_defined(line, ema, signal)
     hist = [
         (m - s) if (m is not None and s is not None) else None
         for m, s in zip(line, sig, strict=True)
@@ -244,18 +239,8 @@ def cmo(values, period: int = 14):
 def trix(values, period: int = 18):
     """TRIX: 1-bar % ROC of ``EMA(EMA(EMA(close, p)))``, aligned."""
     e1 = ema(values, period)
-    defined1 = [(i, v) for i, v in enumerate(e1) if v is not None]
-    e2: list[float | None] = [None] * len(values)
-    if len(defined1) >= period:
-        e2_vals = ema([v for _, v in defined1], period)
-        for (i, _), ev in zip(defined1, e2_vals, strict=True):
-            e2[i] = ev
-    defined2 = [(i, v) for i, v in enumerate(e2) if v is not None]
-    e3: list[float | None] = [None] * len(values)
-    if len(defined2) >= period:
-        e3_vals = ema([v for _, v in defined2], period)
-        for (i, _), ev in zip(defined2, e3_vals, strict=True):
-            e3[i] = ev
+    e2 = smooth_defined(e1, ema, period)
+    e3 = smooth_defined(e2, ema, period)
     n = len(values)
     out: list[float | None] = [None] * n
     prev_idx = None
@@ -276,17 +261,8 @@ def tsi(values, long: int = 25, short: int = 13):
     ema1_d = ema(delta, long)
     ema1_a = ema(abs_delta, long)
 
-    def _ema_of_defined(src):
-        defined = [(i, v) for i, v in enumerate(src) if v is not None]
-        result: list[float | None] = [None] * n
-        if len(defined) >= short:
-            smoothed = ema([v for _, v in defined], short)
-            for (i, _), sv in zip(defined, smoothed, strict=True):
-                result[i] = sv
-        return result
-
-    ema2_d = _ema_of_defined(ema1_d)
-    ema2_a = _ema_of_defined(ema1_a)
+    ema2_d = smooth_defined(ema1_d, ema, short)
+    ema2_a = smooth_defined(ema1_a, ema, short)
     out: list[float | None] = [None] * n
     for i in range(n):
         d_val, a_val = ema2_d[i], ema2_a[i]
@@ -375,12 +351,7 @@ def stochf(highs, lows, closes, k: int = 14, d: int = 3):
         ll = min(lows[i - k + 1 : i + 1])
         rng = hh - ll
         k_line[i] = 100.0 * (closes[i] - ll) / rng if rng != 0 else 0.0
-    defined = [(i, v) for i, v in enumerate(k_line) if v is not None]
-    d_line: list[float | None] = [None] * n
-    if len(defined) >= d:
-        d_vals = sma([v for _, v in defined], d)
-        for (i, _), dv in zip(defined, d_vals, strict=True):
-            d_line[i] = dv
+    d_line = smooth_defined(k_line, sma, d)
     for i in range(n):
         if i < k - 1 + d - 1:
             d_line[i] = None
@@ -404,12 +375,7 @@ def stochrsi(values, rsi_p: int = 14, k: int = 14, d: int = 3):
         ll = min(window)
         rng = hh - ll
         k_line[i] = 100.0 * (rsi_vals[i] - ll) / rng if rng != 0 else 0.0
-    defined = [(i, v) for i, v in enumerate(k_line) if v is not None]
-    d_line: list[float | None] = [None] * n
-    if len(defined) >= d:
-        d_vals = sma([v for _, v in defined], d)
-        for (i, _), dv in zip(defined, d_vals, strict=True):
-            d_line[i] = dv
+    d_line = smooth_defined(k_line, sma, d)
     return k_line, d_line
 
 
@@ -466,13 +432,7 @@ def kst(values, roc1: int = 10, sma1: int = 10, roc2: int = 15, sma2: int = 10,
         for i in range(period_r, n):
             prev = values[i - period_r]
             roc_vals[i] = (values[i] - prev) / prev * 100.0 if prev != 0 else None
-        defined = [(i, v) for i, v in enumerate(roc_vals) if v is not None]
-        smoothed: list[float | None] = [None] * n
-        if len(defined) >= period_s:
-            sm = sma([v for _, v in defined], period_s)
-            for (i, _), sv in zip(defined, sm, strict=True):
-                smoothed[i] = sv
-        return smoothed, weight
+        return smooth_defined(roc_vals, sma, period_s), weight
 
     r1, w1 = _roc_sma(roc1, sma1, 1)
     r2, w2 = _roc_sma(roc2, sma2, 2)
@@ -485,12 +445,7 @@ def kst(values, roc1: int = 10, sma1: int = 10, roc2: int = 15, sma2: int = 10,
         if all(v is not None for v in (v1, v2, v3, v4)):
             kst_line[i] = w1 * v1 + w2 * v2 + w3 * v3 + w4 * v4
 
-    defined_kst = [(i, v) for i, v in enumerate(kst_line) if v is not None]
-    sig_line: list[float | None] = [None] * n
-    if len(defined_kst) >= signal:
-        sig_vals = sma([v for _, v in defined_kst], signal)
-        for (i, _), sv in zip(defined_kst, sig_vals, strict=True):
-            sig_line[i] = sv
+    sig_line = smooth_defined(kst_line, sma, signal)
 
     return kst_line, sig_line
 
@@ -519,13 +474,8 @@ def ac(highs, lows):
     """Accelerator Oscillator: ``AO - SMA(AO, 5)``."""
     n = len(highs)
     ao_vals = ao(highs, lows)
-    # compute SMA-5 of the defined AO tail, mapped back to aligned positions
-    defined = [(i, v) for i, v in enumerate(ao_vals) if v is not None]
-    sma5: list[float | None] = [None] * n
-    if len(defined) >= 5:
-        sm = sma([v for _, v in defined], 5)
-        for (i, _), sv in zip(defined, sm, strict=True):
-            sma5[i] = sv
+    # SMA-5 of the defined AO tail, mapped back to aligned positions
+    sma5 = smooth_defined(ao_vals, sma, 5)
     out: list[float | None] = [None] * n
     for i in range(n):
         if ao_vals[i] is not None and sma5[i] is not None:
@@ -654,12 +604,7 @@ def coppock(values, wma_p: int = 10, roc_long: int = 14, roc_short: int = 11):
         if roc_l[i] is not None and roc_s[i] is not None:
             combined[i] = roc_l[i] + roc_s[i]
     # WMA of the defined combined tail, mapped back
-    defined = [(i, v) for i, v in enumerate(combined) if v is not None]
-    out: list[float | None] = [None] * n
-    if len(defined) >= wma_p:
-        wma_vals = wma([v for _, v in defined], wma_p)
-        for (i, _), wv in zip(defined, wma_vals, strict=True):
-            out[i] = wv
+    out = smooth_defined(combined, wma, wma_p)
     return out
 
 
@@ -751,13 +696,7 @@ def smi_ergodic(values, long: int = 20, short: int = 5, signal: int = 5):
     # double-EMA of delta and abs_delta using the map-back pattern
     def _double_ema(src, p1, p2):
         e1 = ema(src, p1)
-        defined1 = [(i, v) for i, v in enumerate(e1) if v is not None]
-        e2: list[float | None] = [None] * n
-        if len(defined1) >= p2:
-            e2_vals = ema([v for _, v in defined1], p2)
-            for (i, _), ev in zip(defined1, e2_vals, strict=True):
-                e2[i] = ev
-        return e2
+        return smooth_defined(e1, ema, p2)
 
     ema2_d = _double_ema(delta,     long, short)
     ema2_a = _double_ema(abs_delta, long, short)
@@ -769,12 +708,7 @@ def smi_ergodic(values, long: int = 20, short: int = 5, signal: int = 5):
             smi_line[i] = 100.0 * d_val / a_val
 
     # signal = EMA of smi_line, mapped back
-    defined_smi = [(i, v) for i, v in enumerate(smi_line) if v is not None]
-    sig_line: list[float | None] = [None] * n
-    if len(defined_smi) >= signal:
-        sig_vals = ema([v for _, v in defined_smi], signal)
-        for (i, _), sv in zip(defined_smi, sig_vals, strict=True):
-            sig_line[i] = sv
+    sig_line = smooth_defined(smi_line, ema, signal)
 
     return smi_line, sig_line
 
