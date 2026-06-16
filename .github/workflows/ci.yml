@@ -16,7 +16,7 @@ jobs:
       fail-fast: false   # one OS/py failing must NOT cancel the others — we want to SEE which
       matrix:
         os: [windows-latest]   # macOS/Linux paused per user directive (2026-06-11) — re-add to re-enable
-        python: ["3.12", "3.13"]
+        python: ["3.14"]
     steps:
       - uses: actions/checkout@v6
 
@@ -50,7 +50,7 @@ jobs:
       fail-fast: false   # a Windows-only native crash must surface, not cancel macOS/Linux —
       matrix:            # running the GUI suite on windows-latest is the ONLY way to catch the
         os: [windows-latest]   # macOS/Linux paused per user directive (2026-06-11) — re-add to re-enable  # 0xC0000005 class Linux CI never saw.
-        python: ["3.12", "3.13"]
+        python: ["3.14"]
     env:
       # Headless Qt — no real display on any runner. The UI tests already opt into this platform;
       # we set it job-wide so every UI test (and PySide6 import) runs without a display, on all OSes.
@@ -74,34 +74,26 @@ jobs:
       - name: Sync dependencies (incl. the ui extra)
         run: uv sync --extra ui --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
 
-      # The offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process — the counterpart
-      # to the unit run above. `not network` drops the live data-manager test. New GUI tests are
-      # picked up automatically (directory globs, no hard-coded file list).
+      # The whole offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process — the
+      # counterpart to the unit run above. `not network` drops the live data-manager test. New GUI
+      # tests are auto-collected by directory (no hard-coded file list). `-n auto` (pytest-xdist) runs
+      # it across all runner cores in SEPARATE processes (the suite is parallel-safe).
       #
-      # SPLIT to isolate a py3.12-specific native teardown crash. tests/gui/{chart,studio} are stable
-      # under parallel xdist, so they run across all runner cores (`-n auto`). tests/gui/panels holds
-      # the MainWindow/dock-lifecycle tests that intermittently HARD-CRASH a worker on py3.12 under
-      # PARALLEL xdist — a native 0xC0000005-class teardown crash, a DIFFERENT heavy dock test each
-      # run (pre-dates this job, can't be caught in Python; py3.13/3.14 unaffected). Those run
-      # SERIALLY (`-p no:xdist`) so the parallel cross-worker teardown race is off the table.
-      - name: Run GUI test suite — chart + studio (parallel)
-        run: >
-          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
-          tests/gui/chart tests/gui/studio -m "not network"
-
-      # Dock/window-lifecycle tests serially. Retry up to 3x in a FRESH process to cover any residual
-      # native teardown flake: a real failure fails every attempt (still red), a flaky crash clears
-      # on a clean re-run. If serial proves insufficient on py3.12, the next step is to quarantine the
-      # specific offender(s) with an xfail/skip guard rather than red the whole job.
-      - name: Run GUI test suite — panels (serial, native-teardown isolation)
+      # NOTE: the parallel ADS/PySide6 dock-teardown crash (`CDockWidget already deleted` / native
+      # worker crash) that once forced a serial split for tests/gui/panels is a py3.12/py3.13-only
+      # race — the matrix is py3.14 ONLY now (the version this app actually ships/runs on), which is
+      # unaffected, so the whole tree runs parallel again. The 3x retry stays to absorb a rare residual
+      # GC/teardown flake (a real failure fails every attempt and stays red). See git-merge-workflow
+      # memory for the four failed Python-side fix attempts and why py3.14-only is the chosen escape.
+      - name: Run GUI test suite (offscreen)
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            echo "::group::GUI panels attempt $attempt"
-            uv run pytest -q --timeout=120 --timeout-method=thread -p no:xdist tests/gui/panels -m "not network" \
+            echo "::group::GUI test attempt $attempt"
+            uv run pytest -q --timeout=120 --timeout-method=thread -n auto tests/gui -m "not network" \
               && { echo "::endgroup::"; exit 0; }
             echo "::endgroup::"
-            echo "GUI panels attempt $attempt failed — retrying (flaky native Qt-teardown crash)"
+            echo "GUI attempt $attempt failed — retrying (rare GC/teardown flake)"
           done
           exit 1
 
@@ -117,7 +109,7 @@ jobs:
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v7
         with:
-          python-version: "3.12"
+          python-version: "3.14"
       - name: Sync dependencies
         run: uv sync --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
       - name: Run benchmarks
@@ -128,7 +120,9 @@ jobs:
           name: benchmark-results
           path: bench.json
 
-# NOTE: Python 3.14 is intentionally NOT in the matrix yet — PySide6/pyqtgraph wheel
-# availability on 3.14 across all three OSes is unconfirmed (would 404 the uv sync and red the
-# run). Add "3.14" to both matrices once wheels are published; the project's local dev already
-# runs 3.14, so the OS axis here (esp. windows-latest) is the high-value part regardless.
+# NOTE: matrix is py3.14 ONLY — the version this desktop app develops/runs/ships on. py3.12 & py3.13
+# were dropped (2026-06-16): being a BUNDLED desktop app (Python baked into the installer, users don't
+# bring their own), testing other interpreters tested a config we never run — and py3.12/3.13 were the
+# ONLY versions that exposed a parallel ADS/PySide6 dock-teardown C++ crash (unfixable from Python; see
+# git-merge-workflow memory). py3.14 is unaffected, so the GUI suite runs fully parallel again.
+# macOS/Linux paused per user directive (2026-06-11) — re-add the OS axis to re-enable.
