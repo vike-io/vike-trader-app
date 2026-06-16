@@ -766,12 +766,48 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_chart_window_closed(self, frame) -> None:
         if frame in self._chart_frames:
             self._chart_frames.remove(frame)
+        if self._active_frame is frame:
+            self._active_frame = None          # symbol box falls back to the central chart
         self._on_document_closed(frame.doc)
 
     def _on_chart_window_activated(self, frame) -> None:
+        self._set_active_frame(frame)
+
+    def _set_active_frame(self, frame) -> None:
+        """Track the FOCUSED chart window. The symbol box / watchlist drive whichever chart is
+        focused; ``None`` means the central chart is the target. Stage 1 of chart unification —
+        once the central chart is itself an ordinary dock (Stage 3) this becomes the ONE focus
+        model for every chart."""
         self._active_frame = frame
         for f in self._chart_frames:
-            f.set_active(f is frame)
+            try:
+                f.set_active(f is frame)
+            except RuntimeError:               # a frame torn down between activation and here
+                pass
+
+    def _active_chart_doc(self):
+        """The focused chart window's ChartDocument, or ``None`` when the central chart is the
+        target (nothing else focused). A rolled-up / disposed frame is never the target."""
+        f = self._active_frame
+        if f is not None and f in self._chart_frames:
+            try:
+                if f.isVisible() and not f._rolled:
+                    return f.doc
+            except RuntimeError:
+                pass
+        return None
+
+    def eventFilter(self, obj, ev):  # noqa: N802 - Qt override
+        """Clicking the central chart re-targets the symbol box to IT (clears the focused floating
+        chart window). Stage 1 of chart unification — observe-only, never consumes the event."""
+        try:
+            if (self._active_frame is not None
+                    and ev.type() == QtCore.QEvent.MouseButtonPress
+                    and obj is self.price.viewport()):
+                self._set_active_frame(None)
+        except (RuntimeError, AttributeError):
+            pass
+        return super().eventFilter(obj, ev)
 
     def _close_all_chart_windows(self) -> None:
         for f in list(self._chart_frames):
@@ -1287,6 +1323,7 @@ class MainWindow(QtWidgets.QMainWindow):
         _vp = self.price.viewport()
         _vp.setAutoFillBackground(False)
         _vp.setStyleSheet("background:transparent;")
+        _vp.installEventFilter(self)   # click the central chart -> it becomes the symbol target
         self.price.setViewportUpdateMode(QtWidgets.QGraphicsView.FullViewportUpdate)
         chart_card = QtWidgets.QWidget()
         chart_card.setObjectName("chartCard")
@@ -2826,6 +2863,15 @@ class MainWindow(QtWidgets.QMainWindow):
         without ever fetching the gap, which is why the chart lagged behind Binance.) If the
         top-up fetch fails we fall back to whatever is cached rather than leaving an empty chart.
         """
+        doc = self._active_chart_doc()
+        if doc is not None:
+            # Stage 1 of chart unification: the symbol box / watchlist drive the FOCUSED chart
+            # WINDOW, not the central chart. The ChartDocument loads itself (its own cache/network
+            # + bars); the central-chart path below runs only when no chart window is focused.
+            if getattr(self, "news", None) is not None:
+                self.news.set_symbol(symbol)
+            doc.load(symbol=symbol, interval=interval or doc.interval)
+            return
         if getattr(self, "news", None) is not None:   # forward to the News tool only while open
             self.news.set_symbol(symbol)
         interval = interval or getattr(self, "_interval", None) or "1m"
