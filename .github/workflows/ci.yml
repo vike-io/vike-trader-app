@@ -74,26 +74,29 @@ jobs:
       - name: Sync dependencies (incl. the ui extra)
         run: uv sync --extra ui --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
 
-      # The whole offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process — the
-      # counterpart to the unit run above. `not network` drops the live data-manager test. New GUI
-      # tests are auto-collected by directory (no hard-coded file list). `-n auto` (pytest-xdist) runs
-      # it across all runner cores in SEPARATE processes (the suite is parallel-safe).
+      # The offscreen Qt tree (tests/gui/{chart,studio,panels}) — counterpart to the unit run above.
+      # `not network` drops the live data-manager test; new GUI tests auto-collected by directory.
       #
-      # NOTE: the parallel ADS/PySide6 dock-teardown crash (`CDockWidget already deleted` / native
-      # worker crash) that once forced a serial split for tests/gui/panels is a py3.12/py3.13-only
-      # race — the matrix is py3.14 ONLY now (the version this app actually ships/runs on), which is
-      # unaffected, so the whole tree runs parallel again. The 3x retry stays to absorb a rare residual
-      # GC/teardown flake (a real failure fails every attempt and stays red). See git-merge-workflow
-      # memory for the four failed Python-side fix attempts and why py3.14-only is the chosen escape.
-      - name: Run GUI test suite (offscreen)
+      # SPLIT: tests/gui/{chart,studio} run PARALLEL (`-n auto`, stable). tests/gui/panels holds the
+      # MainWindow/dock-lifecycle tests that hit the ADS/PySide6 native teardown crash (`CDockWidget
+      # already deleted` / worker crash) under PARALLEL xdist. That crash is rarest on py3.14 but NOT
+      # absent — a py3.14-only-parallel run flaked 3/3 retries on it (the reason this split was restored
+      # after the py3.12/3.13 drop wrongly assumed py3.14 immune). Panels run SERIALLY (`-p no:xdist`)
+      # so the parallel cross-worker teardown race is off the table, with a 3x retry for residual flake.
+      - name: Run GUI test suite — chart + studio (parallel)
+        run: >
+          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
+          tests/gui/chart tests/gui/studio -m "not network"
+
+      - name: Run GUI test suite — panels (serial, native-teardown isolation)
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            echo "::group::GUI test attempt $attempt"
-            uv run pytest -q --timeout=120 --timeout-method=thread -n auto tests/gui -m "not network" \
+            echo "::group::GUI panels attempt $attempt"
+            uv run pytest -q --timeout=120 --timeout-method=thread -p no:xdist tests/gui/panels -m "not network" \
               && { echo "::endgroup::"; exit 0; }
             echo "::endgroup::"
-            echo "GUI attempt $attempt failed — retrying (rare GC/teardown flake)"
+            echo "GUI panels attempt $attempt failed — retrying (native Qt-teardown flake)"
           done
           exit 1
 
