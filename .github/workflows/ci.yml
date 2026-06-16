@@ -74,26 +74,34 @@ jobs:
       - name: Sync dependencies (incl. the ui extra)
         run: uv sync --extra ui --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
 
-      # The whole offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process —
-      # the counterpart to the unit run above. `not network` drops the live data-manager test.
-      # New GUI tests under tests/gui are picked up automatically (no hard-coded file list).
-      # `-n auto` (pytest-xdist) runs it across all runner cores in SEPARATE processes — full
-      # isolation preserved (the suite is parallel-safe), cutting ~10 min serial to a few.
-      # The offscreen Qt teardown intermittently HARD-CRASHES a worker on py3.12 under parallel
-      # xdist — a different heavy dock/chart test each run (a native 0xC0000005-class crash that
-      # pre-dates this job and can't be caught in Python; py3.13 is unaffected). Retry the suite up
-      # to 3x in a FRESH process: a real failure fails every attempt (still red), a flaky native
-      # teardown crash clears on a clean re-run. The many Python-level teardown guards
-      # (dashtiles/_update_account/watchlist/news) cut the flake rate; this covers the residual.
-      - name: Run GUI test suite (offscreen)
+      # The offscreen Qt tree (tests/gui/{chart,studio,panels}) in its own process — the counterpart
+      # to the unit run above. `not network` drops the live data-manager test. New GUI tests are
+      # picked up automatically (directory globs, no hard-coded file list).
+      #
+      # SPLIT to isolate a py3.12-specific native teardown crash. tests/gui/{chart,studio} are stable
+      # under parallel xdist, so they run across all runner cores (`-n auto`). tests/gui/panels holds
+      # the MainWindow/dock-lifecycle tests that intermittently HARD-CRASH a worker on py3.12 under
+      # PARALLEL xdist — a native 0xC0000005-class teardown crash, a DIFFERENT heavy dock test each
+      # run (pre-dates this job, can't be caught in Python; py3.13/3.14 unaffected). Those run
+      # SERIALLY (`-p no:xdist`) so the parallel cross-worker teardown race is off the table.
+      - name: Run GUI test suite — chart + studio (parallel)
+        run: >
+          uv run pytest -q --timeout=120 --timeout-method=thread -n auto
+          tests/gui/chart tests/gui/studio -m "not network"
+
+      # Dock/window-lifecycle tests serially. Retry up to 3x in a FRESH process to cover any residual
+      # native teardown flake: a real failure fails every attempt (still red), a flaky crash clears
+      # on a clean re-run. If serial proves insufficient on py3.12, the next step is to quarantine the
+      # specific offender(s) with an xfail/skip guard rather than red the whole job.
+      - name: Run GUI test suite — panels (serial, native-teardown isolation)
         shell: bash
         run: |
           for attempt in 1 2 3; do
-            echo "::group::GUI test attempt $attempt"
-            uv run pytest -q --timeout=120 --timeout-method=thread -n auto tests/gui -m "not network" \
+            echo "::group::GUI panels attempt $attempt"
+            uv run pytest -q --timeout=120 --timeout-method=thread -p no:xdist tests/gui/panels -m "not network" \
               && { echo "::endgroup::"; exit 0; }
             echo "::endgroup::"
-            echo "GUI attempt $attempt failed — retrying (flaky native Qt-teardown crash)"
+            echo "GUI panels attempt $attempt failed — retrying (flaky native Qt-teardown crash)"
           done
           exit 1
 
