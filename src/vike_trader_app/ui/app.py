@@ -1177,6 +1177,33 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:        # frame mid-teardown — skip
                 pass
 
+    def _close_all_tool_docks(self) -> None:
+        """Close every DOCKED tool (calendars/screener/journal/news/options/data/studio). Each
+        closeDockWidget fires _on_tool_closed -> _teardown_tool (stop_feed/shutdown/worker-join) +
+        clears _tool_docks + the legacy alias. Without this, a tool DOCK (the default open path)
+        survives teardown and its background timers/workers run on into manager destruction."""
+        for dock in list(self._tool_docks.values()):
+            try:
+                dock.closeDockWidget()
+            except RuntimeError:        # dock mid-teardown — skip
+                pass
+
+    def _close_all_frames_and_docks(self) -> None:
+        """The ONE ordered sweep that closes every torn-out window + docked surface so NOTHING is
+        left as an orphan top-level for an arbitrary-order GC/deleteLater to free (the teardown-race
+        source). Shared by closeEvent AND _apply_workspace_state so the two can't drift. Order is the
+        proven workspace-swap order: chart windows -> docked charts -> tool windows -> floated panels
+        -> tool docks -> chart-document docks. Each close runs its handler's unregister/teardown."""
+        self._close_all_chart_windows()    # each close unregisters hub/bus + drops refs
+        self._close_all_chart_docks()      # docked charts (unregister their docs)
+        self._close_all_tool_windows()     # torn-out tool windows (with per-tool teardown)
+        self._close_all_panel_windows()    # re-home any floated side panels
+        self._close_all_tool_docks()       # docked tools (calendars/screener/...) -> _teardown_tool
+        try:
+            self.tabs.close_all_documents()   # any remaining chart-document docks
+        except (RuntimeError, AttributeError):
+            pass
+
     def _detach_panel(self, dock):
         """⧉ on a side panel (Market watch / Trades) — float its widget into a clean window. Panels
         are NOT DeleteOnClose, so the SAME dock is reused: take the widget out + hide the empty dock
@@ -3623,11 +3650,14 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def closeEvent(self, event):  # noqa: N802 - Qt override
         self._save_session()  # snapshot before teardown so the next launch resumes here
-        # Dispose any torn-out tool windows first — runs each tool's teardown (stop_feed /
-        # studio.shutdown / options disconnect) and nils its alias, so the guarded alias-based
-        # teardown further down skips it instead of double-stopping. Also stops a detached OS
-        # window lingering as a stray top-level after the main window closes.
-        self._close_all_tool_windows()
+        # Close EVERYTHING the user has open — torn-out windows AND docked surfaces (chart windows,
+        # docked charts, tool windows, floated panels, tool docks, chart-document docks) — in ONE
+        # ordered sweep, so nothing survives as an orphan top-level for an arbitrary-order
+        # deleteLater to free during a later test's teardown (the recurring CDockWidget-already-
+        # deleted race). Each close runs its handler's teardown (stop_feed / studio.shutdown /
+        # options disconnect / hub+bus unregister) BEFORE the hub/worker shutdown below. Previously
+        # only torn-out tool windows were closed here — every other surface leaked into teardown.
+        self._close_all_frames_and_docks()
         if getattr(self, "_link_bus", None) is not None:
             self._link_bus.remove_member(self)   # leave the bus: no apply_link after teardown
         self._stop_forward()  # never leave a feed thread running
