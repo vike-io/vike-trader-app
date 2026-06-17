@@ -308,6 +308,12 @@ class TestSkew:
         tail = _tail(out)
         assert tail and all(math.isfinite(v) for v in tail)
 
+    def test_value_matches_scipy_bias_corrected(self):
+        """Pinned to scipy.stats.skew(..., bias=False). The bias factor must be sqrt(p(p-1))/(p-2),
+        NOT p^2/((p-1)(p-2)) — the latter over-stated ~8% (p=20) to ~40% (p=5)."""
+        # skew([1,1,1,1,10], 5) == 2.2360679... (scipy bias=False); was 3.125 with the wrong factor
+        assert skew([1.0, 1.0, 1.0, 1.0, 10.0], 5)[-1] == pytest.approx(2.2360679774997896, abs=1e-9)
+
 
 # ── kurtosis ──────────────────────────────────────────────────────────────────
 

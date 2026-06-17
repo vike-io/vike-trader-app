@@ -150,10 +150,14 @@ class DuckCatalog:
             return []
         lo = start if start is not None else _I64_MIN
         hi = end if end is not None else _I64_MAX
+        # Filter on the BUCKET, not the base ts: a WHERE ts BETWEEN pre-filter truncates the base
+        # bars feeding the edge buckets (a mid-bucket start/end produced a partial/phantom candle).
+        # HAVING keeps only whole buckets whose start falls in [lo, hi]; each is aggregated from ALL
+        # its base bars, so edge buckets are correct.
         rows = self._con.execute(
             f"SELECT (ts - ts % ?) AS bucket, arg_min(open, ts), max(high), min(low), "
             f"arg_max(close, ts), sum(volume) FROM {src} "
-            f"WHERE ts BETWEEN ? AND ? GROUP BY bucket ORDER BY bucket",
+            f"GROUP BY bucket HAVING bucket BETWEEN ? AND ? ORDER BY bucket",
             [target_ms, lo, hi],
         ).fetchall()
         return [Bar(ts=int(r[0]), open=r[1], high=r[2], low=r[3], close=r[4], volume=r[5])

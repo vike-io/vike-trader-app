@@ -22,6 +22,28 @@ def test_mfe_mae_long():
     assert abs(mae + 0.10) < 1e-9   # low 90  -> -10%
 
 
+def test_mfe_mae_short_not_inverted():
+    """A SHORT trade's favorable excursion is the price falling, adverse is it rising. The side was
+    read from t.size>=0 (always true since the engine stores abs), inverting MFE/MAE on shorts."""
+    # short: enter 100, exit 80 (price fell -> profit). low 70 favorable, high 105 adverse.
+    bars = [Bar(ts=0, open=100, high=105, low=100, close=100),
+            Bar(ts=60_000, open=100, high=100, low=70, close=80),
+            Bar(ts=120_000, open=80, high=80, low=80, close=80)]
+    t = Trade(entry_price=100.0, exit_price=80.0, size=1.0, pnl=20.0, entry_ts=0, exit_ts=120_000)
+    (mfe, mae), = R.mfe_mae([t], bars)
+    assert abs(mfe - 0.30) < 1e-9   # low 70 -> +30% favorable for a short
+    assert abs(mae + 0.05) < 1e-9   # high 105 -> -5% adverse for a short
+
+
+def test_report_to_csv_labels_short_side():
+    """The side column read t.size>=0 -> always 'long'. A profitable short must read 'short'."""
+    class _Rep:
+        trades = [Trade(entry_price=100.0, exit_price=80.0, size=1.0, pnl=20.0, entry_ts=0, exit_ts=1)]
+    csv = R.report_to_csv(_Rep())
+    trade_line = csv.strip().splitlines()[-1]
+    assert ",short," in trade_line
+
+
 def test_returns_histogram_counts_all():
     edges, counts = R.returns_histogram([0.0, 0.1, 0.1, 0.2], bins=4)
     assert len(edges) == 5
