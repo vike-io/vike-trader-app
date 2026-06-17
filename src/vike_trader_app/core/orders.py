@@ -25,6 +25,11 @@ class Order:
 def order_fill_price(o: "Order", bar):
     """Fill price for ``o`` against ``bar``, or None if it doesn't trigger.
 
+    Gap-open normalization: a bar that OPENS past the trigger never traded at the trigger price, so
+    the realistic fill is the (gapped) open — ADVERSE for stops (you're filled worse than the stop)
+    and FAVOURABLE for limits (price improvement: you're filled better than the limit). Within a
+    non-gapping bar this collapses to the trigger price, so it's a no-op for ordinary fills.
+
     Trailing stops check the prior extreme's trigger first, then ratchet the extreme with this bar.
     """
     if o.kind == "market":
@@ -35,25 +40,25 @@ def order_fill_price(o: "Order", bar):
         if o.side > 0:
             return bar.close if bar.close <= o.price else None
         return bar.close if bar.close >= o.price else None
-    if o.kind == "limit":  # buy on a dip to price; sell on a rally to price
+    if o.kind == "limit":  # buy on a dip / sell on a rally — a gap through the open improves the fill
         if o.side > 0:
-            return o.price if bar.low <= o.price else None
-        return o.price if bar.high >= o.price else None
-    if o.kind == "stop":  # buy on breakout up; sell on breakdown
+            return min(o.price, bar.open) if bar.low <= o.price else None
+        return max(o.price, bar.open) if bar.high >= o.price else None
+    if o.kind == "stop":  # breakout up / breakdown — a gap through the open worsens the fill
         if o.side > 0:
-            return o.price if bar.high >= o.price else None
-        return o.price if bar.low <= o.price else None
+            return max(o.price, bar.open) if bar.high >= o.price else None
+        return min(o.price, bar.open) if bar.low <= o.price else None
     # trailing: side<0 protects a long (sell-stop trailing the high);
     #           side>0 protects a short (buy-stop trailing the low).
     if o.side < 0:
         trigger = o.extreme - o.trail
         if bar.low <= trigger:
-            return trigger
+            return min(trigger, bar.open)          # gap-down open fills below the trailing stop
         o.extreme = max(o.extreme, bar.high)
         return None
     trigger = o.extreme + o.trail
     if bar.high >= trigger:
-        return trigger
+        return max(trigger, bar.open)              # gap-up open fills above the trailing stop
     o.extreme = min(o.extreme, bar.low)
     return None
 

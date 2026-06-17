@@ -23,6 +23,10 @@ class Result:
     trades: list[Trade]
     equity_curve: list[float]
     final_equity: float
+    # Count of bars where a stop-loss AND a take-profit (both reducing the position) triggered in the
+    # SAME bar — OHLC can't say which hit first, so the engine resolved them pessimistically (stop
+    # first). A high count means the headline result leans on that pessimistic assumption.
+    intrabar_both_hit: int = 0
 
 
 class BacktestEngine:
@@ -57,6 +61,7 @@ class BacktestEngine:
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
+        self.intrabar_both_hit = 0   # bars where a SL+TP bracket both triggered (resolved stop-first)
         self._pending: list[Order] = []
         self._entry_fee = 0.0
         self._entry_ts = 0
@@ -181,7 +186,8 @@ class BacktestEngine:
     # --- run loop ---
     def run(self) -> Result:
         equity_curve = [self.step(bar, i) for i, bar in enumerate(self.bars)]
-        return Result(self.trades, equity_curve, self.equity_now())
+        return Result(self.trades, equity_curve, self.equity_now(),
+                      intrabar_both_hit=self.intrabar_both_hit)
 
     def add_live_bar(self, bar: Bar) -> None:
         """Append a live bar to history and refresh higher-TF aggregates (forward mode).
@@ -217,14 +223,45 @@ class BacktestEngine:
         return self.equity_now()
 
     def _fill_pending(self, bar: Bar) -> None:
+        triggered: list[tuple[Order, float]] = []
         still: list[Order] = []
         for o in self._pending:
             fill_price = order_fill_price(o, bar)
             if fill_price is None:
                 still.append(o)  # rest until triggered
             else:
-                self._apply_fill(o.side, o.size, fill_price, bar.ts, is_maker=o.kind == "limit")
+                triggered.append((o, fill_price))
         self._pending = still
+        if len(triggered) > 1:
+            triggered = self._resolve_intrabar(triggered)
+        for o, fill_price in triggered:
+            if o.size <= 1e-12:                 # capped to ~0 by the bracket guard -> nothing to fill
+                continue
+            self._apply_fill(o.side, o.size, fill_price, bar.ts, is_maker=o.kind == "limit")
+
+    def _resolve_intrabar(self, triggered: "list[tuple[Order, float]]") -> "list[tuple[Order, float]]":
+        """Several resting orders triggered in ONE bar — OHLC can't reveal the intrabar sequence.
+
+        Apply ADVERSE (stop/trailing) fills before FAVOURABLE (limit) fills (pessimistic ordering).
+        When more than one order REDUCES the current position in the same bar (a stop-loss +
+        take-profit bracket), cap the total reduction to the position size, adverse-first, so the
+        profit target can't also fill after the stop already flattened the position. The ambiguous
+        bar is counted in ``intrabar_both_hit`` (surfaced on the Result for honesty)."""
+        triggered = sorted(triggered, key=lambda t: 0 if t[0].kind in ("stop", "trailing") else 1)
+        pos = self.position.size
+        closing_side = -1 if pos > 0 else (1 if pos < 0 else 0)
+        if closing_side:
+            reducers = [t for t in triggered if t[0].side == closing_side]
+            has_stop = any(t[0].kind in ("stop", "trailing") for t in reducers)
+            has_limit = any(t[0].kind not in ("stop", "trailing") for t in reducers)
+            if len(reducers) > 1 and has_stop and has_limit:
+                self.intrabar_both_hit += 1
+                remaining = abs(pos)
+                for o, _fp in reducers:          # adverse-first (triggered is already sorted)
+                    take = min(o.size, remaining)
+                    o.size = take                # order is consumed this bar -> safe to mutate
+                    remaining -= take
+        return triggered
 
     def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> None:
         price = adverse_fill_price(price, side_sign, self.slippage)  # adverse: buys up, sells down
