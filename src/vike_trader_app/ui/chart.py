@@ -249,13 +249,33 @@ class PriceAxis(pg.AxisItem):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._last = None   # (price: float, colour: QColor) for the gutter chip, or None to hide
+        self._last = None        # (price: float, colour: QColor) for the gutter chip, or None to hide
+        self._chip_font = None   # lazily-built + cached QFont for the chip (avoid per-paint construction)
 
     def set_last(self, price, color) -> None:
-        new = None if price is None else (float(price), QtGui.QColor(color))
+        import math
+        try:
+            ok = price is not None and math.isfinite(float(price))
+        except (TypeError, ValueError):
+            ok = False           # non-finite (NaN/inf) -> hide; NaN!=NaN would also defeat the dedup below
+        new = (float(price), QtGui.QColor(color)) if ok else None
         if new != self._last:
             self._last = new
             self.update()
+
+    @staticmethod
+    def chip_top(r_top, r_height, lo, hi, price, th):
+        """Top-y of the gutter chip for ``price`` (or None to not draw). Pure → unit-testable.
+
+        Right axis: ``hi`` maps to the top, ``lo`` to the bottom. Returns None when the range is
+        degenerate or the price has scrolled off-screen; otherwise the chip is clamped fully inside
+        the axis band so it never half-draws past the top/bottom edge."""
+        if not hi > lo:
+            return None
+        y = r_top + (hi - price) / (hi - lo) * r_height   # right axis: hi price at the top
+        if not (r_top <= y <= r_top + r_height):          # price scrolled off-screen -> no chip
+            return None
+        return max(r_top, min(y - th / 2.0, r_top + r_height - th))
 
     def paint(self, p, opt, widget=None):  # noqa: N802 - Qt override
         super().paint(p, opt, widget)
@@ -265,25 +285,25 @@ class PriceAxis(pg.AxisItem):
             lo, hi = float(self.range[0]), float(self.range[1])
         except (TypeError, ValueError, IndexError):
             return
-        if not hi > lo:
-            return
         price, color = self._last
         r = self.boundingRect()
-        y = r.top() + (hi - price) / (hi - lo) * r.height()   # right axis: hi price at the top
-        if not (r.top() <= y <= r.bottom()):                  # price scrolled off-screen -> no chip
-            return
         # With the grid on, boundingRect() is the UNION of the axis strip and the linked view, so
         # r spans the whole plot — its vertical extent is right but its width is the full chart.
         # Clamp the chip to the axis's OWN gutter strip on the right edge (self.width()).
         aw = self.width()
-        # The unified UI font (theme.FONT_UI) at weight 200, sized to the 12px axis labels.
-        font = QtGui.QFont()
-        font.setFamilies([s.strip().strip('"') for s in theme.FONT_UI.split(",")])
-        font.setPixelSize(12)
-        font.setWeight(QtGui.QFont.Weight(200))
-        p.setFont(font)
+        # The unified UI font (theme.FONT_UI) at weight 200, sized to the 12px axis labels — built once.
+        if self._chip_font is None:
+            f = QtGui.QFont()
+            f.setFamilies([s.strip().strip('"') for s in theme.FONT_UI.split(",")])
+            f.setPixelSize(12)
+            f.setWeight(QtGui.QFont.Weight(200))
+            self._chip_font = f
+        p.setFont(self._chip_font)
         th = p.fontMetrics().height() + 4
-        box = QtCore.QRectF(r.right() - aw, y - th / 2.0, aw, th)
+        top = self.chip_top(r.top(), r.height(), lo, hi, price, th)
+        if top is None:
+            return
+        box = QtCore.QRectF(r.right() - aw, top, aw, th)
         p.setPen(QtCore.Qt.NoPen)
         p.setBrush(color)
         p.drawRoundedRect(box, 3, 3)
@@ -1751,15 +1771,12 @@ class PriceChart(pg.PlotWidget):
         self.addItem(self._cursor)
         self._cursor.hide()
 
-        # last-price dashed line + badge
+        # last-price dashed line (the price chip itself is painted by PriceAxis in the right gutter)
         self._last_line = pg.InfiniteLine(
             angle=0, movable=False, pen=pg.mkPen(theme.TEXT3, width=1, style=QtCore.Qt.DashLine)
         )
         self.addItem(self._last_line, ignoreBounds=True)
         self._last_line.hide()
-        self._last_badge = pg.TextItem(color=theme.BG, anchor=(0, 0.5), fill=pg.mkBrush(_UP))
-        self.addItem(self._last_badge, ignoreBounds=True)
-        self._last_badge.hide()
 
         # mouse crosshair (dim dashed)
         cx_pen = pg.mkPen(theme.TEXT2, width=1, style=QtCore.Qt.DashLine)
@@ -3211,7 +3228,6 @@ class PriceChart(pg.PlotWidget):
         bars = self._shown
         if not bars:
             self._last_line.hide()
-            self._last_badge.hide()
             self.getAxis("right").set_last(None, None)
             return
         i = len(bars) - 1
@@ -3221,11 +3237,9 @@ class PriceChart(pg.PlotWidget):
         self._last_line.setPen(pg.mkPen(col, width=1, style=QtCore.Qt.DashLine))
         self._last_line.setPos(b.close)
         self._last_line.show()
-        # TradingView/TradeLocker: the live price as a filled chip in the RIGHT-AXIS gutter (always
-        # visible). The old in-plot TextItem badge sat at the last bar's x and clipped off the right
-        # edge — keep it hidden, the axis gutter tag supersedes it.
+        # TradingView/TradeLocker: the live price as a filled chip in the RIGHT-AXIS gutter, always
+        # visible (PriceAxis.paint draws it — the old in-plot TextItem badge clipped off the edge).
         self.getAxis("right").set_last(b.close, col)
-        self._last_badge.hide()
 
     def _set_ohlc(self, bar, prev_close=None):
         if bar is None:

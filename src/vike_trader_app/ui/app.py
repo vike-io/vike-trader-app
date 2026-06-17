@@ -749,6 +749,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._active_frame is frame:
             self._active_frame = None          # symbol box falls back to the central chart
         self._on_document_closed(frame.doc)
+        self._retile_timer.start()             # remaining tiled windows re-fit the freed space (as minimize does)
 
     def _on_chart_window_activated(self, frame) -> None:
         self._set_active_frame(frame)
@@ -1101,6 +1102,7 @@ class MainWindow(QtWidgets.QMainWindow):
         widget = getattr(frame, "doc", None)         # body still child of the frame here
         if widget is not None:
             self._teardown_tool(key, widget)
+        self._retile_timer.start()                   # remaining tiled windows re-fit the freed space (as minimize does)
 
     def _close_all_tool_windows(self) -> None:
         """Dispose every torn-out tool window (used on app close / workspace swap). Teardown runs
