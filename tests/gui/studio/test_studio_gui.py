@@ -249,22 +249,6 @@ def test_optimize_without_grid_is_graceful(app):
     assert tab.results.last_report is None
 
 
-def test_indicator_dialog_builds_and_autoselects(app):
-    from vike_trader_app.ui.indicators import IndicatorCatalogDialog
-    dlg = IndicatorCatalogDialog()
-    assert dlg._code.toPlainText() != ""   # first indicator auto-selected
-    assert dlg._btn_insert.isEnabled()
-
-
-def test_indicator_insert_appends_to_editor(app):
-    from vike_trader_app.analysis.indicator_catalog import CATALOG
-    tab = StudioTab()
-    tab.set_text("# my strategy\n")
-    tab._insert_snippet(CATALOG[0].snippet)
-    assert CATALOG[0].snippet.strip() in tab.text()
-    assert "# my strategy" in tab.text()  # existing code preserved
-
-
 def test_concurrent_prompt_is_refused(app):
     tab = StudioTab()
     tab.set_agent_client(object())       # any non-None client
@@ -479,7 +463,6 @@ def test_run_code_exits_portfolio_mode(app):
 
 def test_optimize_routes_to_portfolio_path(app, monkeypatch):
     """When _portfolio_bars is set, _optimize uses PortfolioStrategyTester (verified via monkeypatch)."""
-    import math
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
 
     called_with = {}

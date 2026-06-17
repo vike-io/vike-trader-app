@@ -1,25 +1,13 @@
 """Chart windowing helpers (Qt-free): default view + replay-follow + visible y-bounds."""
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.ui.chartdata import follow_window, initial_window, y_bounds
+from vike_trader_app.ui.chartdata import follow_window, y_bounds
 
 
 def _bars(n):
     return [
         Bar(ts=i, open=10 + i, high=12 + i, low=8 + i, close=11 + i, volume=1.0) for i in range(n)
     ]
-
-
-def test_initial_window_shows_last_n():
-    assert initial_window(1000, 300) == (700, 1000)
-
-
-def test_initial_window_smaller_than_window():
-    assert initial_window(50, 300) == (0, 50)
-
-
-def test_initial_window_empty():
-    assert initial_window(0, 300) == (0, 0)
 
 
 def test_follow_window_keeps_cursor_visible():

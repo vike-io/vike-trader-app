@@ -2216,20 +2216,6 @@ class StudioTab(QtWidgets.QWidget):
         except OSError as exc:
             self.results.show_error(f"Export failed: {exc}")
 
-    def _open_indicators(self) -> None:
-        """Open the indicator catalogue; chosen snippet is appended to the editor."""
-        from .indicators import IndicatorCatalogDialog
-
-        dlg = IndicatorCatalogDialog(parent=self)
-        dlg.setAttribute(QtCore.Qt.WA_DeleteOnClose)
-        dlg.insertRequested.connect(self._insert_snippet)
-        dlg.exec()
-
-    def _insert_snippet(self, snippet: str) -> None:
-        current = self.editor.text()
-        sep = "" if not current or current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
-        self.editor.setText(current + sep + snippet)
-
     def _open_config(self) -> None:
         """Open the per-run backtest-config modal (capital + date range)."""
         from vike_trader_app.tester import TesterConfig

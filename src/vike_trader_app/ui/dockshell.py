@@ -693,32 +693,6 @@ class SpaceDeck(QtCore.QObject):
         self._equalize_splitters([d.dockAreaWidget() for d in docks])
         return n
 
-    def arrange_workspace(self, chart_dock, panels, mode: str) -> int:
-        """Tile the CENTRAL chart + the open side panels (Market watch etc.) — the docked layout
-        Window>Arrange used to ignore entirely. The chart stays the anchor; panels are re-docked
-        beside it: BELOW for 'rows' (Tile Horizontally → stacked bands), to the RIGHT otherwise
-        ('columns'/'grid'/'cascade' → side-by-side strips). Each panel chains off the previous so
-        N panels form a clean row/column. Sizes are then equalised. Returns the cell count."""
-        def _live(d):
-            try:
-                return d is not None and not d.isClosed()
-            except RuntimeError:   # a DeleteOnClose dock whose C++ object is already gone
-                return False
-
-        panels = [d for d in panels if _live(d) and d is not chart_dock]
-        if not _live(chart_dock) or not panels:
-            return 0
-        side = QtAds.BottomDockWidgetArea if mode == "rows" else QtAds.RightDockWidgetArea
-        prev_area = chart_dock.dockAreaWidget()
-        if prev_area is None:
-            return 0
-        for d in panels:
-            self._mgr.addDockWidget(side, d, prev_area)
-            prev_area = d.dockAreaWidget()
-        self._equalize_splitters([chart_dock.dockAreaWidget()]
-                                 + [d.dockAreaWidget() for d in panels])
-        return len(panels) + 1
-
     def _equalize_splitters(self, areas: list) -> None:
         """Best-effort equal cell sizes after a tiling: successive ADS splits halve the
         remaining space (1/2, 1/4, ...), so walk the splitters above the arranged areas and
