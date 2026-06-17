@@ -6,6 +6,7 @@ append-only layout — month partitions under ``<symbol>/<interval>/<YYYY-MM>.pa
 the month(s) that changed (and migrates a legacy file into partitions on first append).
 """
 
+import logging
 import shutil
 from pathlib import Path
 
@@ -13,6 +14,8 @@ import polars as pl
 
 from ..core.model import Bar
 from .partition import month_key, partition_by_month
+
+log = logging.getLogger(__name__)
 
 
 def bars_to_dataframe(bars: list[Bar]) -> pl.DataFrame:
@@ -51,6 +54,20 @@ def read_bars_parquet(path) -> list[Bar]:
     return dataframe_to_bars(pl.read_parquet(path))
 
 
+def _read_partition(path) -> list[Bar]:
+    """Read one parquet partition, QUARANTINING a corrupt/truncated file instead of aborting the
+    whole series read. The live app killed mid-write can leave a partial ``<...>.parquet`` whose
+    decode raises (Polars ``ComputeError``); swallowing it here degrades that one month to a
+    refillable gap — the next fetch re-downloads it — rather than crashing every read of the symbol
+    (and the GUI chart load). Read-path only: the write helpers keep raising so a corrupt existing
+    partition is never silently overwritten."""
+    try:
+        return read_bars_parquet(path)
+    except (pl.exceptions.PolarsError, OSError) as e:
+        log.warning("skipping unreadable parquet partition %s: %s", path, e)
+        return []
+
+
 # --- partitioned series layout (Phase 2b) ---
 
 def series_dir(root: str, symbol: str, interval: str) -> Path:
@@ -80,11 +97,11 @@ def read_series(root: str, symbol: str, interval: str) -> list[Bar]:
     parts: list[Bar] = []
     legacy = legacy_path(root, symbol, interval)
     if legacy.exists():
-        parts.extend(read_bars_parquet(legacy))
+        parts.extend(_read_partition(legacy))
     d = series_dir(root, symbol, interval)
     if d.is_dir():
         for f in sorted(d.glob("*.parquet")):
-            parts.extend(read_bars_parquet(f))
+            parts.extend(_read_partition(f))
     return _merge([], parts) if parts else []
 
 
@@ -99,12 +116,12 @@ def read_series_since(root: str, symbol: str, interval: str, start_ms: int) -> l
     parts: list[Bar] = []
     legacy = legacy_path(root, symbol, interval)
     if legacy.exists():
-        parts.extend(read_bars_parquet(legacy))
+        parts.extend(_read_partition(legacy))
     d = series_dir(root, symbol, interval)
     if d.is_dir():
         for f in sorted(d.glob("*.parquet")):
             if f.stem >= start_month:
-                parts.extend(read_bars_parquet(f))
+                parts.extend(_read_partition(f))
     return [b for b in _merge([], parts) if b.ts >= start_ms]
 
 
