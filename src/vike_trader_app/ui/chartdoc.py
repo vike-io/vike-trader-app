@@ -107,7 +107,10 @@ class ChartDocument(QtWidgets.QWidget):
         # same rounded-card treatment as the Chart space — built by the shared make_chart_card.
         card = make_chart_card(self.chart)
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(14, 14, 14, 14)
+        # Small TOP margin: the doc always lives in a ChartWindowFrame whose title bar sits directly
+        # above, so the old 14px top left a dead gap between the window title and the chart toolbar.
+        # Keep the side/bottom padding for the rounded card; just a 3px strip up top.
+        outer.setContentsMargins(14, 3, 14, 14)
         outer.setSpacing(6)
 
         # Link groups (Phase 3): two colour dots in a thin header — an independent SYMBOL channel
