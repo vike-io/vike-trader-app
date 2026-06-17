@@ -94,6 +94,22 @@ def test_apply_child_hardening_is_safe_no_op_off_linux():
     assert apply_child_hardening() is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object confinement is Windows-only")
+def test_windows_job_object_creates_and_does_not_break_runs():
+    """The Windows Job Object must be creatable AND must not break a normal sandbox run (the venv
+    launcher needs to spawn the real interpreter — a process-count cap would deadlock that, so we
+    only cap memory + UI + kill-on-close). Guards the 'Not enough quota' regression."""
+    from vike_trader_app.core.sandbox import winjob
+
+    job = winjob.create_job()
+    assert job, "Job Object should be creatable on Windows"
+    winjob.close_job(job)
+    # creating + closing a standalone job must NOT poison subsequent confined runs
+    res = run_sandboxed(_BUYHOLD, _bars(), TesterConfig(taker_fee=0.0))
+    assert res["ok"] is True
+    assert res["report"]["n_trades"] >= 0
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="rlimit + network-namespace preexec runs only on Linux")
 def test_confined_strategy_still_runs_on_linux():
     """The rlimits + fresh network namespace must NOT break a normal compute strategy. (Linux-gated;
