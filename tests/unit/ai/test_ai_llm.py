@@ -54,6 +54,22 @@ def test_claude_client_runs_tool_loop():
     assert tool_results and tool_results[0]["tool_use_id"] == "t1"
 
 
+def test_claude_client_caches_system_and_tools():
+    """Prompt caching: the system prompt is sent as a cache_control'd block and the last tool
+    carries a cache_control breakpoint, so the static prefix is reused across turns/candidates."""
+    mock = _MockAnthropic()
+    client = ClaudeClient(client=mock)
+    tools = [ToolSpec("a", "ta", {"type": "object", "properties": {}}),
+             ToolSpec("b", "tb", {"type": "object", "properties": {}})]
+    client.run("SYSTEM PROMPT", "go", tools, lambda n, a: {"ok": True})
+    first = mock.calls[0]
+    assert isinstance(first["system"], list)
+    assert first["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert first["system"][0]["text"] == "SYSTEM PROMPT"
+    assert first["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in first["tools"][0]   # only the last tool needs the breakpoint
+
+
 def test_dispatch_routes_to_services():
     dispatch = make_dispatch()
     out = dispatch("run_sma_backtest", {"closes": [100.0 + (i % 7) for i in range(60)],
