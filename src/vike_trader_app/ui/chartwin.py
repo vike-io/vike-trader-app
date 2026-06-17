@@ -302,9 +302,21 @@ class ChartWindowFrame(QtWidgets.QFrame):
             body = getattr(f, "doc", None)
             if body is not None:
                 targets.append(body)            # tool/chart body content (tables, panels, etc.)
+        # NEVER freeze the window the user is actively dragging — its own chart must keep painting,
+        # else the resized viewport's backing store is invalidated and the body goes BLANK until
+        # release. The freeze's real win is the OTHER windows + central chart (they repaint on
+        # reveal as this window moves over them); the dragged window's own chart costs ~nothing.
+        own = set()
+        try:
+            own = {id(v) for v in self.findChildren(QtWidgets.QGraphicsView)}
+        except RuntimeError:
+            pass
+        own_body = getattr(self, "doc", None)
+        if own_body is not None:
+            own.add(id(own_body))
         seen = set()
         for w in targets:
-            if id(w) in seen:
+            if id(w) in seen or id(w) in own:
                 continue
             seen.add(id(w))
             try:

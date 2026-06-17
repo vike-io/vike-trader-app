@@ -276,6 +276,12 @@ class PriceAxis(pg.AxisItem):
         # r spans the whole plot — its vertical extent is right but its width is the full chart.
         # Clamp the chip to the axis's OWN gutter strip on the right edge (self.width()).
         aw = self.width()
+        # The unified UI font (theme.FONT_UI) at weight 200, sized to the 12px axis labels.
+        font = QtGui.QFont()
+        font.setFamilies([s.strip().strip('"') for s in theme.FONT_UI.split(",")])
+        font.setPixelSize(12)
+        font.setWeight(QtGui.QFont.Weight(200))
+        p.setFont(font)
         th = p.fontMetrics().height() + 4
         box = QtCore.QRectF(r.right() - aw, y - th / 2.0, aw, th)
         p.setPen(QtCore.Qt.NoPen)
