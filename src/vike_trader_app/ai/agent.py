@@ -174,10 +174,26 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
                        attempts=max_repairs + 1, problems=problems)
 
 
-def develop_strategies(prompt, bars, *, client, n: int = 3, criterion: str = "sharpe", **kw) -> list:
-    """Generate ``n`` candidates; return them ranked best-first (accepted first, then OOS ``criterion``)."""
+def develop_strategies(prompt, bars, *, client, n: int = 3, criterion: str = "sharpe",
+                       recorder=None, symbol: str = "ai", interval: str = "", ts: int = 0,
+                       **kw) -> list:
+    """Generate ``n`` candidates; return them ranked best-first (accepted first, then OOS ``criterion``).
+
+    ``recorder`` (an analysis.recorder.ExperimentRecorder) optionally logs each accepted candidate's
+    OOS report as a TRIAL, so the AI's search counts toward the anti-overfit deflated-Sharpe trial
+    count (recorder.n_trials()). Best-effort: a recording error never breaks codegen."""
     results = [develop_strategy(prompt, bars, client=client, **kw) for _ in range(n)]
     _attach_overfit(results)   # deflate each candidate's OOS Sharpe against ALL n trials
+
+    if recorder is not None:
+        for r in results:
+            if r.accepted and r.oos_report:
+                try:
+                    recorder.record_report(symbol=symbol, interval=interval,
+                                           strategy=(r.explanation or "ai-candidate")[:80],
+                                           params={}, report=r.oos_report, ts=ts)
+                except Exception:  # noqa: BLE001 - the trial ledger is a side-channel; never fail codegen
+                    pass
 
     def key(r):
         score = r.oos_report.get(criterion, float("-inf")) if r.oos_report else float("-inf")

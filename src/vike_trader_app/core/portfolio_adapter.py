@@ -108,9 +108,10 @@ class SymbolEngineShim:
         self.order_target_value(pct * self._engine.equity_now())
 
     # --- resting orders forwarded to the shared engine ---
-    # NOTE: resting orders bypass the MaxOpenPositions cap for now (the cap is checked in
-    # submit() for market entries only). This is an accepted v1 limitation — cap-at-fill
-    # for resting orders is deferred to W2-C.
+    # Resting orders (limit/stop/trailing) ARE subject to the MaxOpenPositions + per-direction caps:
+    # the cap is checked at FILL time in PortfolioEngine._fill_pending / _fill_pending_granular
+    # (a new-symbol open is dropped when _at_open_cap()), not just for market entries in submit().
+    # Covered by test_max_open_positions_caps_resting_entries.
     def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0,
                      stop=None) -> None:
         self._engine.submit_limit(self._symbol, side_sign, size, price, weight=weight, stop=stop)
