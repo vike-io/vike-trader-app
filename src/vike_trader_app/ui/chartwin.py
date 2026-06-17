@@ -86,6 +86,37 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._feed_badge = FeedBadge() if feed else None   # per-window data state (chart only)
         if self._feed_badge is not None:
             self._bar.add_status(self._feed_badge)
+        # Interval picker IN the title bar — choose the timeframe straight from the window header
+        # (not just the chart's ƒx toolbar row). Reuses the chart's intervalChosen signal, which the
+        # ChartDocument already routes to load(interval), so the chart + title update for free.
+        self._ivl_btn = None
+        _chart = getattr(doc, "chart", None)
+        if _chart is not None and hasattr(_chart, "intervalChosen"):
+            from .chart import _TIMEFRAMES
+            self._ivl_btn = QtWidgets.QPushButton(f"{getattr(doc, 'interval', '1m')} ▾")
+            self._ivl_btn.setObjectName("titleIvl")
+            self._ivl_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._ivl_btn.setStyleSheet(
+                f"#titleIvl{{background:transparent;border:none;color:{theme.TEXT2};"
+                f"font-size:11px;font-weight:600;padding:1px 6px;border-radius:{theme.RADIUS_SM}px;}}"
+                f"#titleIvl:hover{{color:{theme.TEXT};background:{theme.HOVER};}}"
+                f"#titleIvl::menu-indicator{{image:none;}}"
+            )
+            _im = QtWidgets.QMenu(self._ivl_btn)
+            _im.setStyleSheet(
+                f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+                f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
+                f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
+                f"color:{theme.TEXT2};}}"
+                f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+                f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
+            )
+            for _sec, _items in _TIMEFRAMES:
+                _im.addSection(_sec)
+                for _lbl, _iv in _items:
+                    _im.addAction(_lbl, lambda _iv2=_iv: _chart.intervalChosen.emit(_iv2))
+            self._ivl_btn.setMenu(_im)
+            self._bar.add_status(self._ivl_btn)
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
             self._bar.add_widget(doc._pin_btn)
@@ -101,9 +132,20 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._bar.set_menu(self._show_menu)
         lay.addWidget(self._bar)
         lay.addWidget(doc, 1)
+        # The frame's 6px resize border sets a ↔/↕ cursor on hover (mouseMoveEvent). Give the title
+        # bar + body their OWN cursor so that resize cursor can NEVER be inherited down into the
+        # content — it used to STICK over the chart/title after a width/height drag because the frame
+        # stops getting move events once the pointer is over a child. The chart sets its own crosshair
+        # over the plot, which overrides this arrow; buttons keep their pointing-hand. Standard
+        # frameless-window behaviour (VS / MetaTrader): resize cursor only on the edge, never inside.
+        self._bar.setCursor(QtCore.Qt.ArrowCursor)
+        doc.setCursor(QtCore.Qt.ArrowCursor)
 
         if hasattr(doc, "symbolChanged"):
             doc.symbolChanged.connect(lambda *_: self._bar.set_title(doc.title()))
+            if self._ivl_btn is not None:   # keep the title-bar interval chip in sync with the chart
+                doc.symbolChanged.connect(
+                    lambda *_: self._ivl_btn.setText(f"{getattr(doc, 'interval', '')} ▾"))
 
         self._bar.installEventFilter(self)
         self.resize(720, 460)
@@ -269,6 +311,15 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 w.setUpdatesEnabled(not frozen)
                 if not frozen:
                     w.update()
+                    # A QGraphicsView (every pyqtgraph chart) renders into its VIEWPORT child; after
+                    # re-enabling updates, update() on the view alone can leave the viewport BLACK
+                    # until the next scene change. Force the viewport to repaint so the candles come
+                    # back immediately on resize end.
+                    vp = getattr(w, "viewport", None)
+                    if callable(vp):
+                        view = vp()
+                        if view is not None:
+                            view.update()
             except RuntimeError:
                 pass
 
@@ -312,8 +363,21 @@ class ChartWindowFrame(QtWidgets.QFrame):
                (1, 1, 0, 0): QtCore.Qt.SizeFDiagCursor, (0, 0, 1, 1): QtCore.Qt.SizeFDiagCursor,
                (1, 0, 0, 1): QtCore.Qt.SizeBDiagCursor, (0, 1, 1, 0): QtCore.Qt.SizeBDiagCursor,
                }.get(tuple(int(x) for x in e))
-        self.setCursor(cur or QtCore.Qt.ArrowCursor)
+        # Only OWN the resize cursor while actually over an edge; otherwise UNSET so the frame's
+        # children (title bar / chart / tool body) show their own cursor. Forcing ArrowCursor on the
+        # whole frame here used to STICK: once set on an edge, moving onto a child gave the frame no
+        # further move event, so the resize cursor lingered everywhere (see leaveEvent — it resets it).
+        if cur is not None:
+            self.setCursor(cur)
+        else:
+            self.unsetCursor()
         super().mouseMoveEvent(ev)
+
+    def leaveEvent(self, ev):  # noqa: N802 - drop any edge-resize cursor when the mouse leaves the frame
+        # Moving from the frame onto a child widget fires the frame's leaveEvent; clearing the cursor
+        # here is what stops the vertical/horizontal resize cursor from sticking over the content.
+        self.unsetCursor()
+        super().leaveEvent(ev)
 
     def _flush_resize(self) -> None:
         """Timer tick during a live resize: apply the latest pending geometry, or stop the
@@ -334,6 +398,9 @@ class ChartWindowFrame(QtWidgets.QFrame):
         self._resize_edge = None
         if was_resizing:
             self._set_resize_frozen(False)           # unfreeze + one clean repaint at final size
+            # restore the cursor for wherever the pointer ended up — don't leave the resize ↔/↕ stuck
+            if not any(self._edge_at(ev.position().toPoint())):
+                self.unsetCursor()
         super().mouseReleaseEvent(ev)
 
     def _edge_at(self, p: QtCore.QPoint):

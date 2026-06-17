@@ -537,6 +537,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.show()
         _fcolor, _fprefix = _FEED_STATES["live" if self._live_hub.is_live() else "cached"]
         frame.set_feed(_fcolor, _fprefix.replace(" · ", "").strip())
+        self._update_feed_health()   # keep the status-bar badge in sync with the hub-driven header
         if make_current:
             frame.raise_()
             self._on_chart_window_activated(frame)
@@ -892,6 +893,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.hide()
         self._min_rail.add(key, toolreg.TOOL_LABELS.get(key, key), self._tool_icon(key),
                            lambda k=key: self._restore_tool_from_rail(k))
+        self._retile_timer.start()      # the remaining tiled windows re-fit the freed space
 
     def _restore_tool_from_rail(self, key: str):
         self._min_rail.remove(key)      # idempotent — also drops the tab when called programmatically
@@ -901,6 +903,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             frame.show(); frame.raise_(); frame.activated.emit(frame)
+            self._retile_timer.start()  # re-tile so the restored window takes its share
         except RuntimeError:
             self._tool_frames.pop(key, None)
 
@@ -912,11 +915,13 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.hide()
         self._min_rail.add(key, label, self._tool_icon("chart"),
                            lambda f=frame: self._restore_chart_window(f))
+        self._retile_timer.start()      # the remaining tiled windows re-fit the freed space
 
     def _restore_chart_window(self, frame):
         self._min_rail.remove(f"chartwin:{id(frame)}")
         try:
             frame.show(); frame.raise_(); frame.activated.emit(frame)
+            self._retile_timer.start()  # re-tile so the restored window takes its share
         except RuntimeError:
             pass
 
@@ -1864,6 +1869,13 @@ class MainWindow(QtWidgets.QMainWindow):
         """Classify the live feed (data freshness + failure streak) and repaint the badge."""
         if self._forward is not None:
             self._set_feed_health("live")  # forward mode runs its own (genuinely live) feed
+            return
+        # Chart windows run their live feed on the LiveHub (async-load re-arch), NOT the old
+        # _live_timer — so trust the hub's is_live() exactly as the chart header does (see app.py
+        # ~538). Without this the header reads ● LIVE while this status badge wrongly stayed grey.
+        hub = getattr(self, "_live_hub", None)
+        if hub is not None and hub.is_live():
+            self._set_feed_health("live")
             return
         # No poller armed (VIKE_DISABLE_LIVE, or a pure cache load before/without arming) →
         # the watchdog must not claim LIVE off mere data freshness. _arm_live_updates starts
@@ -3613,6 +3625,16 @@ def main():
     _install_qt_log_filter()
     app = QtWidgets.QApplication(sys.argv)
     app.setStyleSheet(theme.stylesheet())
+    # Dark PALETTE to match the dark stylesheet. On resize, Qt fills a widget's newly-exposed region
+    # with the palette Window/Base brush BEFORE the (deferred) stylesheet/pyqtgraph paintEvent runs —
+    # with the default palette that flashed BLACK while dragging a window/chart edge (the heavy candle
+    # view can't repaint every resize frame). A dark palette makes that transient the theme dark.
+    _pal = app.palette()
+    for _role in (QtGui.QPalette.Window, QtGui.QPalette.Base, QtGui.QPalette.Button):
+        _pal.setColor(_role, QtGui.QColor(theme.BG))
+    for _role in (QtGui.QPalette.WindowText, QtGui.QPalette.Text, QtGui.QPalette.ButtonText):
+        _pal.setColor(_role, QtGui.QColor(theme.TEXT))
+    app.setPalette(_pal)
     # Windows shows python.exe's icon in the title bar/taskbar unless the process claims its own
     # AppUserModelID — then the OS uses *our* window icon (the brand V) instead.
     if sys.platform == "win32":
