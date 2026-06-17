@@ -8,8 +8,27 @@ importing ``sandbox.preflight`` is cheap.
 
 import dataclasses
 import json
+import os
 import subprocess
 import sys
+
+# The only env vars the sandbox child needs to start CPython + import the package (incl. numpy/polars
+# compiled extensions, which need PATH/SYSTEMROOT for DLL resolution on Windows). Everything else —
+# crucially every API key / token — is withheld: the child runs untrusted strategy code, so it must
+# not be able to read os.environ["ANTHROPIC_API_KEY"] (etc.) and egress it within the timeout.
+_CHILD_ENV_KEEP = (
+    "PATH", "PYTHONPATH", "PYTHONHOME", "PYTHONIOENCODING", "PYTHONUTF8",
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "TEMP", "TMP", "TMPDIR", "PATHEXT",
+    "LOCALAPPDATA", "APPDATA", "HOMEDRIVE", "HOMEPATH", "HOME", "USERPROFILE",
+    "LANG", "LC_ALL", "LC_CTYPE",
+)
+
+
+def _child_env() -> dict:
+    """A scrubbed environment for the sandbox child: only the allowlisted vars Python/Windows need,
+    with NO secrets carried through. Defence-in-depth — the strategy should never reach os.environ
+    (the preflight gate forbids ``os``), but the gate is hygiene, not a boundary."""
+    return {k: os.environ[k] for k in _CHILD_ENV_KEEP if k in os.environ}
 
 
 def _serialize_bars(bars):
@@ -61,7 +80,9 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
     try:
         proc = subprocess.run(
             [sys.executable, "-c", "from vike_trader_app.core.sandbox.runner import main; main()"],
-            input=job, capture_output=True, text=True, timeout=timeout, **kwargs,
+            input=job, capture_output=True, text=True, timeout=timeout,
+            env=_child_env(),   # scrubbed: no API keys/tokens reach untrusted strategy code
+            **kwargs,
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "timeout"}

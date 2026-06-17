@@ -15,6 +15,14 @@ _FORBIDDEN_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "globals", "locals", "vars",
     "getattr", "setattr", "delattr", "input", "os", "sys", "subprocess", "socket",
     "shutil", "pathlib", "builtins",
+    # __builtins__ (bare name) is the dict-bypass to __import__/eval — deny it alongside the dunder
+    # ATTRIBUTE rule below (which already blocks ().__class__... chains).
+    "__builtins__",
+    # Interactive / process-control builtins: breakpoint() drops into pdb (arbitrary code + a hang on
+    # the headless/MCP path); exit()/quit() kill the host; help()/copyright/license/credits can block
+    # on a pager. None belong in a strategy. (This is HYGIENE/defence-in-depth — the real boundary is
+    # still the out-of-process run_sandboxed; see the module docstring.)
+    "breakpoint", "help", "exit", "quit", "copyright", "license", "credits",
 }
 
 

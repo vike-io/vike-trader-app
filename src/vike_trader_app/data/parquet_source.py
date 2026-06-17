@@ -56,11 +56,11 @@ def read_bars_parquet(path) -> list[Bar]:
 
 def _read_partition(path) -> list[Bar]:
     """Read one parquet partition, QUARANTINING a corrupt/truncated file instead of aborting the
-    whole series read. The live app killed mid-write can leave a partial ``<...>.parquet`` whose
-    decode raises (Polars ``ComputeError``); swallowing it here degrades that one month to a
-    refillable gap — the next fetch re-downloads it — rather than crashing every read of the symbol
-    (and the GUI chart load). Read-path only: the write helpers keep raising so a corrupt existing
-    partition is never silently overwritten."""
+    caller. The live app killed mid-write can leave a partial ``<...>.parquet`` whose decode raises
+    (Polars ``ComputeError``); swallowing it here degrades that one month to a refillable gap — the
+    next fetch re-downloads it — rather than crashing. Used by BOTH the read helpers (read_series*)
+    and the write helpers (append/migrate/truncate): a corrupt month is unreadable anyway, so on
+    append it is overwritten with fresh data (self-heal) rather than left as a permanent crash."""
     try:
         return read_bars_parquet(path)
     except (pl.exceptions.PolarsError, OSError) as e:
@@ -131,9 +131,9 @@ def _migrate_legacy(root: str, symbol: str, interval: str) -> None:
     if not legacy.exists():
         return
     d = series_dir(root, symbol, interval)
-    for month, month_bars in partition_by_month(read_bars_parquet(legacy)).items():
+    for month, month_bars in partition_by_month(_read_partition(legacy)).items():
         path = d / f"{month}.parquet"
-        existing = read_bars_parquet(path) if path.exists() else []
+        existing = _read_partition(path) if path.exists() else []
         write_bars_parquet(_merge(existing, month_bars), path)
     legacy.unlink()
 
@@ -146,7 +146,7 @@ def append_series(new_bars: list[Bar], root: str, symbol: str, interval: str) ->
     d = series_dir(root, symbol, interval)
     for month, month_bars in partition_by_month(new_bars).items():
         path = d / f"{month}.parquet"
-        existing = read_bars_parquet(path) if path.exists() else []
+        existing = _read_partition(path) if path.exists() else []   # corrupt month -> overwrite (self-heal)
         write_bars_parquet(_merge(existing, month_bars), path)
 
 
@@ -171,7 +171,7 @@ def truncate_series(root: str, symbol: str, interval: str, *,
 
     removed = 0
     for path in sorted(d.glob("*.parquet")):
-        bars = read_bars_parquet(path)
+        bars = _read_partition(path)         # corrupt partition -> [] (skipped) rather than a crash
         kept = [b for b in bars if keep(b.ts)]
         if len(kept) == len(bars):
             continue                         # untouched partition

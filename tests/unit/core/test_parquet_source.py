@@ -81,3 +81,29 @@ def test_read_series_quarantines_a_corrupt_legacy_file(tmp_path):
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_bytes(b"not a parquet")
     assert ps.read_series(root, "ETHUSDT", "1h") == []
+
+
+def test_append_into_a_corrupt_partition_self_heals(tmp_path):
+    """Appending into a month whose partition is corrupt (live app killed mid-write) must NOT crash;
+    the corrupt month is overwritten with the fresh bars (self-heal), not left as a permanent gap."""
+    root = str(tmp_path)
+    feb_a = [Bar(ts=1_706_745_600_000 + i * 86_400_000, open=1, high=1, low=1, close=1, volume=1) for i in range(3)]
+    ps.append_series(feb_a, root, "BTCUSDT", "1d")
+    feb_path = ps.series_dir(root, "BTCUSDT", "1d") / "2024-02.parquet"
+    feb_path.write_bytes(b"corrupt mid-write")          # simulate a partial write
+    feb_b = [Bar(ts=1_707_004_800_000 + i * 86_400_000, open=2, high=2, low=2, close=2, volume=1) for i in range(2)]
+    ps.append_series(feb_b, root, "BTCUSDT", "1d")       # must NOT raise
+    left = ps.read_series(root, "BTCUSDT", "1d")
+    assert [b.ts for b in left] == [b.ts for b in feb_b]  # month self-healed to the fresh bars
+
+
+def test_truncate_skips_a_corrupt_partition_without_crashing(tmp_path):
+    """truncate_series must not crash on a corrupt partition (routes reads through the quarantine)."""
+    root = str(tmp_path)
+    jan = [Bar(ts=1_704_067_200_000 + i * 86_400_000, open=1, high=1, low=1, close=1, volume=1) for i in range(5)]
+    feb = [Bar(ts=1_706_745_600_000 + i * 86_400_000, open=1, high=1, low=1, close=1, volume=1) for i in range(5)]
+    ps.append_series(jan + feb, root, "X", "1d")
+    (ps.series_dir(root, "X", "1d") / "2024-01.parquet").write_bytes(b"corrupt")
+    # cutting inside Feb must not raise even though Jan is unreadable
+    ps.truncate_series(root, "X", "1d", before_ts=1_706_832_000_000)  # keep Feb day2+
+    assert [b.ts for b in ps.read_series(root, "X", "1d")] == [b.ts for b in feb[1:]]

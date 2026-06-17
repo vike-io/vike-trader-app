@@ -5,7 +5,11 @@ generalising the forex Yahoo→Dukascopy stitch into a user-orderable chain. A p
 is skipped (the next is tried), so one dead endpoint never blocks the rest.
 """
 
+import logging
+
 from .sources import select_source
+
+log = logging.getLogger(__name__)
 
 
 def fetch_chain(provider_names, symbol, interval, start_ms, end_ms, progress=None,
@@ -23,16 +27,25 @@ def fetch_chain(provider_names, symbol, interval, start_ms, end_ms, progress=Non
     """
     from .symbol_mappings import apply_mapping
 
-    for name in provider_names:
+    names = list(provider_names)
+    causes: list[str] = []   # per-provider reason, surfaced once if the whole chain comes up empty
+    for name in names:
         try:
             fetch_symbol = apply_mapping(symbol, name, mappings) if mappings else symbol
             settings = (settings_by_provider or {}).get(name)
             src = select(fetch_symbol, provider=name, settings=settings)
             bars = src.fetch_bars_range(fetch_symbol, interval, start_ms, end_ms, progress=progress)
-        except Exception:  # noqa: BLE001 - a failing provider is skipped; try the next
+        except Exception as e:  # noqa: BLE001 - a failing provider is skipped; try the next
+            log.debug("provider %s failed for %s %s: %s", name, symbol, interval, e)
+            causes.append(f"{name}: {type(e).__name__}: {e}")
             continue
         if bars:
             return bars, name
+        log.debug("provider %s returned no data for %s %s", name, symbol, interval)
+        causes.append(f"{name}: empty")
+    if names:   # the chain was non-empty but nothing yielded data — make the cause diagnosable
+        log.warning("all %d providers failed/empty for %s %s: %s",
+                    len(names), symbol, interval, "; ".join(causes))
     return [], None
 
 
