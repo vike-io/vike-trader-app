@@ -130,8 +130,17 @@ def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
     win.close()
 
 
-def test_studio_agent_unconfigured_without_key(app, monkeypatch):
+def test_studio_agent_unconfigured_without_key(app, monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)
+    # Isolate from the real on-disk settings: a dev machine may have a persisted Cerebras
+    # provider+key (now that the key actually sticks), which would build a live client and break the
+    # "unconfigured" precondition. Point _ai_settings at an empty temp store.
+    from PySide6 import QtCore
+
+    from vike_trader_app.ui import studio as studio_mod
+    s = QtCore.QSettings(str(tmp_path / "ai.ini"), QtCore.QSettings.IniFormat)
+    monkeypatch.setattr(studio_mod.StudioTab, "_ai_settings", lambda self: s, raising=False)
     win = MainWindow()
     win.open_tool("studio")                  # Studio is an on-demand dock now -> build it first
     app.processEvents()
