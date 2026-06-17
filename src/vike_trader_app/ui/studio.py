@@ -1188,7 +1188,8 @@ class ChatPanel(QtWidgets.QWidget):
 
     promptSubmitted = QtCore.Signal(str)
     providerChanged = QtCore.Signal(str)
-    cerebrasKeyChanged = QtCore.Signal(str)
+    cerebrasKeyChanged = QtCore.Signal(str)      # editingFinished -> persist + rebuild client
+    cerebrasKeyAutoSave = QtCore.Signal(str)     # every keystroke -> SILENT persist (no rebuild)
     connectRequested = QtCore.Signal()
 
     def __init__(self, parent: QtWidgets.QWidget | None = None):
@@ -1229,6 +1230,11 @@ class ChatPanel(QtWidgets.QWidget):
         self._key_input.setPlaceholderText("csk-… (stored locally on this machine)")
         self._key_input.editingFinished.connect(
             lambda: self.cerebrasKeyChanged.emit(self._key_input.text().strip())
+        )
+        # Also persist on every keystroke: editingFinished alone loses the key if you type it and
+        # quit (or click Run) without first defocusing the field — the bug that wiped the stored key.
+        self._key_input.textChanged.connect(
+            lambda: self.cerebrasKeyAutoSave.emit(self._key_input.text().strip())
         )
         kr.addWidget(self._key_input, 1)
         self._key_row.hide()
@@ -1323,7 +1329,9 @@ class ChatPanel(QtWidgets.QWidget):
     # --- AI provider selection ---
 
     def _on_provider(self, value: str) -> None:
-        self._key_row.setVisible(value.lower() == "cerebras")
+        is_cb = value.lower() == "cerebras"
+        self._key_row.setVisible(is_cb)
+        self._btn_connect.setVisible(not is_cb)   # "Connect to Claude" only applies to the Claude provider
         self.providerChanged.emit(value.lower())
 
     def provider(self) -> str:
@@ -1333,6 +1341,7 @@ class ChatPanel(QtWidgets.QWidget):
         label = "Cerebras" if str(name).lower() == "cerebras" else "Claude"
         self._provider.setValue(label)
         self._key_row.setVisible(label == "Cerebras")
+        self._btn_connect.setVisible(label != "Cerebras")
 
     def cerebras_key(self) -> str:
         return self._key_input.text().strip()
@@ -1903,6 +1912,7 @@ class StudioTab(QtWidgets.QWidget):
         self.chat.promptSubmitted.connect(self._on_prompt)
         self.chat.providerChanged.connect(self._on_ai_provider_changed)
         self.chat.cerebrasKeyChanged.connect(self._on_cerebras_key_changed)
+        self.chat.cerebrasKeyAutoSave.connect(self._on_cerebras_key_autosave)
         self.chat.connectRequested.connect(self._open_connect_dialog)
         self._load_ai_settings()
 
@@ -2257,6 +2267,10 @@ class StudioTab(QtWidgets.QWidget):
     def _on_ai_provider_changed(self, provider: str) -> None:
         self._ai_settings().setValue("ai/provider", provider)
         self._rebuild_agent_client(announce=True)
+
+    def _on_cerebras_key_autosave(self, key: str) -> None:
+        """Silent persist on every keystroke (no client rebuild / no chat noise)."""
+        self._ai_settings().setValue("ai/cerebras_key", key)
 
     def _on_cerebras_key_changed(self, key: str) -> None:
         self._ai_settings().setValue("ai/cerebras_key", key)
