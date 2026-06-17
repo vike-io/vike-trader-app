@@ -85,6 +85,15 @@ def test_posix_confine_returns_a_callable():
     assert callable(_posix_confine())          # resource is present on POSIX -> a preexec_fn
 
 
+def test_apply_child_hardening_is_safe_no_op_off_linux():
+    """The in-child seccomp/no_new_privs hardening must import + run without raising everywhere
+    (a safe no-op off Linux / without a libseccomp binding). The valid-strategy test above proves
+    the runner still works with the hardening call wired in."""
+    from vike_trader_app.core.sandbox.harden import apply_child_hardening
+
+    assert apply_child_hardening() is None
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="rlimit + network-namespace preexec runs only on Linux")
 def test_confined_strategy_still_runs_on_linux():
     """The rlimits + fresh network namespace must NOT break a normal compute strategy. (Linux-gated;

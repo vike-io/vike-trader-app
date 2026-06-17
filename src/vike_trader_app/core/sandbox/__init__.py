@@ -83,10 +83,14 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
     """Run AI-generated strategy ``code`` over ``bars`` in a separate, hard-killable process.
 
     Returns ``{"ok": True, "report": {...}}`` or ``{"ok": False, "error": ...}``; NEVER raises on
-    child failure/timeout. Per-platform confinement behind ONE seam (the spawn kwargs):
+    child failure/timeout. Confinement layers:
       • all OSes: a hard wall-clock ``timeout`` (kill) + a scrubbed env (no API keys reach the child)
       • POSIX (Linux/macOS): ``_posix_confine`` preexec — RLIMIT_AS/CPU caps, plus on Linux a fresh
         network namespace (no socket/egress). UNVERIFIED here (Linux CI paused) — see _posix_confine.
+      • Linux (in-child, see ``harden.apply_child_hardening`` called by the runner): NO_NEW_PRIVS +
+        a seccomp denylist (no fork/exec/socket/ptrace) applied before untrusted code runs. seccomp
+        can't go in preexec (it would block the child's own exec); best-effort, no-op without a
+        libseccomp binding. Also UNVERIFIED on CI (Linux paused).
       • Windows: timeout/env only TODAY — the Job-Object + restricted-token backend is issue #192.
     """
     job = json.dumps({
