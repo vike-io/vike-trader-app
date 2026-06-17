@@ -18,6 +18,10 @@ def main() -> None:
         bars = [Bar(ts=b[0], open=b[1], high=b[2], low=b[3], close=b[4], volume=b[5], funding=b[6])
                 for b in job["bars"]]
         config = TesterConfig(**job["config"])
+        # Drop process-creation / raw-networking / ptrace (Linux, best-effort) BEFORE compiling or
+        # running the untrusted strategy source — see harden.py. No-op off Linux / without libseccomp.
+        from .harden import apply_child_hardening
+        apply_child_hardening()
         cls = load_strategy_from_string(job["code"], validate=True)
         report = StrategyTester(cls(), bars, config).run()
         print(json.dumps({"ok": True, "report": report.as_dict()}, default=str))
