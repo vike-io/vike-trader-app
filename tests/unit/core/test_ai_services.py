@@ -62,6 +62,38 @@ def test_run_sma_backtest_no_trades_on_flat_series():
     assert out["total_return"] == pytest.approx(0.0)
 
 
+def test_run_sma_backtest_accepts_string_closes_forms():
+    """An MCP/LLM client may pass `closes` as a real list, a JSON-array string, or a comma/space
+    string. All three must yield the SAME result — the old list(map(float, closes)) iterated a
+    string char-by-char and died on float(','). Guards the reported MCP parse bug."""
+    import json
+
+    closes = [b.close for b in _synth_bars(80)]
+    ref = run_sma_backtest(closes, fast=5, slow=20)
+    as_json = run_sma_backtest(json.dumps(closes), fast=5, slow=20)
+    as_csv = run_sma_backtest(",".join(str(c) for c in closes), fast=5, slow=20)
+    as_space = run_sma_backtest(" ".join(str(c) for c in closes), fast=5, slow=20)
+    for other in (as_json, as_csv, as_space):
+        assert other["final_equity"] == ref["final_equity"]
+        assert other["n_trades"] == ref["n_trades"]
+
+
+def test_run_sma_backtest_garbage_closes_raises_clear_error():
+    """Unparseable `closes` must raise a clear ValueError (never iterate a string char-by-char)."""
+    with pytest.raises(ValueError, match="must be a list of numbers"):
+        run_sma_backtest("not numbers", fast=5, slow=20)
+
+
+def test_optimize_sma_accepts_string_closes():
+    import json
+
+    closes = [b.close for b in _synth_bars(120)]
+    ref = optimize_sma(closes, fasts=[5, 10], slows=[20, 40], top_n=3)
+    via_str = optimize_sma(json.dumps(closes), fasts=[5, 10], slows=[20, 40], top_n=3)
+    assert via_str["n_combos"] == ref["n_combos"]
+    assert [r["total_return"] for r in via_str["top"]] == [r["total_return"] for r in ref["top"]]
+
+
 def test_optimize_sma_ranks_and_limits():
     closes = [b.close for b in _synth_bars(120)]
     out = optimize_sma(closes, fasts=[5, 10], slows=[20, 40], fee_rate=0.0, top_n=3)
