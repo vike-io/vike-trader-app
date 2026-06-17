@@ -305,3 +305,41 @@ class TestStructureRegistration:
         param_names = {p.name for p in spec.params}
         assert "window" in param_names
         assert "bins" in param_names
+
+
+# ── volume_profile (VPVR histogram helper) ────────────────────────────────────
+
+def test_volume_profile_poc_va_and_conservation():
+    from vike_trader_app.core.indicators.structure import volume_profile
+    highs = [100, 101, 102, 101, 103, 101, 101]
+    lows = [99, 100, 101, 100, 102, 100, 100]
+    closes = [100, 101, 101, 101, 102, 101, 101]
+    vols = [5, 40, 10, 30, 5, 20, 15]
+    vp = volume_profile(highs, lows, closes, vols, bins=8, value_area=0.70)
+    assert vp is not None
+    # POC is the centre of the highest-volume bin (the ~101 cluster holds 115 of 125 vol)
+    assert vp.poc_price == pytest.approx(101.25, abs=0.01)
+    assert vp.va_low <= vp.poc_price <= vp.va_high
+    assert sum(vp.bin_volumes) == pytest.approx(sum(vols))   # volume conserved
+    assert len(vp.bin_centers) == len(vp.bin_volumes) == 8
+
+
+def test_volume_profile_value_area_widens_to_target():
+    from vike_trader_app.core.indicators.structure import volume_profile
+    # flat-ish volume across a wide range -> value area must span multiple bins to reach 70%
+    n = 50
+    closes = [100 + i for i in range(n)]
+    highs = [c + 0.5 for c in closes]
+    lows = [c - 0.5 for c in closes]
+    vp = volume_profile(highs, lows, closes, [1.0] * n, bins=10, value_area=0.70)
+    assert vp is not None
+    assert vp.va_high > vp.va_low                 # a real band, not a single bin
+    covered = sum(v for c, v in zip(vp.bin_centers, vp.bin_volumes) if vp.va_low <= c <= vp.va_high)
+    assert covered >= 0.70 * sum(vp.bin_volumes)  # VA holds >= the target fraction
+
+
+def test_volume_profile_none_on_degenerate_or_empty():
+    from vike_trader_app.core.indicators.structure import volume_profile
+    assert volume_profile([], [], [], [], bins=8) is None          # empty
+    assert volume_profile([5, 5], [5, 5], [5, 5], [1, 1], bins=8) is None  # single price
+    assert volume_profile([2, 3], [1, 2], [1.5, 2.5], [0, 0], bins=8) is None  # zero volume

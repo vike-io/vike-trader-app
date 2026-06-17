@@ -11,7 +11,64 @@ Modules provided:
 - ``volume_profile_poc`` — rolling Point-of-Control (highest-volume bin centre)
 """
 
+from dataclasses import dataclass
+
 from .base import Param, indicator
+
+
+@dataclass
+class VolumeProfile:
+    """A volume-by-price histogram over a fixed set of bars (the data the VPVR chart render needs)."""
+
+    bin_centers: list      # price at the centre of each bin (ascending)
+    bin_volumes: list      # volume accumulated in each bin (same order)
+    poc_price: float       # Point of Control: centre price of the highest-volume bin
+    va_low: float          # value-area lower price bound
+    va_high: float         # value-area upper price bound
+
+
+def volume_profile(highs, lows, closes, volumes, bins: int = 24,
+                   value_area: float = 0.70):
+    """Volume-by-price histogram over the given bars: per-bin volume, the POC, and the value area
+    (the contiguous band around the POC holding ``value_area`` of total volume). Qt-free and pure —
+    the chart VPVR render builds on this. Returns ``None`` for empty input, zero volume, or a
+    degenerate (single-price) range.
+
+    Value-area expansion is the standard rule: start at the POC bin and repeatedly annex the
+    higher-volume of the two adjacent bins until the accumulated volume reaches ``value_area``.
+    """
+    n = len(closes)
+    if n == 0 or bins < 1:
+        return None
+    price_min = min(lows)
+    price_max = max(highs)
+    if not (price_max > price_min):
+        return None
+    bin_width = (price_max - price_min) / bins
+    vol = [0.0] * bins
+    for c, v in zip(closes, volumes):
+        idx = int((c - price_min) / bin_width)
+        idx = min(bins - 1, max(0, idx))
+        vol[idx] += v
+    total = sum(vol)
+    if total <= 0:
+        return None
+    centers = [price_min + (k + 0.5) * bin_width for k in range(bins)]
+    poc_idx = vol.index(max(vol))
+    lo = hi = poc_idx
+    acc = vol[poc_idx]
+    target = total * value_area
+    while acc < target and (lo > 0 or hi < bins - 1):
+        left = vol[lo - 1] if lo > 0 else -1.0
+        right = vol[hi + 1] if hi < bins - 1 else -1.0
+        if right >= left:
+            hi += 1
+            acc += vol[hi]
+        else:
+            lo -= 1
+            acc += vol[lo]
+    return VolumeProfile(centers, vol, centers[poc_idx],
+                         price_min + lo * bin_width, price_min + (hi + 1) * bin_width)
 
 
 @indicator(
