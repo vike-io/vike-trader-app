@@ -1,7 +1,11 @@
 """Out-of-process sandbox: subprocess + timeout boundary."""
 
+import sys
+
+import pytest
+
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.sandbox import _child_env, run_sandboxed
+from vike_trader_app.core.sandbox import _child_env, _posix_confine, run_sandboxed
 from vike_trader_app.tester import TesterConfig
 
 
@@ -74,3 +78,17 @@ def test_child_env_excludes_secrets_keeps_essentials(monkeypatch):
     assert "ANTHROPIC_API_KEY" not in env
     assert "VIKE_SOME_TOKEN" not in env
     assert "PATH" in env                       # essentials retained so the child can start + import
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX confinement preexec is not used on Windows")
+def test_posix_confine_returns_a_callable():
+    assert callable(_posix_confine())          # resource is present on POSIX -> a preexec_fn
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="rlimit + network-namespace preexec runs only on Linux")
+def test_confined_strategy_still_runs_on_linux():
+    """The rlimits + fresh network namespace must NOT break a normal compute strategy. (Linux-gated;
+    authored on Windows so unverified there — this is the guard that runs when Linux CI returns.)"""
+    res = run_sandboxed(_BUYHOLD, _bars(), TesterConfig(taker_fee=0.0))
+    assert res["ok"] is True
+    assert res["report"]["n_trades"] >= 0

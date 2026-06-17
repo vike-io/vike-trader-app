@@ -35,25 +35,45 @@ def _serialize_bars(bars):
     return [[b.ts, b.open, b.high, b.low, b.close, b.volume, b.funding] for b in bars]
 
 
-def _posix_limits():
-    """A preexec_fn capping address space + CPU on POSIX; None on platforms without ``resource``."""
+def _posix_confine():
+    """preexec_fn for the POSIX sandbox child: resource caps + (Linux) network isolation.
+
+    Runs in the forked child BEFORE exec; returns None where ``resource`` is unavailable. EVERY
+    control is best-effort and individually guarded — a preexec_fn that RAISES aborts the whole
+    spawn ("Exception occurred in preexec_fn"), so per-control failures are swallowed and we fall
+    back to the wall-clock timeout (the cross-platform backstop).
+
+    HONESTY: authored on Windows (where this branch never runs) and Linux CI is currently paused,
+    so the Linux network isolation below is UNVERIFIED on this machine — it is exercised only by the
+    Linux-gated tests (skipped off Linux) when a Linux runner returns. Full filesystem/syscall
+    confinement (seccomp-bpf) and the Windows Job-Object/restricted-token backend are the deeper
+    follow-ups tracked in issue #192; macOS (sandbox-exec) is not attempted here.
+    """
     try:
         import resource
     except ImportError:
         return None
 
     def _set():
-        # Best-effort per limit: a preexec_fn that RAISES aborts the whole spawn
-        # (subprocess.SubprocessError "Exception occurred in preexec_fn"). Not every limit is
-        # enforceable on every POSIX — notably macOS rejects RLIMIT_AS — so skip the ones that
-        # error rather than killing the sandbox. RLIMIT_CPU (the hard CPU cap) works on macOS too;
-        # the wall-clock timeout in run_sandboxed is the cross-platform backstop regardless.
+        # Not every limit is enforceable on every POSIX (macOS rejects RLIMIT_AS), so skip the ones
+        # that error. RLIMIT_CPU works on macOS too; the wall-clock timeout backstops regardless.
         gb = 1024 ** 3
         for limit, soft_hard in ((resource.RLIMIT_AS, (gb, gb)),      # 1 GB address space
                                  (resource.RLIMIT_CPU, (10, 10))):    # 10 s CPU
             try:
                 resource.setrlimit(limit, soft_hard)
             except (ValueError, OSError):
+                pass
+        # Linux: drop the child into a fresh, EMPTY network namespace (unprivileged, via a user
+        # namespace) so untrusted strategy code can't open a socket / egress. Best-effort: if the
+        # kernel disallows unprivileged user namespaces, unshare just fails and we degrade to the
+        # rlimits + timeout rather than abort the spawn. A compute-only strategy needs no network.
+        if sys.platform == "linux":
+            try:
+                import ctypes
+                _CLONE_NEWUSER, _CLONE_NEWNET = 0x10000000, 0x40000000
+                ctypes.CDLL("libc.so.6", use_errno=True).unshare(_CLONE_NEWUSER | _CLONE_NEWNET)
+            except Exception:  # noqa: BLE001 - any ctypes/kernel hiccup -> fall back, never crash
                 pass
 
     return _set
@@ -63,9 +83,11 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
     """Run AI-generated strategy ``code`` over ``bars`` in a separate, hard-killable process.
 
     Returns ``{"ok": True, "report": {...}}`` or ``{"ok": False, "error": ...}``; NEVER raises on
-    child failure/timeout. The child process is the SECURITY BOUNDARY (subprocess + wall-clock
-    ``timeout`` + POSIX ``setrlimit`` memory/CPU caps). Windows Job-Object caps + a warm-worker pool
-    are a documented follow-up; today Windows relies on the timeout alone.
+    child failure/timeout. Per-platform confinement behind ONE seam (the spawn kwargs):
+      • all OSes: a hard wall-clock ``timeout`` (kill) + a scrubbed env (no API keys reach the child)
+      • POSIX (Linux/macOS): ``_posix_confine`` preexec — RLIMIT_AS/CPU caps, plus on Linux a fresh
+        network namespace (no socket/egress). UNVERIFIED here (Linux CI paused) — see _posix_confine.
+      • Windows: timeout/env only TODAY — the Job-Object + restricted-token backend is issue #192.
     """
     job = json.dumps({
         "code": code,
@@ -74,9 +96,9 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
     })
     kwargs = {}
     if sys.platform != "win32":
-        limits = _posix_limits()
-        if limits is not None:
-            kwargs["preexec_fn"] = limits
+        confine = _posix_confine()
+        if confine is not None:
+            kwargs["preexec_fn"] = confine
     try:
         proc = subprocess.run(
             [sys.executable, "-c", "from vike_trader_app.core.sandbox.runner import main; main()"],
