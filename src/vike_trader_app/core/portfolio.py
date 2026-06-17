@@ -363,11 +363,18 @@ class PortfolioEngine:
         if pos.size != 0 and (pos.size > 0) != (side_sign > 0):
             return size                                  # reducing/closing: never capped
         max_notional = self.leverage * eq
-        # current total notional across all symbols + this symbol's already-pending market opens
+        # current total notional across all symbols + ALL symbols' already-pending market opens this
+        # bar. Summing only THIS symbol's pending let two same-bar opens on different symbols each
+        # ignore the other, so the book silently over-leveraged (each abs() per symbol — a long on A
+        # and a short on B both consume leverage). The order being capped is appended AFTER this, so
+        # it isn't double-counted here.
         cur = sum(abs(self._sym[s].pos.size) * self._sym[s].price * self.multiplier for s in self.symbols)
-        pending = sum(o.side * o.size for o in self._sym[symbol].pending if o.kind == "market") * \
-            self._sym[symbol].price * self.multiplier
-        room_notional = max_notional - cur - abs(pending)
+        pending = sum(
+            abs(sum(o.side * o.size for o in self._sym[s].pending if o.kind == "market"))
+            * self._sym[s].price * self.multiplier
+            for s in self.symbols
+        )
+        room_notional = max_notional - cur - pending
         if room_notional <= 0.0:
             return 0.0
         room = room_notional / (self._sym[symbol].price * self.multiplier)
