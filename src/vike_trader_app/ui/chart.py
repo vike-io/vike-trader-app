@@ -240,7 +240,49 @@ class TimeAxis(pg.AxisItem):
 
 class PriceAxis(pg.AxisItem):
     """Right-hand price axis with thousands separators and tick-spacing-derived decimals
-    (e.g. ``74,600.00`` for BTC, ``1.1650`` for forex) — the TradingView/TradeLocker look."""
+    (e.g. ``74,600.00`` for BTC, ``1.1650`` for forex) — the TradingView/TradeLocker look.
+
+    Also paints the live LAST-PRICE tag in the axis gutter (``set_last``): a filled chip at the
+    current price's y, always visible (the old in-plot TextItem badge got clipped at the chart's
+    right edge). The y is computed from THIS axis's own value range (``self.range``) + rect — NO
+    ``mapViewToScene`` call inside paint (that re-entered the view and crashed the renderer)."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._last = None   # (price: float, colour: QColor) for the gutter chip, or None to hide
+
+    def set_last(self, price, color) -> None:
+        new = None if price is None else (float(price), QtGui.QColor(color))
+        if new != self._last:
+            self._last = new
+            self.update()
+
+    def paint(self, p, opt, widget=None):  # noqa: N802 - Qt override
+        super().paint(p, opt, widget)
+        if self._last is None:
+            return
+        try:
+            lo, hi = float(self.range[0]), float(self.range[1])
+        except (TypeError, ValueError, IndexError):
+            return
+        if not hi > lo:
+            return
+        price, color = self._last
+        r = self.boundingRect()
+        y = r.top() + (hi - price) / (hi - lo) * r.height()   # right axis: hi price at the top
+        if not (r.top() <= y <= r.bottom()):                  # price scrolled off-screen -> no chip
+            return
+        # With the grid on, boundingRect() is the UNION of the axis strip and the linked view, so
+        # r spans the whole plot — its vertical extent is right but its width is the full chart.
+        # Clamp the chip to the axis's OWN gutter strip on the right edge (self.width()).
+        aw = self.width()
+        th = p.fontMetrics().height() + 4
+        box = QtCore.QRectF(r.right() - aw, y - th / 2.0, aw, th)
+        p.setPen(QtCore.Qt.NoPen)
+        p.setBrush(color)
+        p.drawRoundedRect(box, 3, 3)
+        p.setPen(QtGui.QColor(theme.BG))
+        p.drawText(box, QtCore.Qt.AlignCenter, fmt_price(price))
 
     def tickValues(self, minVal, maxVal, size):
         # One evenly-spaced gridline level at a "nice" step (1/2/2.5/5 × 10^k), targeting
@@ -3164,6 +3206,7 @@ class PriceChart(pg.PlotWidget):
         if not bars:
             self._last_line.hide()
             self._last_badge.hide()
+            self.getAxis("right").set_last(None, None)
             return
         i = len(bars) - 1
         b = bars[i]
@@ -3172,10 +3215,11 @@ class PriceChart(pg.PlotWidget):
         self._last_line.setPen(pg.mkPen(col, width=1, style=QtCore.Qt.DashLine))
         self._last_line.setPos(b.close)
         self._last_line.show()
-        self._last_badge.setText(fmt_price(b.close))
-        self._last_badge.fill = pg.mkBrush(col)
-        self._last_badge.setPos(i, b.close)
-        self._last_badge.show()
+        # TradingView/TradeLocker: the live price as a filled chip in the RIGHT-AXIS gutter (always
+        # visible). The old in-plot TextItem badge sat at the last bar's x and clipped off the right
+        # edge — keep it hidden, the axis gutter tag supersedes it.
+        self.getAxis("right").set_last(b.close, col)
+        self._last_badge.hide()
 
     def _set_ohlc(self, bar, prev_close=None):
         if bar is None:
