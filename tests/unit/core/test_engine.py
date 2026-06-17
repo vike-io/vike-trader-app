@@ -163,3 +163,40 @@ def test_funding_charges_held_position():
     result = BacktestEngine(bars, _BuyHold(), cash=10_000.0).run()
     # buy 1 @100 -> cash 9900; funding 1*100*0.01 = 1 -> cash 9899; equity 9899 + 100 = 9999
     assert result.final_equity == pytest.approx(9_999.0)
+
+
+# --- partial-reduce / cross-zero-flip fills (regression: the close branch used to ALWAYS full-close) ---
+
+class _ReduceToFour(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.order_target_shares(10)   # buy 10 -> fills bar 1 @110
+        elif self.index == 1:
+            self.order_target_shares(4)    # reduce to 4 (sell 6) -> fills bar 2 @120
+
+
+def test_partial_reduce_keeps_remainder_and_books_only_closed_units():
+    eng = BacktestEngine(_bars(), _ReduceToFour(), fee_rate=0.0, cash=10_000.0)
+    eng.run()
+    assert eng.position.size == 4.0                              # remainder kept (was wrongly zeroed)
+    assert len(eng.trades) == 1
+    assert eng.trades[-1].size == 6.0                            # only the 6 closed units (was 10)
+    assert eng.trades[-1].pnl == pytest.approx((120 - 110) * 6)  # 60 on the closed portion (was 100)
+
+
+class _FlipLongToShort(Strategy):
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.order_target_shares(5)    # long 5 -> fills bar 1 @110
+        elif self.index == 1:
+            self.order_target_shares(-3)   # flip to short 3 (sell 8) -> fills bar 2 @120
+
+
+def test_cross_zero_flip_closes_then_opens_opposite_side():
+    eng = BacktestEngine(_bars(), _FlipLongToShort(), fee_rate=0.0, cash=10_000.0)
+    eng.run()
+    assert eng.position.size == -3.0                             # opposite side opened (was left flat)
+    assert eng.position.avg_price == pytest.approx(120.0)        # at the flip fill price
+    assert len(eng.trades) == 1
+    assert eng.trades[-1].size == 5.0                            # closed the original 5 long
+    assert eng.trades[-1].pnl == pytest.approx((120 - 110) * 5)  # 50 on the closed long

@@ -245,24 +245,40 @@ class BacktestEngine:
             pos.size = new_size
             self.cash -= delta * price * self.multiplier
             self._entry_fee += fee
-        else:  # close (full)
-            closed = pos.size
-            self.cash -= delta * price * self.multiplier
+        else:  # opposite direction: reduce part of the position, fully close, or close-and-flip
+            self.cash -= delta * price * self.multiplier   # cash flow of the whole order (correct as-is)
+            sign = 1.0 if pos.size > 0 else -1.0
+            closing = min(abs(delta), abs(pos.size))        # units of the existing position retired
+            portion = closing / abs(pos.size)
+            entry_fee_portion = self._entry_fee * portion
+            exit_fee_portion = fee * (closing / abs(delta))  # delta != 0 inside a fill
             self.trades.append(
                 Trade(
                     entry_price=pos.avg_price,
                     exit_price=price,
-                    size=abs(closed),
-                    pnl=(price - pos.avg_price) * closed * self.multiplier,
-                    fees=self._entry_fee + fee,
+                    size=closing,
+                    pnl=(price - pos.avg_price) * (sign * closing) * self.multiplier,  # signed -> shorts ok
+                    fees=entry_fee_portion + exit_fee_portion,
                     entry_ts=self._entry_ts,
                     exit_ts=ts,
                 )
             )
-            pos.size = 0.0
-            pos.avg_price = 0.0
-            self._entry_fee = 0.0
-            self._entry_ts = 0
+            remaining = abs(pos.size) - closing
+            if remaining > 1e-12:   # partial reduce: keep the remainder at the same cost basis
+                pos.size = sign * remaining
+                self._entry_fee -= entry_fee_portion
+                return
+            leftover = abs(delta) - closing   # crossed through zero -> open the opposite side
+            if leftover > 1e-12:
+                pos.size = (1.0 if delta > 0 else -1.0) * leftover
+                pos.avg_price = price
+                self._entry_fee = fee * (leftover / abs(delta))
+                self._entry_ts = ts
+            else:                   # flat
+                pos.size = 0.0
+                pos.avg_price = 0.0
+                self._entry_fee = 0.0
+                self._entry_ts = 0
 
     def _check_liquidation(self, bar: Bar) -> None:
         """Force-close the position at the bar's adverse extreme if equity there is below maint margin."""

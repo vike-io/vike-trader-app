@@ -524,3 +524,35 @@ def test_volume_cap_none_leaves_fills_uncapped():
     eng.run()
     assert eng._sym["S"].pos.size == pytest.approx(50.0)
     assert not any(k == "volume_cap" for _, k, _, _ in eng.dropped)
+
+
+class _OpenTwoSameBar(PortfolioStrategy):
+    """Open BOTH symbols on the same bar — exercises the account-level leverage cap across symbols."""
+    def on_bar(self, ts, bars):
+        if self.index == 0:
+            self.buy("A", 80.0)   # $8000 notional @100
+            self.buy("B", 80.0)   # same bar -> the cap must account for A's pending open
+
+
+def test_leverage_cap_is_account_level_across_symbols():
+    """Two same-bar opens on different symbols must TOGETHER respect leverage*equity — the cap used
+    to sum only the current symbol's pending, letting the book over-leverage (here 1.6x at 1.0x)."""
+    bars = {"A": _series([100.0, 100.0, 100.0]), "B": _series([100.0, 100.0, 100.0])}
+    eng = PortfolioEngine(bars, _OpenTwoSameBar(), cash=10_000.0, leverage=1.0)  # max notional $10k
+    eng.run()
+    notional = (abs(eng._sym["A"].pos.size) + abs(eng._sym["B"].pos.size)) * 100.0
+    assert notional <= 10_000.0 + 1e-6                       # <= 1.0x (was 16000 = 1.6x)
+
+
+def test_single_symbol_leverage_cap_still_clamps():
+    """Regression guard: the cross-symbol fix must not weaken the single-symbol cap."""
+    bars = {"A": _series([100.0, 100.0, 100.0]), "B": _series([100.0, 100.0, 100.0])}
+
+    class _OneBig(PortfolioStrategy):
+        def on_bar(self, ts, bars):
+            if self.index == 0:
+                self.buy("A", 500.0)        # $50k notional, way over the $10k cap
+
+    eng = PortfolioEngine(bars, _OneBig(), cash=10_000.0, leverage=1.0)
+    eng.run()
+    assert abs(eng._sym["A"].pos.size) * 100.0 == pytest.approx(10_000.0)   # clamped to 1.0x
