@@ -91,18 +91,23 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
         a seccomp denylist (no fork/exec/socket/ptrace) applied before untrusted code runs. seccomp
         can't go in preexec (it would block the child's own exec); best-effort, no-op without a
         libseccomp binding. Also UNVERIFIED on CI (Linux paused).
-      • Windows: timeout/env only TODAY — the Job-Object + restricted-token backend is issue #192.
+      • Windows (``winjob`` + ``_run_confined_windows``): the child is assigned to a Job Object —
+        a memory cap, KILL_ON_JOB_CLOSE, and locked-down UI/IPC — BEFORE it is fed its job. (A
+        process-count cap is omitted: the venv python.exe launcher must spawn the real interpreter;
+        see winjob.) A low/restricted-integrity token, to also block file writes, is the remaining
+        #192 sub-item; the Job Object closes the runaway-memory / process-cleanup / UI vectors.
     """
     job = json.dumps({
         "code": code,
         "bars": _serialize_bars(bars),
         "config": dataclasses.asdict(config),
     })
+    if sys.platform == "win32":
+        return _run_confined_windows(job, timeout)
     kwargs = {}
-    if sys.platform != "win32":
-        confine = _posix_confine()
-        if confine is not None:
-            kwargs["preexec_fn"] = confine
+    confine = _posix_confine()
+    if confine is not None:
+        kwargs["preexec_fn"] = confine
     try:
         proc = subprocess.run(
             [sys.executable, "-c", "from vike_trader_app.core.sandbox.runner import main; main()"],
@@ -112,10 +117,39 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
         )
     except subprocess.TimeoutExpired:
         return {"ok": False, "error": "timeout"}
-    out = (proc.stdout or "").strip()
+    return _parse_result(proc.stdout, proc.stderr)
+
+
+def _parse_result(stdout, stderr) -> dict:
+    out = (stdout or "").strip()
     if not out:
-        return {"ok": False, "error": "no result", "stderr": (proc.stderr or "")[-2000:]}
+        return {"ok": False, "error": "no result", "stderr": (stderr or "")[-2000:]}
     try:
         return json.loads(out.splitlines()[-1])   # result is the LAST json line (strategy may print)
     except json.JSONDecodeError:
         return {"ok": False, "error": "unparseable result", "stdout": out[-2000:]}
+
+
+def _run_confined_windows(job_input: str, timeout: float) -> dict:
+    """Windows path: spawn the child, assign it to a confining Job Object BEFORE feeding it stdin
+    (so it's confined before any strategy code runs), then communicate. The child blocks on
+    ``stdin.read()`` until ``communicate`` writes the job, so the assignment always wins the race."""
+    from . import winjob
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "from vike_trader_app.core.sandbox.runner import main; main()"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        env=_child_env(),   # scrubbed: no API keys/tokens reach untrusted strategy code
+    )
+    job = winjob.create_job()
+    if job:
+        winjob.assign(job, int(proc._handle))   # confine before the child reads its job / runs code
+    try:
+        out, err = proc.communicate(input=job_input, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()
+        return {"ok": False, "error": "timeout"}
+    finally:
+        winjob.close_job(job)   # KILL_ON_JOB_CLOSE reaps any surviving child
+    return _parse_result(out, err)
