@@ -5,13 +5,17 @@ derived by scanning bars between each trade's entry and exit timestamps.
 """
 
 
-def _direction(trade) -> int:
-    """Infer +1 (long) / -1 (short) from an unsigned-size Trade.
+def trade_direction(trade) -> int:
+    """Infer +1 (long) / -1 (short) from an unsigned-size Trade — THE single source of truth.
 
-    A profit on a price rise is a long; a profit on a price fall is a short. The degenerate
-    ``pnl == 0`` / ``exit == entry`` case defaults to long.
+    The engine/portfolio record ``Trade.size`` as ``abs`` (side is lost), so ``size >= 0`` is NOT a
+    side test (it's always true). A profit on a price rise is a long; a profit on a price fall is a
+    short. The degenerate ``pnl == 0`` / ``exit == entry`` case defaults to long.
     """
     return 1 if (trade.pnl >= 0) == (trade.exit_price >= trade.entry_price) else -1
+
+
+_direction = trade_direction   # back-compat alias
 
 
 def mae_mfe(trade, bars, direction: int | None = None) -> tuple[float, float]:

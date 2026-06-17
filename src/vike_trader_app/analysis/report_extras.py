@@ -7,6 +7,8 @@ results pane's Distribution view, the Trades-table MFE/MAE columns, and the Expo
 
 from __future__ import annotations
 
+from .excursions import trade_direction
+
 
 def trade_returns(trades) -> list[float]:
     """Per-trade return fraction = ``pnl / (|size| * entry_price)`` (0 when the basis is 0)."""
@@ -34,7 +36,7 @@ def mfe_mae(trades, bars) -> list[tuple[float, float]]:
             r = t.pnl / (abs(t.size) * basis) if (t.size and basis) else 0.0
             out.append((r, r))
             continue
-        long = t.size >= 0
+        long = trade_direction(t) > 0   # NOT t.size (engine stores abs -> always "long")
         best = worst = 0.0
         for b in bars[i0:i1 + 1]:
             up = (b.high - t.entry_price) / basis
@@ -76,7 +78,7 @@ def report_to_csv(report) -> str:
     lines.append("")
     lines.append("trade,side,entry_ts,exit_ts,entry,exit,size,pnl,fees")
     for i, t in enumerate(report.trades, 1):
-        side = "long" if t.size >= 0 else "short"
+        side = "long" if trade_direction(t) > 0 else "short"
         lines.append(f"{i},{side},{t.entry_ts},{t.exit_ts},{t.entry_price},"
                      f"{t.exit_price},{t.size},{t.pnl},{t.fees}")
     return "\n".join(lines) + "\n"

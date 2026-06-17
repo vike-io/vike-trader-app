@@ -253,8 +253,10 @@ def skew(values, period: int = 20):
             continue
         sd = math.sqrt(m2)
         m3 = sum(d ** 3 for d in diffs) / p
-        # sample skewness (bias-corrected)
-        out[i] = (m3 / (sd ** 3)) * (p * p / ((p - 1) * (p - 2)))
+        # bias-corrected sample skewness G1 = g1 * sqrt(p(p-1))/(p-2), where g1 = m3/sd^3 is the
+        # population skewness (sd here is the POPULATION std, /p). The old p*p/((p-1)(p-2)) factor
+        # over-stated by ~8% (p=20) to ~40% (p=5) vs scipy's bias=False.
+        out[i] = (m3 / (sd ** 3)) * (math.sqrt(p * (p - 1)) / (p - 2))
     return out
 
 

@@ -16,6 +16,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import report_extras
+from ..analysis.excursions import trade_direction
 from . import icons, theme
 from .chart import EquityChart
 from .editor import CodeEditor
@@ -578,9 +579,10 @@ class ResultsPanel(QtWidgets.QWidget):
         for r, t in enumerate(trades):
             ret = t.pnl / (abs(t.size) * t.entry_price) if t.size and t.entry_price else 0.0
             mfe, mae = mfe_mae[r] if mfe_mae and r < len(mfe_mae) else (None, None)
+            is_long = trade_direction(t) > 0   # NOT t.size (engine stores abs -> always "long")
             cells = [
                 str(r + 1),
-                "LONG" if t.size >= 0 else "SHORT",
+                "LONG" if is_long else "SHORT",
                 f"{t.entry_price:,.2f}",
                 f"{t.exit_price:,.2f}",
                 f"{abs(t.size):g}",
@@ -591,7 +593,7 @@ class ResultsPanel(QtWidgets.QWidget):
             ]
             pnl_col = theme.UP if t.pnl >= 0 else theme.DOWN
             colors = {
-                1: theme.UP if t.size >= 0 else theme.DOWN,
+                1: theme.UP if is_long else theme.DOWN,
                 5: pnl_col, 6: pnl_col,
                 7: theme.UP,    # MFE = best excursion -> green
                 8: theme.DOWN,  # MAE = worst excursion -> red

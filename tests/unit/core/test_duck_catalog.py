@@ -119,6 +119,21 @@ def test_duck_resample_sliced_matches_core_on_same_slice(tmp_path):
            _tuples(resample(poll.query("X", "1m", s, e), _HOUR))
 
 
+def test_duck_resample_nonaligned_bounds_keep_full_edge_buckets(tmp_path):
+    """A mid-bucket start/end must NOT truncate the edge buckets. The old WHERE-ts pre-filter fed the
+    edge buckets only the in-window base bars (partial OHLCV + a phantom bucket); HAVING keeps whole
+    buckets whose START is in range, each aggregated from ALL its base bars."""
+    bars = [Bar(ts=i * 60_000, open=100 + i, high=200 + i, low=i, close=100 + i, volume=1.0)
+            for i in range(120)]                       # 0:00..1:59 -> buckets at 0:00 and 1:00
+    _seed(tmp_path, "X", "1m", bars)
+    # window 0:30..1:30 — mid-bucket on both ends
+    got = DuckCatalog(str(tmp_path)).resample("X", "1m", _HOUR, 30 * 60_000, 90 * 60_000)
+    full = {b.ts: b for b in resample(bars, _HOUR)}
+    assert [b.ts for b in got] == [_HOUR]              # only the 1:00 bucket (0:00 starts before 0:30)
+    assert got[0].volume == 60.0                       # the FULL hour, not the 30 in-window bars
+    assert _tuples(got) == _tuples([full[_HOUR]])      # byte-identical to the full-base bucket
+
+
 def test_duck_resample_missing_dataset_returns_empty(tmp_path):
     assert DuckCatalog(str(tmp_path)).resample("NOPE", "1m", _HOUR) == []
 
