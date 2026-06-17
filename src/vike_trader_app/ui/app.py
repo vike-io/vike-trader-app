@@ -178,11 +178,10 @@ class _RuleOverlay(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WA_NoSystemBackground, True)
         self.setAttribute(QtCore.Qt.WA_TranslucentBackground, True)
         self._bottom_y = 0  # logical y of the bottom rule; 0 = not placed yet
-        self._vline_x = 0   # logical x of the rail separator; 0 = not placed yet
 
-    def set_lines(self, bottom_y: int, vline_x: int) -> None:
-        if (bottom_y, vline_x) != (self._bottom_y, self._vline_x):
-            self._bottom_y, self._vline_x = bottom_y, vline_x
+    def set_lines(self, bottom_y: int) -> None:
+        if bottom_y != self._bottom_y:
+            self._bottom_y = bottom_y
             self.update()
 
     def paintEvent(self, event):  # noqa: N802 - Qt override
@@ -196,8 +195,6 @@ class _RuleOverlay(QtWidgets.QWidget):
         painter.fillRect(QtCore.QRect(0, 0, w, 1), color)        # under the title bar
         if self._bottom_y > 0:
             painter.fillRect(QtCore.QRect(0, by, w, 1), color)   # above the status bar
-        if self._vline_x > 0:                                    # rail separator (vertical)
-            painter.fillRect(QtCore.QRect(int(round(self._vline_x * dpr)), 0, 1, by), color)
         painter.end()
 
 
@@ -313,11 +310,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._panel_detaching: set[str] = set()
         # Maximize state — ONE machine for the chart header AND every side panel (see _maximize_dock).
         # _maximized is the dock filling the workspace (chart space or a panel); _max_hidden is what
-        # was hidden to make room. _chart_maxed / _panel_maxed are kept in sync only as compat flags
-        # the dock title-bar glyph code (dockshell) still reads.
+        # was hidden to make room. _panel_maxed is the compat flag the dock title-bar glyph code
+        # (dockshell) reads to mark a maximized panel area.
         self._maximized = None
         self._max_hidden: list = []
-        self._chart_maxed: bool = False
         self._panel_maxed: "str | None" = None
         # A chart window docked into the workspace ("Dock into workspace") lives here as an ADS
         # dock (objectName chart:<n>); it tears back out to a clean window via the dock's ⧉.
@@ -665,8 +661,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 self._set_dock_open(d, False)
             except RuntimeError:
                 continue
-        self._chart_maxed = False                      # compat flags (dockshell glyph readers)
-        self._panel_maxed = target.objectName()
+        self._panel_maxed = target.objectName()        # compat flag the dockshell glyph code reads
         self._sync_max_glyph(target, True)
         self._fit_chart_header()
 
@@ -682,7 +677,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self._max_hidden = []
         target = self._maximized
         self._maximized = None
-        self._chart_maxed = False
         self._panel_maxed = None
         self._sync_max_glyph(target, False)
         self._fit_chart_header()
@@ -741,7 +735,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._maximized is self._chart_space_dock():
             self._maximized = None
             self._max_hidden = []
-        self._chart_maxed = False
         self._sync_max_glyph(self._chart_space_dock(), False)
 
     def _frame_of(self, doc) -> "object | None":
@@ -944,9 +937,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._min_rail.remove(dock.objectName())
             # A restored panel must coexist with the chart — if the chart was 'maximized' (panels
             # hidden), clear that state first so the panel isn't immediately re-hidden / leaving a
-            # stale ❐ on the chart header.
-            if getattr(self, "_chart_maxed", False):
-                self._clear_chart_maxed()
+            # stale ❐ on the chart header. _clear_chart_maxed self-guards (no-op unless the chart
+            # was the maximized dock), so it's safe to call unconditionally here.
+            self._clear_chart_maxed()
             self._set_dock_open(dock, True)
             dock.raise_()
         except RuntimeError:
@@ -1848,10 +1841,6 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..data.sources import is_forex_symbol
 
         return "YAHOO · DUKASCOPY" if is_forex_symbol(symbol) else "BINANCE"
-
-    def _update_feed_badge(self, *, live: bool = False) -> None:
-        """Back-compat shim: route the old badge call through the health-based renderer."""
-        self._set_feed_health("live" if live else "idle")
 
     def _set_feed_health(self, state: str) -> None:
         """Paint the feed badge for ``state`` and re-tune the live poll cadence.
@@ -2845,7 +2834,7 @@ class MainWindow(QtWidgets.QMainWindow):
             if self._bars:
                 last = self._bars[-1].close
                 self.crumb.setText(
-                    f"{self._symbol}  ·  1m  ·  {last:,.2f}  ·  {len(self._bars)} bars"
+                    f"{self._symbol}  ·  {self._interval}  ·  {last:,.2f}  ·  {len(self._bars)} bars"
                 )
 
     # --- replay wiring ---
@@ -2932,7 +2921,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._fwd_bars = []
         self._set_backtest_controls_enabled(False)
         self.btn_forward.setText("■ Stop forward")
-        self._update_feed_badge(live=True)
+        self._set_feed_health("live")
 
         # Prefer the push WebSocket feed (lower latency) when the source has one;
         # forex has no push feed, so it falls straight through to REST polling.
@@ -3079,9 +3068,7 @@ class MainWindow(QtWidgets.QMainWindow):
         overlay.setGeometry(0, 0, self.width(), self.height())
         sb = self.statusBar()
         bottom_y = sb.geometry().top() if sb is not None else self.height() - 1
-        rail = getattr(self, "_rail_tb", None)
-        vline_x = rail.geometry().right() if rail is not None else 0  # rail's right edge
-        overlay.set_lines(bottom_y, vline_x)
+        overlay.set_lines(bottom_y)
         overlay.raise_()
 
     def _apply_titlebar_color(self) -> None:
@@ -3385,7 +3372,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _show_shortcuts(self) -> None:
         rows = ["Ctrl+K — command palette", "Ctrl+N — new chart window",
                 "/ — focus the command bar", "Ctrl+Shift+C / V — copy / paste window",
-                "Ctrl+G / Ctrl+M / Ctrl+T — chart / market watch / trades panels",
+                "Ctrl+M / Ctrl+T — market watch / trades panels",
                 "Middle-click tab — close window", "Double-click tab — float window"]
         QtWidgets.QMessageBox.information(self, "Keyboard shortcuts", "\n".join(rows))
 
