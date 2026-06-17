@@ -1,0 +1,19 @@
+# Keep the build context tiny: only pyproject.toml + src/ are needed (see Dockerfile).
+.git/
+.venv/
+venv/
+storage/
+logs/
+tests/
+docs/
+.github/
+.claude/
+**/__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.ruff_cache/
+*.png
+*.log
+*.parquet
+*.db
