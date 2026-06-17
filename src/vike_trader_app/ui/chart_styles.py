@@ -74,20 +74,23 @@ class CandleItem(pg.GraphicsObject):
         if not self._bars:
             return
         p = QtGui.QPainter(self._picture)
+        # Hoist pens/brushes out of the loop (was a per-bar mkPen/mkBrush). Pens re-set only on a
+        # colour flip; the brush is a 3-state pick (hollow up-body = NoBrush, else the colour fill).
+        up_pen, down_pen = pg.mkPen(QtGui.QColor(theme.CANDLE_UP)), pg.mkPen(QtGui.QColor(theme.CANDLE_DOWN))
+        up_brush, down_brush = pg.mkBrush(QtGui.QColor(theme.CANDLE_UP)), pg.mkBrush(QtGui.QColor(theme.CANDLE_DOWN))
+        cur_up = None
         for i, b in enumerate(self._bars):
             up = b.close >= b.open
-            color = QtGui.QColor(theme.CANDLE_UP if up else theme.CANDLE_DOWN)
             w = self._widths[i] if self._widths else 0.6
-            p.setPen(pg.mkPen(color))
+            if up != cur_up:
+                p.setPen(up_pen if up else down_pen)
+                cur_up = up
             if b.high > b.low:
                 p.drawLine(pg.Point(i, b.low), pg.Point(i, b.high))
             top, bottom = max(b.open, b.close), min(b.open, b.close)
             if top > bottom:
                 rect = QRectF(i - w / 2, bottom, w, top - bottom)
-                if self._hollow and up:
-                    p.setBrush(QtCore.Qt.NoBrush)  # hollow up-body: outline only
-                else:
-                    p.setBrush(pg.mkBrush(color))
+                p.setBrush(QtCore.Qt.NoBrush if (self._hollow and up) else (up_brush if up else down_brush))
                 p.drawRect(rect)
             else:
                 p.drawLine(pg.Point(i - w / 2, bottom), pg.Point(i + w / 2, bottom))
@@ -126,9 +129,14 @@ class BarItem(pg.GraphicsObject):
             return
         p = QtGui.QPainter(self._picture)
         tick = 0.32
+        up_pen = pg.mkPen(QtGui.QColor(theme.CANDLE_UP), width=1.4)      # hoisted out of the loop
+        down_pen = pg.mkPen(QtGui.QColor(theme.CANDLE_DOWN), width=1.4)
+        cur_up = None
         for i, b in enumerate(self._bars):
-            color = QtGui.QColor(theme.CANDLE_UP if b.close >= b.open else theme.CANDLE_DOWN)
-            p.setPen(pg.mkPen(color, width=1.4))
+            up = b.close >= b.open
+            if up != cur_up:
+                p.setPen(up_pen if up else down_pen)
+                cur_up = up
             p.drawLine(pg.Point(i, b.low), pg.Point(i, b.high))
             if self._mode == "ohlc":
                 p.drawLine(pg.Point(i - tick, b.open), pg.Point(i, b.open))
@@ -167,11 +175,15 @@ class BlockItem(pg.GraphicsObject):
             return
         p = QtGui.QPainter(self._picture)
         w = 0.8
+        up_pen, down_pen = pg.mkPen(QtGui.QColor(theme.CANDLE_UP)), pg.mkPen(QtGui.QColor(theme.CANDLE_DOWN))
+        up_brush, down_brush = pg.mkBrush(QtGui.QColor(theme.CANDLE_UP)), pg.mkBrush(QtGui.QColor(theme.CANDLE_DOWN))
+        cur_up = None
         for i, b in enumerate(self._bars):
             up = b.close >= b.open
-            color = QtGui.QColor(theme.CANDLE_UP if up else theme.CANDLE_DOWN)
-            p.setPen(pg.mkPen(color))
-            p.setBrush(pg.mkBrush(color))
+            if up != cur_up:                  # pens/brushes hoisted; re-set only on a colour flip
+                p.setPen(up_pen if up else down_pen)
+                p.setBrush(up_brush if up else down_brush)
+                cur_up = up
             top, bottom = max(b.open, b.close), min(b.open, b.close)
             h = top - bottom
             if h <= 0:

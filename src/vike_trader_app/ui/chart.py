@@ -167,10 +167,18 @@ class CandlestickItem(pg.GraphicsObject):
         self._brect = QRectF(-1, lo, len(self._bars) + 1, hi - lo)
         painter = QtGui.QPainter(self._picture)
         width = 0.6
+        # Hoist the two pens/brushes out of the loop (was a fresh QColor+mkPen+mkBrush PER BAR — the
+        # dominant cost of every _generate / replay frame) and re-set them only on a colour flip.
+        # Pixel-identical: consecutive same-colour bars reuse the identical pen/brush.
+        up_pen, down_pen = pg.mkPen(QtGui.QColor(_UP)), pg.mkPen(QtGui.QColor(_DOWN))
+        up_brush, down_brush = pg.mkBrush(QtGui.QColor(_UP)), pg.mkBrush(QtGui.QColor(_DOWN))
+        cur_up = None
         for i, b in enumerate(self._bars):
-            color = QtGui.QColor(_UP if b.close >= b.open else _DOWN)
-            painter.setPen(pg.mkPen(color))
-            painter.setBrush(pg.mkBrush(color))
+            up = b.close >= b.open
+            if up != cur_up:
+                painter.setPen(up_pen if up else down_pen)
+                painter.setBrush(up_brush if up else down_brush)
+                cur_up = up
             if b.high > b.low:  # wick only when there's a range (skip flat/padding bars)
                 painter.drawLine(pg.Point(i, b.low), pg.Point(i, b.high))
             top, bottom = max(b.open, b.close), min(b.open, b.close)

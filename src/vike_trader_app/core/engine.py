@@ -4,12 +4,16 @@ Look-ahead guard: orders submitted during bar *i* fill at the **open of bar i+1*
 because pending orders are filled at the start of each bar *before* the strategy runs.
 """
 
+import bisect
 from dataclasses import dataclass
+from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 from .timeframe import parse_timeframe, resample
+
+_BAR_TS = attrgetter("ts")   # bisect key: higher-TF reads slice a ts-ascending list in O(log n)
 
 
 @dataclass
@@ -150,13 +154,19 @@ class BacktestEngine:
         """Completed higher-TF bars visible at the current base bar (deliver-on-complete)."""
         ms, coarse = self._tf[tf]
         window_start = self._now - self._now % ms
-        return [b for b in coarse if b.ts < window_start]
+        # coarse is ts-ascending: bisect to the first bar at/after window_start instead of rescanning
+        # the whole list every bar (was O(n) per call -> O(n^2) per run on a multi-timeframe strategy).
+        return coarse[:bisect.bisect_left(coarse, window_start, key=_BAR_TS)]
 
     def forming_for(self, tf: str):
         """The still-building coarse bar for ``tf`` from base bars seen so far, or None."""
         ms, _ = self._tf[tf]
         window_start = self._now - self._now % ms
-        window = [b for b in self.bars if window_start <= b.ts <= self._now]
+        # self.bars is ts-ascending: slice the [window_start, _now] window via bisect rather than
+        # scanning the whole base series each call (the dominant MTF O(n^2) hot path).
+        lo = bisect.bisect_left(self.bars, window_start, key=_BAR_TS)
+        hi = bisect.bisect_right(self.bars, self._now, key=_BAR_TS)
+        window = self.bars[lo:hi]
         if not window:
             return None
         return Bar(
