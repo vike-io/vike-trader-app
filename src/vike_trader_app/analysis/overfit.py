@@ -65,6 +65,12 @@ def pbo_cscv(matrix, n_splits: int) -> float:
         raise ValueError("n_splits must be even for CSCV")
     t = len(matrix)
     n_cols = len(matrix[0])
+    # A NaN/inf anywhere makes the IS-best / OOS-rank comparisons meaningless (NaN compares False ->
+    # garbage rank, and a rank of 0 would make math.log(0) raise). PBO is then UNCOMPUTABLE: return
+    # NaN (which overfit_verdict renders as "not assessed"), NOT 0.0 — 0.0 reads as a reassuring
+    # "no overfit" and the raw call sites (report.py, ai/services.py) used to crash on this input.
+    if any(not math.isfinite(v) for row in matrix for v in row):
+        return float("nan")
     bounds = [(g * t // n_splits, (g + 1) * t // n_splits) for g in range(n_splits)]
     groups = [list(range(a, b)) for a, b in bounds]
 
@@ -79,10 +85,12 @@ def pbo_cscv(matrix, n_splits: int) -> float:
         best = max(range(n_cols), key=lambda j: is_perf[j])
         rank = sum(1 for j in range(n_cols) if oos_perf[j] <= oos_perf[best])
         omega = rank / (n_cols + 1)
+        if not 0.0 < omega < 1.0:   # degenerate split -> skip (logit undefined at 0/1)
+            continue
         logits.append(math.log(omega / (1.0 - omega)))
 
     if not logits:
-        return 0.0
+        return float("nan")
     return sum(1 for lam in logits if lam <= 0.0) / len(logits)
 
 
@@ -99,7 +107,11 @@ def overfit_verdict(pbo: float, deflated_sr: float, wf_consistency: float | None
     points = 0
     reasons: list[str] = []
 
-    if pbo > 0.5:
+    if math.isnan(pbo):
+        # PBO couldn't be computed (degenerate / non-finite returns matrix). Surface that honestly
+        # rather than letting NaN comparisons fall through as a silent "no overfit".
+        reasons.append("PBO not assessed (degenerate or non-finite returns matrix).")
+    elif pbo > 0.5:
         points += 2
         reasons.append(
             f"PBO {pbo:.0%}: the selected configuration is more likely than not overfit."

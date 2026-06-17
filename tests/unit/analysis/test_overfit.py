@@ -1,5 +1,7 @@
 """Anti-overfitting statistics: PSR, deflated Sharpe, PBO (CSCV), verdict."""
 
+import math
+
 import pytest
 
 from vike_trader_app.analysis.overfit import (
@@ -98,3 +100,18 @@ def test_verdict_high_risk_when_overfit():
 def test_verdict_medium_in_between():
     v = overfit_verdict(pbo=0.3, deflated_sr=0.95)
     assert v.level == "Medium"
+
+
+def test_pbo_nan_on_nonfinite_matrix_not_crash_not_zero():
+    """A NaN/inf in the returns matrix makes PBO uncomputable -> NaN (was a crash via math.log(0) at
+    the raw call sites, or a misleading garbage value). NaN, never a reassuring 0.0."""
+    m = [[1.0, 2.0, float("nan")], [2.0, 1.0, 3.0], [float("inf"), 0.5, 1.0], [1.0, 2.0, 3.0]]
+    out = pbo_cscv(m, n_splits=2)        # must not raise
+    assert math.isnan(out)
+
+
+def test_verdict_surfaces_pbo_not_assessed_on_nan():
+    """overfit_verdict must report a NaN PBO as 'not assessed', not silently let NaN fall through
+    the comparisons as a clean 'no overfit'."""
+    v = overfit_verdict(pbo=float("nan"), deflated_sr=0.99)
+    assert any("not assessed" in r.lower() for r in v.reasons)
