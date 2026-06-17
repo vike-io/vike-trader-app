@@ -7,7 +7,9 @@ so they serialize cleanly to JSON without any additional transformation.
 
 from __future__ import annotations
 
+import json
 import os
+import re
 
 import numpy as np
 
@@ -84,15 +86,42 @@ def fetch_ohlcv(
 # ---------------------------------------------------------------------------
 
 
+def _as_float_list(closes, *, field: str = "closes") -> list[float]:
+    """Coerce an LLM/MCP price-series arg to ``list[float]``.
+
+    LLM clients pass a price list inconsistently: a real JSON array, a JSON-array *string*
+    (``"[100, 101]"``), or a bare delimited string (``"100,101"`` / ``"100 101"``). The old code
+    did ``list(map(float, closes))`` which, on a string, iterates CHARACTERS and dies on the first
+    non-digit (``float(',')``) — the reported parse failure. Accept all of the above; raise a clear
+    ValueError otherwise (never iterate a string char-by-char)."""
+    if isinstance(closes, str):
+        s = closes.strip()
+        try:
+            closes = json.loads(s)                       # "[100, 101]" -> [100, 101]
+        except (ValueError, TypeError):
+            closes = [p for p in re.split(r"[,\s]+", s) if p]   # "100,101" / "100 101" -> ["100","101"]
+    if isinstance(closes, (int, float)):
+        closes = [closes]                                # a lone scalar (e.g. from json.loads("100"))
+    try:
+        out = [float(x) for x in closes]
+    except (TypeError, ValueError) as e:
+        raise ValueError(
+            f"`{field}` must be a list of numbers (or a JSON/comma-separated string of numbers); "
+            f"could not parse {type(closes).__name__}: {e}"
+        ) from e
+    return out
+
+
 def run_sma_backtest(closes, fast: int, slow: int, *, fee_rate: float = 0.0,
                      init_cash: float = 10_000.0) -> dict:
     """Backtest an SMA(fast)x SMA(slow) crossover (long/flat) on ``closes``; return full metrics.
 
     ``closes`` is a list of float close prices (JSON-friendly — an LLM/MCP client passes these
-    directly). Builds entry/exit signals with the vectorized SMA helpers, runs the compiled
-    kernel for the equity curve + trades, then computes the metric suite (incl. Sortino/Calmar).
+    directly; a JSON/comma-separated string is also accepted). Builds entry/exit signals with the
+    vectorized SMA helpers, runs the compiled kernel for the equity curve + trades, then computes
+    the metric suite (incl. Sortino/Calmar).
     """
-    closes = list(map(float, closes))
+    closes = _as_float_list(closes)
     n = len(closes)
     smas = _sma_matrix(np.asarray(closes, dtype=float), [fast, slow])
     entries, exits = _cross_signals(smas[fast], smas[slow])
@@ -131,7 +160,7 @@ def optimize_sma(closes, fasts, slows, *, fee_rate: float = 0.0, top_n: int = 10
     ``closes`` is a list of float close prices. Each result carries ``params`` + ``total_return``
     + ``n_trades``. ``top_n`` bounds the returned list (the full grid is always swept).
     """
-    results = sweep_sma_cross(list(map(float, closes)), list(fasts), list(slows), fee_rate=fee_rate)
+    results = sweep_sma_cross(_as_float_list(closes), list(fasts), list(slows), fee_rate=fee_rate)
     return {
         "n_combos": len(results),
         "top": results[:top_n],

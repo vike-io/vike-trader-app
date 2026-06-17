@@ -8,14 +8,20 @@ extra: ``pip install vike_trader_app[mcp]``.
 from . import services, telemetry
 
 
-def run_sma_backtest(closes, fast: int, slow: int, fee_rate: float = 0.0) -> dict:
-    """Backtest an SMA(fast)x SMA(slow) crossover on a list of close prices; return metrics."""
+def run_sma_backtest(closes: list[float], fast: int, slow: int, fee_rate: float = 0.0) -> dict:
+    """Backtest an SMA(fast)x SMA(slow) crossover on a list of close prices; return metrics.
+
+    ``closes`` is a JSON array of numbers, e.g. [100.0, 101.2, 100.8, ...].
+    """
     return services.run_sma_backtest(closes, fast=fast, slow=slow, fee_rate=fee_rate)
 
 
-def optimize_sma(closes, fasts: list[int], slows: list[int], fee_rate: float = 0.0,
+def optimize_sma(closes: list[float], fasts: list[int], slows: list[int], fee_rate: float = 0.0,
                  top_n: int = 10) -> dict:
-    """Sweep SMA crossover parameters over fasts x slows; return the top-N ranked combos."""
+    """Sweep SMA crossover parameters over fasts x slows; return the top-N ranked combos.
+
+    ``closes`` is a JSON array of numbers, e.g. [100.0, 101.2, 100.8, ...].
+    """
     return services.optimize_sma(closes, fasts, slows, fee_rate=fee_rate, top_n=top_n)
 
 
@@ -179,9 +185,34 @@ def tool_names(server) -> list[str]:
     return [fn.__name__ for fn in _TOOLS]
 
 
+def _warm_jit() -> None:
+    """Initialise Numba's backtest kernels ON THE MAIN THREAD before the server serves requests.
+
+    Two problems this prevents, both of which made the first MCP backtest "never come back":
+      * Cold JIT compile: the first backtest in a fresh process otherwise compiles the @njit
+        kernels inline (tens of seconds), blowing past the MCP client's tool timeout. (cache=True
+        persists this across runs, so it's a one-time-per-install cost.)
+      * Numba's first per-process dispatch is pathologically slow OFF the main thread — and FastMCP
+        runs sync tools in a worker thread, so the first tool call paid 30s+ EVEN with a warm cache,
+        while the SECOND was 0.5s. Forcing that first dispatch here (main thread) makes every
+        worker-thread tool call fast.
+
+    A 5-bar series compiles the identical float64 type-signatures as a 5000-bar one. Best-effort."""
+    try:
+        services.run_sma_backtest([1.0, 2.0, 3.0, 4.0, 5.0], fast=2, slow=3)
+        services.optimize_sma([1.0, 2.0, 3.0, 4.0, 5.0], [2], [3])
+    except Exception:  # noqa: BLE001 - warm-up is purely an optimization; never block startup
+        pass
+
+
 def main() -> None:
     """Console-script entry point: run the stdio MCP server."""
-    build_server().run()
+    import os
+
+    server = build_server()
+    if os.environ.get("VIKE_MCP_WARMUP", "1") != "0":
+        _warm_jit()   # synchronous, MAIN thread — must precede run() (see _warm_jit docstring)
+    server.run()
 
 
 if __name__ == "__main__":
