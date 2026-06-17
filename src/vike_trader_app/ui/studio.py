@@ -9,6 +9,7 @@ space (app.py), not here. The overfit-risk verdict banner sits above the tabs.
 import difflib
 import html
 from dataclasses import asdict, dataclass, replace
+from importlib.util import find_spec
 
 import numpy as np
 import pyqtgraph as pg
@@ -20,15 +21,13 @@ from .chart import EquityChart
 from .editor import CodeEditor
 from .flowlayout import FlowLayout
 
-# Optional 3D surface render. pyqtgraph.opengl needs PyOpenGL (the `vike_trader_app[viz3d]`
-# extra). When it's absent — or when running headless/offscreen, where GL can't initialise — we
-# fall back to a flat pyqtgraph ImageView heatmap, so the Surface tab always works.
-try:  # pragma: no cover - import guard
-    import pyqtgraph.opengl as _gl
-    _HAS_GL = True
-except Exception:  # noqa: BLE001
-    _gl = None
-    _HAS_GL = False
+# Optional 3D surface render. pyqtgraph.opengl pulls in the whole PyOpenGL stack (OpenGL.GL), ~280ms
+# at import — paid by EVERY launch even though the 3D surface is a rarely-opened Studio tab. So only
+# DETECT availability here with find_spec (cheap — locates the module without executing it) and DEFER
+# the real import to _draw_surface_gl (first 3D draw). Absent / headless / a GL hiccup -> the flat
+# pyqtgraph ImageView heatmap fallback, so the Surface tab always works.
+_HAS_GL = find_spec("pyqtgraph.opengl") is not None and find_spec("OpenGL") is not None
+_gl = None  # the pyqtgraph.opengl module — imported lazily on the first real 3D draw
 
 
 def _gl_usable() -> bool:
@@ -972,6 +971,9 @@ class ResultsPanel(QtWidgets.QWidget):
         self._surface_stack.setCurrentWidget(self._surface_img)
 
     def _draw_surface_gl(self, z) -> None:
+        global _gl
+        if _gl is None:
+            import pyqtgraph.opengl as _gl   # deferred ~280ms import; only on the first real 3D draw
         if self._surface_gl is None:
             self._surface_gl = _gl.GLViewWidget()
             self._surface_gl.setBackgroundColor(theme.BG)

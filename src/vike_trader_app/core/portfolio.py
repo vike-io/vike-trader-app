@@ -6,14 +6,16 @@ step fill at each symbol's NEXT bar open (no look-ahead), mirroring the single-s
 engine. Equity = cash + sum(position size * last close).
 """
 
+import bisect
 from dataclasses import dataclass, field
+from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
 
-import bisect
+_BAR_TS = attrgetter("ts")   # bisect key for the per-symbol higher-TF reads (mirror BacktestEngine)
 
 
 def _default_sizer():
@@ -480,13 +482,18 @@ class PortfolioEngine:
         """Completed higher-TF bars for ``symbol`` visible at the current step (no look-ahead)."""
         ms, coarse = self._sym[symbol].tf[tf]
         window_start = self._now - self._now % ms
-        return [b for b in coarse if b.ts < window_start]
+        # coarse is ts-ascending: bisect instead of rescanning every bar (O(n) per call -> O(n^2)/run).
+        return coarse[:bisect.bisect_left(coarse, window_start, key=_BAR_TS)]
 
     def forming_for(self, symbol: str, tf: str):
         """The still-building coarse bar for ``tf`` / ``symbol`` from base bars seen so far, or None."""
         ms, _ = self._sym[symbol].tf[tf]
         window_start = self._now - self._now % ms
-        window = [b for b in self.bars[symbol] if window_start <= b.ts <= self._now]
+        # base series is ts-ascending: slice [window_start, _now] via bisect, not a full scan per call.
+        base = self.bars[symbol]
+        lo = bisect.bisect_left(base, window_start, key=_BAR_TS)
+        hi = bisect.bisect_right(base, self._now, key=_BAR_TS)
+        window = base[lo:hi]
         if not window:
             return None
         return Bar(
