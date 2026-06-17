@@ -183,7 +183,7 @@ def stylesheet() -> str:
     /* generic panels / cards */
     .Panel {{ background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_LG}px; }}
 
-    /* group boxes (e.g. the Tools-tab calculators) — themed card with an inset title */
+    /* group boxes — themed card with an inset title */
     QGroupBox {{
         background: {SURFACE}; border: 1px solid {BORDER}; border-radius: {RADIUS_LG}px;
         margin-top: 14px; padding: {SPACE_3}px;

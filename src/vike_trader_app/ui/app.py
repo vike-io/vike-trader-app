@@ -59,7 +59,6 @@ from .studio import StudioTab
 # The 7 non-Studio tool widgets (AlertsTab, JournalTab, NewsTab, ScreenerTab, DataManagerTab,
 # EconomicCalendarTab/CalendarSpace, OptionsTab) are NO LONGER imported here: they are built
 # on demand by ToolRegistry (ui/toolreg.py) inside open_tool(), not eagerly in _build_central.
-# (Tools tab of standalone calculators stays hidden — restore via its addTab + a _TOOL_ITEMS entry.)
 from ..data.options.service import OptionsService  # app-level OptionsService stays eager (Plan 1)
 
 _SPEEDS = [1, 2, 5, 10, 25, 50]  # bars advanced per timer tick
@@ -1304,10 +1303,6 @@ class MainWindow(QtWidgets.QMainWindow):
         # re-parents them into the Studio chart block; closing the Studio dock rescues them back
         # out (see _rescue_studio_controls) before the DeleteOnClose dock tree is destroyed.
         self._studio_controls, self._studio_scrubber = self._build_controls()
-        # Tools tab hidden per user request (see import note above).
-        # self.tools = ToolsTab()
-        # self.tabs.addTab(self.tools, "Tools")
-        #
         # The 7 non-Studio tools (screener/journal/alerts/data/news/calendar/options) are NO
         # LONGER eager SpaceDeck spaces — they open on-demand as dock widgets via open_tool(key)
         # (empty-workspace re-arch). Their legacy attributes (self.screener/.datamanager/.news/…)
