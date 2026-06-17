@@ -88,3 +88,22 @@ def test_rag_retriever_error_is_swallowed(fake_sandbox):
 
     r = develop_strategy("x", _bars(), client=_FakeClient(), retrieve=_boom)
     assert r.accepted   # RAG failure must not break codegen
+
+
+def test_candidates_recorded_into_the_trial_ledger(fake_sandbox):
+    """Each accepted AI candidate is logged as a trial, so recorder.n_trials() reflects the search
+    (the input the deflated-Sharpe correction needs)."""
+    from vike_trader_app.analysis.recorder import ExperimentRecorder
+    from vike_trader_app.data.store import Store
+
+    rec = ExperimentRecorder(Store(":memory:"))
+    results = develop_strategies("an MA strategy", _bars(), client=_FakeClient(), n=3,
+                                 recorder=rec, symbol="BTCUSDT", interval="1h", ts=1)
+    accepted = [r for r in results if r.accepted]
+    assert accepted and rec.n_trials() == len(accepted)
+
+
+def test_recorder_is_opt_in(fake_sandbox):
+    """No recorder -> no recording, identical behaviour to before (back-compat)."""
+    results = develop_strategies("x", _bars(), client=_FakeClient(), n=2)
+    assert all(r.accepted for r in results)   # runs fine with recorder=None (default)

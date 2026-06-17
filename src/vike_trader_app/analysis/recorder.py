@@ -47,6 +47,25 @@ class ExperimentRecorder:
         )
         return self.store.save_run(rec)
 
+    def record_report(self, *, symbol, interval, strategy, params, report: dict, ts,
+                      start_ts=0, end_ts=0, n_bars=0) -> int:
+        """Persist one trial from a metrics DICT (the sandbox/tester ``as_dict`` report) rather than
+        an engine ``Result`` — the form AI candidates carry (no equity_curve/trades lists). Lets
+        ``ai.agent.develop_strategies`` count its candidates as trials for the deflated-Sharpe moat."""
+        rec = RunRecord(
+            ts=ts, symbol=symbol, interval=interval, strategy=strategy,
+            start_ts=start_ts, end_ts=end_ts, n_bars=n_bars or int(report.get("n_bars", 0) or 0),
+            net_return=float(report.get("total_return", 0.0)),
+            final_equity=float(report.get("final_equity", 0.0)),
+            trades=int(report.get("n_trades", 0)),
+            win_rate=float(report.get("win_rate", 0.0)),
+            profit_factor=_finite(float(report.get("profit_factor", 0.0))),
+            max_drawdown=float(report.get("max_drawdown", 0.0)),
+            sharpe=float(report.get("sharpe", 0.0)),
+            params=params,
+        )
+        return self.store.save_run(rec)
+
     def n_trials(self, strategy: str | None = None) -> int:
         """Number of recorded runs (optionally for one strategy) — DSR's trial count."""
         runs = self.store.list_runs(limit=10**9)
