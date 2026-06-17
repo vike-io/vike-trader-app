@@ -345,29 +345,36 @@ def test_open_windows_auto_retile_to_fill_on_resize(app, _synthetic_load):
     win.close()
 
 
-def test_resize_drag_freezes_chart_repaints(app, _synthetic_load):
-    """Perf regression: an edge-resize drag must FREEZE chart-view + body repaints for the duration.
+def test_resize_drag_freezes_other_charts_not_the_dragged_one(app, _synthetic_load):
+    """Perf + UX: an edge-resize drag FREEZES the OTHER chart views/bodies for the duration, but
+    NEVER the window being dragged.
 
-    The central chart (and any chart window) replays a ~10k-candle QPicture (~130ms) on every
-    paint, and other open windows' tables repaint on reveal — so repainting per resize frame stuck
-    the drag at ~300ms-2s with several windows open (measured). _set_resize_frozen disables every
-    QGraphicsView + each frame's body content during the drag and restores them on release."""
+    The OTHER charts replay a ~10k-candle QPicture (~130ms) and other windows' tables repaint on
+    reveal — repainting all of them per resize frame stuck the drag at ~300ms-2s with several
+    windows open (measured), so _set_resize_frozen disables them during the drag. But the dragged
+    window's OWN chart must keep painting: freezing it gives ~no perf win and leaves its resized
+    viewport BLANK until release (the bug this guards)."""
     win = MainWindow(session_path=None)
     win.show()
     QtWidgets.QApplication.processEvents()
     win._new_chart_document("ETHUSDT", "1h")
+    win._new_chart_document("SOLUSDT", "1h")
     win.open_tool("journal")
     QtWidgets.QApplication.processEvents()
     frame = win._chart_frames[-1]
-    views = win.findChildren(QtWidgets.QGraphicsView)
-    assert views, "no chart views to freeze"
-    assert all(v.updatesEnabled() for v in views)          # live before a drag
+    all_views = win.findChildren(QtWidgets.QGraphicsView)
+    own = set(frame.findChildren(QtWidgets.QGraphicsView))      # the dragged window's own chart
+    others = [v for v in all_views if v not in own]
+    assert own, "dragged frame has no chart view"
+    assert others, "no other chart views to freeze"
+    assert all(v.updatesEnabled() for v in all_views)          # live before a drag
 
-    frame._set_resize_frozen(True)                         # simulate drag start
-    assert all(not v.updatesEnabled() for v in views), "chart views not frozen during resize"
+    frame._set_resize_frozen(True)                             # simulate drag start
+    assert all(v.updatesEnabled() for v in own), "the dragged window's own chart must NOT freeze"
+    assert all(not v.updatesEnabled() for v in others), "other chart views not frozen during resize"
 
-    frame._set_resize_frozen(False)                        # simulate drag release
-    assert all(v.updatesEnabled() for v in views), "chart views not restored after resize"
+    frame._set_resize_frozen(False)                            # simulate drag release
+    assert all(v.updatesEnabled() for v in all_views), "chart views not restored after resize"
     win.close()
 
 
