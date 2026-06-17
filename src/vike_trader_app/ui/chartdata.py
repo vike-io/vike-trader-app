@@ -1,43 +1,6 @@
 """Qt-free helpers that prepare engine output for plotting."""
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
-
-
-@dataclass(frozen=True)
-class Marker:
-    """A point to draw on the price chart."""
-
-    ts: int
-    price: float
-    kind: str  # "entry" | "exit"
-
-
-def trade_markers(trades) -> list[Marker]:
-    """Two markers per trade: the entry fill and the exit fill."""
-    markers: list[Marker] = []
-    for t in trades:
-        markers.append(Marker(ts=t.entry_ts, price=t.entry_price, kind="entry"))
-        markers.append(Marker(ts=t.exit_ts, price=t.exit_price, kind="exit"))
-    return markers
-
-
-def equity_points(
-    timestamps: list[int], equity_curve: list[float]
-) -> tuple[list[int], list[float]]:
-    """Zip bar timestamps with the per-bar equity curve (lengths must match)."""
-    if len(timestamps) != len(equity_curve):
-        raise ValueError(
-            f"length mismatch: {len(timestamps)} timestamps vs {len(equity_curve)} equity points"
-        )
-    return list(timestamps), list(equity_curve)
-
-
-def initial_window(n_total: int, window: int) -> tuple[int, int]:
-    """The default visible x-range: the last ``window`` bars (full range if fewer)."""
-    if n_total <= 0:
-        return (0, 0)
-    return (max(0, n_total - window), n_total)
 
 
 def follow_window(index: int, n_total: int, window: int) -> tuple[int, int]:
@@ -149,18 +112,3 @@ def fmt_price(v: float, ref: float | None = None) -> str:
     ``73,182.49`` for BTC, ``1.1650`` for forex. ``ref`` fixes the precision to another
     value's magnitude (so a +35.36 change next to a 73k price still shows 2 dp)."""
     return f"{v:,.{price_decimals(v if ref is None else ref)}f}"
-
-
-def ohlc_legend_text(bar, prev_close=None) -> str:
-    """'O.. H.. L.. C.. +chg (chg%)' header text; '' when bar is None."""
-    if bar is None:
-        return ""
-    ref = bar.close
-    parts = [f"O{fmt_price(bar.open, ref)}", f"H{fmt_price(bar.high, ref)}",
-             f"L{fmt_price(bar.low, ref)}", f"C{fmt_price(bar.close, ref)}"]
-    if prev_close:
-        chg = bar.close - prev_close
-        pct = chg / prev_close * 100
-        s = "+" if chg >= 0 else ""
-        parts.append(f"{s}{fmt_price(chg, ref)} ({s}{pct:.2f}%)")
-    return "  ".join(parts)

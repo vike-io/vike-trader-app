@@ -3,7 +3,9 @@
 Each entry carries a self-contained helper the user can drop into a Strategy (they already
 accumulate ``self.closes`` etc. — see the example strategies). Every snippet is preflight-clean
 (``core.sandbox.preflight``): only allowed imports, no forbidden names, no dunder access — so
-inserting one never trips the sandbox gate. Pure data; the UI (``ui/indicators.py``) renders it.
+inserting one never trips the sandbox gate. Pure data. NOTE: currently unwired — the Studio
+indicator-insert dialog that rendered it was removed; kept for the AI strategy builder / a future
+re-add of an insert affordance.
 """
 
 from dataclasses import dataclass
