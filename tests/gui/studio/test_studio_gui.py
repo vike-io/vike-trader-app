@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6 import QtWidgets  # noqa: E402
+from PySide6 import QtCore, QtWidgets  # noqa: E402
 
 from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.tester import TesterConfig  # noqa: E402
@@ -553,3 +553,41 @@ def test_optimize_portfolio_too_few_bars_shows_toast(app):
     # A toast was shown but no run recorded
     assert len(tab.results._runs) == runs_before
     assert "120" in tab.results._status.text()  # the "need >=120 bars" toast text was set
+
+
+# --- AI provider: Cerebras key persistence + Connect-button scoping -----------------------------
+
+def test_cerebras_key_persists_on_keystroke_and_restores(app, tmp_path, monkeypatch):
+    """The Cerebras key must persist as you TYPE — editingFinished alone lost it if you quit (or
+    clicked Run) before defocusing the field, which wiped the stored key (the reported bug)."""
+    s = QtCore.QSettings(str(tmp_path / "ai.ini"), QtCore.QSettings.IniFormat)
+    monkeypatch.setattr(StudioTab, "_ai_settings", lambda self: s)
+
+    tab = StudioTab()
+    tab.chat.set_provider("cerebras")
+    # Type a key WITHOUT firing editingFinished (textChanged only) — the old code never saved this.
+    tab.chat._key_input.setText("csk-abc123")
+    QtWidgets.QApplication.processEvents()
+    assert s.value("ai/cerebras_key") == "csk-abc123"
+
+    # A fresh tab restores the key from settings into the field.
+    tab2 = StudioTab()
+    assert tab2.chat.cerebras_key() == "csk-abc123"
+
+
+def test_connect_button_only_for_claude(app):
+    """The "🤖 Connect" button installs vike-trader into Claude Desktop/Code over MCP — it applies
+    ONLY to the Claude provider, so it must hide for Cerebras (and the key row mirrors it)."""
+    tab = StudioTab()
+
+    tab.chat.set_provider("cerebras")
+    assert tab.chat._btn_connect.isHidden() is True      # no "Connect to Claude" under Cerebras
+    assert tab.chat._key_row.isHidden() is False         # the API-key field is shown instead
+
+    tab.chat.set_provider("claude")
+    assert tab.chat._btn_connect.isHidden() is False     # Connect returns for Claude
+    assert tab.chat._key_row.isHidden() is True          # key field hidden
+
+    # The live toggle path (SegmentedControl value change) does the same.
+    tab.chat._on_provider("cerebras")
+    assert tab.chat._btn_connect.isHidden() is True
