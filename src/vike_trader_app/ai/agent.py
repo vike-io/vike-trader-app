@@ -63,6 +63,36 @@ class AgentResult:
     problems: list = field(default_factory=list)
     is_report: object = None   # sandbox as_dict() on the in-sample slice (or None)
     oos_report: object = None  # sandbox as_dict() on the held-out (out-of-sample) slice (or None)
+    oos_n: int = 0             # number of out-of-sample bars (n_obs for the deflated-Sharpe verdict)
+    overfit: object = None     # {deflated_sharpe, level, reasons, is_sharpe, oos_sharpe, n_trials} or None
+
+
+def _attach_overfit(results: list) -> None:
+    """Attach an overfitting Verdict to each ACCEPTED candidate.
+
+    Deflates the observed OOS Sharpe against the Sharpes of ALL accepted candidate trials (the search
+    the model effectively performed), and folds in the IS->OOS consistency (a candidate whose edge
+    collapses out-of-sample is flagged). No PBO matrix here (single IS/OOS split), so pbo=0 and the
+    verdict leans on the deflated Sharpe + consistency — honest, and cheaper than re-running a full
+    walk-forward through the sandbox."""
+    from ..analysis.overfit import deflated_sharpe_ratio, overfit_verdict
+
+    trials = [float(r.oos_report.get("sharpe", 0.0)) for r in results if r.accepted and r.oos_report]
+    for r in results:
+        if not (r.accepted and r.oos_report):
+            continue
+        observed = float(r.oos_report.get("sharpe", 0.0))
+        n_obs = max(2, int(r.oos_n or 2))
+        dsr = deflated_sharpe_ratio(observed, trials or [observed], n_obs)
+        is_sr = float(r.is_report.get("sharpe", 0.0)) if r.is_report else 0.0
+        # IS->OOS consistency proxy in [0,1]: how much of the in-sample edge survived out-of-sample.
+        if is_sr > 0:
+            wf = max(0.0, min(1.0, observed / is_sr))
+        else:
+            wf = None if is_sr == 0 else 0.0
+        v = overfit_verdict(0.0, dsr, wf)
+        r.overfit = {"deflated_sharpe": float(dsr), "level": v.level, "reasons": list(v.reasons),
+                     "is_sharpe": is_sr, "oos_sharpe": observed, "n_trials": len(trials)}
 
 
 def _split(bars, holdout_frac):
@@ -71,8 +101,12 @@ def _split(bars, holdout_frac):
 
 
 def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
-                     holdout_frac: float = 0.3, timeout: float = 30.0) -> AgentResult:
-    """One codegen -> pre-flight -> sandbox-on-OOS loop with bounded repair; scores on the OOS slice."""
+                     holdout_frac: float = 0.3, timeout: float = 30.0, retrieve=None) -> AgentResult:
+    """One codegen -> pre-flight -> sandbox-on-OOS loop with bounded repair; scores on the OOS slice.
+
+    ``retrieve(prompt) -> list[str]`` optionally grounds the system prompt with reference passages
+    (RAG); pass e.g. a wrapper over ``ai.services.query_kb``. ``None`` (default) = no grounding.
+    """
     from ..core.sandbox import run_sandboxed
     from ..core.sandbox.preflight import check_strategy_source
     from ..tester import TesterConfig
@@ -82,6 +116,15 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
     if not oos_bars or not is_bars:
         return AgentResult(code="", explanation="", accepted=False, attempts=0,
                            problems=["not enough bars for an in-sample + out-of-sample split"])
+    system = STRATEGY_SYSTEM_PROMPT
+    if retrieve is not None:
+        try:
+            passages = [p for p in (retrieve(prompt) or []) if p]
+        except Exception:  # noqa: BLE001 - RAG is best-effort; never fail codegen on a retriever error
+            passages = []
+        if passages:
+            system = ("RELEVANT REFERENCE (use if helpful; do not quote verbatim):\n"
+                      + "\n---\n".join(passages) + "\n\n" + STRATEGY_SYSTEM_PROMPT)
     tools = [submit_strategy_tool()]
     user = prompt
     code = explanation = ""
@@ -97,7 +140,7 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
             return {"error": f"unknown tool {name}"}
 
         try:
-            client.run(STRATEGY_SYSTEM_PROMPT, user, tools, _dispatch)
+            client.run(system, user, tools, _dispatch)
         except Exception as exc:  # noqa: BLE001 - a flaky client becomes a repair attempt, not a crash
             problems = [f"client error: {type(exc).__name__}: {exc}"]
             user = "The previous attempt errored. Submit a strategy via submit_strategy."
@@ -122,8 +165,11 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
             user = "Your strategy made no out-of-sample trades. Make the entry condition fire. Resubmit."
             continue
         is_res = run_sandboxed(code, is_bars, config, timeout=timeout)
-        return AgentResult(code=code, explanation=explanation, accepted=True, attempts=attempt,
-                           problems=[], is_report=is_res.get("report"), oos_report=oos["report"])
+        result = AgentResult(code=code, explanation=explanation, accepted=True, attempts=attempt,
+                             problems=[], is_report=is_res.get("report"), oos_report=oos["report"],
+                             oos_n=len(oos_bars))
+        _attach_overfit([result])   # single-trial verdict (no deflation); develop_strategies re-deflates
+        return result
     return AgentResult(code=code, explanation=explanation, accepted=False,
                        attempts=max_repairs + 1, problems=problems)
 
@@ -131,6 +177,7 @@ def develop_strategy(prompt, bars, *, client, config=None, max_repairs: int = 2,
 def develop_strategies(prompt, bars, *, client, n: int = 3, criterion: str = "sharpe", **kw) -> list:
     """Generate ``n`` candidates; return them ranked best-first (accepted first, then OOS ``criterion``)."""
     results = [develop_strategy(prompt, bars, client=client, **kw) for _ in range(n)]
+    _attach_overfit(results)   # deflate each candidate's OOS Sharpe against ALL n trials
 
     def key(r):
         score = r.oos_report.get(criterion, float("-inf")) if r.oos_report else float("-inf")

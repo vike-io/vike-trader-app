@@ -55,11 +55,19 @@ class ClaudeClient(LLMClient):
     def run(self, system: str, user: str, tools: list[ToolSpec], dispatch, max_turns: int = 8) -> str:
         anth_tools = [{"name": t.name, "description": t.description, "input_schema": t.input_schema}
                       for t in tools]
+        # Prompt caching: the system prompt + tool defs are large and IDENTICAL across every turn of
+        # this loop AND across repeated candidate generations, so mark them cacheable (ephemeral, 5min
+        # TTL). A cache_control breakpoint on the last tool covers the whole tools block; one on the
+        # system block covers the system prompt. The API silently ignores it when too short to cache.
+        if anth_tools:
+            anth_tools[-1] = {**anth_tools[-1], "cache_control": {"type": "ephemeral"}}
+        system_param = ([{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}]
+                        if system else system)
         messages: list[dict] = [{"role": "user", "content": user}]
         final = ""
         for _ in range(max_turns):
             resp = self._client.messages.create(
-                model=self._model, max_tokens=self._max_tokens, system=system,
+                model=self._model, max_tokens=self._max_tokens, system=system_param,
                 tools=anth_tools, messages=messages,
             )
             tool_uses = [b for b in resp.content if getattr(b, "type", None) == "tool_use"]
