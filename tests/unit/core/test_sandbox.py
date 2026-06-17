@@ -122,6 +122,33 @@ def test_windows_low_integrity_blocks_file_writes():
     assert not os.path.exists(target)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Job Object process cap is Windows-only")
+def test_windows_process_count_cap_blocks_extra_spawn():
+    """With the live-process cap, the venv launcher (stub + real interpreter = 2) runs, but a child
+    attempting to spawn a 3rd process is blocked ('Not enough quota'). Assigns the job while the
+    child is SUSPENDED (the deterministic seam) then resumes — mirrors _run_confined_windows."""
+    import subprocess
+
+    from vike_trader_app.core.sandbox import winjob
+
+    create_suspended = 0x00000004
+    child = ("import subprocess,sys\n"
+             "try:\n"
+             "    subprocess.run([sys.executable,'-c','pass'],capture_output=True,timeout=10)\n"
+             "    print('SPAWNED')\n"
+             "except OSError:\n"
+             "    print('BLOCKED')\n")
+    proc = subprocess.Popen([sys.executable, "-c", child], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, creationflags=create_suspended)
+    job = winjob.create_job(active_processes=2)
+    assert job
+    winjob.assign(job, int(proc._handle))
+    assert winjob.resume_process(int(proc._handle))
+    out, _ = proc.communicate(timeout=30)
+    winjob.close_job(job)
+    assert out.strip() == "BLOCKED"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Job Object confinement is Windows-only")
 def test_windows_job_object_creates_and_does_not_break_runs():
     """The Windows Job Object must be creatable AND must not break a normal sandbox run (the venv

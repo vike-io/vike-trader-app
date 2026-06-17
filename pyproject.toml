@@ -24,6 +24,7 @@ live = ["websockets>=12"]  # push WebSocket feed (data/vike_live.py); PollingBar
 duck = ["duckdb>=1.0"]  # columnar read/resample engine (data/duck_catalog.py); Catalog needs no dep
 mcp = ["mcp>=1.2"]
 ai = ["fastembed>=0.3", "rank-bm25>=0.2", "anthropic>=0.40"]
+sandbox = ["pyseccomp>=0.1.2; sys_platform == 'linux'"]  # activates the in-child seccomp denylist (core/sandbox/harden.py) on Linux; netns + rlimits + timeout still confine without it. Verified working on Ubuntu 24.04 (libseccomp.so.2 ships by default).
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-timeout>=2", "pytest-xdist>=3", "ruff>=0.6", "pytest-benchmark>=5"]

@@ -28,6 +28,7 @@ CREATE_SUSPENDED+ResumeThread, see above).
 import sys
 
 # JOBOBJECT_BASIC_LIMIT_INFORMATION.LimitFlags
+_JOB_LIMIT_ACTIVE_PROCESS = 0x00000008
 _JOB_LIMIT_PROCESS_MEMORY = 0x00000100
 _JOB_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 # SetInformationJobObject info classes
@@ -76,8 +77,13 @@ def _structs():
     return _EXT_LIMIT, _UI_RESTRICTIONS
 
 
-def create_job(memory_bytes: int = 1024 ** 3):
-    """Create + configure a confining Job Object; return its handle (int) or None on any failure."""
+def create_job(memory_bytes: int = 1024 ** 3, active_processes: int = 0):
+    """Create + configure a confining Job Object; return its handle (int) or None on any failure.
+
+    ``active_processes`` > 0 caps the number of LIVE processes in the job (ACTIVE_PROCESS_LIMIT) —
+    only safe when the child is assigned to the job while SUSPENDED (so the venv launcher's spawn of
+    the real interpreter happens inside the cap, deterministically), which ``_run_confined_windows``
+    arranges. 0 (default) leaves the count uncapped."""
     if sys.platform != "win32":
         return None
     try:
@@ -93,8 +99,11 @@ def create_job(memory_bytes: int = 1024 ** 3):
             return None
         ext_cls, ui_cls = _structs()
         ext = ext_cls()
-        ext.BasicLimitInformation.LimitFlags = (
-            _JOB_LIMIT_PROCESS_MEMORY | _JOB_LIMIT_KILL_ON_JOB_CLOSE)
+        flags = _JOB_LIMIT_PROCESS_MEMORY | _JOB_LIMIT_KILL_ON_JOB_CLOSE
+        if active_processes > 0:
+            flags |= _JOB_LIMIT_ACTIVE_PROCESS
+            ext.BasicLimitInformation.ActiveProcessLimit = active_processes
+        ext.BasicLimitInformation.LimitFlags = flags
         ext.ProcessMemoryLimit = memory_bytes
         ok = k32.SetInformationJobObject(job, _JobObjectExtendedLimitInformation,
                                          ctypes.byref(ext), ctypes.sizeof(ext))
@@ -120,6 +129,23 @@ def assign(job: int, process_handle: int) -> bool:
         k32 = ctypes.WinDLL("kernel32", use_last_error=True)
         k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
         return bool(k32.AssignProcessToJobObject(job, process_handle))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def resume_process(process_handle: int) -> bool:
+    """Resume a process created with CREATE_SUSPENDED, via ntdll NtResumeProcess (resumes ALL its
+    threads by process handle — subprocess.Popen doesn't expose the thread handle for ResumeThread).
+    MUST be called even if job setup failed, or the suspended child hangs forever. Returns success."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        ntdll = ctypes.WinDLL("ntdll", use_last_error=True)
+        ntdll.NtResumeProcess.argtypes = [wintypes.HANDLE]
+        return ntdll.NtResumeProcess(process_handle) == 0   # 0 == STATUS_SUCCESS
     except Exception:  # noqa: BLE001
         return False
 
