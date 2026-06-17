@@ -2279,6 +2279,8 @@ class PriceChart(pg.PlotWidget):
                     self.addItem(curve)
                     curve.setZValue(self._next_z())  # overlays sit above the candles
                 ind.curves[lbl] = curve
+            if ind.name == "volume_profile_poc":     # also draw the fixed-range VPVR histogram
+                self._draw_vpvr(ind)
         elif ind.kind in ("oscillator", "pairs"):
             if self._pane_host is None:
                 return
@@ -2294,7 +2296,58 @@ class PriceChart(pg.PlotWidget):
         self._reveal_indicator(ind, self._reveal_index())
         self._apply_visibility(ind)
 
+    def _draw_vpvr(self, ind: "_Indicator"):
+        """Fixed-range Volume Profile (VPVR) for volume_profile_poc: a volume-by-price histogram
+        anchored to the RIGHT edge of the loaded bars, with the value area + POC bin highlighted.
+        Stored as ind.vpvr_item (a BarGraphItem — NOT in ind.curves, whose items get setData())."""
+        self._clear_vpvr(ind)
+        bars = self._bars
+        if not bars:
+            return
+        from vike_trader_app.core.indicators.structure import volume_profile
+        vp = volume_profile([b.high for b in bars], [b.low for b in bars],
+                            [b.close for b in bars], [b.volume for b in bars],
+                            bins=int(ind.params.get("bins", 24) or 24))
+        if vp is None:
+            return
+        centers = vp.bin_centers
+        right = len(bars) - 1                              # anchor to the last bar (data x)
+        span = max(1.0, len(bars) * 0.18)                  # histogram spans ~18% of the x-range
+        maxv = max(vp.bin_volumes) or 1.0
+        bin_h = (centers[1] - centers[0]) * 0.86 if len(centers) > 1 else 1.0
+        lengths = [span * (v / maxv) for v in vp.bin_volumes]
+        x0 = [right - L for L in lengths]                  # bars grow leftward from the right edge
+        base = QtGui.QColor(theme.BLUE)    # out-of-value-area bins (faint)
+        base.setAlpha(70)
+        in_va = QtGui.QColor(theme.BLUE)   # value-area bins
+        in_va.setAlpha(140)
+        poc_c = QtGui.QColor(_DOWN)        # the POC bin
+        poc_c.setAlpha(190)
+        brushes = []
+        for c in centers:
+            if abs(c - vp.poc_price) <= bin_h:
+                brushes.append(pg.mkBrush(poc_c))
+            elif vp.va_low <= c <= vp.va_high:
+                brushes.append(pg.mkBrush(in_va))
+            else:
+                brushes.append(pg.mkBrush(base))
+        item = pg.BarGraphItem(x0=x0, y=centers, width=lengths, height=bin_h, pen=None, brushes=brushes)
+        item.setZValue(self._next_z())                     # translucent, above the candles
+        self.addItem(item)
+        ind.vpvr_item = item
+        item.setVisible(getattr(ind, "shown", True))
+
+    def _clear_vpvr(self, ind: "_Indicator"):
+        item = getattr(ind, "vpvr_item", None)
+        if item is not None:
+            try:
+                self.removeItem(item)
+            except Exception:  # noqa: BLE001 - already gone / view torn down
+                pass
+            ind.vpvr_item = None
+
     def _unrender(self, ind: "_Indicator"):
+        self._clear_vpvr(ind)
         for c in ind.curves.values():
             if ind.own_scale and self._vb2 is not None:
                 self._vb2.removeItem(c)
@@ -2389,6 +2442,9 @@ class PriceChart(pg.PlotWidget):
             c.setVisible(ind.shown)
         if ind.scatter is not None:
             ind.scatter.setVisible(ind.shown)
+        vpvr = getattr(ind, "vpvr_item", None)
+        if vpvr is not None:
+            vpvr.setVisible(ind.shown)
 
     def edit_indicator(self, uid: int):
         """Open the Settings dialog (Inputs + Style); apply -> recompute + re-render."""
