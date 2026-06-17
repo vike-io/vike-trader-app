@@ -43,11 +43,11 @@ def _posix_confine():
     spawn ("Exception occurred in preexec_fn"), so per-control failures are swallowed and we fall
     back to the wall-clock timeout (the cross-platform backstop).
 
-    HONESTY: authored on Windows (where this branch never runs) and Linux CI is currently paused,
-    so the Linux network isolation below is UNVERIFIED on this machine — it is exercised only by the
-    Linux-gated tests (skipped off Linux) when a Linux runner returns. Full filesystem/syscall
-    confinement (seccomp-bpf) and the Windows Job-Object/restricted-token backend are the deeper
-    follow-ups tracked in issue #192; macOS (sandbox-exec) is not attempted here.
+    VERIFIED on Ubuntu 24.04 (prod1, 2026-06-17): unprivileged ``unshare(NEWUSER|NEWNET)`` succeeds
+    and blocks egress (connect -> ENETUNREACH), and RLIMIT_AS/CPU apply. CI still doesn't run Linux,
+    so the Linux-gated tests stay skipped there. In-child seccomp (harden.py) layers on top; the
+    Windows Job-Object + Low-integrity backend covers the shipped platform (issue #192). macOS
+    (sandbox-exec) is not attempted here.
     """
     try:
         import resource
@@ -86,7 +86,7 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
     child failure/timeout. Confinement layers:
       • all OSes: a hard wall-clock ``timeout`` (kill) + a scrubbed env (no API keys reach the child)
       • POSIX (Linux/macOS): ``_posix_confine`` preexec — RLIMIT_AS/CPU caps, plus on Linux a fresh
-        network namespace (no socket/egress). UNVERIFIED here (Linux CI paused) — see _posix_confine.
+        network namespace (no socket/egress). VERIFIED on Ubuntu 24.04 (prod1); see _posix_confine.
       • Linux (in-child, see ``harden.apply_child_hardening`` called by the runner): NO_NEW_PRIVS +
         a seccomp denylist (no fork/exec/socket/ptrace) applied before untrusted code runs. seccomp
         can't go in preexec (it would block the child's own exec); best-effort, no-op without a
@@ -130,20 +130,31 @@ def _parse_result(stdout, stderr) -> dict:
         return {"ok": False, "error": "unparseable result", "stdout": out[-2000:]}
 
 
+# Max live processes in the sandbox job: the venv python.exe launcher stub (1) + the real
+# interpreter it spawns (2). Capping at 2 lets the launch through but blocks the strategy from
+# spawning a 3rd (shell-out / fork-bomb). Safe ONLY because the child is assigned to the job while
+# SUSPENDED (CREATE_SUSPENDED below), so the spawn happens deterministically inside the cap.
+_WIN_MAX_PROCESSES = 2
+_CREATE_SUSPENDED = 0x00000004
+
+
 def _run_confined_windows(job_input: str, timeout: float) -> dict:
-    """Windows path: spawn the child, assign it to a confining Job Object BEFORE feeding it stdin
-    (so it's confined before any strategy code runs), then communicate. The child blocks on
-    ``stdin.read()`` until ``communicate`` writes the job, so the assignment always wins the race."""
+    """Windows path: spawn the child SUSPENDED, assign it to a confining Job Object (memory cap,
+    KILL_ON_JOB_CLOSE, UI lockdown, AND a live-process cap) while it can't run, THEN resume it and
+    communicate. Suspending closes the assign-before-spawn race, so the process-count cap is
+    deterministic; resume is unconditional (a suspended child would otherwise hang to the timeout)."""
     from . import winjob
 
     proc = subprocess.Popen(
         [sys.executable, "-c", "from vike_trader_app.core.sandbox.runner import main; main()"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env=_child_env(),   # scrubbed: no API keys/tokens reach untrusted strategy code
+        creationflags=_CREATE_SUSPENDED,
     )
-    job = winjob.create_job()
+    job = winjob.create_job(active_processes=_WIN_MAX_PROCESSES)
     if job:
-        winjob.assign(job, int(proc._handle))   # confine before the child reads its job / runs code
+        winjob.assign(job, int(proc._handle))   # confine while suspended -> before it runs any code
+    winjob.resume_process(int(proc._handle))    # MUST run even if job setup failed (else it hangs)
     try:
         out, err = proc.communicate(input=job_input, timeout=timeout)
     except subprocess.TimeoutExpired:

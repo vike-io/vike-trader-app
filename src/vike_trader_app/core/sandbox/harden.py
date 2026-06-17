@@ -13,7 +13,10 @@ Linux:
     creation (fork/vfork/execve/execveat), raw networking (socket/connect/…), and ptrace return
     EPERM. Thread creation (``clone`` for pthreads — numba/numpy) is deliberately NOT blocked.
     Default action ALLOW; the action is EPERM (not KILL) so a stray denied call is a Python error,
-    not a silent SIGSYS death. UNVERIFIED on CI (Linux runners paused).
+    not a silent SIGSYS death. Needs the binding installed (the ``sandbox`` extra ->
+    ``pyseccomp``); no-op without it. VERIFIED on Ubuntu 24.04 (prod1, 2026-06-17): the unprivileged
+    ``unshare(user+net)`` netns blocks egress, rlimits/no_new_privs apply, and the seccomp denylist
+    blocks ``socket`` with the binding present. CI still does not exercise it (Linux runners paused).
 
 Windows:
   * drop THIS process to LOW integrity (the child lowers its OWN token — Windows allows lowering,
