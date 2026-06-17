@@ -1,7 +1,7 @@
 """Out-of-process sandbox: subprocess + timeout boundary."""
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.sandbox import run_sandboxed
+from vike_trader_app.core.sandbox import _child_env, run_sandboxed
 from vike_trader_app.tester import TesterConfig
 
 
@@ -62,3 +62,15 @@ def test_malicious_source_rejected_in_child():
     res = run_sandboxed(bad, _bars(), TesterConfig())
     assert res["ok"] is False
     assert "pre-flight" in res["error"] or "not allowed" in res["error"]
+
+
+def test_child_env_excludes_secrets_keeps_essentials(monkeypatch):
+    """The sandbox child must NOT inherit API keys/tokens (a strategy could read os.environ and
+    egress them), but MUST keep what CPython needs to start. (test_valid_strategy_runs_sandboxed
+    above already proves the child still imports + runs under this scrubbed env.)"""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "SECRET-must-not-leak")
+    monkeypatch.setenv("VIKE_SOME_TOKEN", "also-secret")
+    env = _child_env()
+    assert "ANTHROPIC_API_KEY" not in env
+    assert "VIKE_SOME_TOKEN" not in env
+    assert "PATH" in env                       # essentials retained so the child can start + import

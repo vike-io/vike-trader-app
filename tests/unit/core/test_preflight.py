@@ -43,3 +43,21 @@ def test_normal_loops_allowed():
 
 def test_syntax_error_reported():
     assert any("syntax error" in p for p in check_strategy_source("def f(:\n"))
+
+
+# --- boundary pins: freeze the denylist against silent regression (hygiene, not the real boundary) ---
+
+def test_breakpoint_flagged():
+    # breakpoint() drops into pdb -> arbitrary code + a hang on the headless/MCP path.
+    assert any("not allowed" in p for p in check_strategy_source("breakpoint()\n"))
+
+
+def test_process_control_builtins_flagged():
+    for name in ("help", "exit", "quit", "copyright", "license", "credits"):
+        assert any("not allowed" in p for p in check_strategy_source(f"{name}()\n")), name
+
+
+def test_dunder_builtins_name_flagged():
+    # the bare-name dict bypass to __import__/eval
+    assert any("not allowed" in p for p in
+               check_strategy_source('__builtins__["__import__"]("os")\n'))
