@@ -85,13 +85,41 @@ def test_posix_confine_returns_a_callable():
     assert callable(_posix_confine())          # resource is present on POSIX -> a preexec_fn
 
 
-def test_apply_child_hardening_is_safe_no_op_off_linux():
-    """The in-child seccomp/no_new_privs hardening must import + run without raising everywhere
-    (a safe no-op off Linux / without a libseccomp binding). The valid-strategy test above proves
-    the runner still works with the hardening call wired in."""
+@pytest.mark.skipif(sys.platform == "win32",
+                    reason="on Windows apply_child_hardening() LOWERS this process to Low IL — "
+                           "must only run in the sandbox child, tested via subprocess below")
+def test_apply_child_hardening_is_safe_no_op_off_windows():
+    """Off Windows the in-child hardening imports + runs without raising (a safe no-op on macOS /
+    on Linux without a libseccomp binding). The valid-strategy test proves the runner still works
+    with the hardening call wired in. NEVER call it in-process on Windows: it drops the caller to
+    Low integrity (so the pytest process could no longer write .pytest_cache etc.)."""
     from vike_trader_app.core.sandbox.harden import apply_child_hardening
 
     assert apply_child_hardening() is None
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Low-integrity confinement is Windows-only")
+def test_windows_low_integrity_blocks_file_writes():
+    """In a CHILD process (never the test process — it would stay Low IL), apply_child_hardening()
+    drops to Low integrity and a write to a medium-IL location (the repo) is then blocked, while a
+    control child WITHOUT hardening writes fine. This is the #192 file-write RCE mitigation."""
+    import os
+    import subprocess
+
+    target = os.path.join(os.getcwd(), "_il_test_probe.txt")
+    control = subprocess.run([sys.executable, "-c", f"open(r'{target}','w').write('x'); print('WROTE')"],
+                             capture_output=True, text=True)
+    assert "WROTE" in control.stdout
+    if os.path.exists(target):
+        os.remove(target)
+    hardened = subprocess.run(
+        [sys.executable, "-c",
+         "from vike_trader_app.core.sandbox.harden import apply_child_hardening as h; h()\n"
+         f"\nopen(r'{target}','w').write('x')"],
+        capture_output=True, text=True)
+    assert hardened.returncode != 0
+    assert "PermissionError" in hardened.stderr
+    assert not os.path.exists(target)
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Job Object confinement is Windows-only")

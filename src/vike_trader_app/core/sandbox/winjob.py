@@ -19,9 +19,10 @@ cap needs CREATE_SUSPENDED + assign + ResumeThread (subprocess.Popen closes the 
 can't resume) — left as a follow-up. Memory/kill-on-close/UI apply reliably and DON'T conflict.
 
 Everything is best-effort and guarded: any Win32 failure returns None / False and the caller falls
-back to the env scrub + wall-clock timeout. This does NOT stop file writes — that needs a low/
-restricted-integrity token (the remaining #192 sub-item); the Job Object closes the runaway-memory,
-process-cleanup, and UI/IPC vectors.
+back to the env scrub + wall-clock timeout. The Job Object closes the runaway-memory, process-
+cleanup, and UI/IPC vectors; file WRITES are blocked separately by the in-child Low-integrity drop
+(harden._set_low_integrity_windows). Remaining #192 item: a Windows process-count cap (needs
+CREATE_SUSPENDED+ResumeThread, see above).
 """
 
 import sys

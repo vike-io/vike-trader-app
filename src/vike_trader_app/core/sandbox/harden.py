@@ -1,25 +1,28 @@
-"""Best-effort in-child syscall hardening for the Linux sandbox (folds into issue #192).
+"""Best-effort in-child OS hardening for the sandbox (folds into issue #192).
 
 Installed by ``runner.main()`` AFTER the heavy framework imports but BEFORE any untrusted strategy
-source is compiled/executed — NOT in the parent's ``preexec_fn``, where blocking ``execve`` would
-block the child's OWN exec of the interpreter. Linux-only and fully best-effort: every step is
-guarded, so a missing capability degrades to the layers already in place (rlimits + a fresh network
-namespace from ``_posix_confine``'s preexec, plus the cross-platform wall-clock timeout) and NEVER
-aborts the run.
+source is compiled/executed — so the framework initialises unrestricted and only the untrusted code
+runs confined. Cross-platform, fully best-effort: every step is guarded, so a missing capability
+degrades to the layers already in place (the parent's rlimits + netns preexec on Linux / Job Object
+on Windows, plus the cross-platform env scrub + wall-clock timeout) and NEVER aborts the run.
 
-Layers added here:
+Linux:
   * ``PR_SET_NO_NEW_PRIVS`` — the child can't gain privileges via a setuid binary (also a
     precondition for loading a seccomp filter unprivileged).
   * a seccomp DENYLIST (via the optional ``seccomp`` / ``pyseccomp`` libseccomp binding): process
     creation (fork/vfork/execve/execveat), raw networking (socket/connect/…), and ptrace return
     EPERM. Thread creation (``clone`` for pthreads — numba/numpy) is deliberately NOT blocked.
-    Default action ALLOW, so ordinary compute syscalls (mmap/read/write/open) are untouched, and the
-    action is EPERM (not KILL) so a stray denied call surfaces as a Python error, not a silent
-    SIGSYS death.
+    Default action ALLOW; the action is EPERM (not KILL) so a stray denied call is a Python error,
+    not a silent SIGSYS death. UNVERIFIED on CI (Linux runners paused).
 
-HONESTY: Linux CI is paused, so this is UNVERIFIED on CI. It's a no-op without a libseccomp binding
-and on non-Linux. The Linux-gated sandbox tests guard against breaking a normal compute strategy
-when a Linux runner returns.
+Windows:
+  * drop THIS process to LOW integrity (the child lowers its OWN token — Windows allows lowering,
+    never raising). Mandatory Integrity Control's "no write up" then blocks the untrusted strategy
+    from WRITING to the medium-integrity filesystem (the original #192 RCE was a file write). This
+    is done in-child, NOT via CreateProcessAsUser, which is privilege-gated and needs manual pipe
+    plumbing. Already-open stdin/stdout pipes keep working (MIC is checked at handle-open, not use),
+    and the child receives all its data via stdin, so it needs no file reads. The Job Object set up
+    by the parent (winjob) remains in force. CANNOT be undone by the strategy (you can't raise IL).
 """
 
 import sys
@@ -34,11 +37,13 @@ _DENY = (
 
 
 def apply_child_hardening() -> None:
-    """Apply NO_NEW_PRIVS + a seccomp denylist in this (Linux) child. No-op elsewhere; never raises."""
-    if sys.platform != "linux":
-        return
-    _set_no_new_privs()
-    _install_seccomp()
+    """Confine THIS child before it runs untrusted code: Linux -> NO_NEW_PRIVS + seccomp denylist;
+    Windows -> drop to Low integrity (no filesystem writes). No-op elsewhere; never raises."""
+    if sys.platform == "linux":
+        _set_no_new_privs()
+        _install_seccomp()
+    elif sys.platform == "win32":
+        _set_low_integrity_windows()
 
 
 def _set_no_new_privs() -> None:
@@ -69,4 +74,77 @@ def _install_seccomp() -> None:
                 pass
         flt.load()
     except Exception:                        # noqa: BLE001 - any libseccomp hiccup -> degrade, never crash
+        pass
+
+
+def _redirect_temp_to_lowil() -> None:
+    """Point TEMP/TMP at a LocalLow scratch dir BEFORE lowering IL, so a low-IL child still has a
+    writable temp (LocalLow carries a Low mandatory label). Without this, tempfile finds no usable
+    dir (all are medium-IL) and any temp-using code raises. The scratch is the ONLY writable spot —
+    the repo / system / profile stay read-only, which is the whole point."""
+    import os
+
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return
+    low_tmp = os.path.join(os.path.dirname(local), "LocalLow", "vike-sandbox-temp")
+    try:
+        os.makedirs(low_tmp, exist_ok=True)   # created at medium IL; inherits LocalLow's Low label
+    except OSError:
+        return
+    for var in ("TEMP", "TMP", "TMPDIR"):
+        os.environ[var] = low_tmp
+    import tempfile
+
+    tempfile.tempdir = None                   # force gettempdir() to re-read the env on next use
+
+
+def _set_low_integrity_windows() -> None:
+    """Lower THIS process's token to Low integrity (S-1-16-4096). MIC then blocks writes to the
+    medium-integrity filesystem. Best-effort; leaves the IL unchanged on any failure."""
+    _redirect_temp_to_lowil()                 # must precede the drop (needs medium IL to create it)
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi = ctypes.WinDLL("advapi32", use_last_error=True)
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        advapi.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD,
+                                            ctypes.POINTER(wintypes.HANDLE)]
+        advapi.ConvertStringSidToSidW.argtypes = [wintypes.LPCWSTR, ctypes.POINTER(ctypes.c_void_p)]
+        advapi.GetLengthSid.argtypes = [ctypes.c_void_p]
+        advapi.GetLengthSid.restype = wintypes.DWORD
+        advapi.SetTokenInformation.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                               ctypes.c_void_p, wintypes.DWORD]
+        k32.LocalFree.argtypes = [ctypes.c_void_p]
+
+        token_adjust_default, token_query = 0x0080, 0x0008
+        token_integrity_level = 25            # TOKEN_INFORMATION_CLASS.TokenIntegrityLevel
+        se_group_integrity = 0x00000020
+
+        class _SID_AND_ATTRIBUTES(ctypes.Structure):
+            _fields_ = [("Sid", ctypes.c_void_p), ("Attributes", wintypes.DWORD)]
+
+        class _TOKEN_MANDATORY_LABEL(ctypes.Structure):
+            _fields_ = [("Label", _SID_AND_ATTRIBUTES)]
+
+        htok = wintypes.HANDLE()
+        if not advapi.OpenProcessToken(k32.GetCurrentProcess(),
+                                       token_adjust_default | token_query, ctypes.byref(htok)):
+            return
+        psid = ctypes.c_void_p()
+        try:
+            if not advapi.ConvertStringSidToSidW("S-1-16-4096", ctypes.byref(psid)):
+                return
+            til = _TOKEN_MANDATORY_LABEL()
+            til.Label.Sid = psid
+            til.Label.Attributes = se_group_integrity
+            size = ctypes.sizeof(til) + advapi.GetLengthSid(psid)
+            advapi.SetTokenInformation(htok, token_integrity_level, ctypes.byref(til), size)
+        finally:
+            if psid:
+                k32.LocalFree(psid)
+            k32.CloseHandle(htok)
+    except Exception:  # noqa: BLE001 - best-effort; degrade to Job Object + env-scrub + timeout
         pass

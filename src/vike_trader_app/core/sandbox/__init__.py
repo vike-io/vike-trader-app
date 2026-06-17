@@ -94,8 +94,8 @@ def run_sandboxed(code, bars, config, *, timeout: float = 30.0) -> dict:
       • Windows (``winjob`` + ``_run_confined_windows``): the child is assigned to a Job Object —
         a memory cap, KILL_ON_JOB_CLOSE, and locked-down UI/IPC — BEFORE it is fed its job. (A
         process-count cap is omitted: the venv python.exe launcher must spawn the real interpreter;
-        see winjob.) A low/restricted-integrity token, to also block file writes, is the remaining
-        #192 sub-item; the Job Object closes the runaway-memory / process-cleanup / UI vectors.
+        see winjob.) The child then drops to LOW integrity in-process (harden) before running
+        untrusted code, so it can't WRITE to the medium-IL filesystem (only a LocalLow scratch).
     """
     job = json.dumps({
         "code": code,
