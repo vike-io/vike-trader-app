@@ -31,7 +31,7 @@ dev = ["pytest>=8", "pytest-timeout>=2", "pytest-xdist>=3", "ruff>=0.6", "pytest
 
 [project.scripts]
 vike-trader-app = "vike_trader_app.cli.main:app"      # CLI — implemented in Phase 2
-vike-trader-app-gui = "vike_trader_app.ui.app:main"   # visual backtester (desktop)
+vike-trader-app-gui = "vike_trader_app.ui.launcher:main"   # desktop GUI; thin launcher defers the heavy import so optimizer workers don't re-import the whole UI stack
 vike-mcp = "vike_trader_app.ai.mcp_server:main"
 vike-chat = "vike_trader_app.ai.cli:main"
 
