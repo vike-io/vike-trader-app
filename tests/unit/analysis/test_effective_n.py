@@ -1,6 +1,39 @@
 """effective_n_trials collapses correlated trials toward 1; independent trials stay ~N."""
 
-from vike_trader_app.analysis.overfit import effective_n_trials, deflated_sharpe_with_effective_n
+import random
+
+from vike_trader_app.analysis.overfit import _pearson, effective_n_trials, deflated_sharpe_with_effective_n
+
+
+def _ref_effective_n(series):
+    """Reference: the original O(N^2) pure-Python pairwise formula the numpy path replaced."""
+    n = len(series)
+    if n == 0:
+        return 0.0
+    if n == 1:
+        return 1.0
+    corrs = [_pearson(series[i], series[j]) for i in range(n) for j in range(i + 1, n)]
+    avg = sum(corrs) / len(corrs) if corrs else 0.0
+    r = max(avg, 0.0)
+    return min(max(n / (1.0 + (n - 1) * r), 1.0), float(n))
+
+
+def test_vectorized_matches_pure_python_reference():
+    """The numpy fast path must equal the pure-Python pairwise reference (random + a zero-var row)."""
+    rng = random.Random(7)
+    for _ in range(20):
+        n = rng.randint(2, 12)
+        m = rng.randint(2, 40)
+        series = [[rng.gauss(0, 1) for _ in range(m)] for _ in range(n)]
+        if rng.random() < 0.3:                       # sometimes inject a flat (zero-variance) trial
+            series[rng.randrange(n)] = [0.5] * m
+        assert abs(effective_n_trials(series) - _ref_effective_n(series)) < 1e-9
+
+
+def test_ragged_series_use_exact_pairwise_path():
+    """Unequal lengths fall back to the exact pairwise path (per-pair min-length truncation)."""
+    series = [[0.01, -0.02, 0.03, 0.0], [0.02, -0.01, 0.02], [-0.01, 0.02, -0.03, 0.01, 0.0]]
+    assert abs(effective_n_trials(series) - _ref_effective_n(series)) < 1e-12
 
 
 def test_identical_series_collapse_to_one():

@@ -27,7 +27,8 @@ class _OptimizeMixin:
     def optimize(self, make, param_grid: dict, *, criterion: str = "sharpe", method: str = "grid",
                  seed: int = 0, n_trials: int | None = None, pop_size: int = 20,
                  generations: int = 10, mutation_rate: float = 0.2, sampler: str = "tpe",
-                 workers: int = 1, strategy_source: str | None = None) -> OptimizeReport:
+                 workers: int = 1, strategy_source: str | None = None,
+                 _grid_pool=None) -> OptimizeReport:
         """Search ``param_grid`` with ``method``, scoring each combo through the engine; rank by
         ``criterion`` (a TesterReport metric). ``make(**params) -> Strategy``. ``method`` = ``grid``
         (exhaustive) / ``random`` / ``genetic`` (no-dep GA) / ``bayesian`` (optuna TPE/GP/CMA-ES via
@@ -45,7 +46,7 @@ class _OptimizeMixin:
 
         prefill = getattr(self, "_parallel_grid_prefill", None)
         if method == "grid" and strategy_source and prefill is not None:
-            prefill(reports, param_grid, workers, strategy_source)
+            prefill(reports, param_grid, workers, strategy_source, _grid_pool)
 
         def objective(params: dict) -> float:
             key = tuple(sorted(params.items()))
@@ -84,10 +85,12 @@ class StrategyTester(_OptimizeMixin):
         return Backtester(make(**params), self.data, self.config).run()
 
     def _parallel_grid_prefill(self, reports: dict, param_grid: dict, workers: int,
-                               strategy_source: str) -> None:
+                               strategy_source: str, grid_pool=None) -> None:
         """Seed ``reports`` with every grid combo's TesterReport, computed across worker processes.
 
-        Best-effort: a no-op when only one worker resolves, and any pool error keeps whatever
+        With ``grid_pool`` (a reused :class:`~.parallel.GridPool`, as walk-forward passes) the
+        shared pool runs this window's combos; otherwise a fresh one-shot pool is spawned. Best-
+        effort either way: a no-op when only one worker resolves, and any pool error keeps whatever
         partial results already arrived (the serial objective recomputes the missing keys) — so
         parallelism can speed optimize up but never make it FAIL."""
         from .parallel import parallel_grid_reports, resolve_workers
@@ -95,9 +98,9 @@ class StrategyTester(_OptimizeMixin):
         if resolve_workers(workers) <= 1:
             return
         try:
-            for params, rep in parallel_grid_reports(
-                strategy_source, param_grid, self.data, self.config, workers
-            ):
+            it = (grid_pool.run(param_grid, self.data, self.config) if grid_pool is not None
+                  else parallel_grid_reports(strategy_source, param_grid, self.data, self.config, workers))
+            for params, rep in it:
                 reports[tuple(sorted(params.items()))] = rep
         except Exception:  # noqa: BLE001 - parallelism is an optimization, never a failure mode
             log.warning("parallel grid prefill failed; falling back to serial", exc_info=True)
@@ -115,7 +118,10 @@ class StrategyTester(_OptimizeMixin):
         Returns a ``WalkForwardReport`` (per-window IS vs OOS scores + ``wf_efficiency``) whose
         stitched ``oos_report.verdict`` is an ``analysis.overfit.Verdict``.
         """
+        from contextlib import nullcontext
+
         from ..analysis.validation import walk_forward_splits
+        from .parallel import GridPool, resolve_workers
         from .walkforward import WalkForwardWindow
 
         cash = self.config.cash
@@ -124,21 +130,26 @@ class StrategyTester(_OptimizeMixin):
         concat_trades: list = []
         windows: list = []
         final_curves: list = []
-        for tr_s, tr_e, te_s, te_e in walk_forward_splits(len(self.data), n_splits, mode=mode):
-            opt = StrategyTester(make, self.data[tr_s:tr_e], self.config).optimize(
-                make, param_grid, criterion=criterion, method=method, seed=seed, n_trials=n_trials,
-                pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler,
-                workers=workers, strategy_source=strategy_source,
-            )
-            final_curves = [t.report.equity_curve for t in opt.ranked]
-            oos = Backtester(make(**opt.best.params), self.data[te_s:te_e], self.config).run()
-            windows.append(WalkForwardWindow((tr_s, tr_e), (te_s, te_e), opt.best.params, oos,
-                                             is_score=opt.best.score, oos_score=getattr(oos, criterion)))
-            start = equity
-            for v in oos.equity_curve:
-                stitched.append(start * (v / cash))
-            equity = start * (oos.final_equity / cash)
-            concat_trades.extend(oos.trades)
+        # ONE worker pool reused across every window's grid: pay the Windows-spawn / GUI-import cost
+        # ONCE for the whole walk-forward, not per window. nullcontext (-> pool=None) whenever
+        # parallelism doesn't apply, so the serial path is byte-for-byte unchanged.
+        use_pool = method == "grid" and bool(strategy_source) and resolve_workers(workers) > 1
+        with (GridPool(strategy_source, workers) if use_pool else nullcontext()) as pool:
+            for tr_s, tr_e, te_s, te_e in walk_forward_splits(len(self.data), n_splits, mode=mode):
+                opt = StrategyTester(make, self.data[tr_s:tr_e], self.config).optimize(
+                    make, param_grid, criterion=criterion, method=method, seed=seed, n_trials=n_trials,
+                    pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler,
+                    workers=workers, strategy_source=strategy_source, _grid_pool=pool,
+                )
+                final_curves = [t.report.equity_curve for t in opt.ranked]
+                oos = Backtester(make(**opt.best.params), self.data[te_s:te_e], self.config).run()
+                windows.append(WalkForwardWindow((tr_s, tr_e), (te_s, te_e), opt.best.params, oos,
+                                                 is_score=opt.best.score, oos_score=getattr(oos, criterion)))
+                start = equity
+                for v in oos.equity_curve:
+                    stitched.append(start * (v / cash))
+                equity = start * (oos.final_equity / cash)
+                concat_trades.extend(oos.trades)
 
         return assemble_walk_forward(windows, final_curves, stitched, concat_trades, self.config)
 
