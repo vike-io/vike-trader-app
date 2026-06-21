@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from itertools import combinations
 from statistics import NormalDist, variance
 
+import numpy as np
+
 _N01 = NormalDist()
 _EULER = 0.5772156649015329
 
@@ -165,8 +167,22 @@ def effective_n_trials(return_series) -> float:
         return 0.0
     if n == 1:
         return 1.0
-    corrs = [_pearson(return_series[i], return_series[j]) for i in range(n) for j in range(i + 1, n)]
-    avg = sum(corrs) / len(corrs) if corrs else 0.0
+
+    lengths = {len(s) for s in return_series}
+    if len(lengths) == 1 and next(iter(lengths)) >= 2:
+        # Fast path: equal-length series (the walk-forward / single-window case) — ONE BLAS-backed
+        # correlation matrix instead of the O(N^2) pure-Python pairwise loop that dominated profiles
+        # (~12 s / 21M genexpr calls on a 36-combo walk-forward). Identical Pearson math; a
+        # zero-variance row yields NaN here, which we map to 0.0 to match ``_pearson``.
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr = np.corrcoef(np.asarray(return_series, dtype=float))
+        iu = np.triu_indices(n, k=1)
+        avg = float(np.nan_to_num(corr[iu], nan=0.0).mean())
+    else:
+        # Ragged series (rare): keep the exact pairwise ``_pearson`` (per-pair min-length truncation).
+        corrs = [_pearson(return_series[i], return_series[j]) for i in range(n) for j in range(i + 1, n)]
+        avg = sum(corrs) / len(corrs) if corrs else 0.0
+
     r = max(avg, 0.0)
     eff = n / (1.0 + (n - 1) * r)
     return min(max(eff, 1.0), float(n))
