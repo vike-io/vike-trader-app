@@ -45,7 +45,8 @@ class PortfolioStrategyTester(_OptimizeMixin):
     def walk_forward(self, make, param_grid: dict, *, n_splits: int = 4, criterion: str = "sharpe",
                      mode: str = "anchored", method: str = "grid", seed: int = 0,
                      n_trials: int | None = None, pop_size: int = 20, generations: int = 10,
-                     mutation_rate: float = 0.2, sampler: str = "tpe"):
+                     mutation_rate: float = 0.2, sampler: str = "tpe",
+                     workers: int = 1, strategy_source: str | None = None):
         """Per-window optimize-on-train -> run-best-OOS-on-test over the portfolio, stitched + verdict.
 
         Windows are DATE-based over the aligned union timeline: each index split maps to a shared
@@ -80,7 +81,8 @@ class PortfolioStrategyTester(_OptimizeMixin):
             opt = PortfolioStrategyTester(
                 train_slice, self.config, max_open_positions=self.max_open_positions, ranges=self.ranges,
             ).optimize(make, param_grid, criterion=criterion, method=method, seed=seed, n_trials=n_trials,
-                       pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler)
+                       pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler,
+                       workers=workers, strategy_source=strategy_source)
             final_curves = [t.report.equity_curve for t in opt.ranked]
 
             best = opt.best

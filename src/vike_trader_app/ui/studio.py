@@ -65,6 +65,7 @@ class OptimizerConfig:
     generations: int = 10
     sampler: str = "tpe"
     seed: int = 0
+    workers: int = 0   # process count for the exhaustive grid; 0 = Auto (all logical cores)
 
 
 @dataclass
@@ -1607,6 +1608,8 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
         self.pop_size = _spin(4, 500, config.pop_size)
         self.generations = _spin(1, 500, config.generations)
         self.seed = _spin(0, 1_000_000, config.seed)
+        self.workers = _spin(0, 256, config.workers)
+        self.workers.setSpecialValueText("Auto (all cores)")   # shown when value == 0
 
         form.addRow("Search method", self.method)
         form.addRow("Ranking criterion", self.criterion)
@@ -1617,10 +1620,12 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
         form.addRow("Generations (genetic)", self.generations)
         form.addRow("Bayesian sampler", self.sampler)
         form.addRow("Seed", self.seed)
+        form.addRow("Worker processes", self.workers)
         root.addLayout(form)
 
         hint_text = ("Grid is exhaustive; genetic/bayesian scale to large grids. "
-                     "Rolling WF uses a fixed-width sliding train window.")
+                     "Rolling WF uses a fixed-width sliding train window. "
+                     "Worker processes parallelize the grid search across CPU cores (0 = Auto, all cores).")
         if not _HAS_OPTUNA:
             hint_text += "  Bayesian needs the optional vike_trader_app[opt] extra (optuna)."
         hint = QtWidgets.QLabel(hint_text)
@@ -1655,6 +1660,7 @@ class OptimizerConfigDialog(QtWidgets.QDialog):
             generations=self.generations.value(),
             sampler=self.sampler.currentText(),
             seed=self.seed.value(),
+            workers=self.workers.value(),
         )
 
 
@@ -1761,7 +1767,8 @@ class StudioTab(QtWidgets.QWidget):
         self._portfolio_ranges = None  # per-symbol membership ranges (survivorship-free)
         self._portfolio_name = ""    # DataSet name surfaced in toasts
         # Optimizer + walk-forward config (set via the Optimizer modal; consumed by _optimize).
-        self._opt_config = OptimizerConfig()
+        from ..data import prefs
+        self._opt_config = OptimizerConfig(workers=int(prefs.get_pref("optimizer_workers", 0) or 0))
 
         root = QtWidgets.QVBoxLayout(self)
         # No root inset — every visible gap is a single, uniform _GAP instead of doubling up
@@ -2144,7 +2151,7 @@ class StudioTab(QtWidgets.QWidget):
             QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
             try:
                 pt = PortfolioStrategyTester(self._portfolio_bars, config, ranges=self._portfolio_ranges)
-                wf = pt.walk_forward(cls.make, grid, **wf_kw)
+                wf = pt.walk_forward(cls.make, grid, **wf_kw, strategy_source=self.editor.text())
             except Exception as exc:  # noqa: BLE001
                 self.results.show_error(f"Portfolio optimize failed: {type(exc).__name__}: {exc}")
                 return
@@ -2165,7 +2172,7 @@ class StudioTab(QtWidgets.QWidget):
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
             st = StrategyTester(cls(), bars, config)
-            wf = st.walk_forward(cls.make, grid, **wf_kw)
+            wf = st.walk_forward(cls.make, grid, **wf_kw, strategy_source=self.editor.text())
         except Exception as exc:  # noqa: BLE001
             self.results.show_error(f"Optimize failed: {type(exc).__name__}: {exc}")
             return
@@ -2208,8 +2215,11 @@ class StudioTab(QtWidgets.QWidget):
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             self._opt_config = dlg.values()
             c = self._opt_config
+            from ..data import prefs
+            prefs.set_pref("optimizer_workers", c.workers)   # persist the cores choice across sessions
+            cores = "auto" if c.workers == 0 else str(c.workers)
             self.results.toast(
-                f"Optimizer · {c.method} · {c.criterion} · WF {c.mode} ({c.n_splits}) — press Walk-forward"
+                f"Optimizer · {c.method} · {c.criterion} · WF {c.mode} ({c.n_splits}) · {cores} cores — press Walk-forward"
             )
 
     def _export_csv(self) -> None:
