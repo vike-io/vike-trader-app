@@ -98,3 +98,71 @@ def parallel_grid_reports(source: str, param_grid: dict, data, config, workers: 
         max_workers=n, initializer=_init_worker, initargs=(source, data, config)
     ) as ex:
         yield from ex.map(_run_params, combos)
+
+
+# --- reusable pool across datasets (walk-forward windows) --------------------------------------
+
+def _init_source(source: str) -> None:
+    """Reusable-pool initializer: compile the strategy source ONCE per worker (data comes per task,
+    because each walk-forward window has a different train slice)."""
+    from ..core.strategy_loader import load_strategy_from_string
+
+    _WORKER["cls"] = load_strategy_from_string(source, validate=False)
+
+
+def _run_on(data, config, params: dict):
+    """Reusable-pool task: run one combo over this window's ``data`` -> (params, report)."""
+    from .backtester import Backtester
+
+    return params, Backtester(_WORKER["cls"].make(**params), data, config).run()
+
+
+class GridPool:
+    """A worker pool reused across multiple datasets — the walk-forward windows.
+
+    Why: ``walk_forward`` optimizes once PER window, and a fresh ``ProcessPoolExecutor`` per window
+    re-pays the Windows-spawn cost every time (measured ~2 s/pool from the GUI, because each worker
+    re-imports the app). This holds ONE pool for the whole walk-forward: the strategy is compiled
+    once per worker (the initializer), and each window ships only its train ``data`` + params per
+    task. Use as a context manager so the pool is ALWAYS shut down deterministically (the codebase's
+    teardown-crash history means a lingering pool is not acceptable).
+
+    Degrades gracefully: if the pool can't start (or only one worker resolves), every ``run`` is a
+    plain in-process loop — identical numbers, just serial.
+    """
+
+    def __init__(self, source: str, workers: int | None):
+        self._source = source
+        self._n = resolve_workers(workers)
+        self._ex = None
+
+    def __enter__(self) -> "GridPool":
+        if self._n > 1:
+            try:
+                self._ex = cf.ProcessPoolExecutor(
+                    max_workers=self._n, initializer=_init_source, initargs=(self._source,))
+            except Exception:  # noqa: BLE001 - fall back to serial; never fail the optimize
+                self._ex = None
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        ex, self._ex = self._ex, None
+        if ex is not None:
+            ex.shutdown(wait=True, cancel_futures=True)
+        return False
+
+    def run(self, param_grid: dict, data, config):
+        """Yield ``(params, report)`` for every grid combo over ``data`` (this window's slice)."""
+        combos = grid_combos(param_grid)
+        if self._ex is None or len(combos) < _MIN_PARALLEL_COMBOS:
+            from ..core.strategy_loader import load_strategy_from_string
+            from .backtester import Backtester
+
+            cls = load_strategy_from_string(self._source, validate=False)
+            for p in combos:
+                yield p, Backtester(cls.make(**p), data, config).run()
+            return
+
+        futures = [self._ex.submit(_run_on, data, config, p) for p in combos]
+        for f in futures:
+            yield f.result()

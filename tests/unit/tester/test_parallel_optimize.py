@@ -94,6 +94,39 @@ def test_parallel_grid_matches_serial(workers):
     assert serial.best.params == parallel.best.params      # (no ties in this grid)
 
 
+def _returns_map(pairs):
+    return {tuple(sorted(p.items())): round(rep.total_return, 9) for p, rep in pairs}
+
+
+def test_gridpool_matches_serial():
+    """A reused GridPool (parallel) returns the same per-combo numbers as its own serial loop."""
+    from vike_trader_app.tester.parallel import GridPool
+
+    bars = _bars()
+    cfg = TesterConfig()
+    with GridPool(_SOURCE, 1) as serial:        # workers=1 -> in-process loop
+        smap = _returns_map(serial.run(GRID := {"fast": [5, 8, 10, 12, 15, 20], "slow": [25, 30, 40, 50, 60, 80]}, bars, cfg))
+    with GridPool(_SOURCE, 4) as parallel:
+        pmap = _returns_map(parallel.run(GRID, bars, cfg))
+    assert smap == pmap
+
+
+def test_gridpool_reused_across_datasets():
+    """ONE pool, run on two DIFFERENT datasets (the walk-forward case): each result is correct and
+    they genuinely differ — proving the pool reuses workers without leaking the prior window's data."""
+    from vike_trader_app.tester.parallel import GridPool
+
+    cfg = TesterConfig()
+    grid = {"fast": [5, 8, 10, 12, 15, 20], "slow": [25, 30, 40, 50, 60, 80]}
+    a, b = _bars()[:300], _bars()[120:]
+    with GridPool(_SOURCE, 4) as pool:          # reused across both datasets
+        ra, rb = _returns_map(pool.run(grid, a, cfg)), _returns_map(pool.run(grid, b, cfg))
+    with GridPool(_SOURCE, 1) as s:             # serial reference
+        sa, sb = _returns_map(s.run(grid, a, cfg)), _returns_map(s.run(grid, b, cfg))
+    assert ra == sa and rb == sb                # reused pool correct on BOTH windows
+    assert ra != rb                             # and the two windows really are different data
+
+
 def test_walk_forward_parallel_matches_serial():
     cls = load_strategy_from_string(_SOURCE)
     bars = _bars()
