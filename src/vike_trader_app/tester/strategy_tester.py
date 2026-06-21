@@ -1,5 +1,7 @@
 """StrategyTester — the MT5-style facade: .run() single backtest, .optimize() grid/genetic/Bayesian sweep."""
 
+import logging
+
 from ..analysis import samplers
 from ..analysis.metrics import returns
 from ..analysis.overfit import effective_n_trials
@@ -9,6 +11,8 @@ from .optimize import OptimizeReport, OptimizeTrial
 from .report import TesterReport
 
 _CRITERIA = ("sharpe", "sortino", "calmar", "omega", "total_return", "profit_factor", "recovery_factor")
+
+log = logging.getLogger(__name__)
 
 
 class _OptimizeMixin:
@@ -22,15 +26,26 @@ class _OptimizeMixin:
 
     def optimize(self, make, param_grid: dict, *, criterion: str = "sharpe", method: str = "grid",
                  seed: int = 0, n_trials: int | None = None, pop_size: int = 20,
-                 generations: int = 10, mutation_rate: float = 0.2, sampler: str = "tpe") -> OptimizeReport:
+                 generations: int = 10, mutation_rate: float = 0.2, sampler: str = "tpe",
+                 workers: int = 1, strategy_source: str | None = None) -> OptimizeReport:
         """Search ``param_grid`` with ``method``, scoring each combo through the engine; rank by
         ``criterion`` (a TesterReport metric). ``make(**params) -> Strategy``. ``method`` = ``grid``
         (exhaustive) / ``random`` / ``genetic`` (no-dep GA) / ``bayesian`` (optuna TPE/GP/CMA-ES via
         ``sampler``). Every combo uses the tester's SAME TesterConfig, cached so each distinct combo
-        runs once; trial return-series feed a correlation-aware effective trial count for the verdict."""
+        runs once; trial return-series feed a correlation-aware effective trial count for the verdict.
+
+        ``workers`` > 1 with ``strategy_source`` (the strategy's source text) runs the exhaustive
+        ``grid`` across that many worker processes — the combos are independent, so the cache is
+        pre-filled in parallel and the numbers are identical to the serial path. Parallelism is
+        best-effort: any pool failure falls back to the in-process loop, never failing the run.
+        Only ``grid`` parallelizes (random/genetic/bayesian are sequential by construction)."""
         if criterion not in _CRITERIA:
             raise ValueError(f"unknown criterion {criterion!r}; expected one of {_CRITERIA}")
         reports: dict[tuple, TesterReport] = {}
+
+        prefill = getattr(self, "_parallel_grid_prefill", None)
+        if method == "grid" and strategy_source and prefill is not None:
+            prefill(reports, param_grid, workers, strategy_source)
 
         def objective(params: dict) -> float:
             key = tuple(sorted(params.items()))
@@ -68,11 +83,30 @@ class StrategyTester(_OptimizeMixin):
     def _run_trial(self, make, params: dict) -> TesterReport:
         return Backtester(make(**params), self.data, self.config).run()
 
+    def _parallel_grid_prefill(self, reports: dict, param_grid: dict, workers: int,
+                               strategy_source: str) -> None:
+        """Seed ``reports`` with every grid combo's TesterReport, computed across worker processes.
+
+        Best-effort: a no-op when only one worker resolves, and any pool error keeps whatever
+        partial results already arrived (the serial objective recomputes the missing keys) — so
+        parallelism can speed optimize up but never make it FAIL."""
+        from .parallel import parallel_grid_reports, resolve_workers
+
+        if resolve_workers(workers) <= 1:
+            return
+        try:
+            for params, rep in parallel_grid_reports(
+                strategy_source, param_grid, self.data, self.config, workers
+            ):
+                reports[tuple(sorted(params.items()))] = rep
+        except Exception:  # noqa: BLE001 - parallelism is an optimization, never a failure mode
+            log.warning("parallel grid prefill failed; falling back to serial", exc_info=True)
 
     def walk_forward(self, make, param_grid: dict, *, n_splits: int = 4, criterion: str = "sharpe",
                      mode: str = "anchored", method: str = "grid", seed: int = 0,
                      n_trials: int | None = None, pop_size: int = 20, generations: int = 10,
-                     mutation_rate: float = 0.2, sampler: str = "tpe"):
+                     mutation_rate: float = 0.2, sampler: str = "tpe",
+                     workers: int = 1, strategy_source: str | None = None):
         """Per-window optimize-on-train -> run-best-OOS-on-test, stitched, with an overfit verdict.
 
         ``mode`` selects the train window: ``anchored`` (expanding from bar 0) or ``rolling``
@@ -94,6 +128,7 @@ class StrategyTester(_OptimizeMixin):
             opt = StrategyTester(make, self.data[tr_s:tr_e], self.config).optimize(
                 make, param_grid, criterion=criterion, method=method, seed=seed, n_trials=n_trials,
                 pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler,
+                workers=workers, strategy_source=strategy_source,
             )
             final_curves = [t.report.equity_curve for t in opt.ranked]
             oos = Backtester(make(**opt.best.params), self.data[te_s:te_e], self.config).run()
