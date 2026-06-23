@@ -200,3 +200,42 @@ def test_arrange_with_floating_charts_leaves_docked_panels_alone(app):
         for j in range(i + 1, len(fr)):
             assert not fr[i].geometry().intersects(fr[j].geometry())
     win.close()
+
+
+# ---------------------------------------------------------------- manual resize freezes auto-tile
+
+def test_user_resize_freezes_autotile_until_arrange(app):
+    """User-reported: hand-resize a floating window, then add + delete a chart -> the manual size
+    must survive. Fix: a frame's move/resize emits userGeomChanged -> _layout_user_dirty, which
+    short-circuits the auto-retile (_retile_open_windows) that add/delete/resize would otherwise run
+    (re-gridding every window); an explicit Window>Arrange clears the flag and re-tiles."""
+    win = _win("market")
+    for _ in range(2):
+        win._new_chart_document("BTCUSDT", "1m", network=False)
+    _pe(8)
+    fr = [f for f in win._chart_frames if not f.is_detached() and f.isVisible()]
+    assert len(fr) == 2
+
+    # control: with NO manual resize, the auto-retile re-grids (auto-tiling active by default)
+    fr[0].setGeometry(QtCore.QRect(10, 10, 300, 200))
+    assert win._layout_user_dirty is False
+    win._retile_open_windows()
+    _pe()
+    assert fr[0].geometry() != QtCore.QRect(10, 10, 300, 200)   # re-gridded
+
+    # user hand-resizes the first window -> the frame emits userGeomChanged -> auto-tiling freezes
+    manual = QtCore.QRect(40, 40, 520, 360)
+    fr[0].setGeometry(manual)
+    fr[0].userGeomChanged.emit()                               # the move/resize handlers emit this
+    assert win._layout_user_dirty is True                     # signal wired -> frozen
+
+    win._retile_open_windows()                                # what add/delete/resize would fire
+    _pe()
+    assert fr[0].geometry() == manual                         # manual size preserved (NOT re-gridded)
+
+    # an explicit Arrange re-enables auto-tiling and re-grids
+    win._arrange_chart_windows("grid")
+    _pe()
+    assert win._layout_user_dirty is False
+    assert fr[0].geometry() != manual                         # re-tiled into a grid cell
+    win.close()
