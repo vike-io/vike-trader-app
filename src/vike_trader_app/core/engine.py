@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
+from .fill import compute_fill
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 from .timeframe import parse_timeframe, resample
@@ -273,53 +274,44 @@ class BacktestEngine:
         if self._on_fill is not None:
             self._on_fill(side_sign, size, price, fee, ts, is_maker)
         delta = side_sign * size
+        self.cash -= delta * price * self.multiplier   # signed notional moves cash in every case
         pos = self.position
-        if pos.size == 0:  # open
-            pos.size = delta
-            pos.avg_price = price
-            self.cash -= delta * price * self.multiplier
+        out = compute_fill(pos.size, pos.avg_price, side_sign, size, price, self.multiplier)
+        if out.kind == "open":
+            pos.size = out.new_size
+            pos.avg_price = out.new_avg_px
             self._entry_fee = fee
             self._entry_ts = ts
-        elif (pos.size > 0) == (delta > 0):  # add in the same direction
-            new_size = pos.size + delta
-            pos.avg_price = (pos.avg_price * abs(pos.size) + price * abs(delta)) / abs(new_size)
-            pos.size = new_size
-            self.cash -= delta * price * self.multiplier
+            return
+        if out.kind == "add":
+            pos.size = out.new_size
+            pos.avg_price = out.new_avg_px
             self._entry_fee += fee
-        else:  # opposite direction: reduce part of the position, fully close, or close-and-flip
-            self.cash -= delta * price * self.multiplier   # cash flow of the whole order (correct as-is)
-            sign = 1.0 if pos.size > 0 else -1.0
-            closing = min(abs(delta), abs(pos.size))        # units of the existing position retired
-            portion = closing / abs(pos.size)
-            entry_fee_portion = self._entry_fee * portion
-            exit_fee_portion = fee * (closing / abs(delta))  # delta != 0 inside a fill
-            self.trades.append(
-                Trade(
-                    entry_price=pos.avg_price,
-                    exit_price=price,
-                    size=closing,
-                    pnl=(price - pos.avg_price) * (sign * closing) * self.multiplier,  # signed -> shorts ok
-                    fees=entry_fee_portion + exit_fee_portion,
-                    entry_ts=self._entry_ts,
-                    exit_ts=ts,
-                )
+            return
+        # reduce / close / flip: record the closed portion, then update the position
+        entry_fee_portion = self._entry_fee * out.portion
+        exit_fee_portion = fee * (out.closing_qty / size)   # closing / abs(delta); abs(delta) == size
+        self.trades.append(
+            Trade(
+                entry_price=out.entry_avg_px,
+                exit_price=price,
+                size=out.closing_qty,
+                pnl=out.realized_pnl,
+                fees=entry_fee_portion + exit_fee_portion,
+                entry_ts=self._entry_ts,
+                exit_ts=ts,
             )
-            remaining = abs(pos.size) - closing
-            if remaining > 1e-12:   # partial reduce: keep the remainder at the same cost basis
-                pos.size = sign * remaining
-                self._entry_fee -= entry_fee_portion
-                return
-            leftover = abs(delta) - closing   # crossed through zero -> open the opposite side
-            if leftover > 1e-12:
-                pos.size = (1.0 if delta > 0 else -1.0) * leftover
-                pos.avg_price = price
-                self._entry_fee = fee * (leftover / abs(delta))
-                self._entry_ts = ts
-            else:                   # flat
-                pos.size = 0.0
-                pos.avg_price = 0.0
-                self._entry_fee = 0.0
-                self._entry_ts = 0
+        )
+        pos.size = out.new_size
+        pos.avg_price = out.new_avg_px
+        if out.kind == "reduce":
+            self._entry_fee -= entry_fee_portion
+        elif out.kind == "flip":
+            self._entry_fee = fee * (out.leftover / size)
+            self._entry_ts = ts
+        else:  # close -> flat
+            self._entry_fee = 0.0
+            self._entry_ts = 0
 
     def _check_liquidation(self, bar: Bar) -> None:
         """Force-close the position at the bar's adverse extreme if equity there is below maint margin."""
