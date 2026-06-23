@@ -296,10 +296,10 @@ def test_maximized_window_refits_on_workspace_resize(app, _synthetic_load):
     win.close()
 
 
-def test_open_windows_auto_retile_to_fill_on_resize(app, _synthetic_load):
-    """Tiled workspace ('auto re-tile to fill' — the user's choice): with 2+ open floating windows,
-    a workspace resize re-tiles them to fill it (no empty gap). A resize ARMS a debounced re-tile;
-    a maximized window is left filling (not re-tiled); cascade opts out entirely."""
+def test_resize_does_not_retile_floating_windows_but_refills_maximized(app, _synthetic_load):
+    """No auto-arrange: a workspace resize leaves floating (non-maximized) windows exactly where the
+    user put them — only Window>Arrange re-tiles. A MAXIMIZED window still re-fills the resized
+    workspace (that's host_resized/maximize, not arrange)."""
     win = MainWindow(session_path=None)
     win.resize(1200, 820)
     win.show()
@@ -310,41 +310,20 @@ def test_open_windows_auto_retile_to_fill_on_resize(app, _synthetic_load):
     QtWidgets.QApplication.processEvents()
     host = win.dock_manager
 
-    # BEHAVIOR: the re-tile (what the debounced timer fires) fills the current workspace — no gap.
-    win._retile_open_windows()
+    # FLOATING windows must NOT move/resize when the workspace GROWS — no auto-retile to fill.
+    before = [QtCore.QRect(f.geometry()) for f in win._chart_frames]
+    win.resize(1340, 900)
     QtWidgets.QApplication.processEvents()
-    right = max(f.geometry().right() for f in win._chart_frames)
-    bottom = max(f.geometry().bottom() for f in win._chart_frames)
-    assert right >= host.rect().width() - 10
-    assert bottom >= host.rect().height() - 10
+    assert [f.geometry() for f in win._chart_frames] == before    # stayed exactly put
 
-    # WIRING: a non-cascade resize ARMS the debounced re-tile; cascade does NOT. Drive resizeEvent
-    # directly — synchronous, so no event-loop time passes and the 140ms singleShot can't fire/clear
-    # mid-assert (an isActive() check after win.resize()+processEvents() is timing-flaky under xdist).
-    win._retile_timer.stop()
-    win.resizeEvent(QtGui.QResizeEvent(QtCore.QSize(1100, 800), QtCore.QSize(1200, 820)))
-    assert win._retile_timer.isActive()
-    win._arrange_chart_windows("cascade")
-    win._retile_timer.stop()
-    win.resizeEvent(QtGui.QResizeEvent(QtCore.QSize(1000, 760), QtCore.QSize(1100, 800)))
-    assert not win._retile_timer.isActive()
-
-    # GUARD: a maximized window is left filling — the re-tile is a no-op while one is maximized.
-    win._arrange_chart_windows("grid")
+    # a MAXIMIZED window still re-fills the workspace on resize (host_resized — maximize, not arrange).
     f0 = win._chart_frames[0]
     f0.toggle_max()
     QtWidgets.QApplication.processEvents()
-    win._retile_open_windows()
+    win.resize(1180, 800)
     QtWidgets.QApplication.processEvents()
     assert f0._maxed and f0.width() == host.rect().width()
     f0.toggle_max()
-
-    # GUARD: cascade re-tile is a no-op (free overlap preserved).
-    win._arrange_chart_windows("cascade")
-    geos = [QtCore.QRect(f.geometry()) for f in win._chart_frames]
-    win._retile_open_windows()
-    QtWidgets.QApplication.processEvents()
-    assert [f.geometry() for f in win._chart_frames] == geos
     win.close()
 
 
