@@ -22,10 +22,13 @@ def test_absent_creds_returns_none():
                                 now_ms=lambda: 0, load=_load_none) is None
 
 
-def test_demo_defaults_to_demo_host():
+def test_demo_defaults_to_demo_rest_and_empty_ws():
+    """Demo WS default is empty — Binance demo has no listenKey endpoint (410 Gone)."""
     cfg = resolve_venue_config("binance", Environment.DEMO, now_ms=lambda: 0, load=_load_ok)
     assert cfg.rest_base_url == BINANCE_DEMO_REST
-    assert cfg.ws_base_url  # non-empty default
+    # ws_base_url must be EMPTY — do NOT fall back to the mainnet host
+    assert cfg.ws_base_url == ""
+    assert "stream.binance.com" not in cfg.ws_base_url
     assert cfg.signer is not None
 
 

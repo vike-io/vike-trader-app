@@ -77,7 +77,25 @@ def test_apply_snapshot_seeds_position_and_registry():
     mo = ManagedOrder(request=_req(coid="prev-1"), status=OrderStatus.ACCEPTED, venue_order_id="9")
     hub.apply_snapshot(ReconcileSnapshot(positions=(("BTCUSDT", 0.5),), open_orders=(mo,)))
     assert hub.account.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.5
+    # No position_avg_px supplied -> falls back to 0.0 (backwards-compat)
+    assert hub.account.positions[("binance", "BTCUSDT", "BOTH")]["avg_px"] == 0.0
     assert hub.registry["prev-1"] is mo
+
+
+def test_apply_snapshot_seeds_avg_px_from_snapshot():
+    """apply_snapshot must seed avg_px from position_avg_px, not hardcode 0.0."""
+    from vike_trader_app.exec.binance.client import ReconcileSnapshot
+
+    hub = _hub()
+    snap = ReconcileSnapshot(
+        positions=(("BTCUSDT", 0.5),),
+        open_orders=(),
+        position_avg_px=(("BTCUSDT", 68000.0),),
+    )
+    hub.apply_snapshot(snap)
+    pos = hub.account.positions[("binance", "BTCUSDT", "BOTH")]
+    assert pos["size"] == 0.5
+    assert pos["avg_px"] == 68000.0  # from snapshot, NOT hardcoded 0.0
 
 
 def test_shutdown_detaches_and_unsubscribes():

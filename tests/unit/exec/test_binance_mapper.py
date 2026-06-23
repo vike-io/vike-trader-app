@@ -59,3 +59,12 @@ def test_canceled_rejected_expired():
 
 def test_unknown_exec_type_is_ignored():
     assert map_execution_report(_frame(x="TRADE_PREVENTION"), venue="binance", symbol="BTCUSDT") == []
+
+
+def test_frame_symbol_overrides_passed_symbol():
+    """Account-wide WS: frame `s` takes precedence over the caller's `symbol` argument."""
+    frame = _frame(x="TRADE", X="FILLED", s="ETHUSDT", l="1.0", L="3000", m=False, t=999)
+    out = map_execution_report(frame, venue="binance", symbol="BTCUSDT")
+    fills = [e for e in out if isinstance(e, FillEvent)]
+    assert len(fills) == 1
+    assert fills[0].symbol == "ETHUSDT"  # frame's `s`, NOT the passed "BTCUSDT"

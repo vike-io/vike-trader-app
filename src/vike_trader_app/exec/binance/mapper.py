@@ -20,7 +20,12 @@ from vike_trader_app.exec.events import (
 
 
 def map_execution_report(frame: dict, *, venue: str, symbol: str) -> list[object]:
-    """Map one executionReport to frozen vike events ([] for an unknown exec type)."""
+    """Map one executionReport to frozen vike events ([] for an unknown exec type).
+
+    The WS stream is account-wide; the frame's `s` field carries the true order symbol. We read
+    it from the frame and fall back to the passed `symbol` only when `s` is absent.
+    """
+    symbol = str(frame.get("s", symbol))
     coid = str(frame.get("c", ""))
     ts = int(frame.get("T", 0))
     x = frame.get("x")
