@@ -10,6 +10,11 @@ here, mirroring the engine). Positions are keyed ``(venue, symbol, position_side
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vike_trader_app.exec.events import FillEvent
+
 _EPS = 1e-12
 
 
@@ -22,7 +27,7 @@ class Account:
         self.realized_pnl: float = 0.0
         self.trades: list[float] = []   # gross price PnL per closing portion, in order
 
-    def apply_fill(self, fill) -> None:
+    def apply_fill(self, fill: "FillEvent") -> None:
         key = (fill.venue, fill.symbol, "BOTH")
         pos = self.positions.get(key)
         delta = fill.side * fill.last_qty

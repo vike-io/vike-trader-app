@@ -78,3 +78,104 @@ def test_parity_holds_with_slippage_and_multiplier():
     SimulatedExecutionClient(eng, bus, symbol="X")
     res = eng.run()
     assert acc.trades == [t.pnl for t in res.trades]                 # adverse fill price flows through the FillEvent
+
+
+# ---------------------------------------------------------------------------
+# Intrabar SL+TP bracket cap
+# ---------------------------------------------------------------------------
+
+class _BracketStrategy(Strategy):
+    """Buy on bar 0, arm a stop_sell at 95 + limit_sell at 115 on bar 1.
+
+    Bar 2 straddles both triggers (low=90 <= 95 AND high=120 >= 115):
+    engine caps the limit to ~0 (stop fills first), so only ONE closing fill
+    happens and intrabar_both_hit == 1.
+    """
+
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.buy(1.0)
+        elif self.index == 1:
+            # Arm bracket — both will trigger on bar 2
+            self.stop_sell(1.0, price=95.0)
+            self.limit_sell(1.0, price=115.0)
+
+
+def _bracket_bars():
+    # bar 0: entry — fills at open=100 on bar 1
+    # bar 1: stop+limit arms — next-open semantics: arms before strategy sees bar 2
+    # bar 2: straddle bar — open=100 (between 95 and 115), high=120, low=90
+    return [
+        Bar(ts=0,        open=100, high=105, low=95,  close=102, volume=1.0),  # buy submitted
+        Bar(ts=60_000,   open=100, high=105, low=95,  close=100, volume=1.0),  # entry fills; bracket armed
+        Bar(ts=120_000,  open=100, high=120, low=90,  close=105, volume=1.0),  # straddles both stops
+    ]
+
+
+def test_intrabar_bracket_cap_parity():
+    """Parity holds through the adversarial stop-first bracket-cap path.
+
+    The stop at 95 fires first (adverse), consuming the entire size=1 position.
+    The limit at 115 gets capped to 0 and is skipped. One closing Trade, one
+    FillEvent — parity must hold AND intrabar_both_hit must be 1.
+    """
+    bus = EventBus()
+    acc = Account()
+    bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
+    eng = BacktestEngine(_bracket_bars(), _BracketStrategy(), cash=10_000.0)
+    SimulatedExecutionClient(eng, bus, venue="sim", symbol="X")
+    res = eng.run()
+
+    assert acc.trades == [t.pnl for t in res.trades]   # parity holds through bracket-cap
+    assert res.intrabar_both_hit == 1                   # exactly the adversarial bar was exercised
+
+
+# ---------------------------------------------------------------------------
+# Liquidation force-close
+# ---------------------------------------------------------------------------
+
+class _LeveragedLong(Strategy):
+    """Open a maximum leveraged long on bar 0; hold until liquidated."""
+
+    def on_bar(self, bar):
+        if self.index == 0:
+            self.buy(100.0)   # leverage cap will trim to max; we need a large number
+
+
+def _liquidation_bars():
+    # bar 0: buy submitted, fills at open of bar 1 (=100)
+    # bar 1: hold — equity fine, low=95 not enough to liquidate (95 > 94.73)
+    # bar 2: liquidation bar — low=90 < 94.73 threshold triggers force-close
+    return [
+        Bar(ts=0,        open=100, high=105, low=98,  close=100, volume=1.0),  # buy submitted
+        Bar(ts=60_000,   open=100, high=102, low=95,  close=100, volume=1.0),  # entry fills; safe
+        Bar(ts=120_000,  open=100, high=102, low=90,  close=100, volume=1.0),  # liquidation fires
+    ]
+
+
+def test_liquidation_parity():
+    """Parity holds through the _check_liquidation force-close path.
+
+    Setup: leverage=10, maint_margin=0.05, cash=1000.
+    Leverage cap: max_pos = 10 * 1000 / 100 = 100 shares.
+    After buying 100 shares at 100: cash=-9000, notional=100*100=10000.
+    Liq threshold: -9000 + 100*adverse <= 0.05 * 100 * adverse -> adverse <= 94.73.
+    Bar 2 low=90 triggers force-close at adverse=90 -> one closing Trade, one FillEvent.
+    """
+    bus = EventBus()
+    acc = Account()
+    bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
+    # leverage=10, maint_margin=0.05: cash=1000, leverage cap allows 100 shares at 100
+    eng = BacktestEngine(
+        _liquidation_bars(),
+        _LeveragedLong(),
+        cash=1_000.0,
+        leverage=10.0,
+        maint_margin=0.05,
+    )
+    SimulatedExecutionClient(eng, bus, venue="sim", symbol="X")
+    res = eng.run()
+
+    assert acc.trades == [t.pnl for t in res.trades]   # parity holds through liquidation fill
+    assert len(res.trades) >= 1                         # at least the liquidation close trade
+    assert eng.position.size == 0.0                     # position is flat after liquidation
