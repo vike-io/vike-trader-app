@@ -77,3 +77,20 @@ def test_closes_and_targets_pass_through_even_with_a_gate():
     strat._engine = OrderRouter(eng, RiskGate(RiskLimits()), symbol="X")
     res = eng.run()
     assert len(res.trades) == 1 and eng.position.size == 0.0
+
+
+def test_engine_risk_param_gates_via_router():
+    from vike_trader_app.exec.risk import RiskGate, RiskLimits
+    strat = _BuyThenClose()
+    # risk= binds the strategy through the router; a tiny notional cap denies the buy
+    eng = BacktestEngine(_bars(), strat, cash=10_000.0,
+                         risk=RiskGate(RiskLimits(max_notional_per_order=10.0)))
+    res = eng.run()
+    assert res.trades == [] and eng.position.size == 0.0
+
+
+def test_engine_risk_none_binds_directly_byte_identical():
+    base = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
+    same = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001, risk=None).run()
+    assert same.equity_curve == base.equity_curve
+    assert [t.pnl for t in same.trades] == [t.pnl for t in base.trades]

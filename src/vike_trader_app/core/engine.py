@@ -48,6 +48,7 @@ class BacktestEngine:
         maint_margin: float = 0.0,
         cashflows=None,
         on_fill=None,
+        risk=None,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -76,7 +77,11 @@ class BacktestEngine:
         for tf in timeframes or []:
             ms = parse_timeframe(tf)
             self._tf[tf] = (ms, resample(bars, ms))
-        strategy._engine = self
+        if risk is not None:
+            from .order_router import OrderRouter
+            strategy._engine = OrderRouter(self, risk)
+        else:
+            strategy._engine = self
 
     # --- order intake (called from the strategy) ---
     def submit(self, side_sign: int, size: float, weight: float = 0.0, stop=None) -> None:
