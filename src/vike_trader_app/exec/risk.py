@@ -65,9 +65,24 @@ class RiskGate:
 
     def __init__(self, limits: RiskLimits) -> None:
         self.limits = limits
+        self._order_times: deque[int] = deque()
+
+    @staticmethod
+    def _reduces(request: OrderRequest, ctx: RiskContext) -> bool:
+        """True if the order shrinks abs(position): explicit reduce_only, or opposite a non-zero pos."""
+        if request.reduce_only:
+            return True
+        return ctx.position_size != 0.0 and (request.side * ctx.position_size) < 0.0
 
     def check(self, request: OrderRequest, ctx: RiskContext) -> RiskVerdict:
         lim = self.limits
+
+        # --- trading state (kill switch) — runs before anything else ---
+        if ctx.trading_state is TradingState.HALTED:
+            return RiskVerdict(False, None, "halted")
+        if ctx.trading_state is TradingState.REDUCING and not self._reduces(request, ctx):
+            return RiskVerdict(False, None, "reduce-only")
+
         # --- normalize: round price to tick, size to lot ---
         price = None if request.price is None else _round_to(request.price, lim.tick_size)
         qty = _round_to(request.qty, lim.lot_size)
@@ -90,5 +105,14 @@ class RiskGate:
             projected = abs(ctx.position_size + req.side * req.qty) * ctx.mark_price
             if projected > lim.max_total_exposure:
                 return RiskVerdict(False, None, "over-max-exposure")
+
+        # --- sliding-window throttle (only accepted orders consume a slot) ---
+        if lim.max_orders_per_window is not None:
+            cutoff = ctx.now_ms - lim.window_ms
+            while self._order_times and self._order_times[0] <= cutoff:
+                self._order_times.popleft()
+            if len(self._order_times) >= lim.max_orders_per_window:
+                return RiskVerdict(False, None, "rate-limited")
+            self._order_times.append(ctx.now_ms)
 
         return RiskVerdict(True, req, "")
