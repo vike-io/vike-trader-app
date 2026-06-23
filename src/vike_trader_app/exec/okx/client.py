@@ -1,10 +1,16 @@
 """OKXSpotExecutionClient — signed V5 REST submit/cancel (ACK-only; fills via WS later).
 
 Reuses the shared CryptoExecutionClient flow. OKX specifics: instId (BTC-USDT dashed form),
-tdMode=cash, buy/sell lowercase, clOrdId as the client id, tgtCcy=base_ccy ONLY on a Market Buy
+tdMode auto-detected from acctLv (cash for spot/spot-futures, cross for multi-currency/portfolio
+margin), buy/sell lowercase, clOrdId as the client id, tgtCcy=base_ccy ONLY on a Market Buy
 (sz is otherwise read as QUOTE USDT by OKX), and a two-level error model:
   - top-level code != "0" → OKXApiError
   - top-level code == "0" but data[0].sCode != "0" → OKXApiError (partial-batch per-order error)
+
+tdMode resolution (GET /api/v5/account/config, acctLv field):
+  "1" or "2" (Spot / Spot-and-futures)     → tdMode = "cash"
+  "3" or "4" (Multi-currency / Portfolio)  → tdMode = "cross"
+Result is cached on the instance after the first call.
 """
 
 from __future__ import annotations
@@ -15,6 +21,10 @@ from vike_trader_app.exec.crypto_client import CryptoExecutionClient
 
 # cancel: filled / already-canceled / does-not-exist family — swallowed by cancel()
 _NOT_FOUND = frozenset({51400, 51401, 51402})
+
+_PATH_ACCOUNT_CONFIG = "/api/v5/account/config"
+# acctLv values that use cash (spot-mode and spot+futures)
+_CASH_ACCT_LEVELS = frozenset({"1", "2"})
 
 
 class OKXSpotExecutionClient(CryptoExecutionClient):
@@ -35,12 +45,31 @@ class OKXSpotExecutionClient(CryptoExecutionClient):
         super().__init__(bus, signer=signer, rest_base_url=rest_base_url, symbol=symbol,
                          filters=filters, base_asset=base_asset, transport=transport,
                          public_transport=public_transport)
+        self._td_mode: str | None = None  # lazily resolved + cached by _resolve_td_mode()
+
+    def _resolve_td_mode(self) -> str:
+        """Return the correct tdMode for this account, fetching acctLv once then caching.
+
+        acctLv "1"/"2" (Spot / Spot-and-futures) → "cash"
+        acctLv "3"/"4" (Multi-currency / Portfolio margin) → "cross"
+        Falls back to "cash" if the field is absent.
+        """
+        if self._td_mode is not None:
+            return self._td_mode
+        try:
+            resp = self._transport(self._base, _PATH_ACCOUNT_CONFIG, "GET", {}, self._signer)
+            data = self.unwrap(resp)
+            acct_lv = str(data[0].get("acctLv", "1")) if data else "1"
+        except Exception:  # noqa: BLE001 — best-effort; fall back to cash on any error
+            acct_lv = "1"
+        self._td_mode = "cash" if acct_lv in _CASH_ACCT_LEVELS else "cross"
+        return self._td_mode
 
     def build_order_params(self, request) -> dict:
         is_limit = request.order_type.lower() == "limit"
         params = {
             "instId": self._symbol,
-            "tdMode": "cash",
+            "tdMode": self._resolve_td_mode(),
             "side": "buy" if request.side > 0 else "sell",
             "ordType": "limit" if is_limit else "market",
             "sz": format_qty(request.qty, self._filters["step_size"]),

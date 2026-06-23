@@ -24,10 +24,12 @@ def _seen(bus):
     return out
 
 
-def _client(transport):
-    return OKXSpotExecutionClient(EventBus(), signer=object(), rest_base_url="https://x",
-                                  symbol="BTC-USDT", filters=_FILTERS, base_asset="BTC",
-                                  transport=transport, public_transport=lambda *a, **k: {})
+def _client(transport, td_mode="cash"):
+    c = OKXSpotExecutionClient(EventBus(), signer=object(), rest_base_url="https://x",
+                               symbol="BTC-USDT", filters=_FILTERS, base_asset="BTC",
+                               transport=transport, public_transport=lambda *a, **k: {})
+    c._td_mode = td_mode  # pre-seed to avoid a config call in unit tests
+    return c
 
 
 def _limit_req(coid="sess-0"):
@@ -47,6 +49,7 @@ def test_submit_limit_buy_builds_params_and_acks():
     client = OKXSpotExecutionClient(bus, signer=object(), rest_base_url="https://x",
                                     symbol="BTC-USDT", filters=_FILTERS,
                                     transport=_transport, public_transport=lambda *a, **k: {})
+    client._td_mode = "cash"  # pre-seed; tdMode auto-detection tested in test_okx_tdmode.py
     client.submit(_limit_req())
     assert [type(e).__name__ for e in seen] == ["OrderSubmitted", "OrderAccepted"]
     assert not any(isinstance(e, FillEvent) for e in seen)
@@ -104,6 +107,7 @@ def test_submit_rejects_on_top_level_code():
     client = OKXSpotExecutionClient(bus, signer=object(), rest_base_url="https://x",
                                     symbol="BTC-USDT", filters=_FILTERS,
                                     transport=_transport, public_transport=lambda *a, **k: {})
+    client._td_mode = "cash"
     client.submit(_limit_req())
     assert [type(e).__name__ for e in seen] == ["OrderSubmitted", "OrderRejected"]
     rej = [e for e in seen if isinstance(e, OrderRejected)][0]
@@ -119,6 +123,7 @@ def test_submit_rejects_on_per_order_scode_with_top_code_zero():
     client = OKXSpotExecutionClient(bus, signer=object(), rest_base_url="https://x",
                                     symbol="BTC-USDT", filters=_FILTERS,
                                     transport=_transport, public_transport=lambda *a, **k: {})
+    client._td_mode = "cash"
     client.submit(_limit_req())
     assert [type(e).__name__ for e in seen] == ["OrderSubmitted", "OrderRejected"]
     rej = [e for e in seen if isinstance(e, OrderRejected)][0]
