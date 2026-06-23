@@ -72,14 +72,13 @@ def test_okx_branch_builds_okx_client(app, monkeypatch):
         real_init(self, *a, **k)
 
     monkeypatch.setattr(okx_client_mod.OKXSpotExecutionClient, "__init__", _spy_init)
-    # NOTE: the OKX client's self._symbol is BTC-USDT (inst_id), but LiveOmsHub.symbol is BTCUSDT
-    # (the user's symbol). apply_snapshot asserts sym == hub.symbol, so we return the hub's symbol.
+    # connect() returns the client's native symbol (BTC-USDT), matching hub.symbol after the fix.
     monkeypatch.setattr(
         okx_client_mod.OKXSpotExecutionClient, "connect",
         lambda self: __import__("vike_trader_app.exec.crypto_client",
                                 fromlist=["ReconcileSnapshot"]).ReconcileSnapshot(
-            positions=(("BTCUSDT", 0.0),),
-            position_avg_px=(("BTCUSDT", 0.0),),
+            positions=(("BTC-USDT", 1.5),),
+            position_avg_px=(("BTC-USDT", 65000.0),),
         ),
     )
 
@@ -94,6 +93,12 @@ def test_okx_branch_builds_okx_client(app, monkeypatch):
         assert ok is True
         assert captured.get("built") is True
         assert win._exec_session is not None
+        # Regression guard: hub.symbol must be the client inst_id (BTC-USDT), so the seeded
+        # position is readable under ('okx', 'BTC-USDT', 'BOTH'). This assertion FAILS on the
+        # old wiring (hub.symbol='BTCUSDT') and PASSES only after the fix.
+        hub = win._exec_session._hub
+        assert hub.symbol == "BTC-USDT"
+        assert hub.account.positions[("okx", "BTC-USDT", "BOTH")]["size"] == 1.5
     finally:
         win.shutdown()
 
@@ -155,13 +160,13 @@ def test_okx_public_fetch_uses_okx_getter_not_binance(app, monkeypatch):
     # Provide a working OKX public getter.
     monkeypatch.setattr(okxtransport, "okx_public_get", _fake_okx_instruments)
 
-    # NOTE: return hub symbol (BTCUSDT) not client inst_id (BTC-USDT); apply_snapshot asserts equality.
+    # connect() returns the client's native symbol (BTC-USDT), matching hub.symbol after the fix.
     monkeypatch.setattr(
         okx_client_mod.OKXSpotExecutionClient, "connect",
         lambda self: __import__("vike_trader_app.exec.crypto_client",
                                 fromlist=["ReconcileSnapshot"]).ReconcileSnapshot(
-            positions=(("BTCUSDT", 0.0),),
-            position_avg_px=(("BTCUSDT", 0.0),),
+            positions=(("BTC-USDT", 0.0),),
+            position_avg_px=(("BTC-USDT", 0.0),),
         ),
     )
 

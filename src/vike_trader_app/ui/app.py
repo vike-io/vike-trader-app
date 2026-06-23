@@ -3066,6 +3066,7 @@ class MainWindow(QtWidgets.QMainWindow):
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
             bus = EventBus()
+            client_symbol = symbol
             client = BybitSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset)
@@ -3096,6 +3097,7 @@ class MainWindow(QtWidgets.QMainWindow):
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
             bus = EventBus()
+            client_symbol = inst_id          # BTC-USDT; hub must match the client/snapshot key
             client = OKXSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
                 filters=filters, base_asset=base_asset,
@@ -3111,6 +3113,7 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
                                if s.get("symbol") == symbol), "")
             bus = EventBus()
+            client_symbol = symbol
             client = BinanceSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset)
@@ -3118,7 +3121,7 @@ class MainWindow(QtWidgets.QMainWindow):
             tick_size=filters["tick_size"] or None, lot_size=filters["step_size"] or None,
             min_notional=filters["min_notional"] or None))
         hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
-                         venue=venue, symbol=symbol, now_ms=lambda: int(time.time() * 1000))
+                         venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
         self._exec_session = LiveExecutionSession(hub)
         return True
