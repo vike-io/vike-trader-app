@@ -6,11 +6,13 @@ Signer concern. HARD: the secret/signature never reach __repr__/__str__/any log 
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import json
 import urllib.parse
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable, Protocol
 
 from vike_trader_app.exec.credentials import Credentials
@@ -100,5 +102,60 @@ class BybitV5Signer:
     def __repr__(self) -> str:  # secret/signature must never leak into logs/exceptions
         tail = self._key[-4:] if self._key else ""
         return f"BybitV5Signer(key=***{tail}, recv_window={self._recv_window})"
+
+    __str__ = __repr__
+
+
+class OKXV5Signer:
+    """OKX V5: HMAC-SHA256 base64 over ts+method+requestPath+body, carried in OK-ACCESS-* headers.
+    GET encodes query params in the URL and signs requestPath?query; POST signs the EXACT json body
+    bytes (sign-then-send — never re-serialize, or OK-ACCESS-SIGN won't match)."""
+
+    def __init__(self, credentials: Credentials, *, now_ms: Callable[[], int],
+                 offset_ms: int = 0) -> None:
+        self._key = credentials.api_key
+        self._secret = credentials.api_secret.encode()
+        self._passphrase = credentials.passphrase or ""
+        self._now_ms = now_ms
+        self._offset_ms = offset_ms
+
+    def set_offset_ms(self, offset_ms: int) -> None:
+        """Apply a server-time skew correction."""
+        self._offset_ms = offset_ms
+
+    def prepare(self, params: dict, *, method: str = "GET", path: str = "") -> PreparedRequest:
+        # Compute ISO8601 timestamp with milliseconds + Z
+        ms = self._now_ms() + self._offset_ms
+        ts = datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+        if method.upper() == "GET":
+            query = urllib.parse.urlencode(params)
+            request_path = path + ("?" + query if query else "")
+            body = ""
+            response_body = None
+        else:  # POST
+            body = json.dumps(params, separators=(",", ":"))
+            request_path = path
+            query = ""
+            response_body = body.encode()
+
+        # prehash = ts + METHOD + requestPath + body
+        prehash = ts + method.upper() + request_path + body
+        sign = base64.b64encode(
+            hmac.new(self._secret, prehash.encode(), hashlib.sha256).digest()
+        ).decode()
+
+        headers = {
+            "OK-ACCESS-KEY": self._key,
+            "OK-ACCESS-SIGN": sign,
+            "OK-ACCESS-TIMESTAMP": ts,
+            "OK-ACCESS-PASSPHRASE": self._passphrase,
+        }
+
+        return PreparedRequest(query=query, body=response_body, headers=headers)
+
+    def __repr__(self) -> str:  # secret/signature must never leak into logs/exceptions
+        tail = self._key[-4:] if self._key else ""
+        return f"OKXV5Signer(key=***{tail})"
 
     __str__ = __repr__
