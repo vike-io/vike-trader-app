@@ -100,7 +100,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
                 hide_ind = "" if arrow else f"#{name}::menu-indicator{{image:none;width:0px;}}"
                 return (
                     f"#{name}{{background:transparent;border:none;color:{theme.TEXT2};font-size:14px;"
-                    f"font-weight:300;padding:1px 6px;border-radius:{theme.RADIUS_SM}px;}}"
+                    f"font-weight:300;padding:1px 4px;border-radius:{theme.RADIUS_SM}px;}}"
                     f"#{name}:hover{{color:{theme.TEXT};background:{theme.HOVER};}}" + hide_ind
                 )
 
@@ -141,10 +141,12 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self._fx_btn.clicked.connect(_chart._open_indicator_picker)
             self._bar.add_status(self._fx_btn)
 
-            # chart-type (style) — icon-only chip + grouped menu; glyph resyncs on styleChanged
+            # chart-type (style) IS the far-left brand icon: clicking opens the style menu and the
+            # icon becomes the chosen style's glyph (ACCENT-coloured, like the old brand mark). No
+            # separate chart-type chip — the brand icon does the job (de-duplicated).
             self._style_btn = QtWidgets.QPushButton()
             self._style_btn.setObjectName("titleStyle")
-            self._style_btn.setIcon(style_icon(getattr(_chart, "_style", "Candles")))
+            self._style_btn.setIcon(style_icon(getattr(_chart, "_style", "Candles"), theme.ACCENT))
             self._style_btn.setIconSize(QtCore.QSize(16, 16))
             self._style_btn.setToolTip(f"Chart style · {getattr(_chart, '_style', 'Candles')}")
             self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
@@ -157,7 +159,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
                     _sm.addAction(style_icon(_st), _st, lambda s=_st: _chart.set_style(s))
             self._style_btn.setMenu(_sm)
             _chart.styleChanged.connect(self._on_style_changed)
-            self._bar.add_status(self._style_btn)
+            self._bar.set_brand_button(self._style_btn)   # far-left brand position, not the status row
 
             # date-range — single dropdown (replaces the 1D/5D/…/5Y button row). The chip shows the
             # currently-selected range value (e.g. "1D"), updated on each pick. No ▾ arrow.
@@ -178,6 +180,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
             # it on menu hide by sending a synthetic Leave so :hover re-evaluates to the real state.
             for _c in (self._ivl_btn, self._style_btn, self._range_btn):
                 _c.menu().aboutToHide.connect(lambda b=_c: self._clear_chip_hover(b))
+
+            # even ~20px gaps between brand / symbol / chips (4px chip padding each side + the
+            # spacing below ≈ 20px glyph-to-glyph). Per-instance so tool/panel bars are unaffected.
+            self._bar.tune_spacing(main=12, status=8)
         self._feed_badge = FeedBadge() if feed else None   # per-window data state (chart only)
         if self._feed_badge is not None:
             self._bar.add_status(self._feed_badge)
@@ -226,7 +232,7 @@ class ChartWindowFrame(QtWidgets.QFrame):
         """Resync the title-bar chart-type chip's glyph + tooltip when the chart style switches."""
         if self._style_btn is None:
             return
-        self._style_btn.setIcon(style_icon(style))
+        self._style_btn.setIcon(style_icon(style, theme.ACCENT))
         self._style_btn.setToolTip(f"Chart style · {style}")
 
     def _pick_range(self, chart, days: float, label: str) -> None:

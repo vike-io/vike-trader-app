@@ -138,6 +138,18 @@ class UnifiedTitleBar(QtWidgets.QWidget):
             self._icon.setPixmap(pixmap)
             self._icon.show()
 
+    def set_brand_button(self, btn: QtWidgets.QWidget) -> None:
+        """Use an interactive button as the far-left brand mark (hides the static icon). Chart
+        windows pass their chart-type selector here so the brand icon IS the style dropdown."""
+        self._icon.hide()
+        self._lay.insertWidget(0, btn, 0, QtCore.Qt.AlignVCenter)
+
+    def tune_spacing(self, *, main: int, status: int, status_margin: int = 0) -> None:
+        """Per-instance spacing override (chart windows space their title-bar chips ~20px apart)."""
+        self._lay.setSpacing(main)
+        self._statuslay.setSpacing(status)
+        self._statuslay.setContentsMargins(status_margin, 0, status_margin, 0)
+
     def set_title(self, text: str) -> None:
         self._title.setTextFormat(QtCore.Qt.PlainText)
         self._title.setText(text)
