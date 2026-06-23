@@ -91,7 +91,7 @@ class CommandBar(QtWidgets.QWidget):
 
         # window-type launchers — QToolBar gives the » extension (overflow) for free
         self.launchers = QtWidgets.QToolBar()
-        self.launchers.setIconSize(QtCore.QSize(18, 18))
+        self.launchers.setIconSize(QtCore.QSize(22, 22))
         self.launchers.setMovable(False)
         self.launchers.setStyleSheet(
             f"QToolBar{{border:none;background:transparent;spacing:2px;}}"
