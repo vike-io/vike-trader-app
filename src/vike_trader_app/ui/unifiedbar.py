@@ -78,7 +78,7 @@ class FeedBadge(QtWidgets.QWidget):
         self._dot.setStyleSheet(f"background:{color};border-radius:4px;")
         self._label.setText(label)
         self._label.setStyleSheet(
-            f"color:{color};font-size:14px;font-weight:600;background:transparent;")
+            f"color:{color};font-size:12px;font-weight:200;background:transparent;")
 
     def text(self) -> str:
         """The label text (without the dot) — back-compat for callers/tests that read it."""
