@@ -1,9 +1,10 @@
 """LIVE smoke test against demo-api.binance.com — manual gate, excluded by -m "not network".
 
 Requires BINANCE_DEMO_API_KEY/SECRET in .env (loaded below via dotenv). Places a small resting
-BTCUSDT LIMIT far below the market (price=1000 USDT, so it rests and never fills), confirms
-OrderAccepted via the REST ACK, then cancels it, and reconciles open orders. Verifies the
-signed REST path end-to-end against the funded demo account.
+BTCUSDT LIMIT at 90% of the current market price (fetched live), so it rests without filling
+and passes Binance's PERCENT_PRICE_BY_SIDE filter. Confirms OrderAccepted via the REST ACK,
+then cancels it, and reconciles open orders. Verifies the signed REST path end-to-end against
+the funded demo account.
 
 Run manually:
     PYTHONPATH=src .venv/Scripts/python -m pytest tests/unit/exec/test_binance_live_smoke.py -m network -v
@@ -116,9 +117,31 @@ def test_demo_round_trip_place_then_cancel() -> None:
     # --- Step 4: submit a tiny BUY LIMIT far below market (should REST, not fill) -------------
     min_notional = f["min_notional"] or 5.0
     step_size = f["step_size"] or 0.001
+    tick_size = f["tick_size"] or 1.0
     min_qty = f["min_qty"] or 0.001
-    price = 1000.0  # well below BTC market; order will rest, not fill
-    qty = max(min_qty, round((min_notional / price) * 2 / step_size) * step_size)
+
+    # Fetch current market price so the resting price is market-relative.
+    # Using 90% of market: safely inside Binance's PERCENT_PRICE_BY_SIDE band and
+    # far enough below mid that the order rests without filling during the test.
+    ticker = get_public_json(cfg.rest_base_url, "/api/v3/ticker/price", {"symbol": "BTCUSDT"})
+    market_price = float(ticker["price"])
+    from decimal import ROUND_DOWN, Decimal
+    raw_price = market_price * 0.90
+    tick_d = Decimal(str(tick_size))
+    price = float(
+        (Decimal(str(raw_price)) / tick_d).to_integral_value(rounding=ROUND_DOWN) * tick_d
+    )
+
+    step_d = Decimal(str(step_size))
+    raw_qty = max(min_qty, (min_notional * 2) / price)
+    qty = float(
+        (Decimal(str(raw_qty)) / step_d).to_integral_value(rounding=ROUND_DOWN) * step_d
+    )
+    # Ensure qty meets min_qty after rounding down
+    if qty < min_qty:
+        qty = float(
+            (Decimal(str(min_qty)) / step_d).to_integral_value(rounding=ROUND_DOWN) * step_d
+        )
 
     minter = CoidMinter()
     coid = minter.mint()
