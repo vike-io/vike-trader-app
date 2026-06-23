@@ -23,6 +23,7 @@ from vike_trader_app.exec.events import (
     OrderSubmitted,
     OrderTriggered,
 )
+from vike_trader_app.exec.order import InvalidOrderTransition
 from vike_trader_app.exec.risk import RiskContext, TradingState
 
 _LIFECYCLE = (OrderSubmitted, OrderAccepted, OrderTriggered, OrderPartiallyFilled,
@@ -44,6 +45,7 @@ class LiveOmsHub:
         self._now_ms = now_ms
         self.registry: dict = {}
         self._trading_state = TradingState.ACTIVE
+        self._seen_trade_ids: set[str] = set()
         self.bus.subscribe(self._on_event)
 
     def submit_ticket(self, request: OrderRequest) -> None:
@@ -64,6 +66,7 @@ class LiveOmsHub:
     def apply_snapshot(self, snapshot) -> None:
         """Seed the Account position (size only — no venue avg_px) and the open-order registry."""
         for sym, qty in snapshot.positions:
+            assert sym == self.symbol, f"snapshot symbol {sym} != hub symbol {self.symbol}"
             self.account.positions[(self.venue, sym, "BOTH")] = {"size": qty, "avg_px": 0.0}
         for mo in snapshot.open_orders:
             self.registry[mo.client_order_id] = mo
@@ -82,6 +85,12 @@ class LiveOmsHub:
 
     def _on_event(self, event) -> None:
         if isinstance(event, FillEvent):
+            # In-memory dedup: always-on guard against WS reconnect replays (Fix 1).
+            if event.trade_id:
+                if event.trade_id in self._seen_trade_ids:
+                    return  # reconnect replay — drop
+                self._seen_trade_ids.add(event.trade_id)
+            # Persistent dedup layer (only when exec_db is wired up).
             if self._exec_db is not None:
                 from vike_trader_app.data import exec_db
 
@@ -96,7 +105,10 @@ class LiveOmsHub:
         if isinstance(event, _LIFECYCLE):
             mo = self.registry.get(event.client_order_id)
             if mo is not None:
-                mo.apply(event)
+                try:
+                    mo.apply(event)
+                except InvalidOrderTransition:
+                    return  # idempotent/out-of-order WS replay — skip (Fix 2)
                 self._persist_order(mo)
 
     def _persist_order(self, mo) -> None:

@@ -79,3 +79,27 @@ def test_cancel_issues_delete():
     client.cancel("sess-0")
     assert captured["method"] == "DELETE"
     assert captured["params"]["origClientOrderId"] == "sess-0"
+
+
+def test_cancel_swallows_2011_unknown_order():
+    """Fix 3: -2011 means the order is already gone; cancel() should return normally."""
+    def _transport(*a, **kw):
+        raise BinanceApiError(-2011, "Unknown order sent.")
+
+    bus = EventBus()
+    client = BinanceSpotExecutionClient(bus, signer=object(), rest_base_url="https://x",
+                                        symbol="BTCUSDT", filters=_FILTERS, transport=_transport)
+    client.cancel("sess-0")   # must not raise
+
+
+def test_cancel_reraises_non_2011_errors():
+    """Fix 3: any other BinanceApiError must propagate."""
+    def _transport(*a, **kw):
+        raise BinanceApiError(-1000, "Illegal characters found in parameter.")
+
+    bus = EventBus()
+    client = BinanceSpotExecutionClient(bus, signer=object(), rest_base_url="https://x",
+                                        symbol="BTCUSDT", filters=_FILTERS, transport=_transport)
+    with pytest.raises(BinanceApiError) as exc_info:
+        client.cancel("sess-0")
+    assert exc_info.value.code == -1000

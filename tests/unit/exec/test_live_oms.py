@@ -97,3 +97,27 @@ def test_lifecycle_event_drives_registry():
     hub.bus.publish(OrderAccepted(client_order_id="s-0", venue_order_id="11"))
     assert hub.registry["s-0"].status is OrderStatus.ACCEPTED
     assert hub.registry["s-0"].venue_order_id == "11"
+
+
+def test_reconnect_replay_does_not_double_fold_without_exec_db():
+    """Fix 1: in-memory dedup must block a replayed FillEvent even when exec_db is None."""
+    hub = _hub()   # no exec_db_conn
+    hub.registry["s-0"] = ManagedOrder(request=_req(), status=OrderStatus.ACCEPTED)
+    fill = FillEvent(trade_id="t-replay", client_order_id="s-0", venue="binance",
+                     symbol="BTCUSDT", side=+1, last_qty=1.0, last_px=100.0)
+    hub.bus.publish(fill)   # first delivery — should fold
+    hub.bus.publish(fill)   # WS reconnect replay — must be dropped
+    pos = hub.account.positions[("binance", "BTCUSDT", "BOTH")]
+    assert pos["size"] == 1.0   # folded ONCE
+
+
+def test_ws_replay_of_accept_on_seeded_order_does_not_crash():
+    """Fix 2: replaying OrderAccepted for a snapshot-seeded ACCEPTED order must not raise."""
+    from vike_trader_app.exec.binance.client import ReconcileSnapshot
+
+    hub = _hub()
+    mo = ManagedOrder(request=_req(coid="prev-1"), status=OrderStatus.ACCEPTED, venue_order_id="9")
+    hub.apply_snapshot(ReconcileSnapshot(positions=(("BTCUSDT", 0.5),), open_orders=(mo,)))
+    # WS replays x=NEW -> OrderAccepted for an order already at ACCEPTED: must not raise
+    hub.bus.publish(OrderAccepted(client_order_id="prev-1", venue_order_id="9"))
+    assert hub.registry["prev-1"].status is OrderStatus.ACCEPTED

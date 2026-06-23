@@ -63,9 +63,20 @@ class BinanceSpotExecutionClient:
                                        venue_order_id=str(resp.get("orderId", "")), ts=request.ts))
 
     def cancel(self, client_order_id: str) -> None:
-        """DELETE the resting order; the OrderCanceled state change arrives via the WS."""
-        self._transport(self._base, "/api/v3/order", "DELETE",
-                        {"symbol": self._symbol, "origClientOrderId": client_order_id}, self._signer)
+        """DELETE the resting order; the OrderCanceled state change arrives via the WS.
+
+        -2011 ("Unknown order") means the order is already gone (filled/canceled by the WS);
+        swallow it silently — the terminal state has already been/will be delivered via the WS.
+        Any other error code is re-raised.
+        """
+        try:
+            self._transport(self._base, "/api/v3/order", "DELETE",
+                            {"symbol": self._symbol, "origClientOrderId": client_order_id},
+                            self._signer)
+        except BinanceApiError as exc:
+            if exc.code == -2011:
+                return  # order already gone — WS delivered/will deliver the terminal state
+            raise
 
     def connect(self) -> ReconcileSnapshot:
         """Reconcile on connect (MAIN thread): base-asset free balance -> position; open orders ->
