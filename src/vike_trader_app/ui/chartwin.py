@@ -32,7 +32,6 @@ class ChartWindowFrame(QtWidgets.QFrame):
     cloneRequested = QtCore.Signal(object)   # self — duplicate this window (MainWindow handles)
     redockRequested = QtCore.Signal(object)  # self — dock this window into the workspace (charts + tools)
     minimizeRequested = QtCore.Signal(object)  # self — minimize via the host (tools: AmiBroker left auto-hide tab)
-    userGeomChanged = QtCore.Signal()          # user hand-moved/resized this frame → host freezes auto-tiling
 
     def __init__(self, doc, host: QtWidgets.QWidget, *, title: "str | None" = None,
                  icon: "QtGui.QPixmap | None" = None, feed: bool = True, clone: bool = False):
@@ -359,7 +358,6 @@ class ChartWindowFrame(QtWidgets.QFrame):
                     self.move(target)
                     cursor = self._host.mapFromGlobal(ev.globalPosition().toPoint())
                     self._update_snap_preview(self._snap_zone_rect(cursor))
-                self.userGeomChanged.emit()    # user dragged the window → freeze auto-tiling
                 return True
             if t == QtCore.QEvent.MouseButtonRelease:
                 self._drag_off = None
@@ -463,7 +461,6 @@ class ChartWindowFrame(QtWidgets.QFrame):
             # Throttle: store the target; apply the leading edge immediately, then coalesce
             # further moves to the 16ms tick so the relayout can't starve the mouse queue.
             self._pending_geo = g
-            self.userGeomChanged.emit()        # user is edge-resizing → freeze auto-tiling
             if not self._resize_timer.isActive():
                 self.setGeometry(g)
                 self._pending_geo = None

@@ -282,20 +282,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
         self._active_frame = None
-        # Auto-tile: the workspace behaves like a tiled layout — on resize/maximize the open
-        # floating windows re-tile to fill it (no empty gap). `_last_arrange_mode` is the layout
-        # to re-apply (grid by default; Window>Arrange sets it); "cascade" opts OUT of auto-tiling
-        # (free overlap). The re-tile is DEBOUNCED so it runs once after a resize settles, never
-        # per-event (each setGeometry relays a chart ~90ms — synchronous re-tile would re-stick).
+        # Floating windows do NOT auto-arrange: adding / deleting / minimizing a window or resizing
+        # the workspace leaves every other window exactly where the user put it. Windows tile ONLY
+        # when the user explicitly picks Window>Arrange (_arrange_chart_windows); `_last_arrange_mode`
+        # just records the last mode chosen there. (A MAXIMIZED window still re-fills on resize via
+        # _reflow_frames/host_resized — that's maximize behaviour, not arrange.)
         self._last_arrange_mode = "grid"
-        # Once the user hand-drags a floating window (move/resize), auto-tiling backs off (tiling-WM
-        # style) so a later add / delete / workspace-resize no longer re-grids the manual layout;
-        # cleared by an explicit Window>Arrange. Set from each frame's userGeomChanged signal.
-        self._layout_user_dirty = False
-        self._retile_timer = QtCore.QTimer(self)
-        self._retile_timer.setSingleShot(True)
-        self._retile_timer.setInterval(140)
-        self._retile_timer.timeout.connect(self._retile_open_windows)
         # empty-workspace re-arch: open non-chart tools (screener/journal/… ) lazily as docks,
         # keyed by tool key for singleton open-or-focus (Plan 1). See ui/toolreg.py.
         self._tool_docks: dict[str, "QtAds.CDockWidget"] = {}
@@ -528,7 +520,6 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.cloneRequested.connect(self._clone_window)
         frame.redockRequested.connect(self._redock_chart)
         frame.minimizeRequested.connect(self._minimize_chart_window_to_left)
-        frame.userGeomChanged.connect(self._mark_layout_user_dirty)
         # pairs indicators need a 2nd symbol the app fetches (the chart can't reach the data
         # layer). The central chart used to wire this; now each peer frame's chart does.
         doc.chart.pairsRequested.connect(lambda n, ch=doc.chart: self._add_pairs(ch, n))
@@ -754,7 +745,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._active_frame is frame:
             self._active_frame = None          # symbol box falls back to the central chart
         self._on_document_closed(frame.doc)
-        self._retile_timer.start()             # remaining tiled windows re-fit the freed space (as minimize does)
+        # NB: no re-tile — the remaining windows stay exactly where the user left them.
 
     def _on_chart_window_activated(self, frame) -> None:
         self._set_active_frame(frame)
@@ -803,8 +794,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         from . import chartwin
 
-        self._last_arrange_mode = mode      # remember it so a workspace resize re-applies it
-        self._layout_user_dirty = False     # an explicit Arrange re-enables auto-tiling
+        self._last_arrange_mode = mode      # record the last Arrange mode the user chose
         frames = self._chart_frames + list(self._tool_frames.values())
         def _alive(d):
             # isClosed() raises if the C++ dock was already freed (a leaked dock under xdist, or a
@@ -886,7 +876,6 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
         frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
         frame.minimizeRequested.connect(lambda _f, k=key: self._minimize_tool_to_left(k))
-        frame.userGeomChanged.connect(self._mark_layout_user_dirty)
         self._tool_frames[key] = frame
         return frame
 
@@ -901,7 +890,6 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.hide()
         self._min_rail.add(key, toolreg.TOOL_LABELS.get(key, key), self._tool_icon(key),
                            lambda k=key: self._restore_tool_from_rail(k))
-        self._retile_timer.start()      # the remaining tiled windows re-fit the freed space
 
     def _restore_tool_from_rail(self, key: str):
         self._min_rail.remove(key)      # idempotent — also drops the tab when called programmatically
@@ -911,7 +899,6 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         try:
             frame.show(); frame.raise_(); frame.activated.emit(frame)
-            self._retile_timer.start()  # re-tile so the restored window takes its share
         except RuntimeError:
             self._tool_frames.pop(key, None)
 
@@ -923,13 +910,11 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.hide()
         self._min_rail.add(key, label, self._tool_icon("chart"),
                            lambda f=frame: self._restore_chart_window(f))
-        self._retile_timer.start()      # the remaining tiled windows re-fit the freed space
 
     def _restore_chart_window(self, frame):
         self._min_rail.remove(f"chartwin:{id(frame)}")
         try:
             frame.show(); frame.raise_(); frame.activated.emit(frame)
-            self._retile_timer.start()  # re-tile so the restored window takes its share
         except RuntimeError:
             pass
 
@@ -1109,7 +1094,7 @@ class MainWindow(QtWidgets.QMainWindow):
         widget = getattr(frame, "doc", None)         # body still child of the frame here
         if widget is not None:
             self._teardown_tool(key, widget)
-        self._retile_timer.start()                   # remaining tiled windows re-fit the freed space (as minimize does)
+        # NB: no re-tile — the remaining windows stay exactly where the user left them.
 
     def _close_all_tool_windows(self) -> None:
         """Dispose every torn-out tool window (used on app close / workspace swap). Teardown runs
@@ -3034,10 +3019,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._place_rules()
         self._fit_chart_header()   # chart width changed -> re-pin the header's ⧉ ─ □ ✕
         self._reflow_frames()      # keep MAXIMIZED windows filling the workspace as it changes
-        # Tiled-workspace fill: re-tile the open windows to the new size once the resize settles
-        # (debounced — see _retile_open_windows). "cascade" is the free-overlap mode → no re-tile.
-        if self._last_arrange_mode != "cascade":
-            self._retile_timer.start()
+        # NB: floating (non-maximized) windows are intentionally NOT re-tiled on resize — the user
+        # owns their layout; only Window>Arrange re-tiles.
 
     def _reflow_frames(self) -> None:
         """On a workspace resize, re-fit every attached chartwin frame via host_resized(): a
@@ -3053,36 +3036,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 f.host_resized()
             except RuntimeError:
                 pass
-
-    def _mark_layout_user_dirty(self) -> None:
-        """A floating window was hand-moved/resized → freeze auto-tiling so a later add / delete /
-        workspace-resize stops re-gridding the user's manual layout. Re-enabled by Window>Arrange
-        (which clears the flag)."""
-        self._layout_user_dirty = True
-
-    def _retile_open_windows(self) -> None:
-        """Debounced re-tile after a workspace resize: re-apply the last Arrange layout so the
-        open floating windows keep filling the workspace (the user chose 'auto re-tile to fill').
-        Skipped when a window is MAXIMIZED (it already fills via host_resized — re-tiling would
-        un-maximize it) or in cascade (free-overlap) mode. arrange() itself skips detached /
-        minimized / hidden frames, so only the live tiled set is touched."""
-        if self._closing:
-            return
-        if self._last_arrange_mode == "cascade":
-            return
-        if self._layout_user_dirty:
-            # the user hand-sized a window — don't re-grid their layout (Window>Arrange re-enables)
-            return
-        frames = self._chart_frames + list(self._tool_frames.values())
-        live = [f for f in frames
-                if not f.is_detached() and not f._rolled and f.isVisible()]
-        # Only auto-fill a MULTI-window layout: a lone floating window must not balloon to the
-        # whole workspace on every app-resize (use its own □ to fill it). Skip while one is
-        # maximized — it already fills via host_resized, and re-tiling would un-maximize it.
-        if len(live) < 2 or any(getattr(f, "_maxed", False) for f in live):
-            return
-        from . import chartwin
-        chartwin.arrange(frames, self.dock_manager, self._last_arrange_mode)
 
     def _place_rules(self) -> None:
         """Size the separator overlay to the whole window and tell it where the bottom rule
@@ -3518,7 +3471,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _stop_all_timers(self) -> None:
         """Stop every MainWindow QTimer so no tick fires during/after teardown. (The live/forward/hub
         timers are stopped by _stop_live_updates / _stop_forward / _live_hub.shutdown in shutdown.)"""
-        for name in ("_rollup_timer", "_timer", "_clock", "_retile_timer",
+        for name in ("_rollup_timer", "_timer", "_clock",
                      "_price_timer", "_refresh_timer"):
             t = getattr(self, name, None)
             if t is not None:

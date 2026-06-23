@@ -202,40 +202,36 @@ def test_arrange_with_floating_charts_leaves_docked_panels_alone(app):
     win.close()
 
 
-# ---------------------------------------------------------------- manual resize freezes auto-tile
+# ---------------------------------------------------------------- add/delete never auto-arranges
 
-def test_user_resize_freezes_autotile_until_arrange(app):
-    """User-reported: hand-resize a floating window, then add + delete a chart -> the manual size
-    must survive. Fix: a frame's move/resize emits userGeomChanged -> _layout_user_dirty, which
-    short-circuits the auto-retile (_retile_open_windows) that add/delete/resize would otherwise run
-    (re-gridding every window); an explicit Window>Arrange clears the flag and re-tiles."""
+def test_add_delete_never_autoarranges_only_explicit_arrange_does(app):
+    """User requirement: adding or deleting a window must NOT re-arrange the others — every window
+    stays exactly where the user put it. Tiling happens ONLY when the user explicitly picks
+    Window>Arrange (_arrange_chart_windows). (A maximized window still re-fills on resize via
+    host_resized, but that's maximize, not arrange.)"""
     win = _win("market")
     for _ in range(2):
         win._new_chart_document("BTCUSDT", "1m", network=False)
     _pe(8)
+    win._arrange_chart_windows("grid")                         # explicit tile -> known start layout
+    _pe()
     fr = [f for f in win._chart_frames if not f.is_detached() and f.isVisible()]
     assert len(fr) == 2
+    before = [f.geometry() for f in fr]
 
-    # control: with NO manual resize, the auto-retile re-grids (auto-tiling active by default)
-    fr[0].setGeometry(QtCore.QRect(10, 10, 300, 200))
-    assert win._layout_user_dirty is False
-    win._retile_open_windows()
+    # ADD a 3rd chart -> the existing two must NOT move
+    win._new_chart_document("BTCUSDT", "1m", network=False)
+    _pe(8)
+    assert [f.geometry() for f in fr] == before                # add did not re-arrange
+
+    # DELETE the 3rd chart -> the original two STILL must not move
+    win._chart_frames[-1].close_window()
+    _pe(8)
+    assert [f.geometry() for f in fr] == before                # delete did not re-arrange
+
+    # ONLY an explicit Arrange re-tiles
+    win._arrange_chart_windows("rows")
     _pe()
-    assert fr[0].geometry() != QtCore.QRect(10, 10, 300, 200)   # re-gridded
-
-    # user hand-resizes the first window -> the frame emits userGeomChanged -> auto-tiling freezes
-    manual = QtCore.QRect(40, 40, 520, 360)
-    fr[0].setGeometry(manual)
-    fr[0].userGeomChanged.emit()                               # the move/resize handlers emit this
-    assert win._layout_user_dirty is True                     # signal wired -> frozen
-
-    win._retile_open_windows()                                # what add/delete/resize would fire
-    _pe()
-    assert fr[0].geometry() == manual                         # manual size preserved (NOT re-gridded)
-
-    # an explicit Arrange re-enables auto-tiling and re-grids
-    win._arrange_chart_windows("grid")
-    _pe()
-    assert win._layout_user_dirty is False
-    assert fr[0].geometry() != manual                         # re-tiled into a grid cell
+    g = [f.geometry() for f in fr]
+    assert g[0].x() == g[1].x() and g[1].y() > g[0].y() + 50    # stacked by the explicit Arrange
     win.close()
