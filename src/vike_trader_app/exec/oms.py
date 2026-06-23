@@ -60,5 +60,9 @@ class OmsHub:
         return self.tester.run_id
 
     @property
+    def engine(self):
+        return self.tester.engine
+
+    @property
     def equity_curve(self):
         return self.tester.equity_curve
