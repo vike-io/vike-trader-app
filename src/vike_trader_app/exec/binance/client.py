@@ -7,6 +7,8 @@ arrives from the WS). qty/price are formatted to the symbol's step/tick as decim
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from vike_trader_app.exec.binance.format import format_price, format_qty
 from vike_trader_app.exec.binance.transport import BinanceApiError, signed_request
 from vike_trader_app.exec.events import (
@@ -15,18 +17,26 @@ from vike_trader_app.exec.events import (
     OrderRequest,
     OrderSubmitted,
 )
+from vike_trader_app.exec.order import ManagedOrder, OrderStatus
+
+
+@dataclass(frozen=True)
+class ReconcileSnapshot:
+    positions: tuple[tuple[str, float], ...] = ()
+    open_orders: tuple[ManagedOrder, ...] = ()
 
 
 class BinanceSpotExecutionClient:
     """REST half of the live spot client (ACK-only); fills come from the user-data WS."""
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
-                 transport=signed_request) -> None:
+                 base_asset: str = "", transport=signed_request) -> None:
         self.bus = bus
         self._signer = signer
         self._base = rest_base_url
         self._symbol = symbol
         self._filters = filters
+        self._base_asset = base_asset
         self._transport = transport
 
     def submit(self, request: OrderRequest) -> None:
@@ -56,3 +66,29 @@ class BinanceSpotExecutionClient:
         """DELETE the resting order; the OrderCanceled state change arrives via the WS."""
         self._transport(self._base, "/api/v3/order", "DELETE",
                         {"symbol": self._symbol, "origClientOrderId": client_order_id}, self._signer)
+
+    def connect(self) -> ReconcileSnapshot:
+        """Reconcile on connect (MAIN thread): base-asset free balance -> position; open orders ->
+        ACCEPTED ManagedOrders so a later fill/cancel on a prior-session order is a legal FSM edge."""
+        account = self._transport(self._base, "/api/v3/account", "GET", {}, self._signer)
+        free = 0.0
+        for bal in account.get("balances", []):
+            if bal.get("asset") == self._base_asset:
+                free = float(bal.get("free", 0) or 0)
+                break
+        positions = ((self._symbol, free),)
+
+        raw = self._transport(self._base, "/api/v3/openOrders", "GET",
+                              {"symbol": self._symbol}, self._signer)
+        orders: list[ManagedOrder] = []
+        for o in raw:
+            req = OrderRequest(
+                client_order_id=str(o.get("clientOrderId", "")), venue="binance",
+                symbol=self._symbol, side=+1 if o.get("side") == "BUY" else -1,
+                qty=float(o.get("origQty", 0) or 0), order_type=str(o.get("type", "")).lower(),
+                price=float(o["price"]) if o.get("price") not in (None, "", "0", "0.00000000") else None,
+            )
+            mo = ManagedOrder(request=req, status=OrderStatus.ACCEPTED,
+                              venue_order_id=str(o.get("orderId", "")))
+            orders.append(mo)
+        return ReconcileSnapshot(positions=positions, open_orders=tuple(orders))
