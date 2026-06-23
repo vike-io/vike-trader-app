@@ -19,7 +19,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import theme
 
 BAR_H = 30          # one height for every title-bar surface (matches ads--CDockAreaTitleBar QSS)
-_BTN_W = 40         # window-button width (contiguous, no gaps) — design "B"
+_BTN_W = 30         # window-button width (contiguous, no gaps) — narrowed from 40 for a tighter cluster
 _BTN_PX = 15        # window-button glyph size
 
 
