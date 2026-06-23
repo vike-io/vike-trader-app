@@ -264,7 +264,10 @@ class OptionsTab(QtWidgets.QWidget):
         controls = QtWidgets.QHBoxLayout()
         controls.setSpacing(8)
         self.provider = QtWidgets.QComboBox()
-        self.provider.addItems(["Deribit", "yfinance"])   # crypto (Deribit) | stock options (yfinance)
+        # User-facing labels; the internal source id ("Deribit" / "yfinance") rides as item DATA so the
+        # provider-routing check (_apply_provider) stays stable regardless of the display name.
+        self.provider.addItem("Deribit", "Deribit")          # crypto options
+        self.provider.addItem("Yahoo Finance", "yfinance")   # stock/index options (yfinance backend)
         self.underlying = QtWidgets.QComboBox()            # populated per provider by _apply_provider
         self.underlying.setMinimumWidth(96)                # fit typed tickers (GOOGL/ZZZZZ), not "ZZ…"
         self.exp_range = QtWidgets.QComboBox()
@@ -360,7 +363,7 @@ class OptionsTab(QtWidgets.QWidget):
         """Scope the underlying list to the chosen provider: Deribit -> BTC/ETH/SOL (fixed);
         yfinance -> editable stock presets. Emits underlyingChanged only on a user-driven switch
         (emit=False at construction keeps startup network-free)."""
-        deribit = self.provider.currentText() == "Deribit"
+        deribit = self.provider.currentData() == "Deribit"   # internal id (label may read "Yahoo Finance")
         self.underlying.blockSignals(True)
         self.underlying.clear()
         self.underlying.setEditable(not deribit)   # Deribit: fixed coins; yfinance: type any ticker
