@@ -103,7 +103,7 @@ class ChartDocument(QtWidgets.QWidget):
         self._topup_prev: tuple | None = None
         self._topup_pending = False
 
-        self.chart = PriceChart()
+        self.chart = PriceChart(title_controls=True)  # interval/ƒx/style/range live in the title bar
         # same rounded-card treatment as the Chart space — built by the shared make_chart_card.
         card = make_chart_card(self.chart)
         outer = QtWidgets.QVBoxLayout(self)

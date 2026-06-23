@@ -195,13 +195,16 @@ def test_open_in_new_chart_signal(app, _synthetic_load):
 
 
 def test_chart_window_title_bar(app, _synthetic_load):
-    """Every chart window has its own MC-style title bar: title text + pin/detach/min/max/close."""
+    """Every chart window has its own MC-style title bar: SYMBOL title + interval picker chip +
+    pin/detach/min/max/close. The title text is the symbol only; the interval lives in the picker."""
     win = MainWindow(session_path=None)
     doc = win._new_chart_document("ETHUSDT", "2h")
     frame = win._chart_frames[0]
-    assert frame._bar._title.text() == "ETHUSDT · 2h"   # title lives in the shared UnifiedTitleBar
-    doc.load("ETHUSDT", "4h")                       # title follows the document
-    assert frame._bar._title.text() == "ETHUSDT · 4h"
+    assert frame._bar._title.text() == "ETHUSDT"        # title = symbol only (shared UnifiedTitleBar)
+    assert frame._ivl_btn.text() == "2h"                # the interval shows in the picker chip
+    doc.load("ETHUSDT", "4h")                       # picker follows the document's interval
+    assert frame._bar._title.text() == "ETHUSDT"
+    assert frame._ivl_btn.text() == "4h"
     win.close()
 
 

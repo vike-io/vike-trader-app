@@ -547,8 +547,9 @@ def test_reassign_bottom_axis_moves_to_lowest_pane(app):
     a = pc.add_indicator("rsi")   # index 1
     b = pc.add_indicator("macd")  # index 2 (lowest)
     pc._reassign_bottom_axis()
-    # exactly one visible bottom axis: the lowest pane's
-    assert pc.getAxis("bottom").isVisible() is False
+    # the lowest pane shows the time scale; the price axis stays visible (its grid) with labels off
+    assert pc.getAxis("bottom").isVisible() is True            # price axis shown so its vertical grid draws
+    assert pc.getAxis("bottom").style["showValues"] is False   # ...but its time labels are hidden
     assert a.pane.getAxis("bottom").isVisible() is False
     assert b.pane.getAxis("bottom").isVisible() is True
     # every pane axis was fed the same bars as the price chart
@@ -600,7 +601,8 @@ def test_align_panes_reassigns_then_equalizes(app):
     pc._align_panes()
     # bottom axis is reassigned to the lowest pane...
     assert b.pane.getAxis("bottom").isVisible() is True
-    assert pc.getAxis("bottom").isVisible() is False
+    assert pc.getAxis("bottom").isVisible() is True            # price axis shown so its vertical grid draws
+    assert pc.getAxis("bottom").style["showValues"] is False   # ...but its time labels are hidden
     # ...AND all right axes are equalized to one shared width
     w = pc.getAxis("right").width()
     assert a.pane.getAxis("right").width() == w
@@ -652,7 +654,8 @@ def test_new_pane_seeds_bars_and_equalizes_on_add(app):
 def test_remove_last_pane_restores_price_axis(app):
     pc, split = _chart(app)
     ind = pc.add_indicator("rsi")
-    assert pc.getAxis("bottom").isVisible() is False
+    assert pc.getAxis("bottom").isVisible() is True            # price axis shown so its vertical grid draws
+    assert pc.getAxis("bottom").style["showValues"] is False   # ...but its time labels are hidden
     pc.remove_indicator(ind.uid)  # _unrender drops the pane + _align_panes
     assert split.count() == 1
     assert pc.getAxis("bottom").isVisible() is True

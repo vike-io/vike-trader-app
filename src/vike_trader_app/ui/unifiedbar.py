@@ -19,7 +19,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from . import theme
 
 BAR_H = 30          # one height for every title-bar surface (matches ads--CDockAreaTitleBar QSS)
-_BTN_W = 40         # window-button width (contiguous, no gaps) — design "B"
+_BTN_W = 30         # window-button width (contiguous, no gaps) — narrowed from 40 for a tighter cluster
 _BTN_PX = 15        # window-button glyph size
 
 
@@ -53,20 +53,36 @@ def update_max_button_state(button, maxed: bool) -> None:
     button.setToolTip("Restore" if maxed else "Maximize / restore")
 
 
-class FeedBadge(QtWidgets.QLabel):
-    """Compact data-feed badge (● LIVE / ● CACHED / …) for a title bar. The host maps a feed
-    state to (colour, text) and calls set_state — keeps this widget app-agnostic."""
+class FeedBadge(QtWidgets.QWidget):
+    """Compact data-feed badge (● LIVE / ● CACHED / …) for a title bar. The dot is a DRAWN circle
+    (not an inline '●' glyph, which renders high and rides above the text) vertically centred with
+    a 14px label, so the whole badge sits on the same line as the title + chips. The host maps a
+    feed state to (colour, text) and calls set_state — keeps this widget app-agnostic."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("feedBadge")
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self.set_state(theme.TEXT3, "●")
+        lay = QtWidgets.QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(5)
+        self._dot = QtWidgets.QLabel()
+        self._dot.setFixedSize(8, 8)
+        self._label = QtWidgets.QLabel()
+        lay.addWidget(self._dot, 0, QtCore.Qt.AlignVCenter)
+        lay.addWidget(self._label, 0, QtCore.Qt.AlignVCenter)
+        self.set_state(theme.TEXT3, "")
 
     def set_state(self, color: str, text: str) -> None:
-        self.setText(text)
-        self.setStyleSheet(
-            f"#feedBadge{{color:{color};font-size:11px;font-weight:600;background:transparent;}}")
+        label = text.lstrip("●").strip()   # tolerate a legacy leading "●" in the supplied text
+        self._dot.setStyleSheet(f"background:{color};border-radius:4px;")
+        self._label.setText(label)
+        self._label.setStyleSheet(
+            f"color:{color};font-size:12px;font-weight:200;background:transparent;")
+
+    def text(self) -> str:
+        """The label text (without the dot) — back-compat for callers/tests that read it."""
+        return self._label.text()
 
 
 class UnifiedTitleBar(QtWidgets.QWidget):
@@ -88,21 +104,22 @@ class UnifiedTitleBar(QtWidgets.QWidget):
             self._icon.setPixmap(icon)
         else:
             self._icon.hide()
-        lay.addWidget(self._icon)
+        lay.addWidget(self._icon, 0, QtCore.Qt.AlignVCenter)
         self._title = QtWidgets.QLabel(title)
         self._title.setObjectName("unifiedBarTitle")
         self._title.setStyleSheet(
             f"#unifiedBarTitle{{color:{theme.TEXT};font-size:12px;font-weight:600;"
             f"background:transparent;}}")
+        self._title.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self._title.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        lay.addWidget(self._title)
+        lay.addWidget(self._title, 0, QtCore.Qt.AlignVCenter)
         # status box: link dots + feed badge, just right of the title (small gaps)
         self._statusbox = QtWidgets.QWidget()
         self._statusbox.setObjectName("unifiedStatus")
         self._statuslay = QtWidgets.QHBoxLayout(self._statusbox)
         self._statuslay.setContentsMargins(2, 0, 2, 0)
         self._statuslay.setSpacing(8)
-        lay.addWidget(self._statusbox)
+        lay.addWidget(self._statusbox, 0, QtCore.Qt.AlignVCenter)
         lay.addStretch(1)
         # button box: the window controls, CONTIGUOUS (0 gap), hard against the right edge
         self._btnbox = QtWidgets.QWidget()
@@ -121,6 +138,18 @@ class UnifiedTitleBar(QtWidgets.QWidget):
             self._icon.setPixmap(pixmap)
             self._icon.show()
 
+    def set_brand_button(self, btn: QtWidgets.QWidget) -> None:
+        """Use an interactive button as the far-left brand mark (hides the static icon). Chart
+        windows pass their chart-type selector here so the brand icon IS the style dropdown."""
+        self._icon.hide()
+        self._lay.insertWidget(0, btn, 0, QtCore.Qt.AlignVCenter)
+
+    def tune_spacing(self, *, main: int, status: int, status_margin: int = 0) -> None:
+        """Per-instance spacing override (chart windows space their title-bar chips ~20px apart)."""
+        self._lay.setSpacing(main)
+        self._statuslay.setSpacing(status)
+        self._statuslay.setContentsMargins(status_margin, 0, status_margin, 0)
+
     def set_title(self, text: str) -> None:
         self._title.setTextFormat(QtCore.Qt.PlainText)
         self._title.setText(text)
@@ -130,9 +159,19 @@ class UnifiedTitleBar(QtWidgets.QWidget):
         self._title.setTextFormat(QtCore.Qt.RichText)
         self._title.setText(html)
 
+    def style_title(self, *, px: int = 12, weight: int = 600, mono: bool = False) -> None:
+        """Per-instance restyle of the title label (shared default is 12px / weight 600 /
+        proportional). Chart windows use 14px / weight 300 so the symbol matches the title-bar
+        interval picker beside it; this never touches tool/panel bars (each has its own instance)."""
+        fam = f"font-family:{theme.FONT_MONO};" if mono else ""
+        self._title.setStyleSheet(
+            f"#unifiedBarTitle{{color:{theme.TEXT};font-size:{px}px;font-weight:{weight};"
+            f"{fam}background:transparent;}}")
+
     def add_status(self, w: QtWidgets.QWidget) -> None:
-        """Add a status widget (link dot / feed badge) to the left cluster, after the title."""
-        self._statuslay.addWidget(w)
+        """Add a status widget (chip / feed badge) to the left cluster, after the title — vertically
+        centred so mixed-size chips share one centre line."""
+        self._statuslay.addWidget(w, 0, QtCore.Qt.AlignVCenter)
 
     def add_widget(self, w: QtWidgets.QWidget) -> None:
         """Adopt an external widget (e.g. the doc's keep-on-top pin) into the button cluster,

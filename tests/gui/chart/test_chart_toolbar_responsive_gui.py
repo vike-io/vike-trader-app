@@ -50,7 +50,7 @@ def test_progressive_collapse(app):
 def test_essentials_always_present(app):
     c = PriceChart()
     _at(c, 200)                               # very narrow
-    assert not c._symbol_label.isHidden()
+    # symbol label was removed from the toolbar (it lives in the window title bar now)
     assert not c._tf_btn.isHidden()
     assert not c._ind_btn.isHidden()          # collapsed to "ƒx" but still there
     assert not c._style_btn.isHidden()

@@ -139,41 +139,59 @@ def _normalize_intervals(chosen):
 
 
 class CandlestickItem(pg.GraphicsObject):
-    """Draws OHLC candles for ``bars`` (a list of core.model.Bar)."""
+    """Draws OHLC candles for ``bars`` (a list of core.model.Bar).
+
+    paint() renders ONLY the bars in the current view window (+1 buffer each side), not the whole
+    loaded history. Previously _generate() recorded a QPicture of EVERY bar and paint() replayed it
+    in full on every viewport repaint — with 10k+ cached bars that was ~32ms/repaint and the dominant
+    cause of crosshair-move lag (a crosshair move repaints the viewport). Drawing only the visible
+    slice makes per-paint cost scale with what's on screen (~hundreds), independent of how much
+    history is loaded; it also drops the per-frame QPicture rebuild during replay."""
 
     def __init__(self, bars):
         super().__init__()
         self._bars = bars
-        self._picture = QtGui.QPicture()
         self._brect = QRectF(0, 0, 1, 1)
-        self._generate()
+        self._recompute_brect()
 
     def set_bars(self, bars):
         self._bars = bars
-        self._generate()
+        self._recompute_brect()
         self.informViewBoundsChanged()
         self.update()
 
-    def _generate(self):
-        self._picture = QtGui.QPicture()
+    def _recompute_brect(self):
+        # Cache the bounding rect (we already walk every bar): pyqtgraph calls boundingRect() MANY
+        # times per paint/relayout, and recomputing min()/max() over all bars each call was a
+        # measured hot path during resize. It only changes when bars change.
         if not self._bars:
             self._brect = QRectF(0, 0, 1, 1)
             return
-        # Cache the bounding rect here (we already walk every bar): pyqtgraph calls boundingRect()
-        # MANY times per paint/relayout, and recomputing min()/max() over all bars each call was a
-        # measured hot path during resize (483k genexpr calls). It only changes when bars change.
         lo = min(b.low for b in self._bars)
         hi = max(b.high for b in self._bars)
         self._brect = QRectF(-1, lo, len(self._bars) + 1, hi - lo)
-        painter = QtGui.QPainter(self._picture)
+
+    def _visible_slice(self):
+        """[i0, i1) bar-index window currently in view (+1 buffer each side), clamped to the data."""
+        n = len(self._bars)
+        vb = self.getViewBox()
+        if vb is None:
+            return 0, n
+        (x0, x1), _ = vb.viewRange()
+        return max(0, int(x0) - 1), min(n, int(x1) + 2)
+
+    def paint(self, painter, *_):
+        if not self._bars:
+            return
+        i0, i1 = self._visible_slice()
         width = 0.6
-        # Hoist the two pens/brushes out of the loop (was a fresh QColor+mkPen+mkBrush PER BAR — the
-        # dominant cost of every _generate / replay frame) and re-set them only on a colour flip.
-        # Pixel-identical: consecutive same-colour bars reuse the identical pen/brush.
+        # Hoist the two pens/brushes out of the loop (a fresh QColor+mkPen+mkBrush PER BAR was the
+        # dominant cost) and re-set them only on a colour flip — pixel-identical to per-bar pens.
         up_pen, down_pen = pg.mkPen(QtGui.QColor(_UP)), pg.mkPen(QtGui.QColor(_DOWN))
         up_brush, down_brush = pg.mkBrush(QtGui.QColor(_UP)), pg.mkBrush(QtGui.QColor(_DOWN))
         cur_up = None
-        for i, b in enumerate(self._bars):
+        for i in range(i0, i1):
+            b = self._bars[i]
             up = b.close >= b.open
             if up != cur_up:
                 painter.setPen(up_pen if up else down_pen)
@@ -189,13 +207,9 @@ class CandlestickItem(pg.GraphicsObject):
                 # `max(top-bottom, 1e-9)` rect rendered as a full-height "wall" on the chart's
                 # extreme price scale when many flat padding bars trail the data).
                 painter.drawLine(pg.Point(i - width / 2, bottom), pg.Point(i + width / 2, bottom))
-        painter.end()
-
-    def paint(self, painter, *_):
-        painter.drawPicture(0, 0, self._picture)
 
     def boundingRect(self):
-        return self._brect          # cached in _generate(); recomputed only when bars change
+        return self._brect          # cached in _recompute_brect(); recomputed only when bars change
 
 
 class TimeAxis(pg.AxisItem):
@@ -507,9 +521,9 @@ class _IndicatorPicker(dropdowns.PopupCard):
 
     def __init__(self, parent=None):
         super().__init__(parent, object_name="pickerCard", extra_qss=(
-            f"QLineEdit{{background:{theme.BG};border:1px solid {theme.BORDER};"
+            f"QLineEdit{{background:{theme.BG};border:1px solid {theme.BORDER};"   # grey when idle
             f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
-            f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"
+            f"QLineEdit:focus{{border:1px solid {theme.hsl(148, 50, 42)};outline:none;}}"   # deeper green (ACCENT blooms thick at 1px on HiDPI); unified with command box
             f"QPushButton#tab{{background:transparent;border:none;color:{theme.TEXT3};"
             f"padding:6px 13px;border-radius:9px;font-size:13px;font-weight:600;}}"
             f"QPushButton#tab:hover{{color:{theme.TEXT2};}}"
@@ -1699,11 +1713,19 @@ class PriceChart(pg.PlotWidget):
 
     intervalChosen = QtCore.Signal(str)  # emitted by the timeframe dropdown (e.g. "5m")
     pairsRequested = QtCore.Signal(str)  # a pairs indicator was picked; the app supplies a benchmark
+    styleChanged = QtCore.Signal(str)    # render style switched; lets a title-bar style chip resync
 
-    def __init__(self):
+    def __init__(self, title_controls: bool = False):
+        # title_controls=True (chart windows) moves the interval / ƒx indicators / chart-type /
+        # date-range controls OUT of this toolbar and into the window title bar (built by
+        # chartwin.ChartWindowFrame). Studio + bare charts keep them here (default False).
         axis = TimeAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": axis, "right": PriceAxis(orientation="right")})
         self._time_axis = axis
+        # NB: do NOT force MinimalViewportUpdate here — make_chart_card (chartdoc.py) deliberately
+        # uses FullViewportUpdate because the chart viewport is TRANSPARENT (rounded card); Minimal
+        # leaves stale trails on a transparent viewport. The crosshair-lag win is the visible-window
+        # CandlestickItem.paint(), which helps regardless of update mode.
         self.setBackground(theme.CHART_BG)
         # Price scale on the RIGHT (TradingView / Lightweight-Charts convention).
         self.showAxis("right")
@@ -1813,75 +1835,70 @@ class PriceChart(pg.PlotWidget):
             ln.setStyleSheet(f"color:{theme.BORDER};")
             return ln
 
-        # symbol name at the FAR LEFT, before the timeframe selector (TradingView-style)
-        self._symbol_label = QtWidgets.QLabel("", self._top_bar)
-        self._symbol_label.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-        self._symbol_label.setStyleSheet(
-            f"color:{theme.TEXT};font-family:{theme.FONT_MONO};font-size:14px;"
-            f"font-weight:700;background:transparent;padding:0 2px;"
-        )
-        _tb.addWidget(self._symbol_label, 0, QtCore.Qt.AlignVCenter)
-        _tb.addWidget(_divider())
+        # Symbol label REMOVED from the chart toolbar — the symbol lives in the window title bar now.
+        # For chart WINDOWS (title_controls=True) the interval / ƒx indicators / chart-type controls
+        # also live in the title bar (built by chartwin.ChartWindowFrame), so they're skipped here;
+        # Studio + bare charts keep them in this toolbar. The OHLC legend always stays on the chart.
+        if not title_controls:
+            # timeframe selector (grouped dropdown) -> emits intervalChosen
+            self._tf_btn = QtWidgets.QPushButton("1m", self._top_bar)
+            self._tf_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._tf_btn.setStyleSheet(_btn_qss)
+            _tf_menu = QtWidgets.QMenu(self._tf_btn)
+            # The toolbar's `QWidget{background:transparent}` rule cascades into this menu (same
+            # specificity as the app-wide QMenu rule, but more local, so it would win and leave the
+            # popup transparent/off-tone). Re-assert the unified dropdown surface explicitly here so
+            # the timeframe menu matches every other popup (SURFACE card, BORDER edge, popup radius).
+            _tf_menu.setStyleSheet(
+                f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+                f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
+                f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
+                f"color:{theme.TEXT2};}}"
+                f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+                f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
+            )
+            for _sec, _items in _TIMEFRAMES:
+                _tf_menu.addSection(_sec)
+                for _lbl, _iv in _items:
+                    _tf_menu.addAction(_lbl, lambda iv=_iv: self.intervalChosen.emit(iv))
+            self._tf_btn.setMenu(_tf_menu)
+            _tb.addWidget(self._tf_btn)
+            _tb.addWidget(_divider())
 
-        # timeframe selector (grouped dropdown) -> emits intervalChosen
-        self._tf_btn = QtWidgets.QPushButton("1m", self._top_bar)
-        self._tf_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self._tf_btn.setStyleSheet(_btn_qss)
-        _tf_menu = QtWidgets.QMenu(self._tf_btn)
-        # The toolbar's `QWidget{background:transparent}` rule cascades into this menu (same
-        # specificity as the app-wide QMenu rule, but more local, so it would win and leave the
-        # popup transparent/off-tone). Re-assert the unified dropdown surface explicitly here so the
-        # timeframe menu matches every other popup (SURFACE card, BORDER edge, popup radius).
-        _tf_menu.setStyleSheet(
-            f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
-            f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
-            f"color:{theme.TEXT2};}}"
-            f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
-            f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
-        )
-        for _sec, _items in _TIMEFRAMES:
-            _tf_menu.addSection(_sec)
-            for _lbl, _iv in _items:
-                _tf_menu.addAction(_lbl, lambda iv=_iv: self.intervalChosen.emit(iv))
-        self._tf_btn.setMenu(_tf_menu)
-        _tb.addWidget(self._tf_btn)
-        _tb.addWidget(_divider())
+            # indicators (searchable catalog -> overlay)
+            self._ind_btn = QtWidgets.QPushButton("ƒx Indicators", self._top_bar)
+            self._ind_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._ind_btn.setStyleSheet(_btn_qss)
+            self._ind_btn.clicked.connect(self._open_indicator_picker)
+            _tb.addWidget(self._ind_btn)
+            _tb.addWidget(_divider())
 
-        # indicators (searchable catalog -> overlay)
-        self._ind_btn = QtWidgets.QPushButton("ƒx Indicators", self._top_bar)
-        self._ind_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self._ind_btn.setStyleSheet(_btn_qss)
-        self._ind_btn.clicked.connect(self._open_indicator_picker)
-        _tb.addWidget(self._ind_btn)
-        _tb.addWidget(_divider())
-
-        # chart-style selector (grouped dropdown) -> set_style(...). TradingView-style: the
-        # button shows ONLY the current style's glyph (tooltip names it); every dropdown entry
-        # carries its own glyph (style_icons.py).
-        self._style_btn = QtWidgets.QPushButton(self._top_bar)
-        self._style_btn.setIcon(style_icon("Candles"))
-        self._style_btn.setIconSize(QtCore.QSize(18, 18))
-        self._style_btn.setToolTip("Chart style · Candles")
-        self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
-        self._style_btn.setStyleSheet(_btn_qss)
-        _style_menu = QtWidgets.QMenu(self._style_btn)
-        _style_menu.setStyleSheet(  # re-assert the unified popup surface (see the timeframe menu)
-            f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-            f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
-            f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
-            f"color:{theme.TEXT2};}}"
-            f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
-            f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
-        )
-        for _sec, _styles in chart_styles.STYLE_SECTIONS:
-            _style_menu.addSection(_sec)
-            for _st in _styles:
-                _style_menu.addAction(style_icon(_st), _st, lambda s=_st: self.set_style(s))
-        self._style_btn.setMenu(_style_menu)
-        _tb.addWidget(self._style_btn)
-        self._ohlc_divider = _divider()   # toggled with the OHLC legend on narrow charts
-        _tb.addWidget(self._ohlc_divider)
+            # chart-style selector (grouped dropdown) -> set_style(...). TradingView-style: the
+            # button shows ONLY the current style's glyph (tooltip names it); every dropdown entry
+            # carries its own glyph (style_icons.py).
+            self._style_btn = QtWidgets.QPushButton(self._top_bar)
+            self._style_btn.setIcon(style_icon("Candles"))
+            self._style_btn.setIconSize(QtCore.QSize(18, 18))
+            self._style_btn.setToolTip("Chart style · Candles")
+            self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._style_btn.setStyleSheet(_btn_qss)
+            _style_menu = QtWidgets.QMenu(self._style_btn)
+            _style_menu.setStyleSheet(  # re-assert the unified popup surface (see the timeframe menu)
+                f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+                f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
+                f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
+                f"color:{theme.TEXT2};}}"
+                f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+                f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
+            )
+            for _sec, _styles in chart_styles.STYLE_SECTIONS:
+                _style_menu.addSection(_sec)
+                for _st in _styles:
+                    _style_menu.addAction(style_icon(_st), _st, lambda s=_st: self.set_style(s))
+            self._style_btn.setMenu(_style_menu)
+            _tb.addWidget(self._style_btn)
+            self._ohlc_divider = _divider()   # toggled with the OHLC legend on narrow charts
+            _tb.addWidget(self._ohlc_divider)
 
         # OHLC legend
         self._ohlc_label = QtWidgets.QLabel(self._top_bar)
@@ -1898,23 +1915,25 @@ class PriceChart(pg.PlotWidget):
 
         _tb.addStretch(1)  # push the range selector to the FAR right
 
-        # range selector (tight) -> far top-right
-        _range_w = self._range_w = QtWidgets.QWidget(self._top_bar)
-        _rb = QtWidgets.QHBoxLayout(_range_w)
-        _rb.setContentsMargins(0, 0, 0, 0)
-        _rb.setSpacing(0)
-        _range_qss = (
-            f"QPushButton{{color:{theme.TEXT3};background:transparent;border:none;"
-            f"padding:1px 6px;font-size:14px;font-weight:400;border-radius:3px;}}"
-            f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
-        )
-        for _label, _days in _RANGES:
-            _b = QtWidgets.QPushButton(_label, _range_w)
-            _b.setCursor(QtCore.Qt.PointingHandCursor)
-            _b.setStyleSheet(_range_qss)
-            _b.clicked.connect(lambda _checked=False, d=_days: self.set_visible_range(d))
-            _rb.addWidget(_b)
-        _tb.addWidget(_range_w)
+        if not title_controls:
+            # date-range selector (tight) -> far top-right. For chart windows this becomes a single
+            # dropdown in the title bar (chartwin.ChartWindowFrame) instead of this button row.
+            _range_w = self._range_w = QtWidgets.QWidget(self._top_bar)
+            _rb = QtWidgets.QHBoxLayout(_range_w)
+            _rb.setContentsMargins(0, 0, 0, 0)
+            _rb.setSpacing(0)
+            _range_qss = (
+                f"QPushButton{{color:{theme.TEXT3};background:transparent;border:none;"
+                f"padding:1px 6px;font-size:14px;font-weight:400;border-radius:3px;}}"
+                f"QPushButton:hover{{color:{theme.TEXT};background:{theme.PANEL};}}"
+            )
+            for _label, _days in _RANGES:
+                _b = QtWidgets.QPushButton(_label, _range_w)
+                _b.setCursor(QtCore.Qt.PointingHandCursor)
+                _b.setStyleSheet(_range_qss)
+                _b.clicked.connect(lambda _checked=False, d=_days: self.set_visible_range(d))
+                _rb.addWidget(_b)
+            _tb.addWidget(_range_w)
         self._top_bar.move(0, 4)
 
         # crosshair axis tag boxes — hovered price on the right axis, time on the bottom axis
@@ -1979,9 +1998,9 @@ class PriceChart(pg.PlotWidget):
 
     # --- data ---
     def set_title(self, text: str):
-        """Set the symbol shown at the far left of the toolbar (before the timeframe selector)."""
+        """Record the symbol/title prefix used by the OHLC header. The toolbar no longer shows a
+        symbol label (the symbol lives in the window title bar now)."""
         self._title = text or ""
-        self._symbol_label.setText(self._title)
         self._show_last_ohlc()
 
     def set_data(self, bars, trades):
@@ -2768,9 +2787,16 @@ class PriceChart(pg.PlotWidget):
         disp = self._display_bars()
         if not panes:
             self.showAxis("bottom")
+            self.getAxis("bottom").setStyle(showValues=True)   # single-pane: time labels under candles
             self._time_axis.set_bars(disp)
         else:
-            self.hideAxis("bottom")
+            # Keep the price pane's bottom axis SHOWN so its vertical gridlines still draw, but hide
+            # only its time LABELS (the labels live on the lowest pane). Fully hiding it (hideAxis)
+            # ALSO kills the x-grid, so the price pane lost its vertical gridlines while the panes
+            # kept theirs — the "grid break" when an oscillator indicator (e.g. AC) is added.
+            self.showAxis("bottom")
+            self.getAxis("bottom").setStyle(showValues=False)
+            self._time_axis.set_bars(disp)
             for p in panes:
                 p.set_bottom_axis_visible(False)
                 p.set_bars(disp)
@@ -2927,8 +2953,10 @@ class PriceChart(pg.PlotWidget):
         if style not in chart_styles.ALL_STYLES:
             return
         self._style = style
-        self._style_btn.setIcon(style_icon(style))   # icon-only button; the tooltip names it
-        self._style_btn.setToolTip(f"Chart style · {style}")
+        if hasattr(self, "_style_btn"):                # absent on chart windows (chip is in the title bar)
+            self._style_btn.setIcon(style_icon(style))   # icon-only button; the tooltip names it
+            self._style_btn.setToolTip(f"Chart style · {style}")
+        self.styleChanged.emit(style)                  # resync a title-bar style chip, if any
         time_based = chart_styles.is_time_based(style)
         self._overlays_visible(time_based)   # non-time styles can't align indicators/markers/panes
         # Reveal the full series — the prior style's reveal index doesn't map to a different-length one.
@@ -3423,19 +3451,24 @@ class PriceChart(pg.PlotWidget):
         """Insert an app-supplied control into the top toolbar just before the OHLC divider —
         the MultiCharts status-line slot (link dots etc.), NOT a separate row."""
         lay = self._top_bar.layout()
-        lay.insertWidget(lay.indexOf(self._ohlc_divider), widget, 0, QtCore.Qt.AlignVCenter)
+        anchor = self._ohlc_divider if hasattr(self, "_ohlc_divider") else self._ohlc_label
+        lay.insertWidget(lay.indexOf(anchor), widget, 0, QtCore.Qt.AlignVCenter)
 
     def _relayout_toolbar(self):
         """Collapse the top toolbar as the chart narrows (multi-chart tiling) so labels never
         clip mid-word ('Indicators'->'dic'). Progressive by toolbar width: drop the range
         selector first, then the OHLC legend (+ its divider), then shorten 'ƒx Indicators' to
-        'ƒx'. Symbol / timeframe / indicators / style always remain."""
+        'ƒx'. On chart windows the interval/indicators/style/range controls live in the title
+        bar (title_controls=True), so only the OHLC legend is collapsed here."""
         w = self._top_bar.width()
-        self._range_w.setVisible(w >= 620)
+        if hasattr(self, "_range_w"):
+            self._range_w.setVisible(w >= 620)
         show_ohlc = w >= 470
         self._ohlc_label.setVisible(show_ohlc)
-        self._ohlc_divider.setVisible(show_ohlc)
-        self._ind_btn.setText("ƒx Indicators" if w >= 360 else "ƒx")
+        if hasattr(self, "_ohlc_divider"):
+            self._ohlc_divider.setVisible(show_ohlc)
+        if hasattr(self, "_ind_btn"):
+            self._ind_btn.setText("ƒx Indicators" if w >= 360 else "ƒx")
 
     def _position_nav_bar(self):
         """Dock the zoom/scroll/reset bar at the bottom-left of the LOWEST chart pane, just above
