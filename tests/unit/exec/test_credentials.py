@@ -14,9 +14,9 @@ from vike_trader_app.exec.credentials import (
 
 def test_env_var_names_is_the_single_naming_site():
     assert env_var_names("binance", Environment.DEMO) == (
-        "BINANCE_DEMO_API_KEY", "BINANCE_DEMO_API_SECRET", "BINANCE_DEMO_PASSPHRASE")
+        "BINANCE_DEMO_API_KEY", "BINANCE_DEMO_API_SECRET", "BINANCE_DEMO_API_PASSPHRASE")
     assert env_var_names("binance", Environment.MAINNET) == (
-        "BINANCE_MAINNET_API_KEY", "BINANCE_MAINNET_API_SECRET", "BINANCE_MAINNET_PASSPHRASE")
+        "BINANCE_MAINNET_API_KEY", "BINANCE_MAINNET_API_SECRET", "BINANCE_MAINNET_API_PASSPHRASE")
 
 
 def test_load_returns_credentials_when_set(monkeypatch):
