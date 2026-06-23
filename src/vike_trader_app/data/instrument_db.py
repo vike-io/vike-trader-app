@@ -285,6 +285,40 @@ def parse_exchange_info(payload: dict) -> list[InstrumentSpec]:
     return [s for s in specs if s.symbol]
 
 
+def parse_symbol_filters(payload: dict) -> dict[str, dict]:
+    """Per-symbol order-placement bounds from /exchangeInfo (for RiskLimits, not InstrumentSpec).
+
+    Keeps PRICE_FILTER.tickSize, LOT_SIZE.{stepSize,minQty,maxQty}, and NOTIONAL/MIN_NOTIONAL.
+    minNotional — filters parse_exchange_info drops. Absent filters default to 0.0.
+    """
+    out: dict[str, dict] = {}
+    for entry in payload.get("symbols", []):
+        filters = {f.get("filterType"): f for f in entry.get("filters", [])}
+
+        def _f(ftype: str, field: str) -> float:
+            try:
+                return float(filters.get(ftype, {}).get(field, 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        notional = filters.get("NOTIONAL") or filters.get("MIN_NOTIONAL") or {}
+        try:
+            min_notional = float(notional.get("minNotional", 0) or 0)
+        except (TypeError, ValueError):
+            min_notional = 0.0
+        symbol = str(entry.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        out[symbol] = {
+            "tick_size": _f("PRICE_FILTER", "tickSize"),
+            "step_size": _f("LOT_SIZE", "stepSize"),
+            "min_qty": _f("LOT_SIZE", "minQty"),
+            "max_qty": _f("LOT_SIZE", "maxQty"),
+            "min_notional": min_notional,
+        }
+    return out
+
+
 def _default_fetch() -> dict:
     """GET + parse the live exchangeInfo (stdlib urllib, matching :mod:`.binance_source`)."""
     req = urllib.request.Request(BINANCE_EXCHANGE_INFO_URL,
