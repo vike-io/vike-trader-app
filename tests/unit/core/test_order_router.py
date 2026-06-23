@@ -94,3 +94,24 @@ def test_engine_risk_none_binds_directly_byte_identical():
     same = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001, risk=None).run()
     assert same.equity_curve == base.equity_curve
     assert [t.pnl for t in same.trades] == [t.pnl for t in base.trades]
+
+
+def test_protective_trailing_exit_is_not_strangled_by_the_gate():
+    # a rate-limit gate (1 order/window): the entry consumes the slot; the protective trailing
+    # exit (a reducing order) must still fill — never strand a position.
+    from vike_trader_app.exec.risk import RiskGate, RiskLimits
+
+    class _BuyThenTrail(Strategy):
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(1.0)
+            elif self.index == 1:
+                self.trailing_stop(1.0, trail=5.0)   # protective sell-stop trailing the high
+
+    bars = [_bar(0, 100, 100), _bar(60_000, 110, 110), _bar(120_000, 120, 120), _bar(180_000, 100, 100)]
+    strat = _BuyThenTrail()
+    eng = BacktestEngine(bars, strat, cash=10_000.0,
+                         risk=RiskGate(RiskLimits(max_orders_per_window=1, window_ms=10**12)))
+    res = eng.run()
+    assert eng.position.size == 0.0     # FLATTENED — the exit bypassed the rate-limited gate
+    assert len(res.trades) == 1

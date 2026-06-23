@@ -107,9 +107,15 @@ class OrderRouter:
     def _gate_open(self, side_sign: int, size: float, order_type: str, price: float | None) -> float:
         if self._gate is None:
             return size                                  # transparent pass-through
+        pos = self._engine.position.size
+        if not (pos == 0.0 or (pos > 0.0) == (side_sign > 0.0)):
+            return size   # reducing / closing / flipping (incl. protective exits) — always passes
+        is_stop = order_type == "stop"
         req = OrderRequest(
             client_order_id=f"{self._venue}-{next(self._seq)}", venue=self._venue,
-            symbol=self._symbol, side=side_sign, qty=size, order_type=order_type, price=price,
+            symbol=self._symbol, side=side_sign, qty=size, order_type=order_type,
+            price=None if is_stop else price,
+            trigger_price=price if is_stop else None,
         )
         mark = self._mark_price_fn() if self._mark_price_fn is not None else self._engine._price
         now = self._now_fn() if self._now_fn is not None else self._engine._now
