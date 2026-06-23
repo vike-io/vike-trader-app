@@ -60,7 +60,7 @@ def test_volume_columns_have_bars_and_missing_cells_dash():
     _app()
     tab = OptionsTab()
     tab.set_chain(_chain())
-    vcols = _cols(tab.table, "Volume")
+    vcols = _cols(tab.table, "Vol")     # header shortened from "Volume" so the column can be narrow
     assert len(vcols) == 2
     assert tab._bar.call_col in vcols and tab._bar.put_col in vcols
     # call volume on the first strike (row 0) is the max -> bar fraction 1.0
