@@ -43,7 +43,7 @@ class CryptoExecutionClient:
     PATH_ACCOUNT: str = ""
     PATH_TICKER: str = ""
     CREATE_METHOD: str = "POST"
-    CANCEL_METHOD: str = "POST"
+    CANCEL_METHOD: str = "POST"  # subclasses set per venue (Binance→"DELETE", Bybit→"POST")
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
                  base_asset: str = "", transport, public_transport=None) -> None:
@@ -103,8 +103,8 @@ class CryptoExecutionClient:
                                        venue_order_id=o["venue_order_id"]))
 
         seeded_size = free + locked_sell_qty
-        ticker = self._public_transport(self._base, self.PATH_TICKER, self.build_ticker_params())
-        mark_px = self.parse_mark_px(ticker)
+        raw_ticker = self._public_transport(self._base, self.PATH_TICKER, self.build_ticker_params())
+        mark_px = self.parse_mark_px(self.unwrap(raw_ticker))
         return ReconcileSnapshot(positions=((self._symbol, seeded_size),),
                                  open_orders=tuple(orders),
                                  position_avg_px=((self._symbol, mark_px),))
