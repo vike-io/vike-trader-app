@@ -37,3 +37,11 @@ def test_protocol_names_every_method_both_classes_expose():
     for name in _METHODS:
         assert hasattr(eng, name), f"BacktestEngine missing {name}"
         assert hasattr(shim, name), f"SymbolEngineShim missing {name}"
+
+
+def test_order_router_satisfies_protocol():
+    from vike_trader_app.core.order_router import OrderRouter
+    eng = BacktestEngine([_bar()], Strategy())
+    assert isinstance(OrderRouter(eng), StrategyEngine)
+    for name in _METHODS:
+        assert hasattr(OrderRouter(eng), name), f"OrderRouter missing {name}"
