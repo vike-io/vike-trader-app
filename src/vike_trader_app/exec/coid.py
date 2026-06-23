@@ -11,7 +11,8 @@ import itertools
 import re
 import uuid
 
-BINANCE_COID_RE = re.compile(r"^[\.A-Z\:/a-z0-9_-]{1,36}$")
+CRYPTO_COID_RE = re.compile(r"^[\.A-Z\:/a-z0-9_-]{1,36}$")
+BINANCE_COID_RE = CRYPTO_COID_RE  # back-compat alias (same compiled pattern)
 
 
 class CoidMinter:
@@ -23,6 +24,6 @@ class CoidMinter:
 
     def mint(self) -> str:
         coid = f"{self._session}-{next(self._seq)}"
-        if not BINANCE_COID_RE.match(coid):
-            raise ValueError(f"client_order_id violates Binance charset: {coid!r}")
+        if not CRYPTO_COID_RE.match(coid):
+            raise ValueError(f"client_order_id violates crypto charset: {coid!r}")
         return coid
