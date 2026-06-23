@@ -68,6 +68,15 @@ def test_partially_filled_leg_can_be_canceled_keeping_filled_qty():
     assert o.status is OrderStatus.CANCELED and o.filled_qty == 0.4
 
 
+def test_triggered_leg_can_be_canceled():
+    # a fired stop (TRIGGERED) can still be canceled — OCO sibling-cancel racing the fill
+    o = _order()
+    o.apply(OrderSubmitted("c1")); o.apply(OrderAccepted("c1"))
+    o.apply(OrderTriggered("c1"))
+    o.apply(OrderCanceled("c1", reason="oco-sibling"))
+    assert o.status is OrderStatus.CANCELED
+
+
 def test_accepted_can_cancel_directly():
     o = _order()
     o.apply(OrderSubmitted("c1")); o.apply(OrderAccepted("c1"))
