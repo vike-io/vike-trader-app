@@ -288,6 +288,10 @@ class MainWindow(QtWidgets.QMainWindow):
         # (free overlap). The re-tile is DEBOUNCED so it runs once after a resize settles, never
         # per-event (each setGeometry relays a chart ~90ms — synchronous re-tile would re-stick).
         self._last_arrange_mode = "grid"
+        # Once the user hand-drags a floating window (move/resize), auto-tiling backs off (tiling-WM
+        # style) so a later add / delete / workspace-resize no longer re-grids the manual layout;
+        # cleared by an explicit Window>Arrange. Set from each frame's userGeomChanged signal.
+        self._layout_user_dirty = False
         self._retile_timer = QtCore.QTimer(self)
         self._retile_timer.setSingleShot(True)
         self._retile_timer.setInterval(140)
@@ -524,6 +528,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.cloneRequested.connect(self._clone_window)
         frame.redockRequested.connect(self._redock_chart)
         frame.minimizeRequested.connect(self._minimize_chart_window_to_left)
+        frame.userGeomChanged.connect(self._mark_layout_user_dirty)
         # pairs indicators need a 2nd symbol the app fetches (the chart can't reach the data
         # layer). The central chart used to wire this; now each peer frame's chart does.
         doc.chart.pairsRequested.connect(lambda n, ch=doc.chart: self._add_pairs(ch, n))
@@ -799,6 +804,7 @@ class MainWindow(QtWidgets.QMainWindow):
         from . import chartwin
 
         self._last_arrange_mode = mode      # remember it so a workspace resize re-applies it
+        self._layout_user_dirty = False     # an explicit Arrange re-enables auto-tiling
         frames = self._chart_frames + list(self._tool_frames.values())
         def _alive(d):
             # isClosed() raises if the C++ dock was already freed (a leaked dock under xdist, or a
@@ -880,6 +886,7 @@ class MainWindow(QtWidgets.QMainWindow):
         frame.closed.connect(lambda _f, k=key: self._on_tool_window_closed(k))
         frame.redockRequested.connect(lambda _f, k=key: self._redock_tool(k))
         frame.minimizeRequested.connect(lambda _f, k=key: self._minimize_tool_to_left(k))
+        frame.userGeomChanged.connect(self._mark_layout_user_dirty)
         self._tool_frames[key] = frame
         return frame
 
@@ -3047,6 +3054,12 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:
                 pass
 
+    def _mark_layout_user_dirty(self) -> None:
+        """A floating window was hand-moved/resized → freeze auto-tiling so a later add / delete /
+        workspace-resize stops re-gridding the user's manual layout. Re-enabled by Window>Arrange
+        (which clears the flag)."""
+        self._layout_user_dirty = True
+
     def _retile_open_windows(self) -> None:
         """Debounced re-tile after a workspace resize: re-apply the last Arrange layout so the
         open floating windows keep filling the workspace (the user chose 'auto re-tile to fill').
@@ -3056,6 +3069,9 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._closing:
             return
         if self._last_arrange_mode == "cascade":
+            return
+        if self._layout_user_dirty:
+            # the user hand-sized a window — don't re-grid their layout (Window>Arrange re-enables)
             return
         frames = self._chart_frames + list(self._tool_frames.values())
         live = [f for f in frames
