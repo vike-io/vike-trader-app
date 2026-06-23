@@ -2787,9 +2787,16 @@ class PriceChart(pg.PlotWidget):
         disp = self._display_bars()
         if not panes:
             self.showAxis("bottom")
+            self.getAxis("bottom").setStyle(showValues=True)   # single-pane: time labels under candles
             self._time_axis.set_bars(disp)
         else:
-            self.hideAxis("bottom")
+            # Keep the price pane's bottom axis SHOWN so its vertical gridlines still draw, but hide
+            # only its time LABELS (the labels live on the lowest pane). Fully hiding it (hideAxis)
+            # ALSO kills the x-grid, so the price pane lost its vertical gridlines while the panes
+            # kept theirs — the "grid break" when an oscillator indicator (e.g. AC) is added.
+            self.showAxis("bottom")
+            self.getAxis("bottom").setStyle(showValues=False)
+            self._time_axis.set_bars(disp)
             for p in panes:
                 p.set_bottom_axis_visible(False)
                 p.set_bars(disp)
