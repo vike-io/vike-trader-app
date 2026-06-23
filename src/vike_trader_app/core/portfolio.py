@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
+from .fill import compute_fill
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
@@ -756,85 +757,66 @@ class PortfolioEngine:
         rate = self.maker_fee if is_maker else self.taker_fee
         fee = _fee(size, price, rate, self.multiplier)
         delta = side_sign * size
-        pos = self._sym[symbol].pos
-        self.cash -= fee  # transaction cost
-        self.cash -= delta * price * self.multiplier  # signed notional moves cash in every case
+        st = self._sym[symbol]
+        pos = st.pos
+        self.cash -= fee                                  # transaction cost
+        self.cash -= delta * price * self.multiplier      # signed notional moves cash in every case
+        out = compute_fill(pos.size, pos.avg_price, side_sign, size, price, self.multiplier)
 
-        if pos.size == 0:  # open from flat
-            pos.size = delta
-            pos.avg_price = price
-            self._sym[symbol].entry_fee = fee
-            self._sym[symbol].entry_ts = ts
-            # Reset excursion extremes to the fill price so MAE/MFE starts from entry.
-            self._sym[symbol].hi_since = price
-            self._sym[symbol].lo_since = price
+        if out.kind == "open":
+            pos.size = out.new_size
+            pos.avg_price = out.new_avg_px
+            st.entry_fee = fee
+            st.entry_ts = ts
+            st.hi_since = price                           # reset excursion extremes to entry
+            st.lo_since = price
+            return
+        if out.kind == "add":
+            pos.size = out.new_size
+            pos.avg_price = out.new_avg_px
+            st.entry_fee += fee
             return
 
-        if (pos.size > 0) == (delta > 0):  # add in the same direction
-            new_size = pos.size + delta
-            pos.avg_price = (pos.avg_price * abs(pos.size) + price * abs(delta)) / abs(new_size)
-            pos.size = new_size
-            self._sym[symbol].entry_fee += fee
-            return
-
-        # opposite direction: reduce part of the position, fully close, or close-and-flip.
-        sign = 1.0 if pos.size > 0 else -1.0
-        closing = min(abs(delta), abs(pos.size))  # units of the existing position retired
-        portion = closing / abs(pos.size)
-        entry_fee_portion = self._sym[symbol].entry_fee * portion
-        exit_fee_portion = fee * (closing / abs(delta)) if delta != 0 else 0.0
-        realized = (price - pos.avg_price) * (sign * closing) * self.multiplier  # signed: works for shorts
-        self._sym[symbol].realized += realized
-        # Compute MAE/MFE fractions relative to entry price (guard entry==0).
-        entry = pos.avg_price
-        hi = self._sym[symbol].hi_since
-        lo = self._sym[symbol].lo_since
+        # reduce / close / flip
+        entry_fee_portion = st.entry_fee * out.portion
+        exit_fee_portion = fee * (out.closing_qty / size) if delta != 0 else 0.0
+        st.realized += out.realized_pnl
+        entry = out.entry_avg_px                          # avg price of the closed portion
+        hi, lo = st.hi_since, st.lo_since
         if entry != 0:
-            if pos.size > 0:  # long
+            if pos.size > 0:                              # long
                 mfe = (hi - entry) / entry
-                mae = (lo - entry) / entry   # negative: adverse
-            else:              # short
+                mae = (lo - entry) / entry
+            else:                                         # short
                 mfe = (entry - lo) / entry
-                mae = (entry - hi) / entry   # negative: adverse
+                mae = (entry - hi) / entry
         else:
             mfe, mae = 0.0, 0.0
         self.trades.append(
             Trade(
-                entry_price=pos.avg_price,
+                entry_price=out.entry_avg_px,
                 exit_price=price,
-                size=closing,
-                pnl=realized,
+                size=out.closing_qty,
+                pnl=out.realized_pnl,
                 fees=entry_fee_portion + exit_fee_portion,
-                entry_ts=self._sym[symbol].entry_ts,
+                entry_ts=st.entry_ts,
                 exit_ts=ts,
                 symbol=symbol,
                 mae=mae,
                 mfe=mfe,
             )
         )
-        remaining = abs(pos.size) - closing
-        if remaining > 1e-12:  # partial reduce: keep the remainder at the same cost basis
-            pos.size = sign * remaining
-            self._sym[symbol].entry_fee -= entry_fee_portion
-            return
-
-        leftover = abs(delta) - closing  # crossed through zero -> open opposite side
-        if leftover > 1e-12:
-            pos.size = (1.0 if delta > 0 else -1.0) * leftover
-            pos.avg_price = price
-            self._sym[symbol].entry_fee = fee * (leftover / abs(delta))
-            self._sym[symbol].entry_ts = ts
-            # Reset excursion extremes for the new opposite-side position.
-            self._sym[symbol].hi_since = price
-            self._sym[symbol].lo_since = price
-            # The old protective stop belonged to the position we just closed; the flip's own
-            # stop (if any) is armed by the fill loop after this fill returns.
-            self._sym[symbol].stop = None
-        else:  # flat
-            pos.size = 0.0
-            pos.avg_price = 0.0
-            self._sym[symbol].entry_fee = 0.0
-            self._sym[symbol].entry_ts = 0
-            # Position closed by any means — clear any dangling protective stop so it can't
-            # re-trigger / re-open later.
-            self._sym[symbol].stop = None
+        pos.size = out.new_size
+        pos.avg_price = out.new_avg_px
+        if out.kind == "reduce":
+            st.entry_fee -= entry_fee_portion
+        elif out.kind == "flip":
+            st.entry_fee = fee * (out.leftover / size)
+            st.entry_ts = ts
+            st.hi_since = price
+            st.lo_since = price
+            st.stop = None                                # old stop belonged to the closed position
+        else:  # close -> flat
+            st.entry_fee = 0.0
+            st.entry_ts = 0
+            st.stop = None
