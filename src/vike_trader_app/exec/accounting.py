@@ -33,7 +33,7 @@ class Account:
         prior_size = pos["size"] if pos is not None else 0.0
         prior_avg = pos["avg_px"] if pos is not None else 0.0
         out = compute_fill(prior_size, prior_avg, fill.side, fill.last_qty, fill.last_px, self.multiplier)
-        self.positions[key] = {"size": out.new_size, "avg_px": out.new_avg_px}
+        self.positions[key] = {"size": out.new_size, "avg_px": out.new_avg_px}  # rebind (not in-place mutate) — no external code aliases the inner position dict.
         if out.closing_qty > 0.0:                 # a reduce / close / flip realized PnL on the closed portion
             self.realized_pnl += out.realized_pnl
             self.trades.append(out.realized_pnl)

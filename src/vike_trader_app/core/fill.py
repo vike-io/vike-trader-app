@@ -32,7 +32,7 @@ def compute_fill(prior_size: float, prior_avg_px: float, side: int, qty: float,
                  price: float, multiplier: float = 1.0) -> FillOutcome:
     """Compute the position transition for a fill of ``qty`` at ``price`` on ``side`` (+1/-1)."""
     delta = side * qty
-    if prior_size == 0.0:                                   # open from flat
+    if prior_size == 0.0:                                   # open from flat; exact-zero, matching the engines' `== 0`; a closed position is hard-set to 0.0, never an epsilon residue — do NOT change to abs()<_EPS or it diverges from engine/portfolio.
         return FillOutcome("open", delta, price, 0.0, 0.0, 0.0, 0.0, 0.0)
     if (prior_size > 0.0) == (delta > 0.0):                 # add in the same direction
         new_size = prior_size + delta

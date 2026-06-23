@@ -65,3 +65,13 @@ def test_multiplier_scales_pnl():
     acc.apply_fill(_fill(+1, 1.0, 100.0, "t0"))
     acc.apply_fill(_fill(-1, 1.0, 110.0, "t1"))
     assert acc.trades == [100.0]  # (110-100)*1*10
+
+
+def test_flip_then_close_realizes_each_leg():
+    acc = Account()
+    acc.apply_fill(_fill(+1, 2.0, 100.0, "t0"))   # open long 2 @ 100
+    acc.apply_fill(_fill(-1, 3.0, 120.0, "t1"))   # close 2 (pnl (120-100)*2=40), flip to -1 @ 120
+    acc.apply_fill(_fill(+1, 1.0, 110.0, "t2"))   # close the -1 short (pnl (110-120)*-1=10) -> flat
+    assert acc.trades == [40.0, 10.0]
+    assert acc.realized_pnl == 50.0
+    assert acc.positions[_key()]["size"] == 0.0
