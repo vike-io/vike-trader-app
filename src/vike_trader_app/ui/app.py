@@ -3069,6 +3069,38 @@ class MainWindow(QtWidgets.QMainWindow):
             client = BybitSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset)
+        elif venue == "okx":
+            import functools
+            from ..exec.okx.client import OKXSpotExecutionClient
+            from ..exec.okx.instruments import parse_okx_instruments
+            from ..exec.okx.transport import okx_public_get, okx_signed_request
+            from ..data.okx_source import market_symbol
+
+            inst_id = market_symbol(symbol)                 # BTCUSDT -> BTC-USDT
+            simulated = environment is not Environment.MAINNET   # DEMO -> x-simulated-trading:1
+            info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
+                                  {"instType": "SPOT", "instId": inst_id}, simulated=simulated)
+            if str(info.get("code", "0")) != "0":
+                import logging
+                logging.getLogger(__name__).error(
+                    "OKX instruments error code=%s msg=%s — aborting live exec",
+                    info.get("code"), info.get("msg"))
+                return False
+            parsed = parse_okx_instruments(info)
+            if inst_id not in parsed:
+                import logging
+                logging.getLogger(__name__).error(
+                    "OKX instruments: instId %r absent from response — aborting live exec", inst_id)
+                return False
+            f = parsed[inst_id]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client = OKXSpotExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
+                filters=filters, base_asset=base_asset,
+                transport=functools.partial(okx_signed_request, simulated=simulated),
+                public_transport=functools.partial(okx_public_get, simulated=simulated))
         else:
             from ..data.instrument_db import parse_symbol_filters
             from ..exec.binance.client import BinanceSpotExecutionClient
