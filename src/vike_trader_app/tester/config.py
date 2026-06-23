@@ -40,3 +40,23 @@ class TesterConfig:
             "maint_margin": self.maint_margin,
             "cashflows": self.cashflows,
         }
+
+    def portfolio_engine_kwargs(self) -> dict:
+        """Config-derived keyword args for ``PortfolioEngine`` (the runner adds active_mask,
+        max_open_positions, granular_by_symbol — those are not config-derived)."""
+        return {
+            "fee_rate": self.fee_rate,
+            "cash": self.cash,
+            "slippage": self.slippage,
+            "maker_fee": self.maker_fee,
+            "taker_fee": self.taker_fee,
+            "multiplier": self.multiplier,
+            "leverage": self.leverage,
+            "maint_margin": self.maint_margin,
+            "cash_gate": self.cash_gate,
+            "timeframes": self.timeframes,
+            "max_open_long": self.max_open_long,
+            "max_open_short": self.max_open_short,
+            "sizer": self.sizer,
+            "volume_limit": self.volume_limit,
+        }

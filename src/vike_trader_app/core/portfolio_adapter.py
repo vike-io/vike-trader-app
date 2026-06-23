@@ -209,19 +209,13 @@ class MultiSymbolStrategyRunner:
                     active_mask[s] = [True] * len(aligned[s])
                 else:
                     active_mask[s] = [any(w.contains(b.ts) for w in windows) for b in aligned[s]]
-        engine = PortfolioEngine(aligned, driver,
-                                 fee_rate=self.config.fee_rate, cash=self.config.cash,
-                                 slippage=self.config.slippage, maker_fee=self.config.maker_fee,
-                                 taker_fee=self.config.taker_fee, multiplier=self.config.multiplier,
-                                 leverage=self.config.leverage, maint_margin=self.config.maint_margin,
-                                 cash_gate=self.config.cash_gate, active_mask=active_mask,
-                                 timeframes=self.config.timeframes,
-                                 max_open_positions=self.max_open_positions,
-                                 max_open_long=getattr(self.config, "max_open_long", 0),
-                                 max_open_short=getattr(self.config, "max_open_short", 0),
-                                 sizer=getattr(self.config, "sizer", None),
-                                 volume_limit=getattr(self.config, "volume_limit", None),
-                                 granular_by_symbol=self.granular_by_symbol)
+        engine = PortfolioEngine(
+            aligned, driver,
+            active_mask=active_mask,
+            max_open_positions=self.max_open_positions,
+            granular_by_symbol=self.granular_by_symbol,
+            **self.config.portfolio_engine_kwargs(),
+        )
         self._engine = engine
         result = engine.run()
         # --- equal-weight buy-&-hold benchmark curve ---
