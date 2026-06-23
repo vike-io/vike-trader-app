@@ -12,19 +12,35 @@ targets, and cancels pass through so a position can always be managed. The route
 from __future__ import annotations
 
 import itertools
+from typing import Callable
 
 from vike_trader_app.exec.events import OrderRequest
 from vike_trader_app.exec.risk import RiskContext, RiskGate
 
 
 class OrderRouter:
-    """Wrap ``engine``; route opening orders through ``gate`` (or pass through when ``gate`` is None)."""
+    """Wrap ``engine``; route opening orders through ``gate`` (or pass through when ``gate`` is None).
 
-    def __init__(self, engine, gate: RiskGate | None = None, *, venue: str = "sim", symbol: str = "") -> None:
+    For a non-BacktestEngine engine that lacks `_price`/`_now`, pass `mark_price_fn`/`now_fn` accessors;
+    the default falls back to BacktestEngine's internals.
+    """
+
+    def __init__(
+        self,
+        engine,
+        gate: RiskGate | None = None,
+        *,
+        venue: str = "sim",
+        symbol: str = "",
+        mark_price_fn: Callable[[], float] | None = None,
+        now_fn: Callable[[], int] | None = None,
+    ) -> None:
         self._engine = engine
         self._gate = gate
         self._venue = venue
         self._symbol = symbol
+        self._mark_price_fn = mark_price_fn
+        self._now_fn = now_fn
         self._seq = itertools.count()
 
     # --- reads: forward straight to the engine ---
@@ -95,10 +111,12 @@ class OrderRouter:
             client_order_id=f"{self._venue}-{next(self._seq)}", venue=self._venue,
             symbol=self._symbol, side=side_sign, qty=size, order_type=order_type, price=price,
         )
+        mark = self._mark_price_fn() if self._mark_price_fn is not None else self._engine._price
+        now = self._now_fn() if self._now_fn is not None else self._engine._now
         ctx = RiskContext(
             position_size=self._engine.position.size,
-            mark_price=self._engine._price,
-            now_ms=self._engine._now,
+            mark_price=mark,
+            now_ms=now,
         )
         verdict = self._gate.check(req, ctx)
-        return verdict.request.qty if verdict.ok else 0.0
+        return verdict.request.qty if (verdict.ok and verdict.request is not None) else 0.0
