@@ -10,7 +10,10 @@ thin QObject around this.
 
 The `SimulatedExecutionClient` is attached to the engine AFTER the `PaperTester`'s seed warm-up, so
 only LIVE fills reach the `Account` — matching the live equity curve (the seed is indicator warm-up,
-deliberately excluded from both).
+deliberately excluded from both). Consequence: `.account` is CURVE-ALIGNED, not a position-of-record —
+a position opened during warm-up and still held when live bars begin is NOT reflected in `.account`
+(the engine holds it; the Account starts flat). The Phase-3b live path must reconcile/seed the Account
+from the engine's open position before treating it as the venue position read-model.
 """
 
 from __future__ import annotations

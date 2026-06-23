@@ -2,8 +2,9 @@
 
 `check(request, ctx)` returns a `RiskVerdict`: either `ok` with a NORMALIZED (tick/lot-rounded)
 `OrderRequest`, or a denial with a `reason`. The gate is PURE — it owns no bus and publishes nothing;
-the OmsHub/OrderRouter calls it in all three modes (backtest / paper / live) and publishes the
-`OrderDenied` event on veto, so risk rules run identically everywhere. Five capabilities: instrument
+the OmsHub/OrderRouter calls it in all three modes (backtest / paper / live) and acts on the verdict, so
+risk rules run identically everywhere. (A vetoed order is currently dropped silently by the caller;
+emitting the `OrderDenied` event on veto is reserved for Phase 3b's live order lifecycle.) Five capabilities: instrument
 rounding + validity, max-notional-per-order, max-total-exposure, a `TradingState` kill-switch, and a
 sliding-window order-rate throttler (driven by an injected `ctx.now_ms` clock). Built as ONE thickenable
 stage, never a bus-connected engine component.
@@ -61,7 +62,8 @@ def _round_to(value: float, step: float | None) -> float:
 
 
 class RiskGate:
-    """Pre-trade gate. `check` returns a verdict; the caller publishes OrderDenied on veto.
+    """Pre-trade gate. `check` returns a verdict; the caller acts on it. (A vetoed order is dropped
+    today; emitting `OrderDenied` on veto is reserved for Phase 3b's live order lifecycle.)
 
     One RiskGate per venue/account session; the throttle window is shared across ALL symbols
     routed through it (it is a session-level order-rate limit, not per-symbol).
