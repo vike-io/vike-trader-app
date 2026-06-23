@@ -1,5 +1,10 @@
-"""Bybit connect() reconciles: wallet-balance UNIFIED coin[].walletBalance -> seed; open orders ->
-ACCEPTED ManagedOrders with locked-SELL add-back; tickers lastPrice -> avg_px."""
+"""Bybit connect() reconciles: wallet-balance UNIFIED coin[].availableToWithdraw -> free; open orders ->
+ACCEPTED ManagedOrders with locked-SELL add-back; tickers lastPrice -> avg_px.
+
+seeded_size = availableToWithdraw + locked_sell_qty = total held base asset.
+Using walletBalance instead would double-count: walletBalance already includes locked-sell qty,
+so walletBalance + locked_sell_qty > total. The live smoke (Task 11) is ground-truth for the
+real demo wallet field shape."""
 
 from __future__ import annotations
 
@@ -24,8 +29,11 @@ def test_connect_seeds_from_unified_wallet_and_open_orders():
             assert params == {"accountType": "UNIFIED"}
             return {"retCode": 0, "result": {"list": [
                 {"accountType": "UNIFIED", "coin": [
-                    {"coin": "BTC", "walletBalance": "0.5"},
-                    {"coin": "USDT", "walletBalance": "5000"},
+                    # walletBalance=0.5 is TOTAL (free 0.35 + locked-sell 0.15);
+                    # availableToWithdraw=0.35 is the FREE portion (excludes locked sell qty).
+                    # seeded_size = availableToWithdraw(0.35) + locked_sell(0.15) = 0.5 (correct total).
+                    {"coin": "BTC", "walletBalance": "0.5", "availableToWithdraw": "0.35"},
+                    {"coin": "USDT", "walletBalance": "5000", "availableToWithdraw": "5000"},
                 ]}]}}
         if path == "/v5/order/realtime":
             assert params == {"category": "spot", "symbol": "BTCUSDT"}
@@ -40,8 +48,8 @@ def test_connect_seeds_from_unified_wallet_and_open_orders():
 
     snap = _client(_transport, _public).connect()
     assert isinstance(snap, ReconcileSnapshot)
-    # seeded = walletBalance(0.5) + locked_sell(0.2 - 0.05 = 0.15) = 0.65
-    assert snap.positions == (("BTCUSDT", 0.65),)
+    # seeded = availableToWithdraw(0.35) + locked_sell(0.2 - 0.05 = 0.15) = 0.5 (= walletBalance total, correct)
+    assert snap.positions == (("BTCUSDT", 0.5),)
     assert snap.position_avg_px == (("BTCUSDT", 68000.0),)
     assert len(snap.open_orders) == 1
     mo = snap.open_orders[0]

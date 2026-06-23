@@ -68,7 +68,11 @@ class BybitSpotExecutionClient(CryptoExecutionClient):
     def iter_balances(self, result):
         for acct in result.get("list", []):
             for coin in acct.get("coin", []):
-                yield {"asset": coin.get("coin"), "free": coin.get("walletBalance", 0)}
+                # Use availableToWithdraw (UNIFIED field: total minus qty locked in open sell orders)
+                # so the base's seeded_size = availableToWithdraw + locked_sell_qty = total held base.
+                # walletBalance is the TOTAL balance and would double-count locked sell qty.
+                free = coin.get("availableToWithdraw", coin.get("walletBalance", 0))
+                yield {"asset": coin.get("coin"), "free": free}
 
     def iter_open_orders(self, result):
         for o in result.get("list", []):
@@ -84,8 +88,8 @@ class BybitSpotExecutionClient(CryptoExecutionClient):
             }
 
     def parse_mark_px(self, ticker_resp) -> float:
-        result = ticker_resp.get("result", ticker_resp)  # public transport returns the raw envelope
-        lst = result.get("list", [])
+        # ticker_resp is already unwrapped by the base: parse_mark_px(self.unwrap(raw_ticker)) -> {"list":[...]}
+        lst = ticker_resp.get("list", [])
         return float(lst[0].get("lastPrice", 0) or 0) if lst else 0.0
 
     def is_order_not_found(self, code) -> bool:
