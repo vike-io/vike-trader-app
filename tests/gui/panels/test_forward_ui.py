@@ -140,7 +140,8 @@ def test_render_forward_works_with_an_omshub(app):
     win._render_forward()
     assert "FORWARD" in win.crumb.text()
     assert len(win._fwd_bars) == 3           # _render_forward read oms.engine.bars + oms.equity_curve
-    assert oms.account is not None           # the OmsHub also folded fills into its event-derived Account
+    # the buy fill actually reached the event-derived Account (FillEvent -> bus -> Account), via the render path
+    assert oms.account.positions[("sim", "BTCUSDT", "BOTH")]["size"] == 1.0
     win._stop_forward()
     assert win._forward is None
     win.close()
