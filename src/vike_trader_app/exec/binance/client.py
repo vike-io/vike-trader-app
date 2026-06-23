@@ -7,10 +7,9 @@ arrives from the WS). qty/price are formatted to the symbol's step/tick as decim
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 from vike_trader_app.exec.binance.format import format_price, format_qty
 from vike_trader_app.exec.binance.transport import BinanceApiError, get_public_json, signed_request
+from vike_trader_app.exec.crypto_client import ReconcileSnapshot, VenueApiError  # noqa: F401 re-export
 from vike_trader_app.exec.events import (
     OrderAccepted,
     OrderRejected,
@@ -18,15 +17,6 @@ from vike_trader_app.exec.events import (
     OrderSubmitted,
 )
 from vike_trader_app.exec.order import ManagedOrder, OrderStatus
-
-
-@dataclass(frozen=True)
-class ReconcileSnapshot:
-    positions: tuple[tuple[str, float], ...] = ()
-    open_orders: tuple[ManagedOrder, ...] = ()
-    # Per-position mark price at reconcile time — seeded as avg_px so an immediate close is ~0 PnL
-    # instead of garbage (true cost basis is unknown for a pre-existing holding).
-    position_avg_px: tuple[tuple[str, float], ...] = ()
 
 
 class BinanceSpotExecutionClient:

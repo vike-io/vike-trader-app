@@ -12,15 +12,14 @@ import urllib.error
 import urllib.request
 
 from vike_trader_app.data.rest import get_json
+from vike_trader_app.exec.crypto_client import VenueApiError
 
 
-class BinanceApiError(RuntimeError):
+class BinanceApiError(VenueApiError):
     """A Binance {code, msg} error response (HTTP 4xx)."""
 
     def __init__(self, code: int, msg: str) -> None:
-        super().__init__(f"binance error {code}: {msg}")
-        self.code = code
-        self.msg = msg
+        super().__init__(code, msg)
 
 
 def signed_request(base_url: str, path: str, method: str, params: dict, signer,
