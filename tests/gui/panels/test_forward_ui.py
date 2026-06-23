@@ -130,6 +130,23 @@ def test_load_symbol_is_cache_first_when_fresh(app, monkeypatch):
     win.close()
 
 
+def test_render_forward_works_with_an_omshub(app):
+    from vike_trader_app.exec.oms import OmsHub
+    win = MainWindow()
+    oms = OmsHub(symbol="BTCUSDT", interval="1m", strategy=_BuyFirst(), cash=10_000.0)
+    win._forward = oms
+    for i, c in enumerate((100.0, 110.0, 120.0)):
+        oms.on_bar_live(_bar(i * 60_000, c))
+    win._render_forward()
+    assert "FORWARD" in win.crumb.text()
+    assert len(win._fwd_bars) == 3           # _render_forward read oms.engine.bars + oms.equity_curve
+    # the buy fill actually reached the event-derived Account (FillEvent -> bus -> Account), via the render path
+    assert oms.account.positions[("sim", "BTCUSDT", "BOTH")]["size"] == 1.0
+    win._stop_forward()
+    assert win._forward is None
+    win.close()
+
+
 def test_studio_agent_unconfigured_without_key(app, monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("CEREBRAS_API_KEY", raising=False)

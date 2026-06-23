@@ -50,6 +50,7 @@ class PaperTester:
         on_step=None,
         created_ts: int = 0,
         _persist: bool = True,
+        risk=None,
     ) -> None:
         self.symbol = symbol
         self.interval = interval
@@ -61,7 +62,7 @@ class PaperTester:
         seed = list(seed_bars or [])
         self.engine = BacktestEngine(
             seed, strategy, fee_rate=fee_rate, cash=cash, timeframes=timeframes,
-            slippage=slippage, maker_fee=maker_fee, taker_fee=taker_fee,
+            slippage=slippage, maker_fee=maker_fee, taker_fee=taker_fee, risk=risk,
         )
         # Warm up strategy/indicator state on the seed without recording a live curve.
         self._i = 0

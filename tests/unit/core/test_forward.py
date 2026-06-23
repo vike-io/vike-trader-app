@@ -152,3 +152,22 @@ def test_paper_tester_new_name_and_backcompat_shim():
     from vike_trader_app.core.paper import PaperTester
     from vike_trader_app.core import forward as _shim
     assert _shim.ForwardTester is PaperTester  # old import path still resolves
+
+
+def test_paper_tester_risk_gate_denies_an_over_notional_open():
+    from vike_trader_app.exec.risk import RiskGate, RiskLimits
+    ft = PaperTester(symbol="X", interval="1m", strategy=_BuyThenClose(), cash=10_000.0,
+                     risk=RiskGate(RiskLimits(max_notional_per_order=10.0)))
+    for bar in _bars():
+        ft.on_bar_live(bar)
+    # buy 1 @ ~110 = 110 notional > 10 -> denied -> no round trip
+    assert ft.result().trades == []
+
+
+def test_paper_tester_risk_none_is_unchanged():
+    a = PaperTester(symbol="X", interval="1m", strategy=_BuyThenClose(), cash=10_000.0)
+    b = PaperTester(symbol="X", interval="1m", strategy=_BuyThenClose(), cash=10_000.0, risk=None)
+    for bar in _bars():
+        a.on_bar_live(bar); b.on_bar_live(bar)
+    assert a.result().final_equity == b.result().final_equity
+    assert [t.pnl for t in a.result().trades] == [t.pnl for t in b.result().trades]
