@@ -8,35 +8,40 @@ arrives from the WS). qty/price are formatted to the symbol's step/tick as decim
 from __future__ import annotations
 
 from vike_trader_app.exec.binance.format import format_price, format_qty
-from vike_trader_app.exec.binance.transport import BinanceApiError, get_public_json, signed_request
-from vike_trader_app.exec.crypto_client import ReconcileSnapshot, VenueApiError  # noqa: F401 re-export
-from vike_trader_app.exec.events import (
-    OrderAccepted,
-    OrderRejected,
-    OrderRequest,
-    OrderSubmitted,
+from vike_trader_app.exec.binance.transport import (
+    BinanceApiError,
+    get_public_json,
+    signed_request,
 )
-from vike_trader_app.exec.order import ManagedOrder, OrderStatus
+from vike_trader_app.exec.crypto_client import (  # re-export
+    CryptoExecutionClient,
+    ReconcileSnapshot,
+    VenueApiError,
+)
+
+__all__ = ["BinanceSpotExecutionClient", "ReconcileSnapshot", "BinanceApiError", "VenueApiError"]
 
 
-class BinanceSpotExecutionClient:
+class BinanceSpotExecutionClient(CryptoExecutionClient):
     """REST half of the live spot client (ACK-only); fills come from the user-data WS."""
+
+    VENUE = "binance"
+    PATH_ORDER_CREATE = "/api/v3/order"
+    PATH_ORDER_CANCEL = "/api/v3/order"
+    PATH_OPEN_ORDERS = "/api/v3/openOrders"
+    PATH_ACCOUNT = "/api/v3/account"
+    PATH_TICKER = "/api/v3/ticker/price"
+    CREATE_METHOD = "POST"
+    CANCEL_METHOD = "DELETE"
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
                  base_asset: str = "", transport=signed_request,
                  public_transport=get_public_json) -> None:
-        self.bus = bus
-        self._signer = signer
-        self._base = rest_base_url
-        self._symbol = symbol
-        self._filters = filters
-        self._base_asset = base_asset
-        self._transport = transport
-        self._public_transport = public_transport
+        super().__init__(bus, signer=signer, rest_base_url=rest_base_url, symbol=symbol,
+                         filters=filters, base_asset=base_asset, transport=transport,
+                         public_transport=public_transport)
 
-    def submit(self, request: OrderRequest) -> None:
-        """Publish OrderSubmitted, POST the order (ACK), publish OrderAccepted/OrderRejected."""
-        self.bus.publish(OrderSubmitted(client_order_id=request.client_order_id, ts=request.ts))
+    def build_order_params(self, request) -> dict:
         params = {
             "symbol": self._symbol,
             "side": "BUY" if request.side > 0 else "SELL",
@@ -48,77 +53,45 @@ class BinanceSpotExecutionClient:
         if request.order_type.lower() == "limit":
             params["timeInForce"] = "GTC"
             params["price"] = format_price(request.price, self._filters["tick_size"])
-        try:
-            resp = self._transport(self._base, "/api/v3/order", "POST", params, self._signer)
-        except BinanceApiError as exc:
-            self.bus.publish(OrderRejected(client_order_id=request.client_order_id,
-                                           reason=exc.msg, ts=request.ts))
-            return
-        self.bus.publish(OrderAccepted(client_order_id=request.client_order_id,
-                                       venue_order_id=str(resp.get("orderId", "")), ts=request.ts))
+        return params
 
-    def cancel(self, client_order_id: str) -> None:
-        """DELETE the resting order; the OrderCanceled state change arrives via the WS.
+    def build_cancel_params(self, client_order_id) -> dict:
+        return {"symbol": self._symbol, "origClientOrderId": client_order_id}
 
-        -2011 ("Unknown order") means the order is already gone (filled/canceled by the WS);
-        swallow it silently — the terminal state has already been/will be delivered via the WS.
-        Any other error code is re-raised.
-        """
-        try:
-            self._transport(self._base, "/api/v3/order", "DELETE",
-                            {"symbol": self._symbol, "origClientOrderId": client_order_id},
-                            self._signer)
-        except BinanceApiError as exc:
-            if exc.code == -2011:
-                return  # order already gone — WS delivered/will deliver the terminal state
-            raise
+    def build_account_params(self) -> dict:
+        return {}
 
-    def connect(self) -> ReconcileSnapshot:
-        """Reconcile on connect (MAIN thread): base-asset free balance -> position; open orders ->
-        ACCEPTED ManagedOrders so a later fill/cancel on a prior-session order is a legal FSM edge.
+    def build_open_orders_params(self) -> dict:
+        return {"symbol": self._symbol}
 
-        Position size = free_base + locked_sell_qty (base locked in resting SELL orders) so that
-        a fill on a reconciled SELL doesn't phantom-drive the position negative.
-        avg_px is seeded from the current mark price (GET /api/v3/ticker/price) so an immediate
-        close yields ~0 PnL instead of garbage (true cost basis is unknown for pre-existing lots).
-        """
-        account = self._transport(self._base, "/api/v3/account", "GET", {}, self._signer)
-        free = 0.0
-        for bal in account.get("balances", []):
-            if bal.get("asset") == self._base_asset:
-                free = float(bal.get("free", 0) or 0)
-                break
+    def build_ticker_params(self) -> dict:
+        return {"symbol": self._symbol}
 
-        raw = self._transport(self._base, "/api/v3/openOrders", "GET",
-                              {"symbol": self._symbol}, self._signer)
+    def parse_venue_order_id(self, resp) -> str:
+        return str(resp.get("orderId", ""))
 
-        # Add back base qty locked in resting SELL orders so position is never phantom-negative.
-        locked_sell_qty = 0.0
-        orders: list[ManagedOrder] = []
-        for o in raw:
-            if o.get("side") == "SELL":
-                orig = float(o.get("origQty", 0) or 0)
-                executed = float(o.get("executedQty", 0) or 0)
-                locked_sell_qty += max(0.0, orig - executed)
-            req = OrderRequest(
-                client_order_id=str(o.get("clientOrderId", "")), venue="binance",
-                symbol=self._symbol, side=+1 if o.get("side") == "BUY" else -1,
-                qty=float(o.get("origQty", 0) or 0), order_type=str(o.get("type", "")).lower(),
-                price=float(o["price"]) if o.get("price") not in (None, "", "0", "0.00000000") else None,
-            )
-            mo = ManagedOrder(request=req, status=OrderStatus.ACCEPTED,
-                              venue_order_id=str(o.get("orderId", "")))
-            orders.append(mo)
+    def iter_balances(self, account_resp):
+        for b in account_resp.get("balances", []):
+            yield {"asset": b.get("asset"), "free": b.get("free", 0)}
 
-        seeded_size = free + locked_sell_qty
+    def iter_open_orders(self, resp):
+        for o in resp:
+            price = o.get("price")
+            yield {
+                "side": +1 if o.get("side") == "BUY" else -1,
+                "orig_qty": float(o.get("origQty", 0) or 0),
+                "executed_qty": float(o.get("executedQty", 0) or 0),
+                "coid": str(o.get("clientOrderId", "")),
+                "order_type": str(o.get("type", "")).lower(),
+                "price": float(price) if price not in (None, "", "0", "0.00000000") else None,
+                "venue_order_id": str(o.get("orderId", "")),
+            }
 
-        # Fetch current mark price (unsigned public endpoint) — unknown true cost, so seed avg_px at
-        # mark so an immediate close yields ~0 PnL instead of garbage.
-        ticker = self._public_transport(self._base, "/api/v3/ticker/price",
-                                        {"symbol": self._symbol})
-        mark_px = float(ticker.get("price", 0) or 0)
+    def parse_mark_px(self, ticker_resp) -> float:
+        return float(ticker_resp.get("price", 0) or 0)
 
-        positions = ((self._symbol, seeded_size),)
-        position_avg_px = ((self._symbol, mark_px),)
-        return ReconcileSnapshot(positions=positions, open_orders=tuple(orders),
-                                 position_avg_px=position_avg_px)
+    def is_order_not_found(self, code) -> bool:
+        return code == -2011
+
+    def unwrap(self, resp):
+        return resp  # the Binance transport already raised BinanceApiError on a 4xx body
