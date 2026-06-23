@@ -75,12 +75,12 @@ class TitleBar(QtWidgets.QWidget):
                 b = QtWidgets.QToolButton()
                 b.setText(glyph)
                 b.setToolTip(tip)
-                b.setFixedSize(46, TITLEBAR_H)
+                b.setFixedSize(30, TITLEBAR_H)   # match the chart/tool window controls (unifiedbar _BTN_W=30)
                 b.setCursor(QtCore.Qt.PointingHandCursor)
                 hover = "#c42b1c" if danger else theme.PANEL
                 b.setStyleSheet(
                     f"QToolButton{{border:none;background:transparent;color:{theme.TEXT2};"
-                    f"font-size:13px;}}"
+                    f"font-size:15px;}}"   # match unifiedbar _BTN_PX=15 so the glyphs read identical
                     f"QToolButton:hover{{background:{hover};color:{theme.TEXT};}}"
                 )
                 b.clicked.connect(slot)
