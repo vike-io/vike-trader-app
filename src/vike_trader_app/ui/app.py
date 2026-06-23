@@ -3036,9 +3036,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if cfg is None:
             return False
 
-        from ..data.instrument_db import parse_symbol_filters
         from ..exec.accounting import Account
-        from ..exec.binance.client import BinanceSpotExecutionClient
         from ..exec.binance.transport import get_public_json
         from ..exec.bus import EventBus
         from ..exec.live_oms import LiveOmsHub
@@ -3046,16 +3044,33 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..ui.private_user_data import LiveExecutionSession
 
         symbol = self._symbol
-        info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": symbol})
-        filters = parse_symbol_filters(info).get(symbol, {
-            "tick_size": 0.01, "step_size": 0.001, "min_qty": 0.0, "max_qty": 0.0,
-            "min_notional": 0.0})
-        base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
-                           if s.get("symbol") == symbol), "")
-        bus = EventBus()
-        client = BinanceSpotExecutionClient(
-            bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
-            filters=filters, base_asset=base_asset)
+        if venue == "bybit":
+            from ..exec.bybit.client import BybitSpotExecutionClient
+            from ..exec.bybit.instruments import parse_bybit_instruments_info
+            info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
+                                   {"category": "spot", "symbol": symbol})
+            parsed = parse_bybit_instruments_info(info)
+            f = parsed.get(symbol, {"tick_size": 0.0, "step_size": 0.0, "min_qty": 0.0,
+                                    "max_qty": 0.0, "min_notional": 0.0, "base_asset": ""})
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client = BybitSpotExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+                filters=filters, base_asset=base_asset)
+        else:
+            from ..data.instrument_db import parse_symbol_filters
+            from ..exec.binance.client import BinanceSpotExecutionClient
+            info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": symbol})
+            filters = parse_symbol_filters(info).get(symbol, {
+                "tick_size": 0.01, "step_size": 0.001, "min_qty": 0.0, "max_qty": 0.0,
+                "min_notional": 0.0})
+            base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
+                               if s.get("symbol") == symbol), "")
+            bus = EventBus()
+            client = BinanceSpotExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+                filters=filters, base_asset=base_asset)
         gate = RiskGate(RiskLimits(
             tick_size=filters["tick_size"] or None, lot_size=filters["step_size"] or None,
             min_notional=filters["min_notional"] or None))
