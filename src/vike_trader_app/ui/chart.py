@@ -523,7 +523,7 @@ class _IndicatorPicker(dropdowns.PopupCard):
         super().__init__(parent, object_name="pickerCard", extra_qss=(
             f"QLineEdit{{background:{theme.BG};border:1px solid {theme.BORDER};"   # grey when idle
             f"border-radius:10px;padding:9px 12px;color:{theme.TEXT};font-size:14px;}}"
-            f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"   # green when active — unified with command box
+            f"QLineEdit:focus{{border:1px solid {theme.hsl(148, 50, 42)};outline:none;}}"   # deeper green (ACCENT blooms thick at 1px on HiDPI); unified with command box
             f"QPushButton#tab{{background:transparent;border:none;color:{theme.TEXT3};"
             f"padding:6px 13px;border-radius:9px;font-size:13px;font-weight:600;}}"
             f"QPushButton#tab:hover{{color:{theme.TEXT2};}}"
@@ -1722,11 +1722,10 @@ class PriceChart(pg.PlotWidget):
         axis = TimeAxis(orientation="bottom")
         super().__init__(axisItems={"bottom": axis, "right": PriceAxis(orientation="right")})
         self._time_axis = axis
-        # Repaint only the dirty region on a scene change, NOT the whole viewport (pyqtgraph's
-        # FullViewportUpdate default). A crosshair move otherwise forces the entire grid+axes+candles
-        # to redraw every mouse move (~20-50ms at full screen); MinimalViewportUpdate repaints just the
-        # crosshair strips → ~8ms (~2-6x faster). Paired with CandlestickItem's visible-window paint.
-        self.setViewportUpdateMode(QtWidgets.QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
+        # NB: do NOT force MinimalViewportUpdate here — make_chart_card (chartdoc.py) deliberately
+        # uses FullViewportUpdate because the chart viewport is TRANSPARENT (rounded card); Minimal
+        # leaves stale trails on a transparent viewport. The crosshair-lag win is the visible-window
+        # CandlestickItem.paint(), which helps regardless of update mode.
         self.setBackground(theme.CHART_BG)
         # Price scale on the RIGHT (TradingView / Lightweight-Charts convention).
         self.showAxis("right")

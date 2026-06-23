@@ -75,7 +75,10 @@ class CommandBar(QtWidgets.QWidget):
         self.box.setStyleSheet(
             f"QLineEdit{{background:{theme.RAISE};border:1px solid {theme.BORDER};"   # grey when idle
             f"border-radius:6px;padding:0 10px;color:{theme.TEXT};font-size:12px;}}"
-            f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"   # green when active; full border = clean repaint
+            # deeper green than ACCENT: at 1px the bright ACCENT optically "blooms" thick (worse on
+            # HiDPI where 1px≈1.5-2 physical px); hsl(148,50,42) reads as a thin 1px line. outline:none
+            # is belt-and-suspenders against any native focus ring.
+            f"QLineEdit:focus{{border:1px solid {theme.hsl(148, 50, 42)};outline:none;}}"
         )
         self.box.returnPressed.connect(self._submit)
         self._history: list[str] = []
