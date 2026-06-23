@@ -279,6 +279,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # symbol/interval, tab-able next to the spaces and tear-out-able to a floating window.
         # LiveHub keeps the visible ones' live edges ticking with one round-robin fetch worker.
         self._live_hub = LiveHub(self)
+        self._exec_session = None   # LiveExecutionSession when live exec is gated ON (Phase 3b)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
@@ -3010,6 +3011,60 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             w.setEnabled(on)
 
+    def _maybe_start_live_exec(self) -> bool:
+        """Gate live exec on explicit flag + creds presence (GUI process only). Returns True when a
+        LiveExecutionSession was built. VIKE_DISABLE_LIVE (headless) or blank flags/absent creds ->
+        stay paper (the default) and start no worker."""
+        import os
+        import time
+
+        if os.environ.get("VIKE_DISABLE_LIVE"):
+            return False
+        venue = (os.environ.get("VIKE_EXEC_VENUE") or "").strip()
+        env_name = (os.environ.get("VIKE_EXEC_ENV") or "").strip().upper()
+        if not venue or not env_name:
+            return False
+
+        from ..exec.credentials import Environment
+        from ..exec.venue_config import resolve_venue_config
+
+        try:
+            environment = Environment[env_name]
+        except KeyError:
+            return False
+        cfg = resolve_venue_config(venue, environment, now_ms=lambda: int(time.time() * 1000))
+        if cfg is None:
+            return False
+
+        from ..data.instrument_db import parse_symbol_filters
+        from ..exec.accounting import Account
+        from ..exec.binance.client import BinanceSpotExecutionClient
+        from ..exec.binance.transport import get_public_json
+        from ..exec.bus import EventBus
+        from ..exec.live_oms import LiveOmsHub
+        from ..exec.risk import RiskGate, RiskLimits
+        from ..ui.private_user_data import LiveExecutionSession
+
+        symbol = self._symbol
+        info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": symbol})
+        filters = parse_symbol_filters(info).get(symbol, {
+            "tick_size": 0.01, "step_size": 0.001, "min_qty": 0.0, "max_qty": 0.0,
+            "min_notional": 0.0})
+        base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
+                           if s.get("symbol") == symbol), "")
+        bus = EventBus()
+        client = BinanceSpotExecutionClient(
+            bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+            filters=filters, base_asset=base_asset)
+        gate = RiskGate(RiskLimits(
+            tick_size=filters["tick_size"] or None, lot_size=filters["step_size"] or None,
+            min_notional=filters["min_notional"] or None))
+        hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
+                         venue=venue, symbol=symbol, now_ms=lambda: int(time.time() * 1000))
+        hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
+        self._exec_session = LiveExecutionSession(hub)
+        return True
+
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
         self._apply_titlebar_color()  # native caption colour needs a live HWND (post-show)
@@ -3442,6 +3497,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_forward()
         if getattr(self, "_live_hub", None) is not None:
             self._live_hub.shutdown()            # chart-document live round-robin + its worker
+        if getattr(self, "_exec_session", None) is not None:
+            self._exec_session.shutdown()        # live exec workers + LiveOmsHub detach (Phase 3b)
+            self._exec_session = None
         self._stop_live_updates()
         if getattr(self, "_live_worker", None) is not None:
             self._live_worker.wait(2000)
