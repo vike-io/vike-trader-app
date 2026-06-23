@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from vike_trader_app.exec.credentials import Credentials, Environment, load_credentials
-from vike_trader_app.exec.signer import BinanceHmacSigner, BybitV5Signer
+from vike_trader_app.exec.signer import BinanceHmacSigner, BybitV5Signer, OKXV5Signer
 
 BINANCE_DEMO_REST = "https://demo-api.binance.com"
 BINANCE_MAINNET_REST = "https://api.binance.com"
@@ -29,6 +29,10 @@ BINANCE_MAINNET_WS_DEFAULT = "wss://stream.binance.com:9443/ws"
 
 BYBIT_DEMO_REST = "https://api-demo.bybit.com"
 BYBIT_MAINNET_REST = "https://api.bybit.com"
+
+# OKX: demo and mainnet share the same REST host; the x-simulated-trading:1 header (a transport
+# concern) is the only distinction between demo and mainnet at the HTTP level.
+OKX_REST = "https://www.okx.com"
 
 
 @dataclass(frozen=True)
@@ -66,7 +70,20 @@ def _resolve_bybit(venue: str, env: Environment, creds: Credentials,
                        credentials=creds, signer=signer)
 
 
-_VENUE_BUILDERS = {"binance": _resolve_binance, "bybit": _resolve_bybit}
+def _resolve_okx(venue: str, env: Environment, creds: Credentials,
+                 now_ms: Callable[[], int]) -> VenueConfig:
+    # Demo and mainnet share the same REST host; env override still supported for test injection.
+    if env is Environment.MAINNET:
+        rest = os.environ.get("OKX_MAINNET_BASE_URL") or OKX_REST
+    else:
+        rest = os.environ.get("OKX_DEMO_BASE_URL") or OKX_REST
+    signer = OKXV5Signer(creds, now_ms=now_ms)
+    # WS user-data fill stream is DEFERRED — empty ws_base_url for now.
+    return VenueConfig(venue=venue, environment=env, rest_base_url=rest, ws_base_url="",
+                       credentials=creds, signer=signer)
+
+
+_VENUE_BUILDERS = {"binance": _resolve_binance, "bybit": _resolve_bybit, "okx": _resolve_okx}
 
 
 def resolve_venue_config(venue: str, env: Environment, *, now_ms: Callable[[], int],
