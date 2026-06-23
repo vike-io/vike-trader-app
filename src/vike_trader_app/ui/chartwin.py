@@ -150,7 +150,12 @@ class ChartWindowFrame(QtWidgets.QFrame):
             self._style_btn.setIconSize(QtCore.QSize(16, 16))
             self._style_btn.setToolTip(f"Chart style · {getattr(_chart, '_style', 'Candles')}")
             self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self._style_btn.setStyleSheet(_chip_qss("titleStyle"))
+            # tight brand style: NO horizontal padding so the icon hugs the symbol (~14px gap)
+            self._style_btn.setStyleSheet(
+                f"#titleStyle{{background:transparent;border:none;padding:1px 0px;"
+                f"border-radius:{theme.RADIUS_SM}px;}}"
+                f"#titleStyle:hover{{background:{theme.HOVER};}}"
+                f"#titleStyle::menu-indicator{{image:none;width:0px;}}")
             _sm = QtWidgets.QMenu(self._style_btn)
             _sm.setStyleSheet(_popup_qss())
             for _sec, _styles in chart_styles.STYLE_SECTIONS:
@@ -181,9 +186,10 @@ class ChartWindowFrame(QtWidgets.QFrame):
             for _c in (self._ivl_btn, self._style_btn, self._range_btn):
                 _c.menu().aboutToHide.connect(lambda b=_c: self._clear_chip_hover(b))
 
-            # even ~20px gaps between brand / symbol / chips (4px chip padding each side + the
-            # spacing below ≈ 20px glyph-to-glyph). Per-instance so tool/panel bars are unaffected.
-            self._bar.tune_spacing(main=12, status=8)
+            # Tight ~14px brand-icon→symbol gap (as before), but ~20px between symbol and the chips:
+            # small `main` spacing keeps the icon close to the symbol, while the statusbox left margin
+            # pushes the chip cluster out. Per-instance so tool/panel bars are unaffected.
+            self._bar.tune_spacing(main=6, status=8, status_margin=8)
         self._feed_badge = FeedBadge() if feed else None   # per-window data state (chart only)
         if self._feed_badge is not None:
             self._bar.add_status(self._feed_badge)
