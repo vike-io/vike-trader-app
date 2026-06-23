@@ -16,6 +16,7 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from ..analysis import metrics
 from ..core.engine import BacktestEngine
 from ..core.paper import PaperTester, pump
+from ..exec.oms import OmsHub
 from ..core.strategy_loader import load_strategy_from_file
 from ..data.binance_source import interval_ms
 from ..data.cache import DEFAULT_ROOT, get_bars
@@ -2914,7 +2915,7 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             QtWidgets.QApplication.restoreOverrideCursor()
 
-        self._forward = PaperTester(
+        self._forward = OmsHub(
             symbol=symbol, interval=interval, strategy=self._strategy_factory(),
             cash=_FORWARD_CASH, fee_rate=_FORWARD_FEE, seed_bars=seed,
             store=self.store, on_step=None, created_ts=int(time.time() * 1000),
