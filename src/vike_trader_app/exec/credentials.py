@@ -34,7 +34,7 @@ class Credentials:
 def env_var_names(venue: str, env: Environment) -> tuple[str, str, str]:
     """The (key, secret, passphrase) env-var names for a venue/environment. The ONE naming site."""
     prefix = f"{venue.upper()}_{env.value}"
-    return (f"{prefix}_API_KEY", f"{prefix}_API_SECRET", f"{prefix}_PASSPHRASE")
+    return (f"{prefix}_API_KEY", f"{prefix}_API_SECRET", f"{prefix}_API_PASSPHRASE")
 
 
 def load_credentials(venue: str, env: Environment) -> Credentials | None:
