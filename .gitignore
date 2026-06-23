@@ -62,6 +62,8 @@ _pytest.txt
 _val.txt
 # stdout/stderr from launching the GUI detached (Start-Process … > launch.out.log 2> launch.err.log)
 launch.*.log
+# `python -X importtime` profiling dumps (perf_app.txt, perf_data.txt)
+perf_*.txt
 
 # ---- OS ----
 .DS_Store
