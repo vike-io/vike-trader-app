@@ -73,9 +73,9 @@ class CommandBar(QtWidgets.QWidget):
         self.box.setFixedHeight(24)
         self.box.setMaximumWidth(520)
         self.box.setStyleSheet(
-            f"QLineEdit{{background:{theme.RAISE};border:1px solid {theme.BORDER};"
+            f"QLineEdit{{background:{theme.RAISE};border:1px solid {theme.BORDER};"   # grey when idle
             f"border-radius:6px;padding:0 10px;color:{theme.TEXT};font-size:12px;}}"
-            f"QLineEdit:focus{{border-color:{theme.ACCENT};}}"
+            f"QLineEdit:focus{{border:1px solid {theme.ACCENT};}}"   # green when active; full border = clean repaint
         )
         self.box.returnPressed.connect(self._submit)
         self._history: list[str] = []

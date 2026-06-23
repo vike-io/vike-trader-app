@@ -61,15 +61,17 @@ def test_chart_frame_gets_single_title_unified_bar(app):
     frame = win._chart_frames[-1]
     assert isinstance(frame._bar, UnifiedTitleBar)
     assert {"min", "max", "close"} <= set(frame._bar._buttons)   # ⧉ dropped (float by menu)
-    # the live-ticker title flows through the frame's own bar (one MC title, not a 9-tab strip)
-    assert frame._bar._title.text() == doc.title() == "BTCUSDT · 1m"
+    # the frame's bar shows the SYMBOL as the title (one MC title, not a 9-tab strip); the interval
+    # is carried by the picker chip beside it, not appended to the title text
+    assert frame._bar._title.text() == "BTCUSDT"
+    assert frame._ivl_btn.text() == "1m"
     win.close()
 
 
-def test_chart_frame_is_link_member_with_header_dots(app):
-    """Keystone: there's no central chart link-bus member with header dots anymore. Each chart
-    FRAME's bar adopts the doc's ● symbol + ◆ interval link dots, and the doc is the bus member;
-    recolouring via the doc's setters updates the model."""
+def test_chart_frame_is_link_member_without_header_dots(app):
+    """The doc is the link-bus member and its link-group setters still drive the model, but the
+    ○ symbol + ◆ interval link dots are NO LONGER surfaced in the frame's title bar (decluttered) —
+    they stay on the ChartDocument, just unadopted by the window chrome."""
     from vike_trader_app.ui.panels import LinkDot
 
     win = MainWindow(session_path=None)
@@ -81,8 +83,9 @@ def test_chart_frame_is_link_member_with_header_dots(app):
 
     assert doc in win._link_bus._members            # the DOC is the bus member (not the window)
     assert hasattr(doc, "link_group") and callable(doc.apply_link)
-    # the frame's title bar carries the doc's ● symbol + ◆ interval link dots
-    assert len(frame._bar._statusbox.findChildren(LinkDot)) >= 2   # ● + ◆
+    # the link dots live on the doc but are NOT put in the title bar's status cluster
+    assert frame._bar._statusbox.findChildren(LinkDot) == []
+    assert doc._link_dot is not None and doc._ivl_dot is not None   # model widgets still exist
     doc._set_link_group(2)
     assert doc.link_group == 2
     doc._set_interval_link_group(3)

@@ -78,45 +78,109 @@ class ChartWindowFrame(QtWidgets.QFrame):
             title=title if title is not None else doc.title(),
             icon=icon if icon is not None
             else style_icon("Candles", theme.ACCENT).pixmap(16, 16))
-        # adopt the doc's symbol-link (●) + interval-link (◆) dots into the title bar's status
-        # cluster (MC link colours live on the window chrome, not buried in the chart toolbar)
-        for _dot in (getattr(doc, "_link_dot", None), getattr(doc, "_ivl_dot", None)):
-            if _dot is not None:
-                self._bar.add_status(_dot)
-        self._feed_badge = FeedBadge() if feed else None   # per-window data state (chart only)
-        if self._feed_badge is not None:
-            self._bar.add_status(self._feed_badge)
-        # Interval picker IN the title bar — choose the timeframe straight from the window header
-        # (not just the chart's ƒx toolbar row). Reuses the chart's intervalChosen signal, which the
-        # ChartDocument already routes to load(interval), so the chart + title update for free.
-        self._ivl_btn = None
+        # Symbol-link (○) + interval-link (◆) dots are NOT adopted into the title bar (decluttered);
+        # they stay on the ChartDocument (link-group bus plumbing untouched), just not surfaced here.
+        #
+        # Chart-window title-bar layout reads "BTCUSDT  1m  ● LIVE": the title label carries the
+        # SYMBOL ONLY (restyled 14px / weight 300 / proportional via style_title), then an interval
+        # PICKER chip (same size/weight, no ▾ arrow), then the feed badge. The interval lives in the
+        # picker, so it's dropped from the title text (no more "· 1m").
+        # Chart-window title-bar controls: interval / ƒx indicators / chart-type / date-range chips,
+        # all 14px / weight 300 / proportional to match the symbol. They drive the chart via its
+        # public signals/methods (the chart's own toolbar omits them — see PriceChart title_controls).
+        self._ivl_btn = self._fx_btn = self._style_btn = self._range_btn = None
         _chart = getattr(doc, "chart", None)
         if _chart is not None and hasattr(_chart, "intervalChosen"):
-            from .chart import _TIMEFRAMES
-            self._ivl_btn = QtWidgets.QPushButton(f"{getattr(doc, 'interval', '1m')} ▾")
+            from .chart import _TIMEFRAMES, _RANGES
+            from . import chart_styles
+            # NB: style_icon is already imported at module scope — do NOT re-import it locally here
+            # (a function-local import would shadow it and UnboundLocalError the earlier use above).
+
+            def _chip_qss(name: str, *, arrow: bool = False) -> str:
+                hide_ind = "" if arrow else f"#{name}::menu-indicator{{image:none;width:0px;}}"
+                return (
+                    f"#{name}{{background:transparent;border:none;color:{theme.TEXT2};font-size:14px;"
+                    f"font-weight:300;padding:1px 6px;border-radius:{theme.RADIUS_SM}px;}}"
+                    f"#{name}:hover{{color:{theme.TEXT};background:{theme.HOVER};}}" + hide_ind
+                )
+
+            def _popup_qss() -> str:
+                return (
+                    f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
+                    f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
+                    f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
+                    f"color:{theme.TEXT2};}}"
+                    f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
+                    f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
+                )
+
+            self._bar.style_title(px=14, weight=300)           # symbol "same" as the chips beside it
+            self._bar.set_title(getattr(doc, "symbol", doc.title()))   # symbol only, not "SYM · ivl"
+
+            # interval picker — no ▾ arrow (per request)
+            self._ivl_btn = QtWidgets.QPushButton(f"{getattr(doc, 'interval', '1m')}")
             self._ivl_btn.setObjectName("titleIvl")
             self._ivl_btn.setCursor(QtCore.Qt.PointingHandCursor)
-            self._ivl_btn.setStyleSheet(
-                f"#titleIvl{{background:transparent;border:none;color:{theme.TEXT2};"
-                f"font-size:11px;font-weight:600;padding:1px 6px;border-radius:{theme.RADIUS_SM}px;}}"
-                f"#titleIvl:hover{{color:{theme.TEXT};background:{theme.HOVER};}}"
-                f"#titleIvl::menu-indicator{{image:none;}}"
-            )
+            self._ivl_btn.setToolTip("Timeframe")
+            self._ivl_btn.setStyleSheet(_chip_qss("titleIvl"))
             _im = QtWidgets.QMenu(self._ivl_btn)
-            _im.setStyleSheet(
-                f"QMenu{{background:{theme.SURFACE};border:1px solid {theme.BORDER};"
-                f"border-radius:{theme.RADIUS_POPUP}px;padding:4px;}}"
-                f"QMenu::item{{padding:{theme.DROPDOWN_ITEM_PAD};border-radius:{theme.RADIUS_SM}px;"
-                f"color:{theme.TEXT2};}}"
-                f"QMenu::item:selected{{background:{theme.HOVER};color:{theme.TEXT};}}"
-                f"QMenu::separator{{height:1px;background:{theme.BORDER};margin:4px 8px;}}"
-            )
+            _im.setStyleSheet(_popup_qss())
             for _sec, _items in _TIMEFRAMES:
                 _im.addSection(_sec)
                 for _lbl, _iv in _items:
                     _im.addAction(_lbl, lambda _iv2=_iv: _chart.intervalChosen.emit(_iv2))
             self._ivl_btn.setMenu(_im)
             self._bar.add_status(self._ivl_btn)
+
+            # ƒx indicators — opens the searchable indicator picker
+            self._fx_btn = QtWidgets.QPushButton("ƒx")
+            self._fx_btn.setObjectName("titleFx")
+            self._fx_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._fx_btn.setToolTip("Add indicator")
+            self._fx_btn.setStyleSheet(_chip_qss("titleFx"))
+            self._fx_btn.clicked.connect(_chart._open_indicator_picker)
+            self._bar.add_status(self._fx_btn)
+
+            # chart-type (style) — icon-only chip + grouped menu; glyph resyncs on styleChanged
+            self._style_btn = QtWidgets.QPushButton()
+            self._style_btn.setObjectName("titleStyle")
+            self._style_btn.setIcon(style_icon(getattr(_chart, "_style", "Candles")))
+            self._style_btn.setIconSize(QtCore.QSize(16, 16))
+            self._style_btn.setToolTip(f"Chart style · {getattr(_chart, '_style', 'Candles')}")
+            self._style_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._style_btn.setStyleSheet(_chip_qss("titleStyle"))
+            _sm = QtWidgets.QMenu(self._style_btn)
+            _sm.setStyleSheet(_popup_qss())
+            for _sec, _styles in chart_styles.STYLE_SECTIONS:
+                _sm.addSection(_sec)
+                for _st in _styles:
+                    _sm.addAction(style_icon(_st), _st, lambda s=_st: _chart.set_style(s))
+            self._style_btn.setMenu(_sm)
+            _chart.styleChanged.connect(self._on_style_changed)
+            self._bar.add_status(self._style_btn)
+
+            # date-range — single dropdown (replaces the 1D/5D/…/5Y button row). The chip shows the
+            # currently-selected range value (e.g. "1D"), updated on each pick. No ▾ arrow.
+            self._range_btn = QtWidgets.QPushButton(f"{_RANGES[0][0]}")
+            self._range_btn.setObjectName("titleRange")
+            self._range_btn.setCursor(QtCore.Qt.PointingHandCursor)
+            self._range_btn.setToolTip("Visible date range")
+            self._range_btn.setStyleSheet(_chip_qss("titleRange"))
+            _rm = QtWidgets.QMenu(self._range_btn)
+            _rm.setStyleSheet(_popup_qss())
+            for _label, _days in _RANGES:
+                _rm.addAction(_label, lambda d=_days, lbl=_label: self._pick_range(_chart, d, lbl))
+            self._range_btn.setMenu(_rm)
+            self._bar.add_status(self._range_btn)
+
+            # A QPushButton with a popup menu keeps its :hover grey box after the menu closes — Qt
+            # sends no Leave while the menu holds the mouse, so the hover pseudo-state sticks. Clear
+            # it on menu hide by sending a synthetic Leave so :hover re-evaluates to the real state.
+            for _c in (self._ivl_btn, self._style_btn, self._range_btn):
+                _c.menu().aboutToHide.connect(lambda b=_c: self._clear_chip_hover(b))
+        self._feed_badge = FeedBadge() if feed else None   # per-window data state (chart only)
+        if self._feed_badge is not None:
+            self._bar.add_status(self._feed_badge)
         # adopt the doc's keep-on-top pin (float-only chrome) into the title bar (MC's "stick")
         if getattr(doc, "_pin_btn", None) is not None:
             self._bar.add_widget(doc._pin_btn)
@@ -142,13 +206,34 @@ class ChartWindowFrame(QtWidgets.QFrame):
         doc.setCursor(QtCore.Qt.ArrowCursor)
 
         if hasattr(doc, "symbolChanged"):
-            doc.symbolChanged.connect(lambda *_: self._bar.set_title(doc.title()))
+            # title shows the SYMBOL only; the interval is reflected by the picker chip beside it
+            doc.symbolChanged.connect(
+                lambda *_: self._bar.set_title(getattr(doc, "symbol", doc.title())))
             if self._ivl_btn is not None:   # keep the title-bar interval chip in sync with the chart
                 doc.symbolChanged.connect(
-                    lambda *_: self._ivl_btn.setText(f"{getattr(doc, 'interval', '')} ▾"))
+                    lambda *_: self._ivl_btn.setText(f"{getattr(doc, 'interval', '')}"))
 
         self._bar.installEventFilter(self)
         self.resize(720, 460)
+
+    @staticmethod
+    def _clear_chip_hover(btn) -> None:
+        """Send a synthetic Leave so a menu chip's stuck :hover grey box clears once its menu hides."""
+        QtWidgets.QApplication.sendEvent(btn, QtCore.QEvent(QtCore.QEvent.Type.Leave))
+        btn.update()
+
+    def _on_style_changed(self, style: str) -> None:
+        """Resync the title-bar chart-type chip's glyph + tooltip when the chart style switches."""
+        if self._style_btn is None:
+            return
+        self._style_btn.setIcon(style_icon(style))
+        self._style_btn.setToolTip(f"Chart style · {style}")
+
+    def _pick_range(self, chart, days: float, label: str) -> None:
+        """Apply a visible-range pick and reflect the value in the title-bar range chip (e.g. "1D")."""
+        chart.set_visible_range(days)
+        if self._range_btn is not None:
+            self._range_btn.setText(label)
 
     # --- window verbs ---------------------------------------------------------------------
 
