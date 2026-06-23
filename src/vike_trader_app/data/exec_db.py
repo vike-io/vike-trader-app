@@ -11,6 +11,7 @@ so a reconnect replay never double-counts.
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from vike_trader_app.data import state_db
 
@@ -60,7 +61,7 @@ CREATE TABLE IF NOT EXISTS exec_positions (
 """
 
 
-def connect_exec_db(db_path) -> sqlite3.Connection:
+def connect_exec_db(db_path: str | Path) -> sqlite3.Connection:
     """Open (creating dir + schema) the exec ledger DB. Per-call connection, caller's thread."""
     return state_db.connect(db_path, _SCHEMA)
 

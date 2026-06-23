@@ -20,7 +20,7 @@ class EventBus:
 
     def __init__(self) -> None:
         self._subscribers: list[Callable] = []
-        self._queue: deque = deque()
+        self._queue: deque[object] = deque()
         self._draining = False
 
     def subscribe(self, handler: Callable) -> None:

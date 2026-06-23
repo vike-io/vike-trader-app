@@ -6,8 +6,11 @@ from vike_trader_app.exec.events import (
     FillEvent,
     OrderAccepted,
     OrderCanceled,
+    OrderDenied,
+    OrderExpired,
     OrderFilled,
     OrderPartiallyFilled,
+    OrderRejected,
     OrderRequest,
     OrderSubmitted,
     OrderTriggered,
@@ -87,3 +90,23 @@ def test_accepted_can_cancel_directly():
 def test_reserved_terminal_states_exist():
     # LIQUIDATED/EMULATED/RELEASED reserved for perps/emulated-conditional (Phase 5)
     assert {"LIQUIDATED", "EMULATED", "RELEASED"} <= set(OrderStatus.__members__)
+
+
+def test_rejected_from_submitted():
+    o = _order()
+    o.apply(OrderSubmitted("c1"))
+    o.apply(OrderRejected("c1", reason="insufficient-balance"))
+    assert o.status is OrderStatus.REJECTED
+
+
+def test_denied_from_initialized():
+    o = _order()
+    o.apply(OrderDenied("c1", reason="risk-gate"))
+    assert o.status is OrderStatus.DENIED
+
+
+def test_expired_from_accepted():
+    o = _order()
+    o.apply(OrderSubmitted("c1")); o.apply(OrderAccepted("c1"))
+    o.apply(OrderExpired("c1"))
+    assert o.status is OrderStatus.EXPIRED
