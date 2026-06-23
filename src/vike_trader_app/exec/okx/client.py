@@ -59,7 +59,7 @@ class OKXSpotExecutionClient(CryptoExecutionClient):
         return {}
 
     def build_open_orders_params(self) -> dict:
-        return {"instId": self._symbol}
+        return {"instType": "SPOT", "instId": self._symbol}
 
     def build_ticker_params(self) -> dict:
         return {"instId": self._symbol}
@@ -69,25 +69,25 @@ class OKXSpotExecutionClient(CryptoExecutionClient):
         return str(result[0].get("ordId", "")) if result else ""
 
     def iter_balances(self, result):
-        for detail in result.get("details", []):
-            yield {"asset": detail.get("ccy"), "free": detail.get("availBal", 0)}
+        for acct in result:                       # result == data (list); usually one entry
+            for d in acct.get("details", []):
+                yield {"asset": d.get("ccy"), "free": d.get("availBal", 0)}   # availBal = free/spendable
 
     def iter_open_orders(self, result):
-        for o in result.get("orders", result if isinstance(result, list) else []):
-            price = o.get("px")
+        for o in result:
+            px = o.get("px")
             yield {
                 "side": +1 if o.get("side") == "buy" else -1,
                 "orig_qty": float(o.get("sz", 0) or 0),
                 "executed_qty": float(o.get("accFillSz", 0) or 0),
                 "coid": str(o.get("clOrdId", "")),
                 "order_type": str(o.get("ordType", "")).lower(),
-                "price": float(price) if price not in (None, "", "0") else None,
+                "price": float(px) if px not in (None, "", "0") else None,
                 "venue_order_id": str(o.get("ordId", "")),
             }
 
     def parse_mark_px(self, ticker_resp) -> float:
-        data = ticker_resp if isinstance(ticker_resp, list) else ticker_resp.get("data", [])
-        return float(data[0].get("last", 0) or 0) if data else 0.0
+        return float(ticker_resp[0].get("last", 0) or 0) if ticker_resp else 0.0
 
     def is_order_not_found(self, code: int) -> bool:
         return code in _NOT_FOUND
