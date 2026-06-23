@@ -105,8 +105,9 @@ def test_provider_switch_scopes_underlyings():
     assert tab.provider.currentText() == "Deribit"
     assert [tab.underlying.itemText(i) for i in range(tab.underlying.count())] == ["BTC", "ETH", "SOL"]
     assert not tab.underlying.isEditable()
-    # switch to yfinance -> editable stock presets
-    tab.provider.setCurrentText("yfinance")
+    # switch to Yahoo Finance (display label; internal id "yfinance") -> editable stock presets
+    tab.provider.setCurrentIndex(tab.provider.findData("yfinance"))
+    assert tab.provider.currentText() == "Yahoo Finance" and tab.provider.currentData() == "yfinance"
     tab._apply_provider(emit=False)
     items = [tab.underlying.itemText(i) for i in range(tab.underlying.count())]
     assert "SPY" in items and "AAPL" in items
