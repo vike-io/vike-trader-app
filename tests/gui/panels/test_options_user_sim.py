@@ -199,7 +199,7 @@ def test_open_options_select_symbol_expiry_and_populate_chain(app):
     t = tab.table
     # Chain view by default: calls + [Strike, IV] + puts columns.
     assert t.columnCount() == 2 * len(C.CHAIN_FIELDS) + 2
-    for label in ("Bid", "Ask", "Volume", "Strike", "IV"):
+    for label in ("Bid", "Ask", "Vol", "Strike", "IV"):   # "Volume" header shortened to "Vol"
         assert _cols(t, label), f"missing chain column {label}"
 
     # Strikes populated (10 strikes), plus the spanned ATM marker row -> 11 visible rows.

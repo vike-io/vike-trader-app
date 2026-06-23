@@ -101,6 +101,16 @@ class _GridDelegate(QtWidgets.QStyledItemDelegate):
             painter.drawLine(r.left(), r.top() + 1, r.right(), r.top() + 1)
             painter.restore()
 
+    def sizeHint(self, option, index):  # noqa: N802 - Qt override
+        # The volume columns size to their numbers (short "Vol" header). paint() insets the number
+        # 8px each side, so the default content width clips big stock volumes ("8,842"). Pad these
+        # columns so the number always fits with a little breathing room — while staying far narrower
+        # than the old full-"Volume"-header width.
+        sh = super().sizeHint(option, index)
+        if index.column() in (self.call_col, self.put_col):
+            sh.setWidth(sh.width() + 14)
+        return sh
+
 
 def _columns(view: str) -> tuple[list[str], list[str], list[str]]:
     """(call_fields outer->centre, put_fields centre->outer, header labels) for a view."""
@@ -440,6 +450,12 @@ class OptionsTab(QtWidgets.QWidget):
         strike_col = len(call_fields)
         self._bar.call_col = call_fields.index("volume")
         self._bar.put_col = strike_col + 2 + put_fields.index("volume")
+        # The volume columns only carry a magnitude bar + a small count, so the full "Volume" header
+        # padded them to ~2x the width needed. Show "Vol" instead → content-sizing halves them.
+        for _vc in (self._bar.call_col, self._bar.put_col):
+            _hi = self.table.horizontalHeaderItem(_vc)
+            if _hi is not None:
+                _hi.setText("Vol")
         self._bar.spine_left = strike_col          # Strike col — left edge of the centre spine
         self._bar.spine_right = strike_col + 1      # IV col — right edge of the centre spine
         # map each column to (field, side) so header clicks know what to sort on
