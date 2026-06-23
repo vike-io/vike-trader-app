@@ -71,3 +71,20 @@ def test_verdict_carries_the_normalized_request():
     gate = RiskGate(RiskLimits(tick_size=0.1))
     v = gate.check(_req(price=100.04), _ctx())
     assert isinstance(v, RiskVerdict) and v.request.price == 100.0  # rounded copy, original untouched
+
+
+def test_rejects_invalid_side():
+    gate = RiskGate(RiskLimits())
+    for bad in (0, 2, -2):
+        v = gate.check(_req(side=bad), _ctx())
+        assert v.ok is False and v.reason == "invalid-side"
+
+
+def test_stop_order_notional_uses_trigger_price_not_mark():
+    # stop far from mark: per-order notional must be sized off the trigger, not the mark
+    gate = RiskGate(RiskLimits(max_notional_per_order=1000.0))
+    req = OrderRequest(client_order_id="c", venue="binance", symbol="BTCUSDT",
+                       side=+1, qty=6.0, order_type="stop", price=None, trigger_price=200.0)
+    # at mark (100*6=600) it would pass; at trigger (200*6=1200) it must be denied
+    v = gate.check(req, RiskContext(mark_price=100.0))
+    assert v.ok is False and v.reason == "over-max-notional"

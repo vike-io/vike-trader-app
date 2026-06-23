@@ -61,7 +61,11 @@ def _round_to(value: float, step: float | None) -> float:
 
 
 class RiskGate:
-    """Pre-trade gate. `check` returns a verdict; the caller publishes OrderDenied on veto."""
+    """Pre-trade gate. `check` returns a verdict; the caller publishes OrderDenied on veto.
+
+    One RiskGate per venue/account session; the throttle window is shared across ALL symbols
+    routed through it (it is a session-level order-rate limit, not per-symbol).
+    """
 
     def __init__(self, limits: RiskLimits) -> None:
         self.limits = limits
@@ -77,6 +81,10 @@ class RiskGate:
     def check(self, request: OrderRequest, ctx: RiskContext) -> RiskVerdict:
         lim = self.limits
 
+        # --- side validation — must be exactly +1 or -1; anything else corrupts exposure math ---
+        if request.side not in (1, -1):
+            return RiskVerdict(False, None, "invalid-side")
+
         # --- trading state (kill switch) — runs before anything else ---
         if ctx.trading_state is TradingState.HALTED:
             return RiskVerdict(False, None, "halted")
@@ -91,7 +99,9 @@ class RiskGate:
         # --- validity ---
         if req.qty <= 0.0:
             return RiskVerdict(False, None, "non-positive-size")
-        ref_price = req.price if req.price is not None else ctx.mark_price
+        # stop orders carry price=None + trigger_price; use trigger before falling back to mark
+        ref_price = req.price if req.price is not None else (
+            req.trigger_price if req.trigger_price is not None else ctx.mark_price)
         notional = abs(req.qty) * ref_price
         if lim.min_notional is not None and notional < lim.min_notional:
             return RiskVerdict(False, None, "below-min-notional")
@@ -101,6 +111,8 @@ class RiskGate:
             return RiskVerdict(False, None, "over-max-notional")
 
         # --- projected exposure cap ---
+        # Exposure is valued at ctx.mark_price (position-level mark); per-order notional uses the
+        # order's own ref_price above — intentional, not an inconsistency.
         if lim.max_total_exposure is not None:
             projected = abs(ctx.position_size + req.side * req.qty) * ctx.mark_price
             if projected > lim.max_total_exposure:
