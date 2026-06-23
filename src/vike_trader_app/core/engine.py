@@ -46,6 +46,7 @@ class BacktestEngine:
         leverage: float | None = None,
         maint_margin: float = 0.0,
         cashflows=None,
+        on_fill=None,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -58,6 +59,7 @@ class BacktestEngine:
         self.leverage = leverage
         self.maint_margin = maint_margin
         self._cashflows = cashflows
+        self._on_fill = on_fill   # optional: called per fill (side, size, price, fee, ts, is_maker)
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
@@ -268,6 +270,8 @@ class BacktestEngine:
         rate = self.maker_fee if is_maker else self.taker_fee
         fee = _fee(size, price, rate, self.multiplier)
         self.cash -= fee
+        if self._on_fill is not None:
+            self._on_fill(side_sign, size, price, fee, ts, is_maker)
         delta = side_sign * size
         pos = self.position
         if pos.size == 0:  # open
