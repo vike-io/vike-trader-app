@@ -9,14 +9,25 @@ from __future__ import annotations
 import hashlib
 import hmac
 import urllib.parse
+from dataclasses import dataclass, field
 from typing import Callable, Protocol
 
 from vike_trader_app.exec.credentials import Credentials
 
 
+@dataclass(frozen=True)
+class PreparedRequest:
+    """A signed request the transport can send: GET appends `query` to the URL; POST sends the exact
+    signed `body` bytes (Bybit). `headers` carries the venue auth headers. Binance keeps using the
+    legacy 2-tuple return; only BybitV5Signer returns a PreparedRequest."""
+
+    query: str = ""
+    body: bytes | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+
+
 class Signer(Protocol):
-    def prepare(self, params: dict) -> tuple[str, dict[str, str]]:
-        ...
+    def prepare(self, params: dict, *, method: str = "GET", path: str = ""): ...
 
 
 class BinanceHmacSigner:
@@ -34,7 +45,7 @@ class BinanceHmacSigner:
         """Apply a server-time skew correction (from GET /api/v3/time)."""
         self._offset_ms = offset_ms
 
-    def prepare(self, params: dict) -> tuple[str, dict[str, str]]:
+    def prepare(self, params: dict, *, method: str = "GET", path: str = "") -> tuple[str, dict[str, str]]:
         signed = dict(params)
         signed["timestamp"] = self._now_ms() + self._offset_ms
         signed["recvWindow"] = self._recv_window
