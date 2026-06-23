@@ -3020,7 +3020,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         if os.environ.get("VIKE_DISABLE_LIVE"):
             return False
-        venue = (os.environ.get("VIKE_EXEC_VENUE") or "").strip()
+        venue = (os.environ.get("VIKE_EXEC_VENUE") or "").strip().lower()
         env_name = (os.environ.get("VIKE_EXEC_ENV") or "").strip().upper()
         if not venue or not env_name:
             return False
@@ -3049,9 +3049,20 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.bybit.instruments import parse_bybit_instruments_info
             info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
                                    {"category": "spot", "symbol": symbol})
+            if info.get("retCode", 0) != 0:
+                import logging
+                logging.getLogger(__name__).error(
+                    "Bybit instruments-info error retCode=%s msg=%s — aborting live exec",
+                    info.get("retCode"), info.get("retMsg"))
+                return False
             parsed = parse_bybit_instruments_info(info)
-            f = parsed.get(symbol, {"tick_size": 0.0, "step_size": 0.0, "min_qty": 0.0,
-                                    "max_qty": 0.0, "min_notional": 0.0, "base_asset": ""})
+            if symbol not in parsed:
+                import logging
+                logging.getLogger(__name__).error(
+                    "Bybit instruments-info: symbol %r absent from response — aborting live exec",
+                    symbol)
+                return False
+            f = parsed[symbol]
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
             bus = EventBus()

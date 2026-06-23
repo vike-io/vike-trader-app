@@ -78,6 +78,13 @@ def test_bybit_demo_round_trip_place_then_cancel() -> None:
     assert snapshot.positions[0][0] == "BTCUSDT", (
         f"unexpected symbol in snapshot: {snapshot.positions[0][0]}"
     )
+    # CRITICAL regression guard: walletBalance on the real demo is ~1.0 BTC, NOT 0.
+    # A seed of 0 means iter_balances is reading availableToWithdraw (deprecated/empty "").
+    btc_seed = snapshot.positions[0][1]
+    assert btc_seed > 0, (
+        f"seeded BTC position={btc_seed!r} — expected ~1.0 from walletBalance; "
+        "availableToWithdraw is deprecated and returns '' for UNIFIED accounts"
+    )
 
     # --- Step 4: fetch live market price and compute a resting limit price --------------------
     ticker = get_public_json(cfg.rest_base_url, "/v5/market/tickers",

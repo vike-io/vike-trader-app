@@ -44,6 +44,10 @@ class CryptoExecutionClient:
     PATH_TICKER: str = ""
     CREATE_METHOD: str = "POST"
     CANCEL_METHOD: str = "POST"  # subclasses set per venue (Binance→"DELETE", Bybit→"POST")
+    # When True, iter_balances yields the TOTAL balance (locked-sell already included), so the
+    # base connect() must NOT add locked_sell_qty again.  Bybit UNIFIED walletBalance is a total;
+    # Binance "free" is the free portion only (locked-sell must be added back → False).
+    BALANCE_IS_TOTAL: bool = False
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
                  base_asset: str = "", transport, public_transport=None) -> None:
@@ -102,7 +106,7 @@ class CryptoExecutionClient:
             orders.append(ManagedOrder(request=req, status=OrderStatus.ACCEPTED,
                                        venue_order_id=o["venue_order_id"]))
 
-        seeded_size = free + locked_sell_qty
+        seeded_size = free if self.BALANCE_IS_TOTAL else (free + locked_sell_qty)
         raw_ticker = self._public_transport(self._base, self.PATH_TICKER, self.build_ticker_params())
         mark_px = self.parse_mark_px(self.unwrap(raw_ticker))
         return ReconcileSnapshot(positions=((self._symbol, seeded_size),),

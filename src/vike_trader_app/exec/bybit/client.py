@@ -25,6 +25,9 @@ class BybitSpotExecutionClient(CryptoExecutionClient):
     PATH_TICKER = "/v5/market/tickers"
     CREATE_METHOD = "POST"
     CANCEL_METHOD = "POST"
+    # Bybit UNIFIED walletBalance is the TOTAL held (free + locked-sell); the base connect() must
+    # NOT add locked_sell_qty on top or it double-counts.  availableToWithdraw is deprecated/empty.
+    BALANCE_IS_TOTAL = True
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
                  base_asset: str = "", transport=bybit_signed_request,
@@ -57,7 +60,9 @@ class BybitSpotExecutionClient(CryptoExecutionClient):
         return {"accountType": "UNIFIED"}
 
     def build_open_orders_params(self) -> dict:
-        return {"category": "spot", "symbol": self._symbol}
+        # limit=50 reduces under-count risk; default is ~20.
+        # TODO: paginate nextPageCursor for >50 resting orders
+        return {"category": "spot", "symbol": self._symbol, "limit": 50}
 
     def build_ticker_params(self) -> dict:
         return {"category": "spot", "symbol": self._symbol}
@@ -68,10 +73,10 @@ class BybitSpotExecutionClient(CryptoExecutionClient):
     def iter_balances(self, result):
         for acct in result.get("list", []):
             for coin in acct.get("coin", []):
-                # Use availableToWithdraw (UNIFIED field: total minus qty locked in open sell orders)
-                # so the base's seeded_size = availableToWithdraw + locked_sell_qty = total held base.
-                # walletBalance is the TOTAL balance and would double-count locked sell qty.
-                free = coin.get("availableToWithdraw", coin.get("walletBalance", 0))
+                # Use walletBalance (UNIFIED total: free + locked-sell).  availableToWithdraw is
+                # deprecated and returns "" for UNIFIED accounts — do NOT use it (float("") raises).
+                # BALANCE_IS_TOTAL=True tells the base connect() NOT to add locked_sell_qty again.
+                free = coin.get("walletBalance", 0)
                 yield {"asset": coin.get("coin"), "free": free}
 
     def iter_open_orders(self, result):
