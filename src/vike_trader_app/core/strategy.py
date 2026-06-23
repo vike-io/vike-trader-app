@@ -5,7 +5,12 @@ Subclass ``Strategy`` and implement ``on_bar``. Place orders with ``buy``/``sell
 market orders at the next bar's open (no look-ahead).
 """
 
+from typing import TYPE_CHECKING
+
 from .model import Bar, Position
+
+if TYPE_CHECKING:
+    from .strategy_engine import StrategyEngine
 
 
 class Strategy:
@@ -22,6 +27,8 @@ class Strategy:
     #: Bars to skip before ``on_bar`` fires — set to your longest indicator lookback
     #: so it never acts on NaN.
     WARMUP: int = 0
+
+    _engine: "StrategyEngine | None"
 
     def __init__(self) -> None:
         self._engine = None  # set by the engine in run()
