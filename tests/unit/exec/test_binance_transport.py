@@ -46,3 +46,11 @@ def test_error_body_raises_typed_error():
                        {"symbol": "BTCUSDT"}, _FakeSigner(), urlopen=_err_open)
     assert ei.value.code == -2010
     assert "MIN_NOTIONAL" in ei.value.msg
+
+
+def test_network_error_is_wrapped_without_leaking_the_signed_url():
+    def _boom(req, timeout=0):
+        raise urllib.error.URLError("getaddrinfo failed")
+    with pytest.raises(BinanceApiError) as ei:
+        signed_request("https://x", "/api/v3/order", "POST", {"a": 1}, _FakeSigner(), urlopen=_boom)
+    assert "signature" not in str(ei.value)

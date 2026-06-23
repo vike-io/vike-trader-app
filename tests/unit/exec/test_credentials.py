@@ -42,3 +42,10 @@ def test_load_returns_none_when_blank(monkeypatch):
 def test_no_keyring_dependency():
     mod = importlib.import_module("vike_trader_app.exec.credentials")
     assert "keyring" not in getattr(mod, "__dict__", {})
+
+
+def test_repr_masks_the_secret():
+    creds = Credentials(api_key="abcdef1234", api_secret="TOPSECRET", passphrase="pp")
+    r = repr(creds)
+    assert "TOPSECRET" not in r and "pp" not in r
+    assert "***1234" in r

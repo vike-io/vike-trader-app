@@ -40,6 +40,8 @@ def signed_request(base_url: str, path: str, method: str, params: dict, signer,
         if isinstance(body, dict) and "code" in body:
             raise BinanceApiError(int(body["code"]), str(body.get("msg", ""))) from None
         raise BinanceApiError(int(exc.code), str(body)) from None
+    except urllib.error.URLError as exc:
+        raise BinanceApiError(0, f"network error: {exc.reason}") from None
 
 
 def get_public_json(base_url: str, path: str, params: dict | None = None) -> dict:

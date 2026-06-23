@@ -18,5 +18,6 @@ def test_ids_are_monotonic_within_a_session():
 
 
 def test_two_sessions_do_not_collide():
-    a, b = CoidMinter(), CoidMinter()
+    a = CoidMinter(session="aaaaAAAA")
+    b = CoidMinter(session="bbbbBBBB")
     assert a.mint().split("-")[0] != b.mint().split("-")[0]

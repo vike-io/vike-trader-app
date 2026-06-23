@@ -295,9 +295,9 @@ def parse_symbol_filters(payload: dict) -> dict[str, dict]:
     for entry in payload.get("symbols", []):
         filters = {f.get("filterType"): f for f in entry.get("filters", [])}
 
-        def _f(ftype: str, field: str) -> float:
+        def _f(ftype: str, field: str, _filters: dict = filters) -> float:
             try:
-                return float(filters.get(ftype, {}).get(field, 0) or 0)
+                return float(_filters.get(ftype, {}).get(field, 0) or 0)
             except (TypeError, ValueError):
                 return 0.0
 

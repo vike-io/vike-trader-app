@@ -24,6 +24,12 @@ class Credentials:
     api_secret: str
     passphrase: str | None = None
 
+    def __repr__(self) -> str:
+        tail = self.api_key[-4:] if self.api_key else ""
+        return f"Credentials(api_key=***{tail}, passphrase={'set' if self.passphrase else 'None'})"
+
+    __str__ = __repr__
+
 
 def env_var_names(venue: str, env: Environment) -> tuple[str, str, str]:
     """The (key, secret, passphrase) env-var names for a venue/environment. The ONE naming site."""
