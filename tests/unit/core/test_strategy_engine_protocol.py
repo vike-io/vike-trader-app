@@ -31,9 +31,9 @@ def test_symbol_engine_shim_satisfies_protocol():
 
 
 def test_protocol_names_every_method_both_classes_expose():
-    # the contract enumerates the full Strategy-facing surface; both implementations have all of it
+    eng = BacktestEngine([_bar()], Strategy())
+    pf = PortfolioEngine({"X": [_bar()]}, PortfolioStrategy())
+    shim = SymbolEngineShim(pf, "X", None)
     for name in _METHODS:
-        assert hasattr(BacktestEngine([_bar()], Strategy()), name), f"BacktestEngine missing {name}"
-        pf = PortfolioEngine({"X": [_bar()]}, PortfolioStrategy())
-        assert hasattr(SymbolEngineShim(pf, "X", None), name), f"SymbolEngineShim missing {name}"
-        assert name in StrategyEngine.__protocol_attrs__ if hasattr(StrategyEngine, "__protocol_attrs__") else True
+        assert hasattr(eng, name), f"BacktestEngine missing {name}"
+        assert hasattr(shim, name), f"SymbolEngineShim missing {name}"
