@@ -12,10 +12,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from vike_trader_app.core.fill import compute_fill
+
 if TYPE_CHECKING:
     from vike_trader_app.exec.events import FillEvent
-
-_EPS = 1e-12
 
 
 class Account:
@@ -30,30 +30,10 @@ class Account:
     def apply_fill(self, fill: "FillEvent") -> None:
         key = (fill.venue, fill.symbol, "BOTH")
         pos = self.positions.get(key)
-        delta = fill.side * fill.last_qty
-        price = fill.last_px
-        if pos is None or pos["size"] == 0.0:                     # open
-            self.positions[key] = {"size": delta, "avg_px": price}
-            return
-        if (pos["size"] > 0.0) == (delta > 0.0):                 # add in the same direction
-            new_size = pos["size"] + delta
-            pos["avg_px"] = (pos["avg_px"] * abs(pos["size"]) + price * abs(delta)) / abs(new_size)
-            pos["size"] = new_size
-            return
-        # opposite direction: reduce / fully close / close-and-flip
-        sign = 1.0 if pos["size"] > 0.0 else -1.0
-        closing = min(abs(delta), abs(pos["size"]))
-        pnl = (price - pos["avg_px"]) * (sign * closing) * self.multiplier
-        self.realized_pnl += pnl
-        self.trades.append(pnl)
-        remaining = abs(pos["size"]) - closing
-        if remaining > _EPS:                                     # partial reduce: remainder at cost
-            pos["size"] = sign * remaining
-            return
-        leftover = abs(delta) - closing                          # crossed zero -> open opposite
-        if leftover > _EPS:
-            pos["size"] = (1.0 if delta > 0.0 else -1.0) * leftover
-            pos["avg_px"] = price
-        else:                                                    # flat
-            pos["size"] = 0.0
-            pos["avg_px"] = 0.0
+        prior_size = pos["size"] if pos is not None else 0.0
+        prior_avg = pos["avg_px"] if pos is not None else 0.0
+        out = compute_fill(prior_size, prior_avg, fill.side, fill.last_qty, fill.last_px, self.multiplier)
+        self.positions[key] = {"size": out.new_size, "avg_px": out.new_avg_px}
+        if out.closing_qty > 0.0:                 # a reduce / close / flip realized PnL on the closed portion
+            self.realized_pnl += out.realized_pnl
+            self.trades.append(out.realized_pnl)
