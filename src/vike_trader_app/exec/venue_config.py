@@ -36,6 +36,29 @@ OKX_REST = "https://www.okx.com"
 OKX_DEMO_WS_DEFAULT = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
 OKX_MAINNET_WS_DEFAULT = "wss://ws.okx.com:8443/ws/v5/private"
 
+# Binance fapi (USDS-M perpetuals) — separate REST + WS hosts from the spot API.
+# Demo fapi REST is verified live (demo-fapi.binance.com). The demo fapi WS default
+# (fstream.binancefuture.com) is the testnet-adjacent host; overridable via env if
+# a different host is confirmed empirically via @pytest.mark.network smoke.
+BINANCE_DEMO_FAPI_REST = "https://demo-fapi.binance.com"
+BINANCE_MAINNET_FAPI_REST = "https://fapi.binance.com"
+BINANCE_DEMO_FAPI_WS_DEFAULT = "wss://fstream.binancefuture.com/ws"
+BINANCE_MAINNET_FAPI_WS_DEFAULT = "wss://fstream.binance.com/ws"
+
+
+def binance_fapi_rest(env: Environment) -> str:
+    """Return the env-overridable fapi REST base URL for the given Environment."""
+    if env is Environment.MAINNET:
+        return os.environ.get("BINANCE_MAINNET_FAPI_REST") or BINANCE_MAINNET_FAPI_REST
+    return os.environ.get("BINANCE_DEMO_FAPI_REST") or BINANCE_DEMO_FAPI_REST
+
+
+def binance_fapi_ws(env: Environment) -> str:
+    """Return the env-overridable fapi WS base URL for the given Environment."""
+    if env is Environment.MAINNET:
+        return os.environ.get("BINANCE_MAINNET_FAPI_WS_URL") or BINANCE_MAINNET_FAPI_WS_DEFAULT
+    return os.environ.get("BINANCE_DEMO_FAPI_WS_URL") or BINANCE_DEMO_FAPI_WS_DEFAULT
+
 
 @dataclass(frozen=True)
 class VenueConfig:

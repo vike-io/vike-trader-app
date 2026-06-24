@@ -3173,6 +3173,30 @@ class MainWindow(QtWidgets.QMainWindow):
                 filters=filters, base_asset=base_asset,
                 transport=functools.partial(okx_signed_request, simulated=simulated),
                 public_transport=functools.partial(okx_public_get, simulated=simulated))
+        elif venue == "binance" and product == "perp":
+            import logging
+            from ..exec.binance.perp_client import BinancePerpExecutionClient
+            from ..exec.binance.perp_instruments import parse_binance_perp_instruments
+            from ..exec.venue_config import binance_fapi_rest
+            fapi_rest = binance_fapi_rest(environment)
+            info = get_public_json(fapi_rest, "/fapi/v1/exchangeInfo", {"symbol": symbol})
+            parsed = parse_binance_perp_instruments(info)
+            if symbol not in parsed:
+                logging.getLogger(__name__).error(
+                    "Binance fapi exchangeInfo: symbol %r absent — aborting live exec", symbol)
+                return False
+            f = parsed[symbol]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = symbol                              # plain BTCUSDT — no dash, no -SWAP
+            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            client = BinancePerpExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=symbol,
+                filters=filters, base_asset=base_asset, leverage=leverage)
+            client.set_leverage()                               # MAIN thread, before connect/reconcile
+            # NOTE: a perp MARKET order (price=None) -> ctx.mark_price=0.0 -> the min_notional RiskGate
+            # veto. PRE-EXISTING spot limitation inherited unchanged; proper fix deferred to 5f.
         else:
             from ..data.instrument_db import parse_symbol_filters
             from ..exec.binance.client import BinanceSpotExecutionClient
@@ -3251,7 +3275,22 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("okx", worker)
-        if venue == "binance" and cfg.ws_base_url:
+        if venue == "binance" and product == "perp":
+            from ..exec.venue_config import binance_fapi_rest, binance_fapi_ws
+            _fapi_ws = binance_fapi_ws(environment)
+            if _fapi_ws:
+                from ..exec.binance.perp_user_data import make_binance_perp_run_core
+                from ..ui.private_user_data import PrivateUserDataWorker
+                run_core = make_binance_perp_run_core(
+                    fapi_rest_url=binance_fapi_rest(environment),
+                    ws_base_url=_fapi_ws,
+                    api_key=cfg.credentials.api_key,
+                    symbol=client_symbol,                        # plain BTCUSDT — no dash, no -SWAP
+                    now_ms=lambda: int(time.time() * 1000),
+                )
+                worker = PrivateUserDataWorker(run_core)
+                self._exec_session.add_worker_if_enabled("binance", worker)
+        elif venue == "binance" and product != "perp" and cfg.ws_base_url:
             from ..exec.binance.user_data import make_binance_run_core
             from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_binance_run_core(
