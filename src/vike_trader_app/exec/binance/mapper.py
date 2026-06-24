@@ -54,3 +54,24 @@ def map_execution_report(frame: dict, *, venue: str, symbol: str) -> list[object
         wrap_cls = OrderFilled if frame.get("X") == "FILLED" else OrderPartiallyFilled
         return [fill, wrap_cls(client_order_id=coid, fill=fill, ts=ts)]
     return []
+
+
+def map_binance_private(frame, *, venue: str = "binance", symbol: str = "") -> list[object]:
+    """Dispatch a Binance WS-API user-data frame -> vike events.
+
+    non-dict                                                  -> []
+    ACK echo (top-level 'status'/'result'/'error' present)    -> []
+    inner = frame.get('event', frame)  (unwrap WS-API envelope, tolerate raw)
+    inner.get('e') == 'executionReport'  -> map_execution_report(inner, venue=venue, symbol=symbol)
+    anything else (outboundAccountPosition, balanceUpdate, …) -> []
+    """
+    if not isinstance(frame, dict):
+        return []
+    # Subscribe ACK / error echo: top-level status/result/error key present
+    if "status" in frame or "result" in frame or "error" in frame:
+        return []
+    # Unwrap WS-API envelope {"subscriptionId":0, "event":{...}} — tolerate raw too
+    inner = frame.get("event", frame)
+    if isinstance(inner, dict) and inner.get("e") == "executionReport":
+        return map_execution_report(inner, venue=venue, symbol=symbol)
+    return []

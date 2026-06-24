@@ -1,6 +1,8 @@
 """Pure executionReport mapper: each x/X combo -> the right vike event(s); dual-publish on TRADE."""
 
-from vike_trader_app.exec.binance.mapper import map_execution_report
+import pytest
+
+from vike_trader_app.exec.binance.mapper import map_binance_private, map_execution_report
 from vike_trader_app.exec.events import (
     FillEvent,
     OrderAccepted,
@@ -68,3 +70,72 @@ def test_frame_symbol_overrides_passed_symbol():
     fills = [e for e in out if isinstance(e, FillEvent)]
     assert len(fills) == 1
     assert fills[0].symbol == "ETHUSDT"  # frame's `s`, NOT the passed "BTCUSDT"
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — map_binance_private WS-API envelope dispatcher
+# ---------------------------------------------------------------------------
+
+def _wrapped(inner):
+    return {"subscriptionId": 0, "event": inner}
+
+
+def test_dispatcher_unwraps_wsapi_envelope_and_dual_publishes():
+    inner = _frame(x="TRADE", X="FILLED", l="1.0", L="65000", n="0.01", m=False, t=555)
+    out = map_binance_private(_wrapped(inner), venue="binance", symbol="BTCUSDT")
+    fills = [e for e in out if isinstance(e, FillEvent)]
+    wraps = [e for e in out if isinstance(e, OrderFilled)]
+    assert len(fills) == 1 and len(wraps) == 1
+    assert fills[0].trade_id == "555"
+    assert wraps[0].fill is fills[0]               # wrap carries the SAME FillEvent
+
+
+def test_dispatcher_tolerates_raw_unwrapped_executionReport():
+    inner = _frame(x="TRADE", X="PARTIALLY_FILLED", l="0.5", L="100", t=7)
+    out = map_binance_private(inner, venue="binance", symbol="BTCUSDT")  # no envelope
+    assert any(isinstance(e, FillEvent) for e in out)
+    assert any(isinstance(e, OrderPartiallyFilled) for e in out)
+
+
+def test_dispatcher_ignores_subscribe_ack_frame():
+    assert map_binance_private({"id": "r1", "status": 200, "result": {"subscriptionId": 0}}) == []
+
+
+def test_dispatcher_ignores_error_ack_and_non_dict():
+    assert map_binance_private({"id": "r1", "status": 400, "error": {"code": -2010, "msg": "x"}}) == []
+    assert map_binance_private("pong") == []
+    assert map_binance_private({"event": {"e": "outboundAccountPosition"}}) == []
+
+
+def test_dispatcher_drives_managed_order_fsm_to_filled():
+    """Offline LiveOmsHub integration — the [FillEvent, OrderFilled] pair advances the FSM."""
+    from vike_trader_app.exec.accounting import Account
+    from vike_trader_app.exec.bus import EventBus
+    from vike_trader_app.exec.events import OrderAccepted as OA, OrderRequest, OrderSubmitted as OS
+    from vike_trader_app.exec.live_oms import LiveOmsHub
+    from vike_trader_app.exec.order import OrderStatus
+    from vike_trader_app.exec.risk import RiskGate, RiskLimits
+
+    class _SyncClient:
+        def __init__(self, bus):
+            self._bus = bus
+
+        def submit(self, request):
+            self._bus.publish(OS(client_order_id=request.client_order_id))
+            self._bus.publish(OA(client_order_id=request.client_order_id, venue_order_id="b-1"))
+
+        def detach(self):
+            pass
+
+    bus = EventBus()
+    hub = LiveOmsHub(bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+                     client=_SyncClient(bus), venue="binance", symbol="BTCUSDT")
+    hub.submit_ticket(OrderRequest(client_order_id="coid-1", venue="binance", symbol="BTCUSDT",
+                                   side=+1, qty=1.0, order_type="limit", price=65000.0))
+    assert hub.registry["coid-1"].status is OrderStatus.ACCEPTED
+    inner = _frame(x="TRADE", X="FILLED", c="coid-1", l="1.0", L="65000", t="T1", m=False)
+    for ev in map_binance_private(_wrapped(inner), venue="binance", symbol="BTCUSDT"):
+        bus.publish(ev)
+    mo = hub.registry["coid-1"]
+    assert mo.status is OrderStatus.FILLED       # OrderFilled wrap drove the FSM
+    assert mo.filled_qty == pytest.approx(1.0)
