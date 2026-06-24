@@ -40,8 +40,11 @@ def test_market_buy_sends_contracts_not_base():
     assert "tgtCcy" not in p                    # CRITICAL: SWAP drop
 
 
-def test_base_to_contracts_rounds_and_floors_to_lot():
-    """qty=0.054, ct_val=0.01 → 5.4 → round→5 → format_qty(step=0.1) → '5.0'."""
+def test_base_to_contracts_floors_to_lot_not_rounded_to_whole():
+    """qty=0.054, ct_val=0.01 → 5.4 contracts, FLOORED to lotSz 0.1 → '5.4'.
+
+    OKX SWAP allows FRACTIONAL contracts — base/ct_val must NOT be rounded to a whole contract
+    first (that would floor 5.4 → 5.0, and any sub-0.5-contract order → 0)."""
     cap = {}
 
     def t(base, path, method, params, signer, **k):
@@ -51,7 +54,29 @@ def test_base_to_contracts_rounds_and_floors_to_lot():
     req = OrderRequest(client_order_id="p-1", venue="okx", symbol="BTC-USDT-SWAP",
                        side=+1, qty=0.054, order_type="market", price=None)
     _client(t).submit(req)
-    assert cap["params"]["sz"] == "5.0"
+    assert cap["params"]["sz"] == "5.4"
+
+
+def test_sub_one_contract_order_not_floored_to_zero():
+    """A small order (0.0002 BTC = 0.02 contracts) with lotSz 0.01 sizes to '0.02', NOT '0'.
+
+    The old round(base/ct_val)-to-int floored every sub-0.5-contract order to zero — but the live
+    SWAP minimum is lotSz contracts (~$10), not 1 whole contract (~$1000). RED-proven by the live smoke."""
+    cap = {}
+
+    def t(base, path, method, params, signer, **k):
+        cap["params"] = params
+        return {"code": "0", "data": [{"ordId": "4", "sCode": "0"}]}
+
+    f = {"tick_size": 0.1, "step_size": 0.01, "min_qty": 0.01, "max_qty": 1e4, "min_notional": 0.0}
+    client = OKXPerpExecutionClient(EventBus(), signer=object(), rest_base_url="https://x",
+                                    symbol="BTC-USDT-SWAP", filters=f, base_asset="BTC",
+                                    ct_val=0.01, leverage=3.0,
+                                    transport=t, public_transport=lambda *a, **k: {})
+    req = OrderRequest(client_order_id="p-3", venue="okx", symbol="BTC-USDT-SWAP",
+                       side=+1, qty=0.0002, order_type="market", price=None)
+    client.submit(req)
+    assert cap["params"]["sz"] == "0.02"
 
 
 def test_reduce_only_sell_sets_flag_and_posside_net():

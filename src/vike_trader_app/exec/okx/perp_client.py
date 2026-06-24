@@ -48,11 +48,16 @@ class OKXPerpExecutionClient(OKXSpotExecutionClient):
     # --- base ↔ contracts conversion helpers ---
 
     def _to_contracts(self, base_qty: float) -> float:
-        """Convert base qty → contracts: round(base / ct_val), then floor to lotSz step."""
-        raw = round(base_qty / self._ct_val)
+        """Convert base qty → contracts: base / ct_val, FLOORED to the lotSz step.
+
+        Do NOT round to a whole contract — OKX SWAP allows FRACTIONAL contracts (lotSz e.g. 0.01),
+        so the minimum order is lotSz contracts (~$10), not 1 contract (~$1000). Rounding base/ct_val
+        to an int first would floor any sub-0.5-contract order to 0.
+        """
+        raw = decimal.Decimal(str(base_qty)) / decimal.Decimal(str(self._ct_val))
         # Floor to the lotSz (step_size) via Decimal ROUND_DOWN so partial lots are dropped
         step = decimal.Decimal(str(self._filters["step_size"]))
-        contracts = (decimal.Decimal(str(raw)) // step) * step
+        contracts = (raw // step) * step
         return float(contracts)
 
     def _to_base(self, contracts: float) -> float:

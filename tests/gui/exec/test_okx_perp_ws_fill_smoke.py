@@ -292,15 +292,18 @@ def test_okx_demo_perp_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR
         raw_qty_base = (notional_floor * 2) / ask_price
         base_qty = max(min_qty_base, _ceil_to_step(raw_qty_base, step_in_base))
 
-        # Non-trivial assertion: base_qty must map to at least 1 contract after the client's
-        # _to_contracts() rounding (round(base_qty / ct_val)) — ensures the order is sendable.
-        contracts_check = round(base_qty / ct_val)
-        assert contracts_check >= 1, (
-            f"base_qty={base_qty} maps to {contracts_check} contracts (< 1) — "
-            f"increase notional_floor or check ct_val={ct_val}"
+        # Sendable-order assertion via the client's REAL conversion. OKX SWAP allows FRACTIONAL
+        # contracts (lotSz ~0.01), so the minimum order is lotSz contracts (~$10), NOT 1 whole
+        # contract (~$1000). The order must map to a NON-ZERO contract count after the client's
+        # lotSz floor — and to >= minSz. (The old `round(base/ct_val) >= 1` wrongly demanded a whole
+        # contract and rejected every sub-0.5-contract order — RED-proven against the live demo.)
+        order_contracts = client._to_contracts(base_qty)
+        assert order_contracts >= min_qty_contracts - 1e-12, (
+            f"base_qty={base_qty} maps to {order_contracts} contracts (< minSz {min_qty_contracts}) — "
+            f"increase notional_floor or check ct_val={ct_val}/lotSz={step_size_contracts}"
         )
         print(  # noqa: T201 — demo confirmation
-            f"[smoke] base_qty={base_qty} BTC -> ~{contracts_check} contracts "
+            f"[smoke] base_qty={base_qty} BTC -> {order_contracts} contracts "
             f"(ask={ask_price}, step_in_base={step_in_base}, min_qty_base={min_qty_base})"
         )
 
