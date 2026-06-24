@@ -3187,8 +3187,14 @@ class MainWindow(QtWidgets.QMainWindow):
             client = BinanceSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset)
+        # OKX SWAP: filters["step_size"] is the lotSz in CONTRACTS, but the order qty fed to the gate
+        # is in BASE units. Quantize the gate on the true BASE granularity (lotSz * ctVal); the client's
+        # _to_contracts re-floors to lotSz afterward. Other venues' step_size is already in base.
+        gate_lot_size = filters["step_size"]
+        if venue == "okx" and product == "perp":
+            gate_lot_size = (filters["step_size"] or 0.0) * ct_val
         gate = RiskGate(RiskLimits(
-            tick_size=filters["tick_size"] or None, lot_size=filters["step_size"] or None,
+            tick_size=filters["tick_size"] or None, lot_size=gate_lot_size or None,
             min_notional=filters["min_notional"] or None))
         hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))

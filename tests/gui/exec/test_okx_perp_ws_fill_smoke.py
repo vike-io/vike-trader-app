@@ -382,14 +382,16 @@ def test_okx_demo_perp_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR
             f"start_size={start_size} actual_size={actual_size}"
         )
 
-        # Mark price was set from the fill's fillMarkPx field (perp_mapper enrichment).
-        # unrealized_pnl() returns a float if and only if mark was recorded — proves the
-        # map_okx_perp rescale + mark carry landed correctly in the Account.
-        upnl = hub.account.unrealized_pnl("okx", "BTC-USDT-SWAP")
-        assert isinstance(upnl, float), (
-            f"unrealized_pnl() returned {upnl!r} — mark not recorded from fill fillMarkPx"
+        # POSITIVE evidence the fill's markPx survived the contracts->base enrich + the set_mark feed:
+        # the marks dict is the real proof (unrealized_pnl is a float regardless of whether a mark exists,
+        # so asserting its type proves nothing). A recorded positive mark means map_okx_perp carried the
+        # markPx into FillEvent.mark_price and LiveOmsHub.set_mark folded it.
+        mark = hub.account.marks.get(("okx", "BTC-USDT-SWAP"))
+        assert mark is not None and mark > 0.0, (
+            f"mark not recorded from the fill's markPx — marks={hub.account.marks}"
         )
-        # upnl may be 0.0 exactly (mark == avg_px) but isinstance(0.0, float) is True.
+        upnl = hub.account.unrealized_pnl("okx", "BTC-USDT-SWAP")
+        assert isinstance(upnl, float)   # computable now a mark exists (may be 0.0 if mark == avg_px)
 
     finally:
         # --- Step 11: SIGN-AWARE FLATTEN + cancel residual + shut down --------------------
