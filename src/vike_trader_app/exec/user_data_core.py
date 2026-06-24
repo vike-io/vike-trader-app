@@ -64,5 +64,10 @@ async def run_user_data_forever(
         except Exception:  # noqa: BLE001 — transport hiccup -> reconnect with backoff
             if stop():
                 break
-            await asyncio.sleep(backoff)
+            slept = 0.0
+            while slept < backoff and not stop():   # wake every recv_timeout to poll stop()
+                await asyncio.sleep(min(recv_timeout, backoff - slept))
+                slept += recv_timeout
+            if stop():
+                break
             backoff = min(backoff * 2, max_backoff)

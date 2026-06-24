@@ -237,3 +237,41 @@ def test_reconnect_on_transport_hiccup():
     ))
 
     assert seen == [sentinel], f"Expected sentinel after reconnect, got {seen}"
+
+
+# ---------------------------------------------------------------------------
+# test_backoff_wakes_on_stop (Fix 1b — backoff sleep must poll stop())
+# ---------------------------------------------------------------------------
+
+def test_backoff_wakes_on_stop():
+    """A stop arriving mid-backoff must be seen within ~recv_timeout, not after the full backoff.
+
+    open_ws raises a transport error on the first call (entering the 1.0s initial backoff);
+    stop() flips True shortly after the backoff begins. The pump must return well before the
+    full 1.0s backoff elapses — chunked sleep polls stop() every recv_timeout.
+    """
+    import time
+
+    started = {"t": None}
+
+    async def _open_ws():
+        started["t"] = time.monotonic()
+        raise ValueError("boom — transport hiccup")  # always fails -> backoff path
+
+    def _stop():
+        # False until ~0.05s after the first (failing) connect, then True
+        if started["t"] is None:
+            return False
+        return (time.monotonic() - started["t"]) >= 0.05
+
+    t0 = time.monotonic()
+    _run(run_user_data_forever(
+        lambda e: None,
+        open_ws=_open_ws,
+        decode=lambda f: [],
+        stop=_stop,
+        recv_timeout=0.05,
+        # default max_backoff=30, initial backoff=1.0 — without chunking this sleeps the full 1.0s
+    ))
+    elapsed = time.monotonic() - t0
+    assert elapsed < 0.5, f"backoff did not wake on stop: returned after {elapsed:.3f}s (full backoff is 1.0s)"
