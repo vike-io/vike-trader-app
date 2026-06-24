@@ -1,11 +1,13 @@
 """OKX venue dispatch: demo AND mainnet share https://www.okx.com (x-simulated-trading header
-distinguishes — a transport concern, not a URL concern); empty WS (deferred); OKXV5Signer;
-absent creds -> None; passphrase required."""
+distinguishes — a transport concern, not a URL concern); private-WS resolved (demo wspap + mainnet);
+OKXV5Signer; absent creds -> None; passphrase required."""
 
 from vike_trader_app.exec.credentials import Credentials, Environment
 from vike_trader_app.exec.signer import OKXV5Signer
 from vike_trader_app.exec.venue_config import (
     OKX_REST,
+    OKX_DEMO_WS_DEFAULT,
+    OKX_MAINNET_WS_DEFAULT,
     resolve_venue_config,
 )
 
@@ -23,17 +25,21 @@ def test_okx_absent_creds_returns_none():
                                 now_ms=lambda: 0, load=_load_none) is None
 
 
-def test_okx_demo_uses_okx_host_empty_ws_and_okx_signer():
+def test_okx_demo_uses_okx_host_wspap_ws_and_okx_signer():
     cfg = resolve_venue_config("okx", Environment.DEMO, now_ms=lambda: 0, load=_load_ok)
     assert cfg.rest_base_url == OKX_REST
-    assert cfg.ws_base_url == ""  # WS deferred
+    assert cfg.ws_base_url == OKX_DEMO_WS_DEFAULT
+    assert cfg.ws_base_url == "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
     assert isinstance(cfg.signer, OKXV5Signer)
 
 
-def test_okx_mainnet_uses_same_host():
-    """OKX demo and mainnet share the same REST host — the x-simulated-trading header distinguishes."""
+def test_okx_mainnet_uses_same_rest_host_and_mainnet_ws():
+    """OKX demo and mainnet share the same REST host — the x-simulated-trading header distinguishes.
+    WS hosts differ: demo wspap, mainnet production."""
     cfg = resolve_venue_config("okx", Environment.MAINNET, now_ms=lambda: 0, load=_load_ok)
     assert cfg.rest_base_url == OKX_REST
+    assert cfg.ws_base_url == OKX_MAINNET_WS_DEFAULT
+    assert cfg.ws_base_url == "wss://ws.okx.com:8443/ws/v5/private"
 
 
 def test_okx_demo_env_override(monkeypatch):

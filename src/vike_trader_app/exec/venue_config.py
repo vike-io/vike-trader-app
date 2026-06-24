@@ -35,6 +35,8 @@ BYBIT_MAINNET_WS_DEFAULT = "wss://stream.bybit.com/v5/private"
 # OKX: demo and mainnet share the same REST host; the x-simulated-trading:1 header (a transport
 # concern) is the only distinction between demo and mainnet at the HTTP level.
 OKX_REST = "https://www.okx.com"
+OKX_DEMO_WS_DEFAULT = "wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999"
+OKX_MAINNET_WS_DEFAULT = "wss://ws.okx.com:8443/ws/v5/private"
 
 
 @dataclass(frozen=True)
@@ -78,11 +80,12 @@ def _resolve_okx(venue: str, env: Environment, creds: Credentials,
     # Demo and mainnet share the same REST host; env override still supported for test injection.
     if env is Environment.MAINNET:
         rest = os.environ.get("OKX_MAINNET_BASE_URL") or OKX_REST
+        ws = os.environ.get("OKX_MAINNET_WS_URL") or OKX_MAINNET_WS_DEFAULT
     else:
         rest = os.environ.get("OKX_DEMO_BASE_URL") or OKX_REST
+        ws = os.environ.get("OKX_DEMO_WS_URL") or OKX_DEMO_WS_DEFAULT
     signer = OKXV5Signer(creds, now_ms=now_ms)
-    # WS user-data fill stream is DEFERRED — empty ws_base_url for now.
-    return VenueConfig(venue=venue, environment=env, rest_base_url=rest, ws_base_url="",
+    return VenueConfig(venue=venue, environment=env, rest_base_url=rest, ws_base_url=ws,
                        credentials=creds, signer=signer)
 
 
