@@ -99,6 +99,21 @@ def test_apply_liquidation_noop_when_flat():
     acc = Account()
     acc.apply_liquidation(PositionLiquidated(
         venue="binance", symbol="BTCUSDT", position_side="BOTH",
-        qty=1.0, liq_price=60.0, fee=0.0))
+        qty=1.0, liq_price=60.0, fee=0.5))
     assert acc.realized_pnl == 0.0
     assert acc.trades == []
+    assert acc.balance == 0.0      # TRUE no-op: no fee when there is nothing to liquidate
+
+
+def test_apply_liquidation_replay_does_not_double_charge_fee():
+    """A reconnect-replayed PositionLiquidated must not deduct the fee (or realize PnL) twice."""
+    acc = Account()
+    acc.apply_fill(_fill(+1, 2.0, 100.0))          # long 2 @ 100
+    liq = PositionLiquidated(venue="binance", symbol="BTCUSDT", position_side="BOTH",
+                             qty=2.0, liq_price=60.0, fee=0.5)
+    acc.apply_liquidation(liq)                      # real close: realized -80, fee -0.5
+    assert acc.balance == -0.5
+    assert acc.realized_pnl == -80.0
+    acc.apply_liquidation(liq)                      # REPLAY (position now flat) -> true no-op
+    assert acc.balance == -0.5                      # fee NOT double-charged
+    assert acc.realized_pnl == -80.0               # PnL NOT double-realized

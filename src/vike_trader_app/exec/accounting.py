@@ -70,8 +70,8 @@ class Account:
         key = (ev.venue, ev.symbol, ev.position_side)
         pos = self.positions.get(key)
         if pos is None or pos["size"] == 0.0:
-            self.balance -= ev.fee
-            return
+            return   # true no-op: nothing to liquidate (idempotent on a replayed liquidation —
+            # the fee was already deducted on the real close; deducting it here would double-charge)
         close_side = -1 if pos["size"] > 0.0 else 1      # close on the opposite side
         out = compute_fill(pos["size"], pos["avg_px"], close_side, abs(pos["size"]),
                            ev.liq_price, self.multiplier)
