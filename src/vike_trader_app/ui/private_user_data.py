@@ -14,6 +14,7 @@ hub.shutdown().
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 
@@ -93,7 +94,14 @@ class LiveExecutionSession(QtCore.QObject):
         self._closing = True
         for worker in self._workers.values():
             worker.stop()
-            worker.wait(2000)
+            if not worker.wait(2000):
+                # The worker did not join in 2s — e.g. blocked in a SYNC listenKey REST create during a
+                # reconnect (a blocking urllib call cannot be interrupted mid-flight). It must NOT be left
+                # running into app teardown / os._exit (the 0xC0000409 class). Extend the join window to
+                # cover the worst-case bounded sync-HTTP timeout rather than abandoning a live thread.
+                logging.getLogger("vike.exec").warning(
+                    "user-data worker did not join in 2s; extending the join window")
+                worker.wait(8000)
         self._workers.clear()
         if self._hub is not None:
             self._hub.shutdown()

@@ -136,7 +136,10 @@ async def open_binance_perp_user_data_ws(*, fapi_rest_url: str, ws_base_url: str
     fapi demo is not Cloudflare-gated, so NO browser UA, unlike OKX).
     ``urlopen`` is injectable for offline testing of the listenKey create step.
     """
-    listen_key = listenkey_create(fapi_rest_url=fapi_rest_url, api_key=api_key, urlopen=urlopen)
+    # Bounded create timeout (5s, NOT urllib's 10s default): a create stalled during a reconnect must
+    # not outlast the LiveExecutionSession teardown join (which extends to ~10s for a slow worker).
+    listen_key = listenkey_create(
+        fapi_rest_url=fapi_rest_url, api_key=api_key, urlopen=urlopen, timeout=5)
     url = f"{ws_base_url}/{listen_key}"
     if connect is None:
         import websockets  # noqa: PLC0415 — lazy so websockets is optional at import time

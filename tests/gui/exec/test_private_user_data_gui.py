@@ -126,3 +126,49 @@ def test_shutdown_joins_each_worker(app):
     w.start()
     session.shutdown()
     assert not w.isRunning()
+
+
+def test_shutdown_extends_join_when_worker_slow_to_stop(app):
+    """A worker that does NOT join in 2s (e.g. blocked in a sync listenKey REST create during a
+    reconnect) must get an EXTENDED join window — it must never be abandoned alive into os._exit
+    (the 0xC0000409 teardown class). Confirmed 5d follow-up."""
+    session = LiveExecutionSession(_hub())
+
+    class _SlowWorker:
+        def __init__(self):
+            self.stopped = False
+            self.waits = []
+
+        def stop(self):
+            self.stopped = True
+
+        def wait(self, ms):
+            self.waits.append(ms)
+            return len(self.waits) >= 2   # times out on the first 2s wait, joins on the extension
+
+    w = _SlowWorker()
+    session._workers["binance"] = w
+    session.shutdown()
+    assert w.stopped
+    assert w.waits == [2000, 8000]   # extended the join window past the initial 2s, not abandoned
+
+
+def test_shutdown_does_not_extend_when_worker_joins_promptly(app):
+    """No extra wait when the worker joins within 2s (the common path is unchanged)."""
+    session = LiveExecutionSession(_hub())
+
+    class _FastWorker:
+        def __init__(self):
+            self.waits = []
+
+        def stop(self):
+            pass
+
+        def wait(self, ms):
+            self.waits.append(ms)
+            return True   # joins on the first 2s wait
+
+    w = _FastWorker()
+    session._workers["binance"] = w
+    session.shutdown()
+    assert w.waits == [2000]   # no extension
