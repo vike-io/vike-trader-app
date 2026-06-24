@@ -243,6 +243,53 @@ def test_reconnect_on_transport_hiccup():
 # test_backoff_wakes_on_stop (Fix 1b — backoff sleep must poll stop())
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# test_non_json_frame_skipped  (OKX text 'pong' keepalive guard)
+# ---------------------------------------------------------------------------
+
+def test_non_json_frame_skipped():
+    """A non-JSON frame (e.g. OKX text 'pong') must be skipped without reconnecting.
+
+    The real JSON frame that follows must still be decoded and emitted, proving the
+    core does NOT treat a parse error as a transport hiccup.  open_ws is called exactly
+    once (no reconnect loop).
+    """
+    sentinel = object()
+    seen = []
+    open_ws_calls = {"n": 0}
+    stop_flag = {"v": False}
+
+    frames = ["pong", json.dumps({"real": True})]
+    ws = _FakeWS(frames)
+
+    def _stop():
+        if not ws._frames:
+            stop_flag["v"] = True
+        return stop_flag["v"]
+
+    def _decode(frame):
+        return [sentinel] if frame.get("real") else []
+
+    async def _open_ws():
+        open_ws_calls["n"] += 1
+        return ws
+
+    _run(run_user_data_forever(
+        seen.append,
+        open_ws=_open_ws,
+        decode=_decode,
+        stop=_stop,
+        recv_timeout=0.05,
+    ))
+
+    assert open_ws_calls["n"] == 1, (
+        f"Expected exactly 1 open_ws call (no reconnect on non-JSON frame), got {open_ws_calls['n']}"
+    )
+    assert seen == [sentinel], (
+        f"Expected the JSON frame's decoded event to be emitted, got {seen}"
+    )
+
+
 def test_backoff_wakes_on_stop():
     """A stop arriving mid-backoff must be seen within ~recv_timeout, not after the full backoff.
 

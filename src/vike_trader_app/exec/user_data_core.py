@@ -53,7 +53,10 @@ async def run_user_data_forever(
                         raw = await asyncio.wait_for(ws.recv(), timeout=recv_timeout)
                     except (asyncio.TimeoutError, TimeoutError):
                         continue  # idle — loop back to poll stop() / ping cadence
-                    frame = json.loads(raw)
+                    try:
+                        frame = json.loads(raw)
+                    except (ValueError, TypeError):
+                        continue  # non-JSON keepalive (e.g. OKX text 'pong') — skip, do NOT reconnect
                     for event in decode(frame):
                         emit(event)
             finally:
