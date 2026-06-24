@@ -1,8 +1,11 @@
 """LIVE smoke against api-demo.bybit.com + stream-demo.bybit.com — gated by @pytest.mark.network.
 
-Full round-trip: connect/reconcile -> open private WS -> place a SMALL marketable BUY LIMIT
-(crossing the spread) -> poll WS execution frames via the Qt event loop until the fill lands in
+Full round-trip: connect/reconcile -> open private WS -> place a SMALL MARKET BUY
+-> poll WS execution frames via the Qt event loop until the fill lands in
 LiveOmsHub.account -> assert position moved -> FLATTEN and clean up.
+
+A LIMIT buy at ask*1.001 rests on Bybit spot (never fills), so the smoke uses a MARKET BUY
+(category=spot, marketUnit=baseCoin) which fills instantly and streams the execution frame.
 
 This test GENUINELY FILLS a demo order and ALWAYS cleans up via try/finally.
 
@@ -82,7 +85,7 @@ def test_bybit_demo_ws_fill_roundtrip(app) -> None:  # noqa: PLR0915 — intenti
     Step 2  instruments-info: parses BTCUSDT filters (tick/step/min_notional/min_qty).
     Step 3  connect(): reconcile — seeds LiveOmsHub.account from walletBalance.
     Step 4  Start LiveExecutionSession + PrivateUserDataWorker (the WS fill stream).
-    Step 5  Compute a tiny marketable qty; place a LIMIT BUY at/above ask so it fills.
+    Step 5  Compute a tiny base qty; place a MARKET BUY (fills instantly on Bybit spot).
     Step 6  Assert OrderAccepted (REST ACK) before polling — a rejected order never fills.
     Step 7  Poll Qt event loop (processEvents + worker.wait) up to 15 s for the WS fill.
     Step 8  Assert: Account BTC position increased AND registry fill qty > 0.
@@ -181,19 +184,16 @@ def test_bybit_demo_ws_fill_roundtrip(app) -> None:  # noqa: PLR0915 — intenti
     filled_qty: float = 0.0
 
     try:
-        # --- Step 5: fetch live ask; compute marketable limit price + tiny qty -----------------
+        # --- Step 5: fetch live ask price for qty sizing; place a MARKET BUY -----------------
         ticker = get_public_json(cfg.rest_base_url, "/v5/market/tickers",
                                  {"category": "spot", "symbol": "BTCUSDT"})
         ask_price = float(ticker["result"]["list"][0].get("ask1Price") or
                           ticker["result"]["list"][0]["lastPrice"])
 
-        # Place a limit BUY at ask (or 0.1% above) so it crosses the spread and fills.
-        marketable_px = ask_price * 1.001
-        buy_price = _floor_to_tick(marketable_px, tick_size)
-
         # qty = max(min_qty, ceil_to_step(min_notional * 2 / price, step_size))
         # This satisfies BOTH minOrderQty AND minOrderAmt.
-        raw_qty = max(min_qty, _ceil_to_step((min_notional * 2) / buy_price, step_size))
+        # For a MARKET BUY with marketUnit=baseCoin, qty is in base asset — no price needed.
+        raw_qty = max(min_qty, _ceil_to_step((min_notional * 2) / ask_price, step_size))
         buy_qty = raw_qty  # already step-aligned by _ceil_to_step
 
         # --- Step 6: submit + assert OrderAccepted BEFORE polling --------------------------
@@ -204,8 +204,8 @@ def test_bybit_demo_ws_fill_roundtrip(app) -> None:  # noqa: PLR0915 — intenti
             symbol="BTCUSDT",
             side=+1,
             qty=buy_qty,
-            order_type="limit",
-            price=buy_price,
+            order_type="market",
+            price=None,
         )
         hub.submit_ticket(request)
 
