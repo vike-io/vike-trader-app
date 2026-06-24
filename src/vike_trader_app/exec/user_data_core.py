@@ -60,7 +60,14 @@ async def run_user_data_forever(
                     for event in decode(frame):
                         emit(event)
             finally:
-                await ws.close()
+                # BOUNDED close: a busy stream (e.g. Binance futures markPrice updates) can stall the
+                # websockets close handshake up to the lib default (~10s), which would outlast the
+                # worker's wait(2000)=2s teardown join -> 0xC0000409. Abandon a slow close after
+                # recv_timeout; the socket is reclaimed when the loop/ws is finalized.
+                try:
+                    await asyncio.wait_for(ws.close(), timeout=recv_timeout)
+                except Exception:  # noqa: BLE001 — close errors / timeout must not block teardown
+                    pass
             backoff = 1.0
         except UserDataAuthError:
             raise
