@@ -17,6 +17,7 @@ import pytest
 
 from vike_trader_app.exec.user_data_core import UserDataAuthError
 from vike_trader_app.exec.bybit.user_data import (
+    _HandshakeStopped,
     make_bybit_run_core,
     open_bybit_user_data_ws,
 )
@@ -190,6 +191,74 @@ def test_open_ws_ignores_interleaved_frames_before_subscribe_ack():
     ))
 
     assert result is ws
+
+
+# ---------------------------------------------------------------------------
+# Fix 1 — handshake recv-timeout + stop() poll + overall deadline (0xC0000409)
+# ---------------------------------------------------------------------------
+
+class _BlockingWS:
+    """recv() blocks ~forever; close() flips closed=True. Models a half-open / stalled handshake."""
+
+    def __init__(self):
+        self.sent: list[dict] = []
+        self.closed = False
+
+    async def send(self, data: str) -> None:
+        self.sent.append(json.loads(data))
+
+    async def recv(self) -> str:
+        await asyncio.sleep(3600)   # never returns within the test window
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_handshake_bails_promptly_on_stop():
+    """When stop() flips True mid-handshake, the coroutine returns PROMPTLY raising
+    _HandshakeStopped and the ws is closed — this is the 0xC0000409 teardown fix."""
+    ws = _BlockingWS()
+    flag = {"v": False}
+
+    async def _drive():
+        task = asyncio.ensure_future(open_bybit_user_data_ws(
+            ws_url="wss://fake", api_key="K", api_secret="S", now_ms=lambda: 0,
+            connect=_async_return(ws), stop=lambda: flag["v"],
+            recv_timeout=0.05, handshake_timeout=999,
+        ))
+        await asyncio.sleep(0.1)
+        flag["v"] = True   # request stop while recv() is blocked forever
+        with pytest.raises(_HandshakeStopped):
+            await task
+
+    # Whole drive must finish well within 1s despite recv() awaiting 3600s.
+    asyncio.run(asyncio.wait_for(_drive(), timeout=1.0))
+    assert ws.closed is True, "ws.close() must be called on a stop-during-handshake"
+
+
+def test_handshake_deadline_raises_auth_error():
+    """A persistent ack stall (stop stays False) hits handshake_timeout -> UserDataAuthError;
+    the ws is closed and no secret/api_key/sign leaks into str(exc)."""
+    import time
+
+    _SECRET = "SUPERSECRETKEY99"
+    ws = _BlockingWS()
+    _now = lambda: int(time.monotonic() * 1000)   # real advancing clock so the deadline can pass
+
+    async def _drive():
+        with pytest.raises(UserDataAuthError) as exc_info:
+            await open_bybit_user_data_ws(
+                ws_url="wss://fake", api_key="MYKEY123", api_secret=_SECRET, now_ms=_now,
+                connect=_async_return(ws), stop=lambda: False,
+                recv_timeout=0.05, handshake_timeout=0.1,
+            )
+        return exc_info.value
+
+    exc = asyncio.run(asyncio.wait_for(_drive(), timeout=1.0))
+    assert ws.closed is True, "ws.close() must be called on a handshake deadline"
+    assert _SECRET not in str(exc)
+    assert "MYKEY123" not in str(exc)
 
 
 # ---------------------------------------------------------------------------
