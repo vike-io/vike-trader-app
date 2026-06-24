@@ -173,3 +173,119 @@ def test_disable_live_overrides_bybit(app, monkeypatch):
         assert win._maybe_start_live_exec() is False
     finally:
         win.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Task 7 — WS worker wiring tests
+# ---------------------------------------------------------------------------
+
+def _setup_bybit_mocks(monkeypatch, ws_base_url=""):
+    """Shared mock setup for Bybit gated-live tests (no network)."""
+    from vike_trader_app.exec.credentials import Credentials, Environment
+    from vike_trader_app.exec.signer import BybitV5Signer
+    from vike_trader_app.exec.venue_config import VenueConfig
+
+    monkeypatch.setenv("VIKE_EXEC_VENUE", "bybit")
+    monkeypatch.setenv("VIKE_EXEC_ENV", "DEMO")
+    monkeypatch.delenv("VIKE_DISABLE_LIVE", raising=False)
+
+    creds = Credentials(api_key="K", api_secret="S")
+    cfg = VenueConfig(
+        venue="bybit", environment=Environment.DEMO,
+        rest_base_url="https://api-demo.bybit.com",
+        ws_base_url=ws_base_url,
+        credentials=creds,
+        signer=BybitV5Signer(creds, now_ms=lambda: 0),
+    )
+
+    from vike_trader_app.exec import venue_config as vc
+    monkeypatch.setattr(vc, "resolve_venue_config", lambda *a, **k: cfg)
+
+    from vike_trader_app.exec.bybit import client as bybit_client_mod
+    monkeypatch.setattr(bybit_client_mod.BybitSpotExecutionClient, "connect",
+                        lambda self: __import__(
+                            "vike_trader_app.exec.crypto_client",
+                            fromlist=["ReconcileSnapshot"],
+                        ).ReconcileSnapshot(
+                            positions=((self._symbol, 0.0),),
+                            position_avg_px=((self._symbol, 0.0),),
+                        ))
+
+    import vike_trader_app.exec.binance.transport as btransport
+
+    def _fake_public(base_url, path, params=None):
+        return {"retCode": 0, "result": {"list": [
+            {"symbol": params.get("symbol"), "baseCoin": "BTC",
+             "priceFilter": {"tickSize": "0.01"},
+             "lotSizeFilter": {"basePrecision": "0.000001", "minOrderQty": "0.0001",
+                               "maxOrderQty": "100", "minOrderAmt": "1"}}]}}
+
+    monkeypatch.setattr(btransport, "get_public_json", _fake_public)
+    return cfg
+
+
+def test_bybit_ws_worker_registered_when_ws_url_set(app, monkeypatch):
+    """Bybit gated session with a non-empty ws_base_url must register a 'bybit' WS worker."""
+    _setup_bybit_mocks(monkeypatch, ws_base_url="wss://stream-demo.bybit.com/v5/private")
+
+    # Patch make_bybit_run_core to return a no-op (avoids real asyncio.run/socket).
+    import vike_trader_app.exec.bybit.user_data as ud_mod
+    invoked = {}
+
+    def _fake_make_run_core(**kwargs):
+        invoked["called"] = True
+        return lambda emit, stop: None   # no-op; QThread.run() returns immediately
+
+    monkeypatch.setattr(ud_mod, "make_bybit_run_core", _fake_make_run_core)
+
+    win = MainWindow()
+    try:
+        win._symbol = "BTCUSDT"
+        ok = win._maybe_start_live_exec()
+        assert ok is True
+        assert invoked.get("called") is True, "make_bybit_run_core was not called"
+        assert "bybit" in win._exec_session._workers, (
+            "expected a 'bybit' worker in _exec_session._workers"
+        )
+    finally:
+        win.shutdown()   # joins worker; no-op run_core finishes immediately
+
+
+def test_bybit_no_worker_when_ws_url_empty(app, monkeypatch):
+    """Bybit gated session with ws_base_url='' must start NO WS worker (REST-only, paper-safe)."""
+    _setup_bybit_mocks(monkeypatch, ws_base_url="")
+
+    import vike_trader_app.exec.bybit.user_data as ud_mod
+    invoked = {}
+    monkeypatch.setattr(ud_mod, "make_bybit_run_core",
+                        lambda **kw: invoked.__setitem__("called", True) or (lambda e, s: None))
+
+    win = MainWindow()
+    try:
+        win._symbol = "BTCUSDT"
+        ok = win._maybe_start_live_exec()
+        assert ok is True
+        assert not invoked, "make_bybit_run_core must NOT be called when ws_base_url is empty"
+        assert win._exec_session._workers == {}, (
+            "no worker expected when ws_base_url is empty"
+        )
+    finally:
+        win.shutdown()
+
+
+def test_disable_live_registers_no_bybit_worker(app, monkeypatch):
+    """VIKE_DISABLE_LIVE=1 with a non-empty ws_base_url → False return, no session, no worker."""
+    monkeypatch.setenv("VIKE_EXEC_VENUE", "bybit")
+    monkeypatch.setenv("VIKE_EXEC_ENV", "DEMO")
+    monkeypatch.setenv("VIKE_DISABLE_LIVE", "1")
+    # Don't bother patching instruments/connect — we should never reach that code.
+    win = MainWindow()
+    try:
+        win._symbol = "BTCUSDT"
+        ok = win._maybe_start_live_exec()
+        assert ok is False
+        assert getattr(win, "_exec_session", None) is None, (
+            "no session must be created when VIKE_DISABLE_LIVE is set"
+        )
+    finally:
+        win.shutdown()
