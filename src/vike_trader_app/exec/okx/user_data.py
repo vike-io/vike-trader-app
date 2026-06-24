@@ -158,10 +158,13 @@ def make_okx_run_core(
     symbol: str,
     now_ms,
     connect=None,
+    inst_type: str = "SPOT",
 ):
     """Return a synchronous run_core(emit, stop) that drives the OKX private-WS fill stream.
 
     ``connect`` is passed through to ``open_okx_user_data_ws`` for offline/unit testing.
+    ``inst_type`` is forwarded to ``open_okx_user_data_ws`` (default "SPOT" keeps existing callers
+    byte-identical). Pass ``inst_type="SWAP"`` for the perp variant (use ``make_okx_perp_run_core``).
     ping_ms=15_000 is well under OKX's 30s idle timeout.
     """
 
@@ -178,6 +181,7 @@ def make_okx_run_core(
                     connect=connect,
                     stop=stop,
                     recv_timeout=1.0,
+                    inst_type=inst_type,
                 ),
                 decode=lambda frame: map_okx_private(frame, venue="okx", symbol=symbol),
                 ping=_okx_ping,

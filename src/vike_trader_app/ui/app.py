@@ -3101,6 +3101,45 @@ class MainWindow(QtWidgets.QMainWindow):
             client = BybitSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset)
+        elif venue == "okx" and product == "perp":
+            import functools, logging
+            from ..exec.okx.perp_client import OKXPerpExecutionClient
+            from ..exec.okx.perp_instruments import parse_okx_perp_instruments
+            from ..exec.okx.transport import okx_public_get, okx_signed_request
+            from ..data.okx_source import market_symbol
+
+            inst_id = f"{market_symbol(symbol)}-SWAP"      # BTCUSDT -> BTC-USDT -> BTC-USDT-SWAP
+            simulated = environment is not Environment.MAINNET
+            info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
+                                  {"instType": "SWAP", "instId": inst_id}, simulated=simulated)
+            if str(info.get("code", "0")) != "0":
+                logging.getLogger(__name__).error(
+                    "OKX SWAP instruments error code=%s — aborting live exec", info.get("code"))
+                return False
+            parsed = parse_okx_perp_instruments(info)
+            if inst_id not in parsed:
+                logging.getLogger(__name__).error(
+                    "OKX SWAP instruments: instId %r absent — aborting live exec", inst_id)
+                return False
+            f = parsed[inst_id]
+            ct_val = f.get("ct_val", 0.0)
+            if ct_val <= 0.0:                              # #1 trap: no ctVal -> 100x risk; abort
+                logging.getLogger(__name__).error(
+                    "OKX SWAP instruments: ctVal missing/zero for %r — aborting live exec", inst_id)
+                return False
+            filters = {k: v for k, v in f.items() if k not in ("base_asset", "ct_val", "ct_mult")}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = inst_id                        # BTC-USDT-SWAP — hub matches client/snapshot key
+            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            client = OKXPerpExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
+                filters=filters, base_asset=base_asset, ct_val=ct_val, leverage=leverage,
+                transport=functools.partial(okx_signed_request, simulated=simulated),
+                public_transport=functools.partial(okx_public_get, simulated=simulated))
+            client.set_leverage()                          # MAIN thread, before connect/reconcile
+            # NOTE: a perp MARKET order (price=None) -> ctx.mark_price=0.0 -> the min_notional RiskGate
+            # veto. PRE-EXISTING spot limitation inherited unchanged; proper fix deferred to 5f.
         elif venue == "okx":
             import functools
             from ..exec.okx.client import OKXSpotExecutionClient
@@ -3148,8 +3187,14 @@ class MainWindow(QtWidgets.QMainWindow):
             client = BinanceSpotExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset)
+        # OKX SWAP: filters["step_size"] is the lotSz in CONTRACTS, but the order qty fed to the gate
+        # is in BASE units. Quantize the gate on the true BASE granularity (lotSz * ctVal); the client's
+        # _to_contracts re-floors to lotSz afterward. Other venues' step_size is already in base.
+        gate_lot_size = filters["step_size"]
+        if venue == "okx" and product == "perp":
+            gate_lot_size = (filters["step_size"] or 0.0) * ct_val
         gate = RiskGate(RiskLimits(
-            tick_size=filters["tick_size"] or None, lot_size=filters["step_size"] or None,
+            tick_size=filters["tick_size"] or None, lot_size=gate_lot_size or None,
             min_notional=filters["min_notional"] or None))
         hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
@@ -3179,7 +3224,21 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("bybit", worker)
-        if venue == "okx" and cfg.ws_base_url:
+        if venue == "okx" and product == "perp" and cfg.ws_base_url:
+            from ..exec.okx.perp_user_data import make_okx_perp_run_core
+            from ..ui.private_user_data import PrivateUserDataWorker
+            run_core = make_okx_perp_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                passphrase=cfg.credentials.passphrase,
+                symbol=client_symbol,                        # BTC-USDT-SWAP
+                ct_val=ct_val,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled("okx", worker)
+        elif venue == "okx" and cfg.ws_base_url:
             from ..exec.okx.user_data import make_okx_run_core
             from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_okx_run_core(
