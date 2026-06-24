@@ -26,6 +26,8 @@ class Account:
         self.positions: dict[tuple[str, str, str], dict] = {}
         self.realized_pnl: float = 0.0
         self.trades: list[float] = []   # gross price PnL per closing portion, in order
+        self.balance: float = 0.0
+        self.marks: dict[tuple[str, str], float] = {}
 
     def apply_fill(self, fill: "FillEvent") -> None:
         key = (fill.venue, fill.symbol, "BOTH")
@@ -37,3 +39,19 @@ class Account:
         if out.closing_qty > 0.0:                 # a reduce / close / flip realized PnL on the closed portion
             self.realized_pnl += out.realized_pnl
             self.trades.append(out.realized_pnl)
+
+    def set_mark(self, venue: str, symbol: str, px: float) -> None:
+        """Record the latest mark price for unrealized-PnL valuation (perp mark feed, slice 5+)."""
+        self.marks[(venue, symbol)] = px
+
+    def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
+        """Mark-to-market PnL on the open position. 0.0 if flat or no mark recorded yet.
+
+        Same shape as compute_fill's realized line (core/fill.py:45) evaluated at the mark:
+        (mark - avg_px) * size * multiplier (sign rides in the signed size).
+        """
+        pos = self.positions.get((venue, symbol, position_side))
+        mark = self.marks.get((venue, symbol))
+        if pos is None or mark is None:
+            return 0.0
+        return (mark - pos["avg_px"]) * pos["size"] * self.multiplier
