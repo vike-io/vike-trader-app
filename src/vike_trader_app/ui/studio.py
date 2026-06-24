@@ -76,8 +76,6 @@ class BacktestConfig:
     start_ts: int
     end_ts: int
     resolution_ms: int | None
-# Cap the in-sample grid we backtest to draw the optimization surface (combos = product of axes).
-_SURFACE_MAX_COMBOS = 400
 
 _YEAR_MS = 365.25 * 24 * 60 * 60 * 1000.0
 
@@ -1382,6 +1380,32 @@ class ChatWorker(QtCore.QThread):
         self.result.emit(res)
 
 
+class OptimizeWorker(QtCore.QThread):
+    """Background thread: runs the walk-forward + optimization-surface job, emits the result.
+
+    The grid sweep can take many seconds, so it must not run on the GUI thread (which would freeze
+    the window under a WaitCursor). The heavy lifting is the Qt-free ``run_optimize_job`` — which
+    itself fans the grid across worker processes — and only plain result data crosses back to the
+    main thread via ``done``/``failed``. Mirrors ``ChatWorker``'s lifetime contract (held on the
+    widget, released in ``_on_optimize_finished``, waited in ``shutdown``)."""
+
+    done = QtCore.Signal(object)    # OptimizeJobResult
+    failed = QtCore.Signal(str)
+
+    def __init__(self, job_kwargs: dict):
+        super().__init__()
+        self._kwargs = job_kwargs
+
+    def run(self) -> None:
+        from vike_trader_app.tester.optimize_job import run_optimize_job
+        try:
+            res = run_optimize_job(**self._kwargs)
+        except Exception as exc:  # noqa: BLE001
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+            return
+        self.done.emit(res)
+
+
 # ---------------------------------------------------------------------------
 # SegmentedControl
 # ---------------------------------------------------------------------------
@@ -1756,6 +1780,7 @@ class StudioTab(QtWidgets.QWidget):
         self._config = None          # set to TesterConfig() on first use
         self._agent_client = None
         self._worker: ChatWorker | None = None  # keep a reference so GC doesn't collect it
+        self._opt_worker: OptimizeWorker | None = None  # in-flight walk-forward/surface job (off-GUI)
         self._run_capital = None     # None -> use config.cash
         self._run_range = None       # None -> full bars, else (start_ts, end_ts)
         self._run_resolution = None  # None -> base bars, else coarse window ms to resample to
@@ -2121,14 +2146,22 @@ class StudioTab(QtWidgets.QWidget):
         This is the "optimize safely" path: parameters are picked per train window and scored
         OUT-OF-SAMPLE, and the stitched result carries a PBO/deflated-Sharpe overfit verdict (the
         banner) — so a curve-fit grid sweep shows up as High overfit risk rather than a shiny number.
+
+        The walk-forward + the (exhaustive) optimization-surface grid sweep both run OFF the GUI
+        thread in an ``OptimizeWorker`` — the window stays responsive instead of freezing under a
+        WaitCursor — and the surface sweep runs on the worker pool (``workers`` + ``strategy_source``)
+        instead of serially in-process. Results paint on the main thread in ``_on_optimize_result``.
         """
         from vike_trader_app.core.strategy_loader import load_strategy_from_string
-        from vike_trader_app.tester import StrategyTester, TesterConfig
+        from vike_trader_app.tester import TesterConfig
+
+        if self._opt_worker is not None and self._opt_worker.isRunning():
+            self.results.toast("Already optimizing — please wait…")
+            return
 
         config = self._config if self._config is not None else TesterConfig()
         if self._run_capital is not None:
             config = replace(config, cash=self._run_capital)
-        bars = self._effective_bars()
         try:
             cls = load_strategy_from_string(self.editor.text(), validate=True)
         except Exception as exc:  # noqa: BLE001
@@ -2138,75 +2171,56 @@ class StudioTab(QtWidgets.QWidget):
         if not grid:
             self.results.toast("Add a PARAM_GRID to the strategy to walk-forward optimize it.")
             return
-        cfg = self._opt_config
-        wf_kw = asdict(cfg)   # OptimizerConfig fields == walk_forward kwargs
+
+        wf_kwargs = asdict(self._opt_config)   # OptimizerConfig fields == walk_forward kwargs
+        source = self.editor.text()
+        job = dict(strategy_cls=cls, grid=grid, config=config, wf_kwargs=wf_kwargs,
+                   strategy_source=source)
         if self._portfolio_bars:
-            from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester
             n = min((len(b) for b in self._portfolio_bars.values()), default=0)
             if n < 120:
                 self.results.toast("Need ≥120 bars per symbol to walk-forward optimize a portfolio.")
                 return
+            job.update(portfolio_bars=self._portfolio_bars, portfolio_ranges=self._portfolio_ranges,
+                       portfolio_name=self._portfolio_name)
             self.results.toast(f"Portfolio walk-forward optimizing {self._portfolio_name}…")
-            QtWidgets.QApplication.processEvents()
-            QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-            try:
-                pt = PortfolioStrategyTester(self._portfolio_bars, config, ranges=self._portfolio_ranges)
-                wf = pt.walk_forward(cls.make, grid, **wf_kw, strategy_source=self.editor.text())
-            except Exception as exc:  # noqa: BLE001
-                self.results.show_error(f"Portfolio optimize failed: {type(exc).__name__}: {exc}")
+        else:
+            bars = self._effective_bars()
+            if len(bars) < 120:
+                self.results.toast("Need ≥120 bars to walk-forward optimize.")
                 return
-            finally:
-                QtWidgets.QApplication.restoreOverrideCursor()
-            self.results.add_run(wf.oos_report, [])    # portfolio: no per-bar price chart
-            self.results.show_walk_forward(wf, cfg.criterion)
-            self._populate_surface(pt, cls.make, grid, cfg.criterion)
-            best = wf.windows[-1].best_params if wf.windows else {}
-            level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
-            self.results.toast(f"Portfolio WF-OOS · {self._portfolio_name} · overfit: {level} · best {best}")
-            return
-        if len(bars) < 120:
-            self.results.toast("Need ≥120 bars to walk-forward optimize.")
-            return
-        self.results.toast("Optimizing + walk-forward validating…")
-        QtWidgets.QApplication.processEvents()
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
-        try:
-            st = StrategyTester(cls(), bars, config)
-            wf = st.walk_forward(cls.make, grid, **wf_kw, strategy_source=self.editor.text())
-        except Exception as exc:  # noqa: BLE001
-            self.results.show_error(f"Optimize failed: {type(exc).__name__}: {exc}")
-            return
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-        self.results.add_run(wf.oos_report, bars)
-        self.results.show_walk_forward(wf, cfg.criterion)
-        self._populate_surface(st, cls.make, grid, cfg.criterion)
-        best = wf.windows[-1].best_params if wf.windows else {}
-        level = wf.oos_report.verdict.level if wf.oos_report.verdict else "?"
-        self.results.toast(f"Walk-forward OOS · overfit risk: {level} · best {best}")
+            job.update(bars=bars)
+            self.results.toast("Optimizing + walk-forward validating…")
 
-    def _populate_surface(self, optimizer, make, grid, criterion) -> None:
-        """Feed the Surface tab from an in-sample GRID optimize over ≤2 axes (capped, exhaustive).
+        worker = OptimizeWorker(job)
+        self._opt_worker = worker
+        worker.done.connect(self._on_optimize_result)
+        worker.failed.connect(self._on_optimize_failed)
+        worker.finished.connect(self._on_optimize_finished)
+        self._btn_optimize.setEnabled(False)   # non-blocking busy state (replaces the WaitCursor freeze)
+        worker.start()
 
-        The surface is the optimization LANDSCAPE — always a full grid (so neighbours are
-        comparable), independent of the walk-forward search method. Skipped (with a hint) when the
-        grid has <2 multi-valued params or exceeds _SURFACE_MAX_COMBOS backtests.
-        """
-        multi = [k for k, v in grid.items() if len(v) >= 2]
-        combos = 1
-        for v in grid.values():
-            combos *= len(v)
-        if len(multi) < 2 or combos > _SURFACE_MAX_COMBOS:
-            self.results.show_surface([], grid, criterion)  # shows the "needs a ≥2-param grid" hint
-            return
-        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)  # the grid sweep blocks; show busy
-        try:
-            rep = optimizer.optimize(make, grid, criterion=criterion, method="grid")
-        except Exception:  # noqa: BLE001 - surface is a nice-to-have, never block the WF result
-            return
-        finally:
-            QtWidgets.QApplication.restoreOverrideCursor()
-        self.results.show_surface(rep.ranked, grid, criterion)
+    def _on_optimize_result(self, res) -> None:
+        """Main-thread: paint the walk-forward result + optimization surface from the finished job."""
+        self.results.add_run(res.wf.oos_report, res.chart_bars)
+        self.results.show_walk_forward(res.wf, res.criterion)
+        self.results.show_surface(res.surface_ranked or [], res.grid, res.criterion)  # [] -> hint
+        if res.is_portfolio:
+            self.results.toast(
+                f"Portfolio WF-OOS · {res.portfolio_name} · overfit: {res.overfit_level} · best {res.best_params}")
+        else:
+            self.results.toast(
+                f"Walk-forward OOS · overfit risk: {res.overfit_level} · best {res.best_params}")
+
+    def _on_optimize_failed(self, message: str) -> None:
+        self.results.show_error(f"Optimize failed: {message}")
+
+    def _on_optimize_finished(self) -> None:
+        """Release the finished worker (only now is the QThread truly done) + re-enable the button."""
+        self._btn_optimize.setEnabled(True)
+        worker, self._opt_worker = self._opt_worker, None
+        if worker is not None:
+            worker.deleteLater()
 
     def _open_optimizer_config(self) -> None:
         """Open the optimizer modal (search method, criterion, walk-forward mode) and store it."""
@@ -2431,7 +2445,8 @@ class StudioTab(QtWidgets.QWidget):
             worker.deleteLater()
 
     def shutdown(self) -> None:
-        """Wait for any in-flight AI worker so we never destroy a running QThread on close."""
-        worker = self._worker
-        if worker is not None and worker.isRunning():
-            worker.wait(3000)
+        """Wait for any in-flight worker so we never destroy a running QThread on close (the
+        AI ChatWorker AND the OptimizeWorker; a running QThread torn down crashes the process)."""
+        for worker in (self._worker, self._opt_worker):
+            if worker is not None and worker.isRunning():
+                worker.wait(5000)
