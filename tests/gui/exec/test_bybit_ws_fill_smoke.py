@@ -78,7 +78,7 @@ def _floor_to_tick(value: float, tick: float) -> float:
 # ---------------------------------------------------------------------------
 
 @pytest.mark.skipif(not _creds_present(), reason="BYBIT_DEMO_API_KEY/SECRET not set in .env")
-def test_bybit_demo_ws_fill_roundtrip(app) -> None:  # noqa: PLR0915 — intentionally verbose smoke
+def test_bybit_demo_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR0915 — intentionally verbose smoke
     """Connect -> open private WS -> marketable BUY -> WS fill -> Account reflects it -> flatten.
 
     Step 1  resolve_venue_config: proves creds load; asserts demo WS URL.
@@ -164,6 +164,11 @@ def test_bybit_demo_ws_fill_roundtrip(app) -> None:  # noqa: PLR0915 — intenti
         hub.account.positions.get(("bybit", "BTCUSDT", "BOTH"), {}).get("size", 0.0)
     )
 
+    # --- Fix 1: ensure VIKE_DISABLE_LIVE is unset so add_worker_if_enabled actually starts ------
+    # tests/conftest.py sets VIKE_DISABLE_LIVE=1 globally; as a @pytest.mark.network test that
+    # genuinely needs the live WS, we must clear it for this test only.
+    monkeypatch.delenv("VIKE_DISABLE_LIVE", raising=False)
+
     # --- Step 4: build the WS worker + session --------------------------------------------------
     session = LiveExecutionSession(hub)
     run_core = make_bybit_run_core(
@@ -174,7 +179,24 @@ def test_bybit_demo_ws_fill_roundtrip(app) -> None:  # noqa: PLR0915 — intenti
         now_ms=now_ms,
     )
     worker = PrivateUserDataWorker(run_core)
-    session.add_worker_if_enabled("bybit", worker)
+    started = session.add_worker_if_enabled("bybit", worker)
+    assert started, (
+        "add_worker_if_enabled returned False — VIKE_DISABLE_LIVE was still set or "
+        "worker failed to start; check monkeypatch.delenv above"
+    )
+
+    # --- Fix 2: settle for WS subscribe BEFORE placing the order (race guard) ------------------
+    # The worker connects, auths, and subscribes ASYNCHRONOUSLY in its QThread.  If the order
+    # fills BEFORE the private-channel subscribe completes, Bybit will not push the execution
+    # frame retroactively.  In production the worker subscribes at session-start long before any
+    # order, so this settle is a smoke-only concern.
+    # PrivateUserDataWorker exposes no "subscribed" signal, so we pump the event loop for ~6 s
+    # — enough for the demo WS to complete auth + subscription handshake.
+    settle_deadline = time.monotonic() + 6.0
+    while time.monotonic() < settle_deadline:
+        app.processEvents()
+        worker.wait(200)
+        app.processEvents()
 
     # ---------------------------------------------------------------------------
     # From here on: try/finally so the demo position is ALWAYS flattened.
