@@ -215,8 +215,9 @@ def test_binance_demo_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR0
     )
 
     # --- Fix 2: settle for WS signed-subscribe BEFORE placing the order (race guard) -----------
-    # The worker connects to demo-ws-api.binance.com and sends a signed session.logon subscribe
-    # request ASYNCHRONOUSLY in its QThread.  If the order fills BEFORE the subscribe ACK is
+    # The worker connects to demo-ws-api.binance.com and sends a per-request-signed
+    # userDataStream.subscribe.signature request (HMAC; no session.logon) ASYNCHRONOUSLY in its
+    # QThread.  If the order fills BEFORE the subscribe ACK is
     # received, the demo will not push the executionReport retroactively.  In production the
     # worker subscribes at session-start long before any order, so this settle is smoke-only.
     # PrivateUserDataWorker exposes no "subscribed" signal; pump the event loop for ~6 s —
