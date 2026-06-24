@@ -122,6 +122,15 @@ class OrderExpired:
     ts: int = 0
 
 
+@dataclass(frozen=True)
+class OrderLiquidated:
+    """Venue force-close of an order (perp liquidation) — FSM counterpart of PositionLiquidated."""
+
+    client_order_id: str
+    liq_price: float = 0.0
+    ts: int = 0
+
+
 # --- position / account (derived from fills) ----------------------------------------------------
 
 @dataclass(frozen=True)

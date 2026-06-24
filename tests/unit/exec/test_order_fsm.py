@@ -110,3 +110,35 @@ def test_expired_from_accepted():
     o.apply(OrderSubmitted("c1")); o.apply(OrderAccepted("c1"))
     o.apply(OrderExpired("c1"))
     assert o.status is OrderStatus.EXPIRED
+
+
+# --- Task 6: OrderLiquidated event + LIQUIDATED FSM transition ---
+
+from vike_trader_app.exec.events import OrderLiquidated
+
+
+def _mo(status: OrderStatus) -> ManagedOrder:
+    """Build a ManagedOrder directly at the given status (bypasses FSM for test setup)."""
+    mo = ManagedOrder(request=OrderRequest(client_order_id="c1", venue="binance",
+                                           symbol="BTCUSDT", side=+1, qty=2.0,
+                                           order_type="limit", price=100.0),
+                      status=status)
+    return mo
+
+
+def test_accepted_order_can_be_liquidated():
+    mo = _mo(status=OrderStatus.ACCEPTED)
+    mo.apply(OrderLiquidated(client_order_id=mo.client_order_id, liq_price=60.0))
+    assert mo.status is OrderStatus.LIQUIDATED
+
+
+def test_partially_filled_order_can_be_liquidated():
+    mo = _mo(status=OrderStatus.PARTIALLY_FILLED)
+    mo.apply(OrderLiquidated(client_order_id=mo.client_order_id, liq_price=60.0))
+    assert mo.status is OrderStatus.LIQUIDATED
+
+
+def test_filled_order_cannot_be_liquidated():
+    mo = _mo(status=OrderStatus.FILLED)
+    with pytest.raises(InvalidOrderTransition):
+        mo.apply(OrderLiquidated(client_order_id=mo.client_order_id, liq_price=60.0))

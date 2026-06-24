@@ -19,6 +19,7 @@ from vike_trader_app.exec.events import (
     OrderDenied,
     OrderExpired,
     OrderFilled,
+    OrderLiquidated,
     OrderPartiallyFilled,
     OrderRejected,
     OrderRequest,
@@ -71,6 +72,8 @@ _TRANSITIONS: dict[type, tuple[frozenset[OrderStatus], OrderStatus]] = {
         frozenset({_S.ACCEPTED, _S.TRIGGERED, _S.PARTIALLY_FILLED, _S.PENDING_CANCEL}), _S.CANCELED),
     OrderExpired: (
         frozenset({_S.ACCEPTED, _S.TRIGGERED, _S.PARTIALLY_FILLED}), _S.EXPIRED),
+    OrderLiquidated: (
+        frozenset({_S.ACCEPTED, _S.TRIGGERED, _S.PARTIALLY_FILLED}), _S.LIQUIDATED),
 }
 
 
