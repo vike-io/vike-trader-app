@@ -53,6 +53,7 @@ class FillEvent:
     liquidity_side: str = ""          # 'maker' | 'taker'
     ts: int = 0
     mark_price: float | None = None
+    position_side: str = "BOTH"      # 'BOTH' one-way/spot | 'LONG' | 'SHORT' (hedge perps)
 
 
 # --- order lifecycle events ---------------------------------------------------------------------
