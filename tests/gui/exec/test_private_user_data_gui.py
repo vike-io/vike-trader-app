@@ -16,7 +16,11 @@ from vike_trader_app.exec.live_oms import LiveOmsHub  # noqa: E402
 from vike_trader_app.exec.order import ManagedOrder, OrderStatus  # noqa: E402
 from vike_trader_app.exec.events import OrderRequest  # noqa: E402
 from vike_trader_app.exec.risk import RiskGate, RiskLimits  # noqa: E402
-from vike_trader_app.ui.private_user_data import LiveExecutionSession, PrivateUserDataWorker  # noqa: E402
+from vike_trader_app.ui.private_user_data import (  # noqa: E402
+    LiveExecutionSession,
+    PrivateUserDataWorker,
+    _scrub,
+)
 
 
 @pytest.fixture(scope="module")
@@ -81,6 +85,23 @@ def test_failed_scrubs_secret(app):
     assert scrubbed
     assert "deadbeef" not in scrubbed[0]
     assert "topsecret" not in scrubbed[0]
+
+
+def test_scrub_redacts_bybit_sign_and_auth_frame_shapes():
+    """Fix 3: _scrub must cover the Bybit `sign` token, the `:` separator, and a stringified
+    auth frame's args — the shapes the docstring claims — while leaving benign text alone."""
+    # Bare hex sign with `=` separator is redacted.
+    assert "abcdef0123456789" not in _scrub("sign=abcdef0123456789")
+    # A stringified Bybit auth frame: neither the api_key nor the sign survives.
+    frame = '{"op": "auth", "args": ["MYKEY123", 1700000000000, "DEADBEEFsig"]}'
+    scrubbed = _scrub(frame)
+    assert "MYKEY123" not in scrubbed
+    assert "DEADBEEFsig" not in scrubbed
+    # `:` separator shape (e.g. logged dict-ish) is also covered.
+    assert "topsecretvalue" not in _scrub('secret: topsecretvalue')
+    # Benign message must NOT be mangled — the (?<![A-Za-z]) boundary keeps `design` from
+    # matching the `sign` branch.
+    assert _scrub("design=v2 connected ok") == "design=v2 connected ok"
 
 
 def test_disable_live_starts_no_worker(app, monkeypatch):
