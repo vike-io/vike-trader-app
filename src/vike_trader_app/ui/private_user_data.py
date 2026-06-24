@@ -2,11 +2,14 @@
 """Qt shell for the live user-data stream: a QThread worker + a main-thread marshalling QObject.
 
 PrivateUserDataWorker clones _LiveFeedWorker (app.py:99-119): run() drives the async core off-thread
-and emits frozen events via report=Signal(object); failed=Signal(str) SCRUBS secrets first. The
-worker NEVER touches the bus/account. LiveExecutionSession.(_on_report) is the ONLY code that calls
-bus.publish — the single-main-thread-writer rule. Qt auto-uses a QUEUED connection because the slot
-lives on a main-thread QObject. shutdown() stop()+wait(2000)s every worker (the 0xC0000409 invariant)
-then calls hub.shutdown().
+and emits frozen events via report=Signal(object); failed=Signal(str) passes the message through a
+best-effort secret scrub (_scrub). The PRIMARY secrets-never-logged guarantee is STRUCTURAL — the
+worker closure is the only holder of the creds, events carry no creds, and UserDataAuthError carries
+only ret_msg — so the scrub is a defense-in-depth second line, not the guarantee. The worker NEVER
+touches the bus/account. LiveExecutionSession.(_on_report) is the ONLY code that calls bus.publish —
+the single-main-thread-writer rule. Qt auto-uses a QUEUED connection because the slot lives on a
+main-thread QObject. shutdown() stop()+wait(2000)s every worker (the 0xC0000409 invariant) then calls
+hub.shutdown().
 """
 
 from __future__ import annotations
@@ -16,11 +19,19 @@ import re
 
 from PySide6 import QtCore
 
-_SECRET_RE = re.compile(r"(signature|secret|api[_-]?key|x-mbx-apikey)=\S+", re.IGNORECASE)
+# Defense-in-depth scrub for the failed=Signal(str) path. The PRIMARY guarantee is STRUCTURAL: the
+# worker closure is the only holder of the secret, events carry no creds, and UserDataAuthError carries
+# only ret_msg. This scrub is a best-effort second line for any future error string that embeds a
+# key/secret/sign token. The (?<![A-Za-z]) left-boundary keeps benign words like `design` from matching
+# the `sign` branch.
+_SECRET_RE = re.compile(
+    r"(?<![A-Za-z])(signature|sign|secret|api[_-]?key|x-mbx-apikey)\s*[=:]\s*\S+", re.IGNORECASE)
+_AUTH_ARGS_RE = re.compile(r'("op"\s*:\s*"auth"\s*,\s*"args"\s*:\s*\[)[^\]]*(\])', re.IGNORECASE)
 
 
 def _scrub(message: str) -> str:
-    return _SECRET_RE.sub(r"\1=***", message or "")
+    s = _AUTH_ARGS_RE.sub(r"\1***\2", message or "")   # redact api_key + sign in a stringified auth frame
+    return _SECRET_RE.sub(r"\1=***", s)
 
 
 class PrivateUserDataWorker(QtCore.QThread):

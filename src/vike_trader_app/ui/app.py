@@ -3124,6 +3124,18 @@ class MainWindow(QtWidgets.QMainWindow):
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
         self._exec_session = LiveExecutionSession(hub)
+        if venue == "bybit" and cfg.ws_base_url:
+            from ..exec.bybit.user_data import make_bybit_run_core
+            from ..ui.private_user_data import PrivateUserDataWorker
+            run_core = make_bybit_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled("bybit", worker)
         return True
 
     def showEvent(self, event):  # noqa: N802 - Qt override

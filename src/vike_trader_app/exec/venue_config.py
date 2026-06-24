@@ -29,6 +29,8 @@ BINANCE_MAINNET_WS_DEFAULT = "wss://stream.binance.com:9443/ws"
 
 BYBIT_DEMO_REST = "https://api-demo.bybit.com"
 BYBIT_MAINNET_REST = "https://api.bybit.com"
+BYBIT_DEMO_WS_DEFAULT = "wss://stream-demo.bybit.com/v5/private"
+BYBIT_MAINNET_WS_DEFAULT = "wss://stream.bybit.com/v5/private"
 
 # OKX: demo and mainnet share the same REST host; the x-simulated-trading:1 header (a transport
 # concern) is the only distinction between demo and mainnet at the HTTP level.
@@ -62,11 +64,12 @@ def _resolve_bybit(venue: str, env: Environment, creds: Credentials,
                    now_ms: Callable[[], int]) -> VenueConfig:
     if env is Environment.MAINNET:
         rest = os.environ.get("BYBIT_MAINNET_BASE_URL") or BYBIT_MAINNET_REST
+        ws = os.environ.get("BYBIT_MAINNET_WS_URL") or BYBIT_MAINNET_WS_DEFAULT
     else:
         rest = os.environ.get("BYBIT_DEMO_BASE_URL") or BYBIT_DEMO_REST
+        ws = os.environ.get("BYBIT_DEMO_WS_URL") or BYBIT_DEMO_WS_DEFAULT
     signer = BybitV5Signer(creds, now_ms=now_ms)
-    # WS user-data is DEFERRED to the cross-venue fill-stream PR — empty ws_base_url for now.
-    return VenueConfig(venue=venue, environment=env, rest_base_url=rest, ws_base_url="",
+    return VenueConfig(venue=venue, environment=env, rest_base_url=rest, ws_base_url=ws,
                        credentials=creds, signer=signer)
 
 
