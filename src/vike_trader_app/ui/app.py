@@ -3149,6 +3149,18 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("okx", worker)
+        if venue == "binance" and cfg.ws_base_url:
+            from ..exec.binance.user_data import make_binance_run_core
+            from ..ui.private_user_data import PrivateUserDataWorker
+            run_core = make_binance_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,                        # plain 'BTCUSDT' — no dashed inst_id, no passphrase
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled("binance", worker)
         return True
 
     def showEvent(self, event):  # noqa: N802 - Qt override
