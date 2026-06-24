@@ -67,3 +67,38 @@ def test_apply_funding_credits_and_debits_balance():
                                    funding_rate=-0.0002, amount=2.25))
     assert acc.balance == 0.75
     assert acc.funding_paid == 0.75
+
+
+from vike_trader_app.exec.events import PositionLiquidated
+
+
+def test_apply_liquidation_long_realizes_loss_and_flattens():
+    acc = Account()
+    acc.apply_fill(_fill(+1, 2.0, 100.0))          # long 2 @ 100
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=2.0, liq_price=60.0, fee=0.5))
+    # realized (60-100)*2 = -80 ; balance -fee
+    assert acc.realized_pnl == -80.0
+    assert acc.trades[-1] == -80.0
+    assert acc.balance == -0.5
+    assert acc.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.0
+
+
+def test_apply_liquidation_short_realizes_and_flattens():
+    acc = Account()
+    acc.apply_fill(_fill(-1, 1.0, 100.0))          # short 1 @ 100
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=1.0, liq_price=150.0, fee=0.0))
+    assert acc.realized_pnl == -50.0               # (150-100)*(-1)
+    assert acc.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.0
+
+
+def test_apply_liquidation_noop_when_flat():
+    acc = Account()
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=1.0, liq_price=60.0, fee=0.0))
+    assert acc.realized_pnl == 0.0
+    assert acc.trades == []

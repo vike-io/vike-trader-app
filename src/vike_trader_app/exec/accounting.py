@@ -61,3 +61,22 @@ class Account:
         """Fold a periodic funding cashflow into the cash balance (signed: + received / - paid)."""
         self.balance += ev.amount
         self.funding_paid += ev.amount
+
+    def apply_liquidation(self, ev: "PositionLiquidated") -> None:
+        """Forced close: realize PnL at the liq price, flatten the position, deduct the liq fee.
+
+        Idempotent — a no-op if the keyed position is already flat/absent (replayed liquidation).
+        """
+        key = (ev.venue, ev.symbol, ev.position_side)
+        pos = self.positions.get(key)
+        if pos is None or pos["size"] == 0.0:
+            self.balance -= ev.fee
+            return
+        close_side = -1 if pos["size"] > 0.0 else 1      # close on the opposite side
+        out = compute_fill(pos["size"], pos["avg_px"], close_side, abs(pos["size"]),
+                           ev.liq_price, self.multiplier)
+        self.positions[key] = {"size": out.new_size, "avg_px": out.new_avg_px}
+        if out.closing_qty > 0.0:
+            self.realized_pnl += out.realized_pnl
+            self.trades.append(out.realized_pnl)
+        self.balance -= ev.fee
