@@ -31,6 +31,8 @@ class ReconcileSnapshot:
     # Per-position mark price at reconcile time — seeded as avg_px so an immediate close is ~0 PnL
     # instead of garbage (true cost basis is unknown for a pre-existing holding).
     position_avg_px: tuple[tuple[str, float], ...] = ()
+    # Perp-only: true mark price at reconcile time (avg_px ≠ mark; spot snapshots leave this empty).
+    position_mark_px: tuple[tuple[str, float], ...] = ()
 
 
 class CryptoExecutionClient:
@@ -48,6 +50,8 @@ class CryptoExecutionClient:
     # base connect() must NOT add locked_sell_qty again.  Bybit UNIFIED walletBalance is a total;
     # Binance "free" is the free portion only (locked-sell must be added back → False).
     BALANCE_IS_TOTAL: bool = False
+    # "spot" → balance-derived connect(); "perp" → signed-position reconcile_positions() hook.
+    PRODUCT: str = "spot"
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
                  base_asset: str = "", transport, public_transport=None) -> None:
@@ -85,6 +89,8 @@ class CryptoExecutionClient:
             raise
 
     def connect(self) -> ReconcileSnapshot:
+        if self.PRODUCT == "perp":
+            return self.reconcile_positions()
         account = self.unwrap(self._transport(self._base, self.PATH_ACCOUNT, "GET",
                                               self.build_account_params(), self._signer))
         free = 0.0
@@ -112,6 +118,11 @@ class CryptoExecutionClient:
         return ReconcileSnapshot(positions=((self._symbol, seeded_size),),
                                  open_orders=tuple(orders),
                                  position_avg_px=((self._symbol, mark_px),))
+
+    def reconcile_positions(self) -> ReconcileSnapshot:
+        """Perp reconcile seam. Subclasses (Bybit 5b, OKX 5c, Binance 5d) call a SIGNED position
+        endpoint and return signed long/short positions with avg price + mark. Base raises."""
+        raise NotImplementedError
 
     # --- venue hooks (override in subclasses) ---
     def build_order_params(self, request: OrderRequest) -> dict:
