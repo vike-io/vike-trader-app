@@ -189,3 +189,142 @@ def test_disable_live_overrides_okx(app, monkeypatch):
         assert win._maybe_start_live_exec() is False
     finally:
         win.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Task 5: OKX worker-start guard tests
+# ---------------------------------------------------------------------------
+
+def _make_cfg_with_ws():
+    """Return an OKX VenueConfig with a non-empty ws_base_url (triggers worker-start guard)."""
+    from vike_trader_app.exec.credentials import Credentials, Environment
+    from vike_trader_app.exec.signer import OKXV5Signer
+    from vike_trader_app.exec.venue_config import VenueConfig
+    creds = Credentials(api_key="K", api_secret="S", passphrase="P")
+    return VenueConfig(
+        venue="okx",
+        environment=Environment.DEMO,
+        rest_base_url="https://www.okx.com",
+        ws_base_url="wss://wspap.okx.com:8443/ws/v5/private?brokerId=9999",
+        credentials=creds,
+        signer=OKXV5Signer(creds, now_ms=lambda: 0),
+    )
+
+
+def _fake_connect(snap_positions=None):
+    """Return a connect() lambda that returns a ReconcileSnapshot."""
+    from vike_trader_app.exec.okx import client as okx_client_mod
+
+    positions = snap_positions or (("BTC-USDT", 0.0),)
+    position_avg_px = tuple((sym, 0.0) for sym, _ in positions)
+
+    def _connect(self):
+        return __import__(
+            "vike_trader_app.exec.crypto_client", fromlist=["ReconcileSnapshot"]
+        ).ReconcileSnapshot(positions=positions, position_avg_px=position_avg_px)
+
+    return _connect
+
+
+def test_okx_ws_worker_registered_when_ws_url_set(app, monkeypatch):
+    """OKX guard: worker registered + passphrase='P' + symbol='BTC-USDT' when ws_base_url set."""
+    import vike_trader_app.exec.okx.transport as okxtransport
+    from vike_trader_app.exec import venue_config as vc
+    from vike_trader_app.exec.okx import client as okx_client_mod
+    import vike_trader_app.exec.okx.user_data as okx_user_data
+
+    monkeypatch.setenv("VIKE_EXEC_VENUE", "okx")
+    monkeypatch.setenv("VIKE_EXEC_ENV", "DEMO")
+    monkeypatch.delenv("VIKE_DISABLE_LIVE", raising=False)
+
+    cfg = _make_cfg_with_ws()
+    monkeypatch.setattr(vc, "resolve_venue_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(okxtransport, "okx_public_get", _fake_okx_instruments)
+    monkeypatch.setattr(okx_client_mod.OKXSpotExecutionClient, "connect", _fake_connect())
+
+    # Spy on make_okx_run_core to capture kwargs and return a no-op run_core.
+    captured_kwargs = {}
+
+    def _spy_make_run_core(**kwargs):
+        captured_kwargs.update(kwargs)
+        return lambda emit, stop: None  # no-op run_core
+
+    monkeypatch.setattr(okx_user_data, "make_okx_run_core", _spy_make_run_core)
+
+    win = MainWindow()
+    try:
+        win._symbol = "BTCUSDT"
+        ok = win._maybe_start_live_exec()
+        assert ok is True
+        # Worker must be registered
+        assert "okx" in win._exec_session._workers
+        # Passphrase threaded correctly (the EXTRA arg OKX needs)
+        assert captured_kwargs.get("passphrase") == "P"
+        # Symbol must be the dashed inst_id (BTC-USDT), not the raw BTCUSDT
+        assert captured_kwargs.get("symbol") == "BTC-USDT"
+    finally:
+        win.shutdown()
+
+
+def test_okx_no_worker_when_ws_url_empty(app, monkeypatch):
+    """OKX guard: no worker when ws_base_url is empty (REST-only, paper-safe)."""
+    import vike_trader_app.exec.okx.transport as okxtransport
+    from vike_trader_app.exec import venue_config as vc
+    from vike_trader_app.exec.okx import client as okx_client_mod
+    import vike_trader_app.exec.okx.user_data as okx_user_data
+
+    monkeypatch.setenv("VIKE_EXEC_VENUE", "okx")
+    monkeypatch.setenv("VIKE_EXEC_ENV", "DEMO")
+    monkeypatch.delenv("VIKE_DISABLE_LIVE", raising=False)
+
+    cfg = _make_cfg()   # ws_base_url="" by default
+    monkeypatch.setattr(vc, "resolve_venue_config", lambda *a, **k: cfg)
+    monkeypatch.setattr(okxtransport, "okx_public_get", _fake_okx_instruments)
+    monkeypatch.setattr(okx_client_mod.OKXSpotExecutionClient, "connect", _fake_connect())
+
+    called = []
+
+    def _spy_make_run_core(**kwargs):
+        called.append(kwargs)
+        return lambda emit, stop: None
+
+    monkeypatch.setattr(okx_user_data, "make_okx_run_core", _spy_make_run_core)
+
+    win = MainWindow()
+    try:
+        win._symbol = "BTCUSDT"
+        ok = win._maybe_start_live_exec()
+        assert ok is True
+        # make_okx_run_core must NOT be called when ws_base_url is empty
+        assert called == [], "make_okx_run_core must not be called when ws_base_url is empty"
+        # No worker in session
+        assert win._exec_session._workers == {}
+    finally:
+        win.shutdown()
+
+
+def test_disable_live_registers_no_okx_worker(app, monkeypatch):
+    """VIKE_DISABLE_LIVE=1 + non-empty ws_base_url -> returns False, no exec session, no worker."""
+    import vike_trader_app.exec.okx.user_data as okx_user_data
+
+    monkeypatch.setenv("VIKE_EXEC_VENUE", "okx")
+    monkeypatch.setenv("VIKE_EXEC_ENV", "DEMO")
+    monkeypatch.setenv("VIKE_DISABLE_LIVE", "1")
+
+    called = []
+
+    def _spy_make_run_core(**kwargs):
+        called.append(kwargs)
+        return lambda emit, stop: None
+
+    monkeypatch.setattr(okx_user_data, "make_okx_run_core", _spy_make_run_core)
+
+    win = MainWindow()
+    try:
+        win._symbol = "BTCUSDT"
+        ok = win._maybe_start_live_exec()
+        assert ok is False, "VIKE_DISABLE_LIVE must suppress live exec"
+        assert getattr(win, "_exec_session", None) is None, "no exec session when VIKE_DISABLE_LIVE=1"
+        assert called == [], "make_okx_run_core must not be called when VIKE_DISABLE_LIVE=1"
+    finally:
+        win.shutdown()

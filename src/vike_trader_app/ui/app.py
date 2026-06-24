@@ -3136,6 +3136,19 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("bybit", worker)
+        if venue == "okx" and cfg.ws_base_url:
+            from ..exec.okx.user_data import make_okx_run_core
+            from ..ui.private_user_data import PrivateUserDataWorker
+            run_core = make_okx_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                passphrase=cfg.credentials.passphrase,      # EXTRA arg the OKX arm needs
+                symbol=client_symbol,                        # dashed inst_id 'BTC-USDT' — matches hub.symbol
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled("okx", worker)
         return True
 
     def showEvent(self, event):  # noqa: N802 - Qt override
