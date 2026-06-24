@@ -30,7 +30,7 @@ class Account:
         self.marks: dict[tuple[str, str], float] = {}
 
     def apply_fill(self, fill: "FillEvent") -> None:
-        key = (fill.venue, fill.symbol, "BOTH")
+        key = (fill.venue, fill.symbol, fill.position_side)
         pos = self.positions.get(key)
         prior_size = pos["size"] if pos is not None else 0.0
         prior_avg = pos["avg_px"] if pos is not None else 0.0
