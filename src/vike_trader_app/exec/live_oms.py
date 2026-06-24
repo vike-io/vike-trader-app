@@ -93,6 +93,8 @@ class LiveOmsHub:
         return pos["size"] if pos is not None else 0.0
 
     def _on_event(self, event) -> None:
+        if isinstance(event, FillEvent) and event.symbol != self.symbol:
+            return  # account-wide WS stream: ignore fills for other symbols (not this hub's order)
         if isinstance(event, FillEvent):
             # In-memory dedup: always-on guard against WS reconnect replays (Fix 1).
             if event.trade_id:

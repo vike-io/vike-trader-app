@@ -129,6 +129,29 @@ def test_reconnect_replay_does_not_double_fold_without_exec_db():
     assert pos["size"] == 1.0   # folded ONCE
 
 
+def test_foreign_symbol_fill_is_ignored():
+    """Fix 2: the Bybit execution stream is account-wide; a fill for a DIFFERENT symbol on the
+    shared demo account must NOT fold into this single-symbol hub's Account."""
+    hub = _hub()   # symbol="BTCUSDT"
+    foreign = FillEvent(trade_id="f-1", client_order_id="other", venue="binance",
+                        symbol="ETHUSDT", side=+1, last_qty=2.0, last_px=3000.0)
+    hub.bus.publish(foreign)
+    # No spurious ETHUSDT position created
+    assert ("binance", "ETHUSDT", "BOTH") not in hub.account.positions
+    # And no BTCUSDT position either (nothing folded at all)
+    assert ("binance", "BTCUSDT", "BOTH") not in hub.account.positions
+
+
+def test_matching_symbol_fill_still_folds():
+    """Fix 2 regression guard: a fill for the hub's own symbol still folds into the Account."""
+    hub = _hub()   # symbol="BTCUSDT"
+    hub.registry["s-0"] = ManagedOrder(request=_req(), status=OrderStatus.ACCEPTED)
+    fill = FillEvent(trade_id="m-1", client_order_id="s-0", venue="binance",
+                     symbol="BTCUSDT", side=+1, last_qty=1.0, last_px=100.0)
+    hub.bus.publish(fill)
+    assert hub.account.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 1.0
+
+
 def test_ws_replay_of_accept_on_seeded_order_does_not_crash():
     """Fix 2: replaying OrderAccepted for a snapshot-seeded ACCEPTED order must not raise."""
     from vike_trader_app.exec.binance.client import ReconcileSnapshot
