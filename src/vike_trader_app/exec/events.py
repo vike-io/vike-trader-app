@@ -53,6 +53,7 @@ class FillEvent:
     liquidity_side: str = ""          # 'maker' | 'taker'
     ts: int = 0
     mark_price: float | None = None
+    position_side: str = "BOTH"      # 'BOTH' one-way/spot | 'LONG' | 'SHORT' (hedge perps)
 
 
 # --- order lifecycle events ---------------------------------------------------------------------
@@ -118,6 +119,15 @@ class OrderCanceled:
 @dataclass(frozen=True)
 class OrderExpired:
     client_order_id: str
+    ts: int = 0
+
+
+@dataclass(frozen=True)
+class OrderLiquidated:
+    """Venue force-close of an order (perp liquidation) — FSM counterpart of PositionLiquidated."""
+
+    client_order_id: str
+    liq_price: float = 0.0
     ts: int = 0
 
 

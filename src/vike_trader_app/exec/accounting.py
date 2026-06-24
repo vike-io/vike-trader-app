@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from vike_trader_app.core.fill import compute_fill
 
 if TYPE_CHECKING:
-    from vike_trader_app.exec.events import FillEvent
+    from vike_trader_app.exec.events import FillEvent, FundingEvent, PositionLiquidated
 
 
 class Account:
@@ -26,9 +26,12 @@ class Account:
         self.positions: dict[tuple[str, str, str], dict] = {}
         self.realized_pnl: float = 0.0
         self.trades: list[float] = []   # gross price PnL per closing portion, in order
+        self.balance: float = 0.0
+        self.marks: dict[tuple[str, str], float] = {}
+        self.funding_paid: float = 0.0
 
     def apply_fill(self, fill: "FillEvent") -> None:
-        key = (fill.venue, fill.symbol, "BOTH")
+        key = (fill.venue, fill.symbol, fill.position_side)
         pos = self.positions.get(key)
         prior_size = pos["size"] if pos is not None else 0.0
         prior_avg = pos["avg_px"] if pos is not None else 0.0
@@ -37,3 +40,43 @@ class Account:
         if out.closing_qty > 0.0:                 # a reduce / close / flip realized PnL on the closed portion
             self.realized_pnl += out.realized_pnl
             self.trades.append(out.realized_pnl)
+
+    def set_mark(self, venue: str, symbol: str, px: float) -> None:
+        """Record the latest mark price for unrealized-PnL valuation (perp mark feed, slice 5+)."""
+        self.marks[(venue, symbol)] = px
+
+    def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
+        """Mark-to-market PnL on the open position. 0.0 if flat or no mark recorded yet.
+
+        Same shape as compute_fill's realized line (core/fill.py:45) evaluated at the mark:
+        (mark - avg_px) * size * multiplier (sign rides in the signed size).
+        """
+        pos = self.positions.get((venue, symbol, position_side))
+        mark = self.marks.get((venue, symbol))
+        if pos is None or mark is None:
+            return 0.0
+        return (mark - pos["avg_px"]) * pos["size"] * self.multiplier
+
+    def apply_funding(self, ev: "FundingEvent") -> None:
+        """Fold a periodic funding cashflow into the cash balance (signed: + received / - paid)."""
+        self.balance += ev.amount
+        self.funding_paid += ev.amount
+
+    def apply_liquidation(self, ev: "PositionLiquidated") -> None:
+        """Forced close: realize PnL at the liq price, flatten the position, deduct the liq fee.
+
+        Idempotent — a no-op if the keyed position is already flat/absent (replayed liquidation).
+        """
+        key = (ev.venue, ev.symbol, ev.position_side)
+        pos = self.positions.get(key)
+        if pos is None or pos["size"] == 0.0:
+            return   # true no-op: nothing to liquidate (idempotent on a replayed liquidation —
+            # the fee was already deducted on the real close; deducting it here would double-charge)
+        close_side = -1 if pos["size"] > 0.0 else 1      # close on the opposite side
+        out = compute_fill(pos["size"], pos["avg_px"], close_side, abs(pos["size"]),
+                           ev.liq_price, self.multiplier)
+        self.positions[key] = {"size": out.new_size, "avg_px": out.new_avg_px}
+        if out.closing_qty > 0.0:
+            self.realized_pnl += out.realized_pnl
+            self.trades.append(out.realized_pnl)
+        self.balance -= ev.fee

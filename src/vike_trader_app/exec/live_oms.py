@@ -12,18 +12,21 @@ from __future__ import annotations
 
 from vike_trader_app.exec.events import (
     FillEvent,
+    FundingEvent,
     OrderAccepted,
     OrderCanceled,
     OrderDenied,
     OrderExpired,
     OrderFilled,
+    OrderLiquidated,
     OrderPartiallyFilled,
     OrderRejected,
     OrderRequest,
     OrderSubmitted,
     OrderTriggered,
+    PositionLiquidated,
 )
-from vike_trader_app.exec.order import InvalidOrderTransition, ManagedOrder
+from vike_trader_app.exec.order import InvalidOrderTransition, ManagedOrder, OrderStatus
 from vike_trader_app.exec.risk import RiskContext, TradingState
 
 _LIFECYCLE = (OrderSubmitted, OrderAccepted, OrderTriggered, OrderPartiallyFilled,
@@ -134,6 +137,29 @@ class LiveOmsHub:
             if tid:
                 self._seen_fsm_trade_ids.add(tid)  # mark seen only after a successful apply
             self._persist_order(mo)
+            return
+        if isinstance(event, FundingEvent):
+            if event.symbol != self.symbol:
+                return
+            self.account.apply_funding(event)
+            self._journal("FundingEvent", event)
+            return
+        if isinstance(event, PositionLiquidated):
+            if event.symbol != self.symbol:
+                return
+            self.account.apply_liquidation(event)
+            coid = self._coid_for_position(event)
+            if coid is not None:
+                mo = self.registry.get(coid)
+                if mo is not None:
+                    try:
+                        mo.apply(OrderLiquidated(client_order_id=mo.client_order_id,
+                                                 liq_price=event.liq_price, ts=event.ts))
+                    except InvalidOrderTransition:
+                        pass  # already terminal — idempotent replay
+                    self._persist_order(mo)
+            self._journal("PositionLiquidated", event)
+            return
 
     def _persist_order(self, mo) -> None:
         if self._exec_db is None:
@@ -146,3 +172,26 @@ class LiveOmsHub:
             side=req.side, qty=req.qty, order_type=req.order_type, status=mo.status.value,
             price=req.price, trigger_price=req.trigger_price, venue_order_id=mo.venue_order_id,
             filled_qty=mo.filled_qty, avg_fill_px=mo.avg_fill_px, updated_ts=self._now_ms())
+
+    def _coid_for_position(self, ev) -> str | None:
+        """The most-recent live order on this symbol/side — the leg the liquidation force-closed.
+
+        One-way mode (slice 5a) has at most one open order per symbol; hedge mode (5f) will key
+        off ev.position_side. Returns None if nothing matches (Account still flattens regardless).
+        """
+        for coid, mo in reversed(list(self.registry.items())):
+            if mo.request.symbol == ev.symbol and mo.status not in (
+                    OrderStatus.LIQUIDATED, OrderStatus.FILLED, OrderStatus.CANCELED):
+                return coid
+        return None
+
+    def _journal(self, kind: str, event) -> None:
+        """Append a perp event to the durable audit trail (reuses exec_events JSON; no schema change)."""
+        if self._exec_db is None:
+            return
+        import json
+        from dataclasses import asdict
+        from vike_trader_app.data import exec_db
+        exec_db.append_event(self._exec_db, ts=getattr(event, "ts", 0), kind=kind,
+                             client_order_id=getattr(event, "client_order_id", None),
+                             payload=json.dumps(asdict(event)))
