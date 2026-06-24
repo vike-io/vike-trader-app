@@ -46,6 +46,7 @@ class LiveOmsHub:
         self.registry: dict = {}
         self._trading_state = TradingState.ACTIVE
         self._seen_trade_ids: set[str] = set()
+        self._seen_fsm_trade_ids: set[str] = set()
         self.bus.subscribe(self._on_event)
 
     def submit_ticket(self, request: OrderRequest) -> None:
@@ -115,12 +116,24 @@ class LiveOmsHub:
             return
         if isinstance(event, _LIFECYCLE):
             mo = self.registry.get(event.client_order_id)
-            if mo is not None:
-                try:
-                    mo.apply(event)
-                except InvalidOrderTransition:
-                    return  # idempotent/out-of-order WS replay — skip (Fix 2)
-                self._persist_order(mo)
+            if mo is None:
+                return
+            # FSM-side fill dedup: a reconnect-replayed fill re-emits the OrderFilled/OrderPartiallyFilled
+            # wrap. The bare FillEvent above is deduped via _seen_trade_ids (Account stays correct), but the
+            # wrap would otherwise re-run _accumulate_fill and double-count the registry's filled_qty/
+            # avg_fill_px. Dedup by the fill's trade_id with a SEPARATE set — _seen_trade_ids was already
+            # consumed by the preceding bare FillEvent, so it cannot be reused here.
+            fill = getattr(event, "fill", None)
+            tid = getattr(fill, "trade_id", "") if fill is not None else ""
+            if tid and tid in self._seen_fsm_trade_ids:
+                return  # reconnect replay — the FSM already advanced for this fill
+            try:
+                mo.apply(event)
+            except InvalidOrderTransition:
+                return  # idempotent/out-of-order WS replay — skip (Fix 2)
+            if tid:
+                self._seen_fsm_trade_ids.add(tid)  # mark seen only after a successful apply
+            self._persist_order(mo)
 
     def _persist_order(self, mo) -> None:
         if self._exec_db is None:
