@@ -5,8 +5,10 @@ from vike_trader_app.exec.bus import EventBus
 from vike_trader_app.exec.events import (
     FillEvent,
     OrderAccepted,
+    OrderCanceled,
     OrderDenied,
     OrderFilled,
+    OrderPartiallyFilled,
     OrderRequest,
     OrderSubmitted,
 )
@@ -68,6 +70,50 @@ def test_dual_publish_folds_account_exactly_once_per_trade_id():
     pos = hub.account.positions[("binance", "BTCUSDT", "BOTH")]
     assert pos["size"] == 1.0   # folded ONCE, not twice
     assert hub.registry["s-0"].status is OrderStatus.FILLED
+
+
+def test_reconnect_replayed_partial_fill_does_not_double_count_registry():
+    """A reconnect re-emits [FillEvent, OrderPartiallyFilled]; the wrap must NOT double-count filled_qty."""
+    hub = _hub()
+    hub.registry["s-0"] = ManagedOrder(request=_req(qty=1.0), status=OrderStatus.ACCEPTED)
+    fill = FillEvent(trade_id="T1", client_order_id="s-0", venue="binance", symbol="BTCUSDT",
+                     side=+1, last_qty=0.4, last_px=100.0)
+    wrap = OrderPartiallyFilled(client_order_id="s-0", fill=fill)
+    hub.bus.publish(fill)                       # bare -> Account
+    hub.bus.publish(wrap)                        # wrap -> FSM (first delivery)
+    assert hub.registry["s-0"].filled_qty == 0.4
+    assert hub.registry["s-0"].status is OrderStatus.PARTIALLY_FILLED
+    # reconnect REPLAY: the venue re-pushes the same fill+wrap (same trade_id)
+    hub.bus.publish(fill)
+    hub.bus.publish(wrap)
+    assert hub.registry["s-0"].filled_qty == 0.4   # NOT 0.8 — the wrap is FSM-deduped by trade_id
+    assert hub.registry["s-0"].status is OrderStatus.PARTIALLY_FILLED
+    # the Account is also unchanged (the bare FillEvent was already deduped)
+    assert hub.account.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.4
+
+
+def test_distinct_trade_ids_still_accumulate():
+    """The FSM dedup must NOT block a legitimate multi-fill (distinct trade_ids accumulate)."""
+    hub = _hub()
+    hub.registry["s-0"] = ManagedOrder(request=_req(qty=1.0), status=OrderStatus.ACCEPTED)
+    f1 = FillEvent(trade_id="T1", client_order_id="s-0", venue="binance", symbol="BTCUSDT",
+                   side=+1, last_qty=0.4, last_px=100.0)
+    hub.bus.publish(f1)
+    hub.bus.publish(OrderPartiallyFilled(client_order_id="s-0", fill=f1))
+    f2 = FillEvent(trade_id="T2", client_order_id="s-0", venue="binance", symbol="BTCUSDT",
+                   side=+1, last_qty=0.6, last_px=100.0)
+    hub.bus.publish(f2)
+    hub.bus.publish(OrderFilled(client_order_id="s-0", fill=f2))
+    assert hub.registry["s-0"].filled_qty == 1.0
+    assert hub.registry["s-0"].status is OrderStatus.FILLED
+
+
+def test_non_fill_lifecycle_still_applies():
+    """A non-fill lifecycle event (no .fill) bypasses the FSM dedup and still transitions the FSM."""
+    hub = _hub()
+    hub.registry["s-0"] = ManagedOrder(request=_req(), status=OrderStatus.ACCEPTED)
+    hub.bus.publish(OrderCanceled(client_order_id="s-0", reason="user"))
+    assert hub.registry["s-0"].status is OrderStatus.CANCELED
 
 
 def test_apply_snapshot_seeds_position_and_registry():
