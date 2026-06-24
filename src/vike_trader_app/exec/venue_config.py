@@ -1,15 +1,14 @@
 """Testnet ladder: ONE adapter, swap base-URL + creds + signer by (venue, Environment).
 
 REST and WS base URLs are SEPARATE, env-overridable knobs — the demo REST host is verified
-(demo-api.binance.com) but the matching demo user-data WS host must be confirmed empirically
-(Task 15) and is overridable via BINANCE_DEMO_WS_URL. resolve_venue_config returns None when
-creds are absent (the live gate).
+(demo-api.binance.com) and the matching demo WebSocket-API host (demo-ws-api.binance.com) is
+overridable via BINANCE_DEMO_WS_URL. resolve_venue_config returns None when creds are absent
+(the live gate).
 
-NOTE — Binance demo has NO listenKey user-data stream (POST /api/v3/userDataStream -> 410 Gone,
-deprecated). The Phase-3b fill-stream follow-up must use Binance's WebSocket-API session-based
-user-data path; do NOT default the demo WS to the mainnet host. BINANCE_DEMO_WS_DEFAULT is
-intentionally empty ("") so callers that need a WS URL must supply BINANCE_DEMO_WS_URL explicitly
-and a missing override is surfaced as an empty string rather than silently hitting the mainnet.
+Binance demo and mainnet both use the WebSocket-API session-based signed-subscribe model for
+fill/user-data — NOT the legacy listenKey stream (which is 410 Gone on demo). The demo WS host
+(demo-ws-api.binance.com) aligns with the demo REST credentials; mainnet is the production
+WS-API host (ws-api.binance.com). Both are env-overridable for testnet ladder testing.
 """
 
 from __future__ import annotations
@@ -23,9 +22,8 @@ from vike_trader_app.exec.signer import BinanceHmacSigner, BybitV5Signer, OKXV5S
 
 BINANCE_DEMO_REST = "https://demo-api.binance.com"
 BINANCE_MAINNET_REST = "https://api.binance.com"
-# Demo has NO listenKey endpoint (410 Gone) — leave empty; consumers must use BINANCE_DEMO_WS_URL.
-BINANCE_DEMO_WS_DEFAULT = ""
-BINANCE_MAINNET_WS_DEFAULT = "wss://stream.binance.com:9443/ws"
+BINANCE_DEMO_WS_DEFAULT = "wss://demo-ws-api.binance.com/ws-api/v3"
+BINANCE_MAINNET_WS_DEFAULT = "wss://ws-api.binance.com/ws-api/v3"
 
 BYBIT_DEMO_REST = "https://api-demo.bybit.com"
 BYBIT_MAINNET_REST = "https://api.bybit.com"

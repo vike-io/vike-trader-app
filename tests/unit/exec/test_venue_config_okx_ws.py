@@ -34,6 +34,6 @@ def test_bybit_ws_unchanged():
     assert cfg.ws_base_url == "wss://stream-demo.bybit.com/v5/private"
 
 
-def test_binance_demo_ws_unchanged():
+def test_binance_demo_ws_is_wsapi_host():
     cfg = resolve_venue_config("binance", Environment.DEMO, now_ms=lambda: 0, load=_load)
-    assert cfg.ws_base_url == ""  # demo has no listenKey stream — still empty (regression guard)
+    assert cfg.ws_base_url == "wss://demo-ws-api.binance.com/ws-api/v3"  # WS-API signed-subscribe
