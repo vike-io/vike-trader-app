@@ -19,6 +19,23 @@ def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
+@pytest.fixture(autouse=True)
+def _sync_optimize_worker(monkeypatch):
+    """Run the Studio OptimizeWorker SYNCHRONOUSLY on the main thread. ``_optimize`` is now async
+    (the walk-forward + surface sweep run off the GUI thread); a real QThread running backtests + GC
+    can hard-segfault under full-suite load on py3.14, the same reason the AI ChatWorker test does it
+    (see test_studio_ai_user_sim.py). done + finished are delivered inline so _on_optimize_result /
+    _on_optimize_finished run deterministically and tab._opt_worker is cleared as in production."""
+    from vike_trader_app.ui import studio as studio_mod
+
+    def _sync_start(self):
+        self.run()              # run_optimize_job + done.emit -> _on_optimize_result (direct)
+        self.finished.emit()    # -> _on_optimize_finished -> clears tab._opt_worker, re-enables button
+    monkeypatch.setattr(studio_mod.OptimizeWorker, "start", _sync_start)
+    monkeypatch.setattr(studio_mod.OptimizeWorker, "isRunning", lambda self: False)
+    yield
+
+
 def _bars(n=12):
     return [Bar(ts=i * 60_000, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i)
             for i in range(n)]
