@@ -23,7 +23,7 @@ from vike_trader_app.exec.events import (
     OrderSubmitted,
     OrderTriggered,
 )
-from vike_trader_app.exec.order import InvalidOrderTransition
+from vike_trader_app.exec.order import InvalidOrderTransition, ManagedOrder
 from vike_trader_app.exec.risk import RiskContext, TradingState
 
 _LIFECYCLE = (OrderSubmitted, OrderAccepted, OrderTriggered, OrderPartiallyFilled,
@@ -61,6 +61,7 @@ class LiveOmsHub:
             self.bus.publish(OrderDenied(client_order_id=request.client_order_id,
                                          reason=verdict.reason, ts=request.ts))
             return
+        self.registry[verdict.request.client_order_id] = ManagedOrder(request=verdict.request)
         self.client.submit(verdict.request)
 
     def apply_snapshot(self, snapshot) -> None:
