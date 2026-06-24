@@ -92,6 +92,7 @@ def test_open_ws_creates_listenkey_then_connects_no_ack_loop():
 
     def fake_urlopen(req, timeout=None):
         cap["created"] = True
+        cap["create_timeout"] = timeout
         return _Resp({"listenKey": "LK123"})
 
     class _FakeWS:
@@ -107,6 +108,9 @@ def test_open_ws_creates_listenkey_then_connects_no_ack_loop():
         api_key="AK", connect=fake_connect, urlopen=fake_urlopen))
 
     assert cap.get("created") is True
+    # BOUNDED create timeout (5s, NOT urllib's 10s default) so a create stalled during a reconnect
+    # cannot outlast the LiveExecutionSession teardown join (the 0xC0000409 class).
+    assert cap["create_timeout"] == 5
     assert cap["ws_url"] == "wss://fstream.binancefuture.com/ws/LK123"
     assert isinstance(ws, _FakeWS)
 
