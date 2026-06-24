@@ -1,0 +1,45 @@
+"""Perp-aware Bybit private-WS decoder: reuses the spot map_execution/map_order, then enriches
+each linear FillEvent with mark_price from the execution row's markPrice. position_side stays
+'BOTH' (one-way; the linear execution row carries NO positionIdx — hedge LONG/SHORT is slice 5f).
+Spot mapper.py is NOT edited (byte-identical constraint)."""
+from __future__ import annotations
+
+import dataclasses
+
+from vike_trader_app.exec.bybit.mapper import map_execution, map_order
+from vike_trader_app.exec.events import FillEvent, OrderFilled, OrderPartiallyFilled
+
+
+def _enrich_perp(events: list[object], row: dict) -> list[object]:
+    mark_raw = row.get("markPrice")
+    if mark_raw in (None, ""):
+        return events                      # null-safe: leave mark_price=None (matches spot)
+    mark = float(mark_raw)
+    out: list[object] = []
+    new_fill = None
+    for ev in events:
+        if isinstance(ev, FillEvent):
+            new_fill = dataclasses.replace(ev, mark_price=mark)
+            out.append(new_fill)
+        elif isinstance(ev, (OrderFilled, OrderPartiallyFilled)) and new_fill is not None:
+            out.append(dataclasses.replace(ev, fill=new_fill))   # keep wrap.fill identical to fill
+        else:
+            out.append(ev)
+    return out
+
+
+def map_bybit_perp(frame: dict, *, venue: str = "bybit", symbol: str = "") -> list[object]:
+    """Dispatch like map_bybit_private; for 'execution' rows, reuse map_execution then enrich the
+    FillEvent with mark_price from item['markPrice'] when present. position_side stays 'BOTH'."""
+    topic = frame.get("topic")
+    if topic is None:
+        return []
+    data: list[dict] = frame.get("data", [])
+    events: list[object] = []
+    if topic == "execution":
+        for item in data:
+            events.extend(_enrich_perp(map_execution(item, venue=venue, symbol=symbol), item))
+    elif topic == "order":
+        for item in data:
+            events.extend(map_order(item, venue=venue, symbol=symbol))
+    return events

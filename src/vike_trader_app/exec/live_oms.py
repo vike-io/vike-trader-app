@@ -81,6 +81,9 @@ class LiveOmsHub:
                 "size": qty,
                 "avg_px": avg_px_map.get(sym, 0.0),
             }
+        for sym, mark in getattr(snapshot, "position_mark_px", ()):
+            if mark > 0.0:
+                self.account.set_mark(self.venue, sym, mark)
         for mo in snapshot.open_orders:
             self.registry[mo.client_order_id] = mo
 
@@ -116,6 +119,8 @@ class LiveOmsHub:
                 if not fresh:
                     return  # reconnect replay — drop exactly once
             self.account.apply_fill(event)
+            if event.mark_price is not None and event.mark_price > 0.0:
+                self.account.set_mark(event.venue, event.symbol, event.mark_price)
             return
         if isinstance(event, _LIFECYCLE):
             mo = self.registry.get(event.client_order_id)

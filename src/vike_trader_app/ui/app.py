@@ -3044,7 +3044,38 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..ui.private_user_data import LiveExecutionSession
 
         symbol = self._symbol
-        if venue == "bybit":
+        product = (os.environ.get("VIKE_EXEC_PRODUCT") or "spot").strip().lower()
+        if venue == "bybit" and product == "perp":
+            import logging
+            from ..exec.bybit.perp_client import BybitPerpExecutionClient
+            from ..exec.bybit.perp_instruments import parse_bybit_perp_instruments
+            info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
+                                   {"category": "linear", "symbol": symbol})
+            if info.get("retCode", 0) != 0:
+                logging.getLogger(__name__).error(
+                    "Bybit linear instruments-info error retCode=%s — aborting live exec",
+                    info.get("retCode"))
+                return False
+            parsed = parse_bybit_perp_instruments(info)
+            if symbol not in parsed:
+                logging.getLogger(__name__).error(
+                    "Bybit linear instruments: symbol %r absent — aborting live exec", symbol)
+                return False
+            f = parsed[symbol]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = symbol
+            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            client = BybitPerpExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+                filters=filters, base_asset=base_asset, leverage=leverage)
+            client.set_leverage()   # MAIN thread, before connect/reconcile
+            # NOTE: a perp MARKET order (price=None) → ctx.mark_price=0.0 → the min_notional
+            # RiskGate veto in the shared gate below.  This is a PRE-EXISTING spot limitation
+            # inherited unchanged.  The proper fix (seed mark_price for market orders) is deferred
+            # to slice 5f; do not remove this comment until that fix lands.
+        elif venue == "bybit":
             from ..exec.bybit.client import BybitSpotExecutionClient
             from ..exec.bybit.instruments import parse_bybit_instruments_info
             info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
@@ -3124,7 +3155,19 @@ class MainWindow(QtWidgets.QMainWindow):
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
         self._exec_session = LiveExecutionSession(hub)
-        if venue == "bybit" and cfg.ws_base_url:
+        if venue == "bybit" and product == "perp" and cfg.ws_base_url:
+            from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
+            from ..ui.private_user_data import PrivateUserDataWorker
+            run_core = make_bybit_perp_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled("bybit", worker)
+        elif venue == "bybit" and cfg.ws_base_url:
             from ..exec.bybit.user_data import make_bybit_run_core
             from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_bybit_run_core(
