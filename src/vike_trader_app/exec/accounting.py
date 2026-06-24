@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 from vike_trader_app.core.fill import compute_fill
 
 if TYPE_CHECKING:
-    from vike_trader_app.exec.events import FillEvent
+    from vike_trader_app.exec.events import FillEvent, FundingEvent, PositionLiquidated
 
 
 class Account:
@@ -28,6 +28,7 @@ class Account:
         self.trades: list[float] = []   # gross price PnL per closing portion, in order
         self.balance: float = 0.0
         self.marks: dict[tuple[str, str], float] = {}
+        self.funding_paid: float = 0.0
 
     def apply_fill(self, fill: "FillEvent") -> None:
         key = (fill.venue, fill.symbol, fill.position_side)
@@ -55,3 +56,8 @@ class Account:
         if pos is None or mark is None:
             return 0.0
         return (mark - pos["avg_px"]) * pos["size"] * self.multiplier
+
+    def apply_funding(self, ev: "FundingEvent") -> None:
+        """Fold a periodic funding cashflow into the cash balance (signed: + received / - paid)."""
+        self.balance += ev.amount
+        self.funding_paid += ev.amount

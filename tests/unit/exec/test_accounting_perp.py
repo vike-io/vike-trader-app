@@ -54,3 +54,16 @@ def test_spot_fill_still_keys_both():
     acc = Account()
     acc.apply_fill(_fill(+1, 1.0, 100.0, "t0"))   # default pside="BOTH"
     assert acc.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 1.0
+
+
+from vike_trader_app.exec.events import FundingEvent
+
+
+def test_apply_funding_credits_and_debits_balance():
+    acc = Account()
+    acc.apply_funding(FundingEvent(venue="binance", symbol="BTCUSDT", position_side="BOTH",
+                                   funding_rate=0.0001, amount=-1.50))
+    acc.apply_funding(FundingEvent(venue="binance", symbol="BTCUSDT", position_side="BOTH",
+                                   funding_rate=-0.0002, amount=2.25))
+    assert acc.balance == 0.75
+    assert acc.funding_paid == 0.75
