@@ -25,7 +25,6 @@ Excluded by the default suite:
 
 from __future__ import annotations
 
-import math
 import os
 import time
 
