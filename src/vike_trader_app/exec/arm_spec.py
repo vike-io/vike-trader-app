@@ -28,14 +28,14 @@ def resolve_arm_spec(*, venue, environment, product, symbol, leverage,
     if not venue or not environment:
         return None
     product = (_pick(product, "VIKE_EXEC_PRODUCT", env) or "spot").strip().lower()
-    if product not in ("spot", "perp"):
+    if product not in ("spot", "perp", "option"):
         product = "spot"
     raw_lev = _pick(leverage, "VIKE_EXEC_LEVERAGE", env)
     try:
         lev = float(raw_lev) if raw_lev is not None else 1.0
     except (TypeError, ValueError):
         lev = 1.0
-    if product == "spot" or lev < 1.0:
+    if product != "perp" or lev < 1.0:
         lev = 1.0
     return ExecArmSpec(venue=venue, environment=environment, product=product,
                        symbol=str(symbol), leverage=lev)

@@ -3292,6 +3292,38 @@ class MainWindow(QtWidgets.QMainWindow):
             # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
             # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
             # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
+        elif venue == "deribit":
+            import logging
+            from ..data.options.deribit import parse_instrument_name
+            from ..exec.deribit.client import DeribitExecutionClient
+            from ..exec.deribit.public import fetch_option_instruments
+            from ..exec.deribit.transport import DeribitOrderTransport
+
+            currency = (parse_instrument_name(symbol) or [None])[0]
+            if currency is None:
+                logging.getLogger(__name__).error(
+                    "Deribit arm: symbol %r is not a valid option instrument name — aborting live exec",
+                    symbol)
+                return False
+            all_instruments = fetch_option_instruments(currency, base_url=cfg.rest_base_url)
+            if symbol not in all_instruments:
+                logging.getLogger(__name__).error(
+                    "Deribit arm: instrument %r not found in public/get_instruments — aborting live exec",
+                    symbol)
+                return False
+            filters = all_instruments[symbol]
+            bus = EventBus()
+            client_symbol = symbol   # instrument_name IS the hub symbol — no market_symbol transform
+            transport = DeribitOrderTransport(
+                ws_url=cfg.ws_base_url,
+                client_id=cfg.credentials.api_key,
+                client_secret=cfg.credentials.api_secret,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            transport.connect()   # MAIN thread: open + auth the order socket
+            client = DeribitExecutionClient(
+                bus, transport=transport, symbol=symbol, filters=filters,
+                currency=currency)
         else:
             from ..data.instrument_db import parse_symbol_filters
             from ..exec.binance.client import BinanceSpotExecutionClient
@@ -3419,6 +3451,19 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("binance", worker)
+        if venue == "deribit" and cfg.ws_base_url:
+            from ..exec.deribit.user_data import make_deribit_run_core
+            from ..ui.private_user_data import PrivateUserDataWorker
+            run_core = make_deribit_run_core(
+                ws_url=cfg.ws_base_url,
+                client_id=cfg.credentials.api_key,
+                client_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                currency=currency,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled("deribit", worker)
         return True
 
     # ------------------------------------------------------------------
