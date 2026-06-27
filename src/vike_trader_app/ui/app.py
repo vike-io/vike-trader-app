@@ -3025,19 +3025,45 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             w.setEnabled(on)
 
-    def _maybe_start_live_exec(self) -> bool:
+    def _exec_max_leverage(self) -> float | None:
+        """Maximum leverage cap for arming. Task-6 will read this from QSettings; for now return a
+        conservative default (20×). The UI arm bar can override via ``_arm_max_leverage``."""
+        return getattr(self, "_arm_max_leverage", 20.0)
+
+    def _arm_float(self, env_key: str) -> float | None:
+        """Read an optional float cap: first from the ``_arm_caps`` dict (set by the Task-5 UI arm
+        bar), then from the environment variable *env_key*. Returns None when absent/blank so the
+        matching RiskLimits field stays dormant (spot tests are byte-identical)."""
+        import os
+        raw = getattr(self, "_arm_caps", {}).get(env_key) if hasattr(self, "_arm_caps") else None
+        raw = raw if raw is not None else os.environ.get(env_key)
+        try:
+            return float(raw) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    def _maybe_start_live_exec(self, spec: "ExecArmSpec | None" = None) -> bool:  # noqa: F821
         """Gate live exec on explicit flag + creds presence (GUI process only). Returns True when a
         LiveExecutionSession was built. VIKE_DISABLE_LIVE (headless) or blank flags/absent creds ->
-        stay paper (the default) and start no worker."""
+        stay paper (the default) and start no worker.
+
+        When *spec* is None (the default env-var path) the arm spec is resolved from environment
+        variables (VIKE_EXEC_VENUE / VIKE_EXEC_ENV / …). When *spec* is supplied (Task-5 UI arm
+        bar), its venue/environment/product/symbol/leverage are used directly — no env reads.
+        """
         import os
         import time
 
         if os.environ.get("VIKE_DISABLE_LIVE"):
             return False
-        venue = (os.environ.get("VIKE_EXEC_VENUE") or "").strip().lower()
-        env_name = (os.environ.get("VIKE_EXEC_ENV") or "").strip().upper()
-        if not venue or not env_name:
+        from ..exec.arm_spec import resolve_arm_spec
+        if spec is None:
+            spec = resolve_arm_spec(venue=None, environment=None, product=None,
+                                    symbol=self._symbol, leverage=None)
+        if spec is None:
             return False
+        venue = spec.venue
+        env_name = spec.environment
 
         from ..exec.credentials import Environment
         from ..exec.venue_config import resolve_venue_config
@@ -3057,8 +3083,8 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..exec.risk import RiskGate, RiskLimits
         from ..ui.private_user_data import LiveExecutionSession
 
-        symbol = self._symbol
-        product = (os.environ.get("VIKE_EXEC_PRODUCT") or "spot").strip().lower()
+        symbol = spec.symbol
+        product = spec.product
         if venue == "bybit" and product == "perp":
             import logging
             from ..exec.bybit.perp_client import BybitPerpExecutionClient
@@ -3080,15 +3106,16 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = f.get("base_asset", "")
             bus = EventBus()
             client_symbol = symbol
-            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = BybitPerpExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset, leverage=leverage)
             client.set_leverage()   # MAIN thread, before connect/reconcile
-            # NOTE: a perp MARKET order (price=None) → ctx.mark_price=0.0 → the min_notional
-            # RiskGate veto in the shared gate below.  This is a PRE-EXISTING spot limitation
-            # inherited unchanged.  The proper fix (seed mark_price for market orders) is deferred
-            # to slice 5f; do not remove this comment until that fix lands.
+            # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
+            # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
+            # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
+            # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
         elif venue == "bybit":
             from ..exec.bybit.client import BybitSpotExecutionClient
             from ..exec.bybit.instruments import parse_bybit_instruments_info
@@ -3145,15 +3172,18 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = f.get("base_asset", "")
             bus = EventBus()
             client_symbol = inst_id                        # BTC-USDT-SWAP — hub matches client/snapshot key
-            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = OKXPerpExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
                 filters=filters, base_asset=base_asset, ct_val=ct_val, leverage=leverage,
                 transport=functools.partial(okx_signed_request, simulated=simulated),
                 public_transport=functools.partial(okx_public_get, simulated=simulated))
             client.set_leverage()                          # MAIN thread, before connect/reconcile
-            # NOTE: a perp MARKET order (price=None) -> ctx.mark_price=0.0 -> the min_notional RiskGate
-            # veto. PRE-EXISTING spot limitation inherited unchanged; proper fix deferred to 5f.
+            # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
+            # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
+            # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
+            # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
         elif venue == "okx":
             import functools
             from ..exec.okx.client import OKXSpotExecutionClient
@@ -3204,13 +3234,16 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = f.get("base_asset", "")
             bus = EventBus()
             client_symbol = symbol                              # plain BTCUSDT — no dash, no -SWAP
-            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = BinancePerpExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=symbol,
                 filters=filters, base_asset=base_asset, leverage=leverage)
             client.set_leverage()                               # MAIN thread, before connect/reconcile
-            # NOTE: a perp MARKET order (price=None) -> ctx.mark_price=0.0 -> the min_notional RiskGate
-            # veto. PRE-EXISTING spot limitation inherited unchanged; proper fix deferred to 5f.
+            # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
+            # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
+            # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
+            # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
         else:
             from ..data.instrument_db import parse_symbol_filters
             from ..exec.binance.client import BinanceSpotExecutionClient
@@ -3231,9 +3264,15 @@ class MainWindow(QtWidgets.QMainWindow):
         gate_lot_size = filters["step_size"]
         if venue == "okx" and product == "perp":
             gate_lot_size = (filters["step_size"] or 0.0) * ct_val
+        _is_perp = (product == "perp")
+        _max_order = self._arm_float("VIKE_EXEC_MAX_ORDER_NOTIONAL")
+        _max_expo = self._arm_float("VIKE_EXEC_MAX_EXPOSURE")
         gate = RiskGate(RiskLimits(
             tick_size=filters["tick_size"] or None, lot_size=gate_lot_size or None,
-            min_notional=filters["min_notional"] or None))
+            min_notional=filters["min_notional"] or None,
+            max_notional_per_order=_max_order,
+            max_total_exposure=_max_expo,
+            block_reduce_only_overshoot=_is_perp))
         hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
