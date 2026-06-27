@@ -74,6 +74,31 @@ def test_disarm_stops_funding_timer_and_clears_pollers(app, monkeypatch):
         win.shutdown()
 
 
+def test_arm_button_toggles_to_disarm_and_disarm_is_reachable(app, monkeypatch):
+    """REGRESSION (whole-branch review, CRITICAL): the arm bar must EMIT disarmRequested so the
+    (correct) teardown is USER-REACHABLE — a button that only ever emits armRequested leaves the 5e
+    funding QTimer firing forever with no user-facing stop. Drive the SIGNAL path (click the widget),
+    not _on_disarm_requested directly."""
+    monkeypatch.setenv("VIKE_DISABLE_LIVE", "1")
+    win = MainWindow()
+    try:
+        bar = win.exec_arm
+        # Simulate an armed perp session: prime the funding cadence + flip the bar to armed.
+        win._funding_timer.start(5000)
+        win._funding_pollers = [object()]
+        bar.set_armed(True)
+        assert bar._arm.text() == "■ Disarm"               # button now offers Disarm
+        assert bar._venue.isEnabled() is False             # selectors locked while armed
+        # Clicking the button while armed routes to disarm (NOT arm) -> _on_disarm_requested runs.
+        bar._arm.click()
+        assert not win._funding_timer.isActive()           # teardown REACHED via the signal
+        assert win._funding_pollers == []
+        assert bar._arm.text().startswith("●")             # flipped back to Arm
+        assert bar._venue.isEnabled() is True              # selectors unlocked again (re-arm safe)
+    finally:
+        win.shutdown()
+
+
 def test_restore_arm_selection_does_not_auto_arm(app, monkeypatch):
     """Restoring QSettings selection must NOT arm the session."""
     monkeypatch.setenv("VIKE_DISABLE_LIVE", "1")

@@ -3411,6 +3411,7 @@ class MainWindow(QtWidgets.QMainWindow):
         ok = self._maybe_start_live_exec(spec=spec)
         if ok:
             self._refresh_feed_badge_for_exec(spec)
+            self.exec_arm.set_armed(True)    # flip the button to Disarm (teardown now user-reachable)
         return ok
 
     def _on_disarm_requested(self) -> None:
@@ -3430,6 +3431,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._funding_timer.stop()
         self._funding_pollers = []
         self._update_feed_health()           # back to CACHED/LIVE data-feed badge
+        self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
 
     def _refresh_feed_badge_for_exec(self, spec) -> None:
         """Update the status-bar feed badge to show the armed venue, product and leverage."""
