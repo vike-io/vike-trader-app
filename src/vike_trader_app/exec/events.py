@@ -49,7 +49,7 @@ class FillEvent:
     side: int
     last_qty: float
     last_px: float
-    commission: float = 0.0
+    commission: float = 0.0           # SIGNED: > 0 = charge/cost, < 0 = maker rebate/income (Account nets into balance)
     liquidity_side: str = ""          # 'maker' | 'taker'
     ts: int = 0
     mark_price: float | None = None

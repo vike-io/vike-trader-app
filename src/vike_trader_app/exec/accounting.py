@@ -29,6 +29,7 @@ class Account:
         self.balance: float = 0.0
         self.marks: dict[tuple[str, str], float] = {}
         self.funding_paid: float = 0.0
+        self.fees_paid: float = 0.0   # cumulative signed commission (>0 net cost, <0 net rebate)
 
     def apply_fill(self, fill: "FillEvent") -> None:
         key = (fill.venue, fill.symbol, fill.position_side)
@@ -40,6 +41,10 @@ class Account:
         if out.closing_qty > 0.0:                 # a reduce / close / flip realized PnL on the closed portion
             self.realized_pnl += out.realized_pnl
             self.trades.append(out.realized_pnl)
+        # Net the trade commission into cash, like apply_liquidation nets its fee. Signed:
+        # commission > 0 is a charge (lowers balance), < 0 is a maker rebate (raises it).
+        self.balance -= fill.commission
+        self.fees_paid += fill.commission
 
     def set_mark(self, venue: str, symbol: str, px: float) -> None:
         """Record the latest mark price for unrealized-PnL valuation (perp mark feed, slice 5+)."""
