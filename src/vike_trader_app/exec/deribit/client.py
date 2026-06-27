@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from vike_trader_app.exec.binance.format import format_price, format_qty
 from vike_trader_app.exec.crypto_client import ReconcileSnapshot, VenueApiError
+from vike_trader_app.exec.deribit.reconcile import build_reconcile_snapshot
 from vike_trader_app.exec.deribit.rpc import JsonRpcBuilder, parse_response
 from vike_trader_app.exec.events import (
     OrderAccepted,
@@ -95,9 +96,28 @@ class DeribitExecutionClient:
             raise DeribitApiError(code, str(error.get("message", "")))
 
     def connect(self) -> ReconcileSnapshot:
-        """6a: empty snapshot (no creds/socket yet). 6d iterates private/get_positions(currency,
-        kind='option') + private/get_open_orders_by_currency into positions/open_orders."""
-        return ReconcileSnapshot()
+        """Reconcile on arm (MAIN thread, after transport.connect()): fetch the armed instrument's
+        position + open orders over the authed transport and build a populated ReconcileSnapshot.
+
+        private/get_positions is currency-scoped (every option of self._currency) so the result is
+        FILTERED to self._symbol in build_reconcile_snapshot; private/get_open_orders_by_instrument is
+        already instrument-scoped, so apply_snapshot's sym == hub.symbol assert (live_oms.py:102) holds
+        by construction. Options are one-way -> a single BOTH row (no hedge legs). Raises
+        DeribitApiError on any getter error (a bad reconcile must abort the arm before any fill).
+        """
+        pos_result = self._private_result(
+            "private/get_positions", {"currency": self._currency, "kind": "option"})
+        ord_result = self._private_result(
+            "private/get_open_orders_by_instrument",
+            {"instrument_name": self._symbol, "type": "all"})
+        return build_reconcile_snapshot(pos_result, ord_result, self._symbol)
+
+    def _private_result(self, method: str, params: dict) -> list:
+        """Call a private getter, raise DeribitApiError on error, return the result list (or [])."""
+        _rid, result, error = parse_response(self._transport(method, params))
+        if error is not None:
+            raise DeribitApiError(int(error.get("code", 0)), str(error.get("message", "")))
+        return result or []
 
     def detach(self) -> None:
         """Close the live order transport (the persistent authed order WS) on teardown.
