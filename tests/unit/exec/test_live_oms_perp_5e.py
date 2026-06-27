@@ -124,24 +124,64 @@ def test_binance_autoclose_flattens_and_liquidates_fsm():
     assert hub.registry["o1"].status is OrderStatus.LIQUIDATED
 
 
-def test_binance_multi_partial_autoclose_charges_exactly_once():
-    # A forced close can stream as MULTIPLE partial autoclose- TRADE frames. Per-frame
-    # PositionLiquidated is SAFE because apply_liquidation is idempotent on a flat position: the FIRST
-    # frame flattens the WHOLE held 2.0 @ 100 at price 60 + deducts its fee; the SECOND partial frame
-    # finds size==0.0 and no-ops (no double flatten, no double fee). ev.qty is decorative — the held
-    # size drives the close. Per-partial accounting at each partial's own price is deferred to 5f.
+def test_binance_multi_partial_autoclose_charges_per_distinct_id():
+    # A forced close can stream as MULTIPLE partial autoclose- TRADE frames. With the 5g-1 fix each
+    # partial closes ITS OWN qty (clamped) and charges ITS OWN fee, keyed by a DISTINCT OTU trade id.
+    # Two partials of 1.0 each sum to the held 2.0 @ 100 -> flat; realized -80 (-40 + -40); fee 0.5
+    # twice -> balance -1.0. A REPLAYED id (the WS reconnect re-pushes the first frame) is dropped by
+    # _seen_liq_ids and changes nothing (no double-close, no double-fee). t==0 means no dedup, but a
+    # real venue partial always carries a distinct non-zero trade id, so we use 9 then 10.
     hub = _hub("binance", "BTCUSDT")
     _seed_long(hub, "binance", "BTCUSDT")          # long 2.0 @ 100
-    for l_qty in ("1.0", "1.0"):                    # two partials of the same forced close
+    for t_id in (9, 10):                            # two DISTINCT partials of the same forced close
         frame = {"e": "ORDER_TRADE_UPDATE", "T": 3, "o": {
             "s": "BTCUSDT", "c": "autoclose-9", "x": "TRADE", "X": "PARTIALLY_FILLED",
-            "S": "SELL", "ps": "BOTH", "l": l_qty, "L": "60.0", "n": "0.5", "t": 0}}
+            "S": "SELL", "ps": "BOTH", "l": "1.0", "L": "60.0", "n": "0.5", "t": t_id}}
         for ev in map_binance_perp(frame, venue="binance", symbol="BTCUSDT"):
             hub.bus.publish(ev)
     assert hub.account.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.0
-    assert hub.account.realized_pnl == -80.0       # charged ONCE (first frame flattened the whole 2.0)
-    assert hub.account.balance == -0.5             # fee deducted ONCE (second frame no-ops on flat)
+    assert hub.account.realized_pnl == -80.0       # -40 per distinct partial, summed
+    assert hub.account.balance == -1.0             # 0.5 per distinct id, twice
     assert hub.registry["o1"].status is OrderStatus.LIQUIDATED
+
+    # REPLAY the first partial (id 9) — reconnect re-push must NOT double-close or double-charge.
+    replay = {"e": "ORDER_TRADE_UPDATE", "T": 3, "o": {
+        "s": "BTCUSDT", "c": "autoclose-9", "x": "TRADE", "X": "PARTIALLY_FILLED",
+        "S": "SELL", "ps": "BOTH", "l": "1.0", "L": "60.0", "n": "0.5", "t": 9}}
+    for ev in map_binance_perp(replay, venue="binance", symbol="BTCUSDT"):
+        hub.bus.publish(ev)
+    assert hub.account.realized_pnl == -80.0       # unchanged — replay dropped by _seen_liq_ids
+    assert hub.account.balance == -1.0             # fee NOT re-charged
+
+
+def test_okx_partial_liquidation_leaves_residual():
+    # An OKX partial_liquidation closing only PART (fillSz=1 of a 2.0 pos) must leave size==1.0, not
+    # flatten the whole book (the 5e over-close bug). ct_val=1.0 so 1 contract == 1.0 base.
+    hub = _hub("okx", "BTC-USDT-SWAP")
+    _seed_long(hub, "okx", "BTC-USDT-SWAP")        # long 2.0 @ 100
+    frame = {"arg": {"channel": "orders", "instType": "SWAP"}, "data": [{
+        "category": "partial_liquidation", "instId": "BTC-USDT-SWAP", "posSide": "net",
+        "fillSz": "1", "fillPx": "60.0", "fillFee": "-0.5", "tradeId": "PL1", "fillTime": "2"}]}
+    for ev in map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=1.0):
+        hub.bus.publish(ev)
+    assert hub.account.positions[("okx", "BTC-USDT-SWAP", "BOTH")]["size"] == 1.0  # residual, not 0
+    assert hub.account.realized_pnl == -40.0       # (60-100)*1
+    assert hub.account.balance == -0.5             # one fee
+
+
+def test_liquidation_replay_same_id_dropped_at_hub():
+    # The hub-level _seen_liq_ids dedup: replaying the SAME tradeId (reconnect) must not re-apply.
+    hub = _hub("okx", "BTC-USDT-SWAP")
+    _seed_long(hub, "okx", "BTC-USDT-SWAP")        # long 2.0 @ 100
+    frame = {"arg": {"channel": "orders", "instType": "SWAP"}, "data": [{
+        "category": "partial_liquidation", "instId": "BTC-USDT-SWAP", "posSide": "net",
+        "fillSz": "1", "fillPx": "60.0", "fillFee": "-0.5", "tradeId": "DUP", "fillTime": "2"}]}
+    for _ in range(2):                             # publish the SAME frame twice
+        for ev in map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=1.0):
+            hub.bus.publish(ev)
+    assert hub.account.positions[("okx", "BTC-USDT-SWAP", "BOTH")]["size"] == 1.0  # closed once
+    assert hub.account.realized_pnl == -40.0       # not -80
+    assert hub.account.balance == -0.5             # fee once
 
 
 # ---------------------------------------------------------------------------

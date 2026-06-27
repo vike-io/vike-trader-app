@@ -28,6 +28,7 @@ def _okx_liquidation_event(row: dict, *, venue: str, symbol: str, ct_val: float)
         liq_price=float(px_raw or 0),
         fee=abs(float(row.get("fillFee", 0) or 0)),
         ts=int(row.get("fillTime") or row.get("uTime") or 0),
+        trade_id=str(row.get("tradeId", "")),   # guaranteed non-empty by the has_fill gate (line 92)
     )
 
 

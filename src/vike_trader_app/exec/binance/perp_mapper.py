@@ -67,6 +67,7 @@ def map_binance_perp(frame, *, venue: str = "binance", symbol: str = "") -> list
                 liq_price=float(o.get("L", 0) or 0),
                 fee=float(o.get("n", 0) or 0),
                 ts=ts,
+                trade_id=str(o.get("t", "")),       # OTU trade id — same 't' the fill path reads
             )]                                          # liquidation -> PositionLiquidated ONLY
         fill = FillEvent(
             trade_id=str(o.get("t", "")),

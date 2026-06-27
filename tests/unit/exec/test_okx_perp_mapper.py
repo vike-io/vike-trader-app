@@ -183,6 +183,20 @@ def test_normal_category_fill_unchanged():
     assert evs[1].fill is evs[0]
 
 
+def test_okx_partial_liquidation_carries_trade_id():
+    from vike_trader_app.exec.okx.perp_mapper import map_okx_perp
+    from vike_trader_app.exec.events import PositionLiquidated
+
+    frame = {"arg": {"channel": "orders", "instType": "SWAP"}, "data": [{
+        "category": "partial_liquidation", "instId": "BTC-USDT-SWAP", "posSide": "net",
+        "fillSz": "1", "fillPx": "60.0", "fillFee": "-0.5", "tradeId": "T-77", "fillTime": "2"}]}
+    evs = map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=1.0)
+    assert len(evs) == 1
+    assert isinstance(evs[0], PositionLiquidated)
+    assert evs[0].trade_id == "T-77"
+    assert evs[0].qty == 1.0          # fillSz * ct_val — the real partial qty, not the whole book
+
+
 def test_liq_category_on_nonfill_lifecycle_frame_does_not_liquidate():
     # REGRESSION (whole-branch review, CRITICAL): OKX pushes `category` on EVERY orders frame,
     # INCLUDING the non-fill placement (state='live', fillSz='0', tradeId='') and cancel of a

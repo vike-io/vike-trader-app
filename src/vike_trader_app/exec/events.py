@@ -194,3 +194,4 @@ class PositionLiquidated:
     liq_price: float
     fee: float = 0.0
     ts: int = 0
+    trade_id: str = ""               # venue exec/trade id — the per-frame liquidation dedup key
