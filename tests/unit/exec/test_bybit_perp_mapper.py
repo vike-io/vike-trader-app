@@ -144,3 +144,55 @@ def test_bybit_liquidation_carries_exec_id_as_trade_id():
     assert len(evs) == 1
     assert isinstance(evs[0], PositionLiquidated)
     assert evs[0].trade_id == "E-42"
+
+
+# 5g-3: hedge positionIdx tests
+def test_perp_fill_long_leg_from_position_idx_1():
+    evs = map_bybit_perp(_exec_frame(positionIdx=1, side="Buy"), venue="bybit", symbol="BTCUSDT")
+    fill = [e for e in evs if isinstance(e, FillEvent)][0]
+    assert fill.position_side == "LONG"
+    assert fill.side == +1
+
+
+def test_perp_fill_short_leg_from_position_idx_2():
+    evs = map_bybit_perp(_exec_frame(positionIdx=2, side="Sell"), venue="bybit", symbol="BTCUSDT")
+    fill = [e for e in evs if isinstance(e, FillEvent)][0]
+    assert fill.position_side == "SHORT"
+    assert fill.side == -1
+
+
+def test_perp_fill_one_way_idx_0_stays_both():
+    evs = map_bybit_perp(_exec_frame(positionIdx=0), venue="bybit", symbol="BTCUSDT")
+    assert [e for e in evs if isinstance(e, FillEvent)][0].position_side == "BOTH"
+
+
+def test_perp_fill_absent_position_idx_stays_both():
+    frame = _exec_frame()
+    frame["data"][0].pop("positionIdx", None)        # one-way demo: row may omit positionIdx
+    assert [e for e in map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
+            if isinstance(e, FillEvent)][0].position_side == "BOTH"
+
+
+def test_perp_hedge_fill_without_markprice_still_carries_side():
+    frame = _exec_frame(positionIdx=1, side="Buy")
+    frame["data"][0].pop("markPrice", None)          # null-mark path must still set the leg
+    fill = [e for e in map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
+            if isinstance(e, FillEvent)][0]
+    assert fill.position_side == "LONG"
+    assert fill.mark_price is None
+
+
+def test_perp_dual_publish_wrap_fill_identity_preserved_with_side():
+    evs = map_bybit_perp(_exec_frame(positionIdx=2, side="Sell", leavesQty="0", orderQty="0.01"),
+                         venue="bybit", symbol="BTCUSDT")
+    fill = [e for e in evs if isinstance(e, FillEvent)][0]
+    wrap = [e for e in evs if isinstance(e, (OrderFilled, OrderPartiallyFilled))][0]
+    assert wrap.fill is fill                         # dual-publish identity intact
+    assert wrap.fill.position_side == "SHORT"
+
+
+def test_perp_liquidation_carries_hedge_leg():
+    frame = _exec_frame(positionIdx=2, side="Sell", execType="BustTrade", execId="liq1")
+    liq = [e for e in map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
+           if isinstance(e, PositionLiquidated)][0]
+    assert liq.position_side == "SHORT"

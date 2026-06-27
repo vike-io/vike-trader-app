@@ -13,6 +13,8 @@ from vike_trader_app.exec.bybit.client import BybitSpotExecutionClient
 from vike_trader_app.exec.bybit.transport import BybitApiError, bybit_signed_request
 from vike_trader_app.exec.crypto_client import ReconcileSnapshot
 
+_IDX_SIDE = {1: "LONG", 2: "SHORT"}
+
 
 class BybitPerpExecutionClient(BybitSpotExecutionClient):
     PRODUCT = "perp"
@@ -62,27 +64,37 @@ class BybitPerpExecutionClient(BybitSpotExecutionClient):
         return {"category": "linear", "symbol": self._symbol, "orderLinkId": client_order_id}
 
     def reconcile_positions(self) -> ReconcileSnapshot:
+        """GET /v5/position/list. One-way: positionIdx==0 (side Buy/Sell signs size) -> one BOTH leg
+        (byte-equivalent). Hedge: positionIdx 1 (Long) and 2 (Short) -> a LONG leg AND a SHORT leg,
+        each signed (+abs for idx1/Buy, -abs for idx2/Sell) and carrying its position_side.
+        """
         raw = self.unwrap(self._transport(
             self._base, self.PATH_POSITION_LIST, "GET",
             {"category": "linear", "symbol": self._symbol}, self._signer))
-        signed = 0.0
-        avg_px = 0.0
-        mark_px = 0.0
+        legs: list[tuple[str, float, float, float, str]] = []   # (sym, signed, avg, mark, side)
         for p in raw.get("list", []):
-            # Guard: only accept one-way rows (positionIdx==0). In HEDGE mode the API returns
-            # positionIdx 1 (Long) and 2 (Short) — taking the first would mis-reconcile.
-            if int(p.get("positionIdx", -1)) != 0:
-                continue
             size = abs(float(p.get("size", 0) or 0))
             if size == 0.0:
                 continue
+            try:
+                idx = int(p.get("positionIdx", 0))
+            except (TypeError, ValueError):
+                idx = 0
+            side_lbl = _IDX_SIDE.get(idx, "BOTH")               # 0/other -> one-way BOTH leg
             sign = +1.0 if p.get("side") == "Buy" else -1.0
-            signed = sign * size
-            avg_px = float(p.get("avgPrice", 0) or 0)
-            mark_px = float(p.get("markPrice", 0) or 0)
-            break  # one-way: at most one live position per symbol
+            legs.append((self._symbol, sign * size,
+                         float(p.get("avgPrice", 0) or 0),
+                         float(p.get("markPrice", 0) or 0),
+                         side_lbl))
+        if not legs:
+            return ReconcileSnapshot(
+                positions=((self._symbol, 0.0),), open_orders=(),
+                position_avg_px=((self._symbol, 0.0),),
+                position_mark_px=((self._symbol, 0.0),))
+        hedge = any(sd != "BOTH" for *_r, sd in legs)
         return ReconcileSnapshot(
-            positions=((self._symbol, signed),),
+            positions=tuple((s, q) for s, q, _a, _m, _sd in legs),
             open_orders=(),
-            position_avg_px=((self._symbol, avg_px),),
-            position_mark_px=((self._symbol, mark_px),))
+            position_avg_px=tuple((s, a) for s, _q, a, _m, _sd in legs),
+            position_mark_px=tuple((s, m) for s, _q, _a, m, _sd in legs),
+            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else ())

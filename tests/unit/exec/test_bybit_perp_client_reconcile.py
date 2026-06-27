@@ -46,33 +46,28 @@ def test_reconcile_flat_when_no_positions():
     assert snap.position_mark_px == (("BTCUSDT", 0.0),)
 
 
-def test_reconcile_skips_hedge_mode_rows():
-    """positionIdx != 0 rows (HEDGE mode: 1=Long, 2=Short) must be ignored entirely."""
+def test_reconcile_emits_both_hedge_legs():
+    """Hedge: positionIdx 1 (Long, Buy) + 2 (Short, Sell) -> two signed legs with their sides."""
     def t(base, path, method, params, signer, **k):
         return {"retCode": 0, "result": {"list": [
-            # positionIdx=1 and 2 are HEDGE-mode rows — must be skipped
             {"symbol": "BTCUSDT", "side": "Buy", "size": "0.1", "avgPrice": "65000",
              "markPrice": "65100", "positionIdx": 1},
-            {"symbol": "BTCUSDT", "side": "Sell", "size": "0.1", "avgPrice": "65000",
+            {"symbol": "BTCUSDT", "side": "Sell", "size": "0.04", "avgPrice": "64000",
              "markPrice": "65100", "positionIdx": 2},
         ]}}
     snap = _client(t).connect()
-    # No positionIdx==0 row => treated as flat
-    assert snap.positions == (("BTCUSDT", 0.0),)
-    assert snap.position_avg_px == (("BTCUSDT", 0.0),)
-    assert snap.position_mark_px == (("BTCUSDT", 0.0),)
+    assert snap.positions == (("BTCUSDT", 0.1), ("BTCUSDT", -0.04))
+    assert snap.position_avg_px == (("BTCUSDT", 65000.0), ("BTCUSDT", 64000.0))
+    assert snap.position_sides == (("BTCUSDT", "LONG"), ("BTCUSDT", "SHORT"))
 
 
-def test_reconcile_accepts_one_way_row_among_hedge_noise():
-    """If positionIdx==0 row is present alongside hedge rows, accept only that one."""
+def test_reconcile_net_only_idx0_has_no_position_sides():
+    """One-way: a single positionIdx==0 row -> one BOTH leg, position_sides () (byte-equivalent)."""
     def t(base, path, method, params, signer, **k):
         return {"retCode": 0, "result": {"list": [
             {"symbol": "BTCUSDT", "side": "Buy", "size": "0.07", "avgPrice": "66000",
-             "markPrice": "66200", "positionIdx": 0},
-            # stray hedge rows that must be ignored
-            {"symbol": "BTCUSDT", "side": "Buy", "size": "0.5", "avgPrice": "60000",
-             "markPrice": "66200", "positionIdx": 1},
-        ]}}
+             "markPrice": "66200", "positionIdx": 0}]}}
     snap = _client(t).connect()
     assert snap.positions == (("BTCUSDT", 0.07),)
     assert snap.position_avg_px == (("BTCUSDT", 66000.0),)
+    assert snap.position_sides == ()

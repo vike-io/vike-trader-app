@@ -36,26 +36,27 @@ def test_reconcile_flat_when_amt_zero_string():
     snap = _client(t).connect()
     assert snap.positions == (("BTCUSDT", 0.0),)
 
-def test_reconcile_skips_hedge_rows():
+def test_reconcile_emits_both_hedge_legs():
+    """Hedge mode: a LONG row and a SHORT row each become a signed snapshot leg with its side."""
     def t(base, path, method, params, signer, **k):
         return [{"symbol": "BTCUSDT", "positionAmt": "0.05", "positionSide": "LONG",
                  "entryPrice": "65000", "markPrice": "65100"},
-                {"symbol": "BTCUSDT", "positionAmt": "-0.05", "positionSide": "SHORT",
-                 "entryPrice": "65000", "markPrice": "65100"}]
+                {"symbol": "BTCUSDT", "positionAmt": "-0.03", "positionSide": "SHORT",
+                 "entryPrice": "64000", "markPrice": "65100"}]
     snap = _client(t).connect()
-    assert snap.positions == (("BTCUSDT", 0.0),)
-    assert snap.position_avg_px == (("BTCUSDT", 0.0),)
-    assert snap.position_mark_px == (("BTCUSDT", 0.0),)
+    assert snap.positions == (("BTCUSDT", 0.05), ("BTCUSDT", -0.03))
+    assert snap.position_avg_px == (("BTCUSDT", 65000.0), ("BTCUSDT", 64000.0))
+    assert snap.position_sides == (("BTCUSDT", "LONG"), ("BTCUSDT", "SHORT"))
 
-def test_reconcile_accepts_both_among_hedge_noise():
+def test_reconcile_net_only_has_no_position_sides():
+    """One-way: a single BOTH row -> one leg, position_sides stays () (byte-equivalent)."""
     def t(base, path, method, params, signer, **k):
-        return [{"symbol": "BTCUSDT", "positionAmt": "0.1", "positionSide": "LONG",
-                 "entryPrice": "64000", "markPrice": "65100"},
-                {"symbol": "BTCUSDT", "positionAmt": "0.07", "positionSide": "BOTH",
+        return [{"symbol": "BTCUSDT", "positionAmt": "0.07", "positionSide": "BOTH",
                  "entryPrice": "65000", "markPrice": "65100"}]
     snap = _client(t).connect()
     assert snap.positions == (("BTCUSDT", 0.07),)
     assert snap.position_avg_px == (("BTCUSDT", 65000.0),)
+    assert snap.position_sides == ()
 
 def test_reconcile_missing_markprice_zero():
     def t(base, path, method, params, signer, **k):

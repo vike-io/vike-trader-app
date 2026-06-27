@@ -59,25 +59,31 @@ class BinancePerpExecutionClient(BinanceSpotExecutionClient):
 
     def reconcile_positions(self) -> ReconcileSnapshot:
         """GET /fapi/v2/positionRisk {symbol}. positionAmt is ALREADY SIGNED base qty (long>0,
-        short<0 — no side lookup, no ctVal). entryPrice -> avg, markPrice -> mark. Skip non-BOTH
-        (hedge) rows. One-way: one BOTH row per symbol."""
+        short<0). positionSide is 'BOTH' (one-way) or 'LONG'/'SHORT' (hedge). Emit one snapshot row
+        per live leg: net -> a single BOTH row (byte-equivalent; no position_sides entry); hedge ->
+        a LONG row AND a SHORT row, each carrying its position_side.
+        """
         rows = self.unwrap(self._transport(self._base, self.PATH_POSITIONS, "GET",
                                             {"symbol": self._symbol}, self._signer))
-        signed = 0.0
-        avg_px = 0.0
-        mark_px = 0.0
+        legs: list[tuple[str, float, float, float, str]] = []   # (sym, signed, avg, mark, side)
         for p in rows:
-            if str(p.get("positionSide", "BOTH")) != "BOTH":     # net/one-way only; skip hedge rows
-                continue
+            side = str(p.get("positionSide", "BOTH"))
             amt = float(p.get("positionAmt", 0) or 0)            # already signed
             if amt == 0.0:
                 continue
-            signed = amt
-            avg_px = float(p.get("entryPrice", 0) or 0)
-            mark_px = float(p.get("markPrice", 0) or 0)
-            break                                                # one-way: at most one live row
+            legs.append((self._symbol, amt,
+                         float(p.get("entryPrice", 0) or 0),
+                         float(p.get("markPrice", 0) or 0),
+                         side))
+        if not legs:                                             # flat: one zero BOTH row (unchanged)
+            return ReconcileSnapshot(
+                positions=((self._symbol, 0.0),), open_orders=(),
+                position_avg_px=((self._symbol, 0.0),),
+                position_mark_px=((self._symbol, 0.0),))
+        hedge = any(side != "BOTH" for *_rest, side in legs)
         return ReconcileSnapshot(
-            positions=((self._symbol, signed),),
+            positions=tuple((s, q) for s, q, _a, _m, _sd in legs),
             open_orders=(),
-            position_avg_px=((self._symbol, avg_px),),
-            position_mark_px=((self._symbol, mark_px),))
+            position_avg_px=tuple((s, a) for s, _q, a, _m, _sd in legs),
+            position_mark_px=tuple((s, m) for s, _q, _a, m, _sd in legs),
+            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else ())

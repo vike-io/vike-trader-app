@@ -70,17 +70,25 @@ class LiveOmsHub:
         self.client.submit(verdict.request)
 
     def apply_snapshot(self, snapshot) -> None:
-        """Seed the Account position (size + mark avg_px) and the open-order registry.
+        """Seed Account positions (size + avg_px) and the open-order registry from a reconcile snapshot.
 
-        avg_px comes from snapshot.position_avg_px (keyed by symbol). If absent (e.g. older
-        snapshots without the field), falls back to 0.0 — callers should always supply it.
+        Each position row carries an optional position_side (snapshot.position_sides, index-aligned to
+        snapshot.positions; default 'BOTH' when absent). avg_px is looked up per (symbol, side) so a
+        hedge LONG and SHORT leg of the same symbol get distinct cost bases. mark is per-symbol (one
+        mark feed; both legs mark identically). A net/spot snapshot (no position_sides) writes the
+        (venue, sym, 'BOTH') key with the symbol-keyed avg_px -- byte-equivalent to pre-5g-3.
         """
-        avg_px_map = dict(getattr(snapshot, "position_avg_px", ()))
-        for sym, qty in snapshot.positions:
+        sides = list(getattr(snapshot, "position_sides", ()))
+        avg_by_key = {}                                    # (sym, side) -> avg_px, parallel to positions
+        for i, (sym, avg) in enumerate(getattr(snapshot, "position_avg_px", ())):
+            side = sides[i][1] if i < len(sides) else "BOTH"
+            avg_by_key[(sym, side)] = avg
+        for i, (sym, qty) in enumerate(snapshot.positions):
             assert sym == self.symbol, f"snapshot symbol {sym} != hub symbol {self.symbol}"
-            self.account.positions[(self.venue, sym, "BOTH")] = {
+            side = sides[i][1] if i < len(sides) else "BOTH"
+            self.account.positions[(self.venue, sym, side)] = {
                 "size": qty,
-                "avg_px": avg_px_map.get(sym, 0.0),
+                "avg_px": avg_by_key.get((sym, side), 0.0),
             }
         for sym, mark in getattr(snapshot, "position_mark_px", ()):
             if mark > 0.0:
