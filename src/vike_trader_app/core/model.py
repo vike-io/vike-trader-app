@@ -17,6 +17,8 @@ class Bar:
     close: float
     volume: float = 0.0
     funding: float | None = None  # perp funding rate at this bar, if available
+    bid: float | None = None  # opening best-bid for the bar's window (tick-derived; None for OHLCV bars)
+    ask: float | None = None  # opening best-ask for the bar's window (tick-derived; None for OHLCV bars)
 
 
 @dataclass
