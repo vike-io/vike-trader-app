@@ -36,6 +36,8 @@ class RiskLimits:
     max_total_exposure: float | None = None    # cap on abs(projected position notional)
     max_orders_per_window: int | None = None   # throttle: max orders per window
     window_ms: int = 1000                      # throttle window length
+    max_leverage: float | None = None            # arm-clamp knob; NOT evaluated in check()
+    block_reduce_only_overshoot: bool = False    # reject a reduce_only order exceeding abs(pos)
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,14 @@ def _round_to(value: float, step: float | None) -> float:
     if step is None or step <= 0:
         return value
     return round(value / step) * step
+
+
+def clamp_leverage(requested: float, max_leverage: float | None) -> float:
+    """Pure: clamp the requested leverage to max_leverage (>=1.0). None => no cap."""
+    lev = max(1.0, float(requested))
+    if max_leverage is not None:
+        lev = min(lev, max(1.0, float(max_leverage)))
+    return lev
 
 
 class RiskGate:
@@ -92,6 +102,11 @@ class RiskGate:
             return RiskVerdict(False, None, "halted")
         if ctx.trading_state is TradingState.REDUCING and not self._reduces(request, ctx):
             return RiskVerdict(False, None, "reduce-only")
+
+        # --- reduce-only overshoot (perp; defense-in-depth + honest local OrderDenied) ---
+        if lim.block_reduce_only_overshoot and request.reduce_only \
+                and abs(ctx.position_size) < abs(request.qty):
+            return RiskVerdict(False, None, "reduce-only-overshoot")
 
         # --- normalize: round price to tick, size to lot ---
         price = None if request.price is None else _round_to(request.price, lim.tick_size)

@@ -56,7 +56,7 @@ class LiveOmsHub:
         """Gate the order; publish OrderDenied on veto (follow-up #1) or submit to the venue."""
         ctx = RiskContext(
             position_size=self._position_size(),
-            mark_price=request.price or 0.0,
+            mark_price=request.price if request.price is not None else self._mark(),
             trading_state=self._trading_state,
             now_ms=self._now_ms(),
         )
@@ -98,6 +98,11 @@ class LiveOmsHub:
     def _position_size(self) -> float:
         pos = self.account.positions.get((self.venue, self.symbol, "BOTH"))
         return pos["size"] if pos is not None else 0.0
+
+    def _mark(self) -> float:
+        """Latest recorded mark for this venue/symbol (0.0 if none yet). Seeds the gate's notional
+        valuation for orders that carry no price (perp MARKET orders)."""
+        return self.account.marks.get((self.venue, self.symbol), 0.0)
 
     def _on_event(self, event) -> None:
         if isinstance(event, FillEvent) and event.symbol != self.symbol:

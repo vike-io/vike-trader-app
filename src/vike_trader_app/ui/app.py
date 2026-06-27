@@ -1358,6 +1358,27 @@ class MainWindow(QtWidgets.QMainWindow):
                                       ("calendar", "Calendar", "calendar"), ("options", "Options", "options")):
             self.topbar.add_launcher(icon_name, f"{label} window",
                                      lambda *_a, k=key: self.open_tool(k))
+        # Task 5 — ExecArmBar: venue/product/env/leverage selectors + Arm/Disarm.
+        # The widget is thin; armRequested emits None and MainWindow resolves the spec with the live
+        # symbol. _restore_arm_selection restores the saved selection only (never auto-arms).
+        from .exec_arm import ExecArmBar
+        self.exec_arm = ExecArmBar()
+        self.exec_arm.armRequested.connect(
+            lambda _=None: self._on_arm_requested(
+                self.exec_arm.current_spec(self._symbol)
+            )
+        )
+        self.exec_arm.disarmRequested.connect(self._on_disarm_requested)
+        self._restore_arm_selection()   # QSettings restore — NEVER auto-arms
+        # Mount the arm bar as an always-visible top toolbar — the production surface that finally
+        # makes live exec user-reachable (it was env-var-only). NOT the lazily-re-parented Studio
+        # strip: exec-arm is a GLOBAL control. setMovable(False) keeps it stable below the title bar.
+        self._exec_toolbar = QtWidgets.QToolBar("Execution", self)
+        self._exec_toolbar.setObjectName("exec_arm_toolbar")
+        self._exec_toolbar.setMovable(False)
+        self._exec_toolbar.addWidget(self.exec_arm)
+        self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, self._exec_toolbar)
+
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -3025,19 +3046,45 @@ class MainWindow(QtWidgets.QMainWindow):
         ):
             w.setEnabled(on)
 
-    def _maybe_start_live_exec(self) -> bool:
+    def _exec_max_leverage(self) -> float | None:
+        """Maximum leverage cap for arming. Task-6 will read this from QSettings; for now return a
+        conservative default (20×). The UI arm bar can override via ``_arm_max_leverage``."""
+        return getattr(self, "_arm_max_leverage", 20.0)
+
+    def _arm_float(self, env_key: str) -> float | None:
+        """Read an optional float cap: first from the ``_arm_caps`` dict (set by the Task-5 UI arm
+        bar), then from the environment variable *env_key*. Returns None when absent/blank so the
+        matching RiskLimits field stays dormant (spot tests are byte-identical)."""
+        import os
+        raw = getattr(self, "_arm_caps", {}).get(env_key) if hasattr(self, "_arm_caps") else None
+        raw = raw if raw is not None else os.environ.get(env_key)
+        try:
+            return float(raw) if raw not in (None, "") else None
+        except (TypeError, ValueError):
+            return None
+
+    def _maybe_start_live_exec(self, spec: "ExecArmSpec | None" = None) -> bool:  # noqa: F821
         """Gate live exec on explicit flag + creds presence (GUI process only). Returns True when a
         LiveExecutionSession was built. VIKE_DISABLE_LIVE (headless) or blank flags/absent creds ->
-        stay paper (the default) and start no worker."""
+        stay paper (the default) and start no worker.
+
+        When *spec* is None (the default env-var path) the arm spec is resolved from environment
+        variables (VIKE_EXEC_VENUE / VIKE_EXEC_ENV / …). When *spec* is supplied (Task-5 UI arm
+        bar), its venue/environment/product/symbol/leverage are used directly — no env reads.
+        """
         import os
         import time
 
         if os.environ.get("VIKE_DISABLE_LIVE"):
             return False
-        venue = (os.environ.get("VIKE_EXEC_VENUE") or "").strip().lower()
-        env_name = (os.environ.get("VIKE_EXEC_ENV") or "").strip().upper()
-        if not venue or not env_name:
+        from ..exec.arm_spec import resolve_arm_spec
+        if spec is None:
+            spec = resolve_arm_spec(venue=None, environment=None, product=None,
+                                    symbol=self._symbol, leverage=None)
+        if spec is None:
             return False
+        venue = spec.venue
+        env_name = spec.environment
 
         from ..exec.credentials import Environment
         from ..exec.venue_config import resolve_venue_config
@@ -3057,8 +3104,8 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..exec.risk import RiskGate, RiskLimits
         from ..ui.private_user_data import LiveExecutionSession
 
-        symbol = self._symbol
-        product = (os.environ.get("VIKE_EXEC_PRODUCT") or "spot").strip().lower()
+        symbol = spec.symbol
+        product = spec.product
         if venue == "bybit" and product == "perp":
             import logging
             from ..exec.bybit.perp_client import BybitPerpExecutionClient
@@ -3080,15 +3127,16 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = f.get("base_asset", "")
             bus = EventBus()
             client_symbol = symbol
-            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = BybitPerpExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
                 filters=filters, base_asset=base_asset, leverage=leverage)
             client.set_leverage()   # MAIN thread, before connect/reconcile
-            # NOTE: a perp MARKET order (price=None) → ctx.mark_price=0.0 → the min_notional
-            # RiskGate veto in the shared gate below.  This is a PRE-EXISTING spot limitation
-            # inherited unchanged.  The proper fix (seed mark_price for market orders) is deferred
-            # to slice 5f; do not remove this comment until that fix lands.
+            # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
+            # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
+            # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
+            # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
         elif venue == "bybit":
             from ..exec.bybit.client import BybitSpotExecutionClient
             from ..exec.bybit.instruments import parse_bybit_instruments_info
@@ -3145,15 +3193,18 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = f.get("base_asset", "")
             bus = EventBus()
             client_symbol = inst_id                        # BTC-USDT-SWAP — hub matches client/snapshot key
-            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = OKXPerpExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
                 filters=filters, base_asset=base_asset, ct_val=ct_val, leverage=leverage,
                 transport=functools.partial(okx_signed_request, simulated=simulated),
                 public_transport=functools.partial(okx_public_get, simulated=simulated))
             client.set_leverage()                          # MAIN thread, before connect/reconcile
-            # NOTE: a perp MARKET order (price=None) -> ctx.mark_price=0.0 -> the min_notional RiskGate
-            # veto. PRE-EXISTING spot limitation inherited unchanged; proper fix deferred to 5f.
+            # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
+            # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
+            # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
+            # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
         elif venue == "okx":
             import functools
             from ..exec.okx.client import OKXSpotExecutionClient
@@ -3204,13 +3255,16 @@ class MainWindow(QtWidgets.QMainWindow):
             base_asset = f.get("base_asset", "")
             bus = EventBus()
             client_symbol = symbol                              # plain BTCUSDT — no dash, no -SWAP
-            leverage = float(os.environ.get("VIKE_EXEC_LEVERAGE") or 1.0)
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = BinancePerpExecutionClient(
                 bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=symbol,
                 filters=filters, base_asset=base_asset, leverage=leverage)
             client.set_leverage()                               # MAIN thread, before connect/reconcile
-            # NOTE: a perp MARKET order (price=None) -> ctx.mark_price=0.0 -> the min_notional RiskGate
-            # veto. PRE-EXISTING spot limitation inherited unchanged; proper fix deferred to 5f.
+            # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
+            # LiveOmsHub.submit_ticket reads account.marks for price-less orders. No false veto.
+            # Correctness proven at the LiveOmsHub UNIT level (Task 3: test_live_oms_mark_seed.py);
+            # the offscreen GUI arm tests prove session CONSTRUCTION only (no perp MARKET submitted).
         else:
             from ..data.instrument_db import parse_symbol_filters
             from ..exec.binance.client import BinanceSpotExecutionClient
@@ -3231,9 +3285,15 @@ class MainWindow(QtWidgets.QMainWindow):
         gate_lot_size = filters["step_size"]
         if venue == "okx" and product == "perp":
             gate_lot_size = (filters["step_size"] or 0.0) * ct_val
+        _is_perp = (product == "perp")
+        _max_order = self._arm_float("VIKE_EXEC_MAX_ORDER_NOTIONAL")
+        _max_expo = self._arm_float("VIKE_EXEC_MAX_EXPOSURE")
         gate = RiskGate(RiskLimits(
             tick_size=filters["tick_size"] or None, lot_size=gate_lot_size or None,
-            min_notional=filters["min_notional"] or None))
+            min_notional=filters["min_notional"] or None,
+            max_notional_per_order=_max_order,
+            max_total_exposure=_max_expo,
+            block_reduce_only_overshoot=_is_perp))
         hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
@@ -3333,6 +3393,94 @@ class MainWindow(QtWidgets.QMainWindow):
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("binance", worker)
         return True
+
+    # ------------------------------------------------------------------
+    # Task 5 — ExecArmBar call sites
+    # ------------------------------------------------------------------
+
+    def _on_arm_requested(self, spec) -> bool:
+        """Production call site: called when the user clicks Arm in ExecArmBar.
+
+        If a session is already armed, ignores the request (Disarm first). Otherwise
+        persists the non-secret selection, starts live exec and updates the feed badge.
+        Returns True when a LiveExecutionSession was successfully built.
+        """
+        if getattr(self, "_exec_session", None) is not None:
+            return True                      # already armed — ignore (Disarm first)
+        self._persist_arm_selection(spec)    # QSettings (non-secret only)
+        ok = self._maybe_start_live_exec(spec=spec)
+        if ok:
+            self._refresh_feed_badge_for_exec(spec)
+            self.exec_arm.set_armed(True)    # flip the button to Disarm (teardown now user-reachable)
+        return ok
+
+    def _on_disarm_requested(self) -> None:
+        """Tear down the live-exec session cleanly.
+
+        Stops the funding timer and clears the pollers list so _funding_tick no longer
+        fires signed REST GETs against a detached client/bus. Re-arming after a disarm
+        is safe: _maybe_start_live_exec restarts the timer on the next arm.
+        """
+        sess = getattr(self, "_exec_session", None)
+        if sess is not None:
+            sess.shutdown()
+            self._exec_session = None
+        # Stop the funding timer and clear pollers so _funding_tick no longer fires
+        # synchronous signed REST GETs against a now-detached client/bus (live network
+        # after teardown).  Mirrors the cleanup done in shutdown() / _stop_all_timers().
+        self._funding_timer.stop()
+        self._funding_pollers = []
+        self._update_feed_health()           # back to CACHED/LIVE data-feed badge
+        self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
+
+    def _refresh_feed_badge_for_exec(self, spec) -> None:
+        """Update the status-bar feed badge to show the armed venue, product and leverage."""
+        suffix = f" · PERP {int(spec.leverage)}x" if spec.product == "perp" else " · SPOT"
+        warn = spec.environment == "MAINNET"
+        self._feed_badge.setText(
+            f"● {spec.venue.upper()}{suffix} · {spec.environment}"
+        )
+        # reuse theme.DOWN accent for MAINNET warning; theme.UP for DEMO
+        # (do NOT edit theme.py — constraint from the project guide)
+        self._feed_badge.setStyleSheet(
+            f"color: {theme.DOWN if warn else theme.UP};"
+            f"font-size:10px;background:transparent;border:none;"
+            f"padding:3px 6px;margin-right:6px;"
+        )
+
+    def _persist_arm_selection(self, spec) -> None:
+        """Write the non-secret exec selector state to QSettings.
+
+        Saved: venue / product / environment / leverage.
+        NEVER written: api_key / secret / passphrase — creds live in .env via load_credentials.
+        """
+        from PySide6 import QtCore
+        s = QtCore.QSettings("vike", "trader")
+        s.setValue("exec/venue", spec.venue)
+        s.setValue("exec/product", spec.product)
+        s.setValue("exec/environment", spec.environment)
+        s.setValue("exec/leverage", spec.leverage)
+
+    def _restore_arm_selection(self) -> None:
+        """Restore saved exec selector state into exec_arm combos.
+
+        Restores the SELECTION only — never calls _on_arm_requested (no auto-arm at launch).
+        """
+        from PySide6 import QtCore
+        s = QtCore.QSettings("vike", "trader")
+        v = s.value("exec/venue")
+        if not v:
+            return
+        product_raw = str(s.value("exec/product", "Spot"))
+        # Normalize to title-case for the combo ("spot"/"perp" -> "Spot"/"Perp")
+        product = product_raw.capitalize()
+        self.exec_arm.set_selection(
+            venue=str(v),
+            product=product,
+            environment=str(s.value("exec/environment", "DEMO")),
+            leverage=int(float(s.value("exec/leverage", 1))),
+        )
+        # restore selection ONLY — never call _on_arm_requested here (no auto-arm at launch).
 
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
