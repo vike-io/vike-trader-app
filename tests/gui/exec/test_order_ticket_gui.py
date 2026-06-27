@@ -127,8 +127,12 @@ def test_bus_subscribe_unsubscribe_lifecycle(app, monkeypatch):
             venue = "binance"
             symbol = "BTCUSDT"
             bus = _StubBus()
+            registry = {}
             class _Acct:
                 positions = {}
+                marks = {}
+                balance = 0.0
+                realized_pnl = 0.0
                 def unrealized_pnl(self, *a, **k): return 0.0
             account = _Acct()
             def shutdown(self): pass
@@ -217,12 +221,16 @@ def test_exec_event_updates_position_label(app, monkeypatch):
     try:
         class _StubAcct:
             positions = {("binance", "BTCUSDT", "BOTH"): {"size": 0.01, "avg_px": 65000.0}}
+            marks = {}
+            balance = 0.0
+            realized_pnl = 0.0
             def unrealized_pnl(self, venue, symbol, position_side="BOTH"): return 12.5
 
         class _StubHub:
             venue = "binance"
             symbol = "BTCUSDT"
             bus = type("B", (), {"subscribe": lambda *a: None, "unsubscribe": lambda *a: None})()
+            registry = {}
             account = _StubAcct()
             def shutdown(self): pass
 

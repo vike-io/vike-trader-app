@@ -69,6 +69,21 @@ class LiveOmsHub:
         self.registry[verdict.request.client_order_id] = ManagedOrder(request=verdict.request)
         self.client.submit(verdict.request)
 
+    def cancel_ticket(self, client_order_id: str) -> None:
+        """Cancel a live order by client-order-id (mirrors submit_ticket's registry+client ownership).
+
+        Idempotent: no-op if the order is unknown or already terminal. Publishes NOTHING — the venue WS
+        user-data stream emits the authoritative OrderCanceled that advances the FSM (live_oms.py
+        _on_event -> mo.apply). client.cancel swallows the already-gone case (crypto_client.py:91) and
+        re-raises VenueApiError for any other code; the GUI slot wraps that.
+        """
+        mo = self.registry.get(client_order_id)
+        if mo is None or mo.status in (
+                OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED,
+                OrderStatus.DENIED, OrderStatus.EXPIRED, OrderStatus.LIQUIDATED):
+            return                                  # nothing live to cancel
+        self.client.cancel(client_order_id)
+
     def apply_snapshot(self, snapshot) -> None:
         """Seed Account positions (size + avg_px) and the open-order registry from a reconcile snapshot.
 

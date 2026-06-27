@@ -1394,6 +1394,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._order_ticket_toolbar.addWidget(self.order_ticket)
         self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, self._order_ticket_toolbar)
 
+        # Live Positions & Open-Orders panel — reads the armed hub's Account + registry, refreshed by
+        # the SAME _on_exec_event main-thread subscriber; per-row Cancel -> _on_cancel_ticket.
+        from .positions_panel import PositionsPanel
+        self.positions_panel = PositionsPanel()
+        self.positions_panel.cancelRequested.connect(self._on_cancel_ticket)
+
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -1566,6 +1572,7 @@ class MainWindow(QtWidgets.QMainWindow):
     _PANELS = [
         ("market", "market", "Market watch", "Ctrl+M"),
         ("trades", "trades", "Trades & Positions", "Ctrl+T"),
+        ("positions", "trades", "Positions & Orders", "Ctrl+P"),
         # Dashboard info tiles (Phase 6): small dockable widgets — arrange + pin + save a named
         # workspace to compose a personal dashboard. All default CLOSED on a fresh run.
         ("movers", "market", "Top movers", "Ctrl+Shift+M"),
@@ -2162,12 +2169,17 @@ class MainWindow(QtWidgets.QMainWindow):
         ecal.viewToggled.connect(lambda on: on and self._refresh_calendar_tile())
         self._refresh_calendar_tile()
 
+        positions = make_panel_dock(self.dock_manager, "POSITIONS & ORDERS",
+                                    self.positions_panel, QtAds.BottomDockWidgetArea,
+                                    icon=_ico("trades"))
+
         # rail PANELS toggle targets (key must match _PANELS)
         self._market_dock = market
         self._trades_dock = trades
         self._panel_dock_map = {"market": market, "trades": trades, "movers": movers,
-                                "pnl": pnl, "ecal": ecal, "headlines": headlines}
-        self._docks = [market, trades, movers, pnl, ecal, headlines]
+                                "pnl": pnl, "ecal": ecal, "headlines": headlines,
+                                "positions": positions}
+        self._docks = [market, trades, movers, pnl, ecal, headlines, positions]
         # Programmatic open/close (space switches, rail toggles) is guarded so the user-driven
         # viewToggled (title-bar X / drag-close) is the only thing that updates the rail state.
         self._syncing_docks = False
@@ -2312,7 +2324,7 @@ class MainWindow(QtWidgets.QMainWindow):
         for key, btn in self._panel_btns.items():
             # chart on; side panels + dashboard tiles closed on a fresh run
             fresh_default = key not in ("market", "trades", "movers", "pnl", "ecal",
-                                        "headlines")
+                                        "headlines", "positions")
             btn.setChecked(bool(saved.get(key, fresh_default)))
 
     def _set_dock_open(self, dock, on: bool) -> None:
@@ -3434,6 +3446,10 @@ class MainWindow(QtWidgets.QMainWindow):
                     True, venue=sess.hub.venue, symbol=sess.hub.symbol,
                     environment=spec.environment)
                 sess.hub.bus.subscribe(self._on_exec_event)   # main-thread feedback subscriber
+                from ..exec.positions_view import project_positions_orders
+                self.positions_panel.set_armed(True)
+                self.positions_panel.set_rows(project_positions_orders(   # seed once at arm
+                    sess.hub.account, sess.hub.registry, sess.hub.venue))
         return ok
 
     def _on_disarm_requested(self) -> None:
@@ -3461,6 +3477,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_feed_health()           # back to CACHED/LIVE data-feed badge
         self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
         self.order_ticket.set_armed(False)
+        self.positions_panel.set_armed(False)   # clears rows + disables Cancel (no cancel when no session)
 
     def _refresh_feed_badge_for_exec(self, spec) -> None:
         """Update the status-bar feed badge to show the armed venue, product and leverage."""
@@ -3529,6 +3546,49 @@ class MainWindow(QtWidgets.QMainWindow):
         box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
         return box.exec() == QtWidgets.QMessageBox.StandardButton.Ok
 
+    def _on_cancel_ticket(self, coid: str) -> None:
+        """Per-order Cancel from the positions panel. Armed-only + confirm; inert headless.
+
+        Mirrors _on_submit_ticket's inert-guard: _exec_session is None under VIKE_DISABLE_LIVE
+        (_maybe_start_live_exec returns False), so this early-returns with NO dialog, NO network.
+        cancel_ticket runs a synchronous signed REST DELETE on the GUI thread (same as submit_ticket);
+        no worker thread (a one-shot call would re-introduce the 0xC0000409 join discipline).
+        """
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or sess.hub is None:
+            return  # not armed / headless -> inert
+        if not self._confirm_cancel(coid):
+            return
+        try:
+            sess.hub.cancel_ticket(coid)
+        except Exception as exc:  # noqa: BLE001 - a venue error (auth/rate-limit) must not crash the slot
+            import logging
+            logging.getLogger(__name__).warning("cancel failed for %s: %s", coid, exc)
+
+    def _confirm_cancel(self, coid: str) -> bool:
+        """Light Question modal (cancel REMOVES risk, so no MAINNET-warning escalation). Reachable
+        ONLY from the armed path -> never under VIKE_DISABLE_LIVE / offscreen (no headless hang).
+        Shows env/venue/symbol + the order's side/qty/type/price from the registry; no secrets."""
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or sess.hub is None:
+            return False
+        env_text = getattr(self, "_armed_env", "") or "DEMO"
+        mo = sess.hub.registry.get(coid)
+        if mo is None:
+            return False
+        req = mo.request
+        side = "BUY" if req.side > 0 else "SELL"
+        px = "MKT" if req.price is None else f"{req.price:,.2f}"
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Question)
+        box.setWindowTitle("Cancel order")
+        box.setText(f"{env_text} · {req.venue.upper()} · {req.symbol}\n"
+                    f"Cancel {side} {req.qty} @ {px} ({req.order_type})?")
+        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok
+                               | QtWidgets.QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        return box.exec() == QtWidgets.QMessageBox.StandardButton.Ok
+
     def _on_exec_event(self, event) -> None:
         """Main-thread bus subscriber driving the ticket's status + position lines. Read-and-render
         ONLY — never bus.publish (the bus defers nested publishes; re-publishing here would enqueue
@@ -3548,6 +3608,11 @@ class MainWindow(QtWidgets.QMainWindow):
             upnl = hub.account.unrealized_pnl(hub.venue, hub.symbol)
             self.order_ticket.set_position(
                 f"pos: {pos['size']} @ {pos['avg_px']:.2f}  uPnL {upnl:.2f}")
+        # Live Positions & Open-Orders panel: re-project the armed hub's read-model. Cheap dict
+        # iteration; the cost is the QTableWidget rebuild (fine at human order rates — no throttle).
+        from ..exec.positions_view import project_positions_orders
+        self.positions_panel.set_rows(
+            project_positions_orders(hub.account, hub.registry, hub.venue))
 
     def _persist_arm_selection(self, spec) -> None:
         """Write the non-secret exec selector state to QSettings.
