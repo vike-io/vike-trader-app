@@ -195,3 +195,21 @@ def test_bybit_charge_is_positive_commission():
     fill = next(e for e in evs if isinstance(e, FillEvent))
     assert fill.commission > 0
     assert fill.commission == pytest.approx(0.05)
+
+
+def test_binance_rebate_is_negative_commission():
+    """Binance 'n' is NEGATIVE for a maker rebate; mapped commission must be NEGATIVE (income)."""
+    frame = _binance_trade_row(n="-0.03", m=True)
+    evs = map_execution_report(frame, venue="binance", symbol="BTCUSDT")
+    fill = next(e for e in evs if isinstance(e, FillEvent))
+    assert fill.commission < 0
+    assert fill.commission == pytest.approx(-0.03)
+
+
+def test_bybit_rebate_is_negative_commission():
+    """Bybit 'execFee' is NEGATIVE for a maker rebate; mapped commission must be NEGATIVE (income)."""
+    row = _bybit_exec_row(execFee="-0.02", isMaker=True)
+    evs = map_execution(row, venue="bybit", symbol="BTCUSDT")
+    fill = next(e for e in evs if isinstance(e, FillEvent))
+    assert fill.commission < 0
+    assert fill.commission == pytest.approx(-0.02)
