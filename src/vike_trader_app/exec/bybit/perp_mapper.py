@@ -44,6 +44,7 @@ def _bybit_liquidation_event(item: dict, *, venue: str, symbol: str) -> Position
         # balance -= ev.fee, so a positive taker fee correctly DEDUCTS. NEVER abs(), NEVER negate.
         fee=float(item.get("execFee", 0) or 0),
         ts=int(item.get("execTime", 0) or 0),
+        trade_id=str(item.get("execId", "")),   # per-exec dedup key (same as spot fill trade_id)
     )
 
 

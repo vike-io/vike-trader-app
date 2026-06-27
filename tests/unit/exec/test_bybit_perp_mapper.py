@@ -131,3 +131,16 @@ def test_order_topic_delegates_unchanged():
 
 def test_op_only_frame_empty():
     assert map_bybit_perp({"op": "pong"}, venue="bybit", symbol="BTCUSDT") == []
+
+
+def test_bybit_liquidation_carries_exec_id_as_trade_id():
+    from vike_trader_app.exec.bybit.perp_mapper import map_bybit_perp
+    from vike_trader_app.exec.events import PositionLiquidated
+
+    frame = {"topic": "execution", "data": [{
+        "execType": "BustTrade", "symbol": "BTCUSDT", "side": "Sell", "execId": "E-42",
+        "execQty": "2.0", "execPrice": "60.0", "execFee": "0.5", "execTime": "2"}]}
+    evs = map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
+    assert len(evs) == 1
+    assert isinstance(evs[0], PositionLiquidated)
+    assert evs[0].trade_id == "E-42"
