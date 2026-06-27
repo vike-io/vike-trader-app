@@ -66,39 +66,31 @@ def test_reconcile_flat_when_pos_zero():
     assert snap.positions == (("BTC-USDT-SWAP", 0.0),)
 
 
-def test_reconcile_skips_hedge_rows():
-    """Rows with posSide 'long'/'short' only (no 'net') → flat."""
-
+def test_reconcile_emits_both_hedge_legs():
+    """Hedge: posSide long (pos>0) + short (pos<0) -> two signed-base legs with their sides."""
     def t(base, path, method, params, signer, **k):
         return {"code": "0", "data": [
             {"instId": "BTC-USDT-SWAP", "posSide": "long", "pos": "5",
              "avgPx": "65000", "markPx": "65100", "lever": "3"},
-            {"instId": "BTC-USDT-SWAP", "posSide": "short", "pos": "-5",
-             "avgPx": "65000", "markPx": "65100", "lever": "3"},
+            {"instId": "BTC-USDT-SWAP", "posSide": "short", "pos": "-3",
+             "avgPx": "64000", "markPx": "65100", "lever": "3"},
         ]}
-
     snap = _client(t).connect()
-    assert snap.positions == (("BTC-USDT-SWAP", 0.0),)
-    assert snap.position_avg_px == (("BTC-USDT-SWAP", 0.0),)
-    assert snap.position_mark_px == (("BTC-USDT-SWAP", 0.0),)
+    assert snap.positions == (("BTC-USDT-SWAP", 0.05), ("BTC-USDT-SWAP", -0.03))
+    assert snap.position_avg_px == (("BTC-USDT-SWAP", 65000.0), ("BTC-USDT-SWAP", 64000.0))
+    assert snap.position_sides == (("BTC-USDT-SWAP", "LONG"), ("BTC-USDT-SWAP", "SHORT"))
 
 
-def test_reconcile_accepts_net_among_hedge_noise():
-    """net pos=7 row present alongside stray long/short → accept only net: 7×0.01=0.07."""
-
+def test_reconcile_net_only_has_no_position_sides():
+    """One-way: a single posSide=='net' row -> one BOTH leg, position_sides () (byte-equivalent)."""
     def t(base, path, method, params, signer, **k):
         return {"code": "0", "data": [
-            {"instId": "BTC-USDT-SWAP", "posSide": "long", "pos": "10",
-             "avgPx": "64000", "markPx": "65100", "lever": "3"},
             {"instId": "BTC-USDT-SWAP", "posSide": "net", "pos": "7",
-             "avgPx": "65000", "markPx": "65100", "lever": "3"},
-            {"instId": "BTC-USDT-SWAP", "posSide": "short", "pos": "-3",
-             "avgPx": "64500", "markPx": "65100", "lever": "3"},
-        ]}
-
+             "avgPx": "65000", "markPx": "65100", "lever": "3"}]}
     snap = _client(t).connect()
     assert snap.positions == (("BTC-USDT-SWAP", 0.07),)
     assert snap.position_avg_px == (("BTC-USDT-SWAP", 65000.0),)
+    assert snap.position_sides == ()
 
 
 def test_reconcile_missing_markpx_zero():

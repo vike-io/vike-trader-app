@@ -33,6 +33,10 @@ class ReconcileSnapshot:
     position_avg_px: tuple[tuple[str, float], ...] = ()
     # Perp-only: true mark price at reconcile time (avg_px ≠ mark; spot snapshots leave this empty).
     position_mark_px: tuple[tuple[str, float], ...] = ()
+    # 5g-3 hedge observe: per-row position_side, index-aligned to `positions`. Empty () means
+    # every row is one-way/net -> 'BOTH' (byte-equivalent). A hedge reconcile fills this with
+    # ('LONG'|'SHORT') per leg so apply_snapshot keys the Account per leg.
+    position_sides: tuple[tuple[str, str], ...] = ()
 
 
 class CryptoExecutionClient:

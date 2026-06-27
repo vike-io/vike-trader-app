@@ -16,6 +16,8 @@ from vike_trader_app.exec.okx.client import OKXSpotExecutionClient
 from vike_trader_app.exec.okx.transport import OKXApiError, okx_public_get, okx_signed_request
 from vike_trader_app.exec.crypto_client import ReconcileSnapshot
 
+_POSSIDE_LABEL = {"long": "LONG", "short": "SHORT"}
+
 
 class OKXPerpExecutionClient(OKXSpotExecutionClient):
     PRODUCT = "perp"
@@ -108,29 +110,32 @@ class OKXPerpExecutionClient(OKXSpotExecutionClient):
     # --- perp reconcile ---
 
     def reconcile_positions(self) -> ReconcileSnapshot:
-        """GET /api/v5/account/positions (instType=SWAP, instId=symbol).
-
-        OKX pos is signed CONTRACTS (long>0, short<0) — NO side lookup. Convert pos->base via ct_val.
-        Returns one signed BASE-asset position for self._symbol with avg_px + mark.
+        """GET /api/v5/account/positions. OKX pos is signed CONTRACTS; convert to base via ct_val.
+        Net: posSide=='net' -> one BOTH leg (byte-equivalent). Hedge: posSide 'long'/'short' rows ->
+        a LONG leg AND a SHORT leg, each signed-base and carrying its position_side.
         """
         data = self.unwrap(self._transport(
             self._base, self.PATH_POSITIONS, "GET",
             {"instType": "SWAP", "instId": self._symbol}, self._signer))
-        signed_base = 0.0
-        avg_px = 0.0
-        mark_px = 0.0
-        for p in data:                                          # unwrap() returns the data list directly
-            if str(p.get("posSide", "net")) != "net":          # net mode only; skip hedge long/short rows
-                continue
-            contracts = float(p.get("pos", 0) or 0)            # already signed — no side lookup
+        legs: list[tuple[str, float, float, float, str]] = []   # (sym, signed_base, avg, mark, side)
+        for p in data:
+            contracts = float(p.get("pos", 0) or 0)             # already signed
             if contracts == 0.0:
                 continue
-            signed_base = self._to_base(contracts)              # contracts → BASE via ct_val
-            avg_px = float(p.get("avgPx", 0) or 0)
-            mark_px = float(p.get("markPx", 0) or 0)
-            break                                               # net: at most one live row per symbol
+            side_lbl = _POSSIDE_LABEL.get(str(p.get("posSide", "net")), "BOTH")
+            legs.append((self._symbol, self._to_base(contracts),
+                         float(p.get("avgPx", 0) or 0),
+                         float(p.get("markPx", 0) or 0),
+                         side_lbl))
+        if not legs:
+            return ReconcileSnapshot(
+                positions=((self._symbol, 0.0),), open_orders=(),
+                position_avg_px=((self._symbol, 0.0),),
+                position_mark_px=((self._symbol, 0.0),))
+        hedge = any(sd != "BOTH" for *_r, sd in legs)
         return ReconcileSnapshot(
-            positions=((self._symbol, signed_base),),
+            positions=tuple((s, q) for s, q, _a, _m, _sd in legs),
             open_orders=(),
-            position_avg_px=((self._symbol, avg_px),),
-            position_mark_px=((self._symbol, mark_px),))
+            position_avg_px=tuple((s, a) for s, _q, a, _m, _sd in legs),
+            position_mark_px=tuple((s, m) for s, _q, _a, m, _sd in legs),
+            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else ())
