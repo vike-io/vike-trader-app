@@ -58,3 +58,16 @@ def consolidate_trades(ticks: list[TradeTick], step_ms: int) -> list[Bar]:
     if cur is not None:
         out.append(Bar(ts=cur, open=o, high=h, low=l, close=c, volume=vol))
     return out
+
+
+def tick_to_bar(tick) -> Bar:
+    """A single tick as a degenerate one-price ``Bar`` for the per-tick engine path.
+
+    Quote tick -> OHLC = mid, carrying bid/ask (so the fill model crosses the real spread).
+    Trade tick -> OHLC = price, volume = size, no bid/ask.
+    """
+    if isinstance(tick, QuoteTick):
+        m = tick.mid
+        return Bar(ts=tick.ts, open=m, high=m, low=m, close=m, volume=0.0, bid=tick.bid, ask=tick.ask)
+    return Bar(ts=tick.ts, open=tick.price, high=tick.price, low=tick.price,
+               close=tick.price, volume=tick.size)

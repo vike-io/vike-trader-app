@@ -14,6 +14,7 @@ from .model import Bar, Position, Trade
 from .fill_model import BarFillModel
 from .orders import Order
 from .timeframe import parse_timeframe, resample
+from .ticks import QuoteTick
 
 _BAR_TS = attrgetter("ts")   # bisect key: higher-TF reads slice a ts-ascending list in O(log n)
 
@@ -199,6 +200,29 @@ class BacktestEngine:
         equity_curve = [self.step(bar, i) for i, bar in enumerate(self.bars)]
         return Result(self.trades, equity_curve, self.equity_now(),
                       intrabar_both_hit=self.intrabar_both_hit)
+
+    def run_ticks(self, ticks) -> Result:
+        """Per-tick run: drive the strategy tick-by-tick (Bar Magnifier + per-tick decisions).
+
+        Shares the bar engine's fill/cost/account core via ``_advance``; ``on_bar`` does NOT fire.
+        Fills resolve in true tick order, so stop-vs-target ordering is exact (no pessimistic guess).
+        """
+        from .consolidator import tick_to_bar
+        curve = [self.step_tick(tick_to_bar(t), t, i) for i, t in enumerate(ticks)]
+        return Result(self.trades, curve, self.equity_now(),
+                      intrabar_both_hit=self.intrabar_both_hit)
+
+    def step_tick(self, event: Bar, tick, i: int) -> float:
+        """Advance by one tick; fill pending BEFORE the handler (no look-ahead), then fire the
+        per-tick handler by tick type. Returns equity after the tick."""
+        self.strategy.index = i
+        self._advance(event)   # no cashflows in tick mode
+        if i >= self.strategy.WARMUP:
+            if isinstance(tick, QuoteTick):
+                self.strategy.on_quote_tick(tick)
+            else:
+                self.strategy.on_trade_tick(tick)
+        return self.equity_now()
 
     def add_live_bar(self, bar: Bar) -> None:
         """Append a live bar to history and refresh higher-TF aggregates (forward mode).
