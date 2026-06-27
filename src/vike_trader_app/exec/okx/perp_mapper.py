@@ -8,9 +8,27 @@ from __future__ import annotations
 import dataclasses
 
 from vike_trader_app.exec.okx.mapper import map_okx_order
-from vike_trader_app.exec.events import FillEvent, OrderFilled, OrderPartiallyFilled
+from vike_trader_app.exec.events import FillEvent, OrderFilled, OrderPartiallyFilled, PositionLiquidated
 
 _POSSIDE_MAP = {"net": "BOTH", "long": "LONG", "short": "SHORT"}
+
+# Full OKX 'category' enum: {normal, twap, adl, full_liquidation, partial_liquidation, delivery, ddh}.
+# Liquidation/ADL = exactly these three; 'delivery' (expiry settlement) and 'ddh' (delta-hedge) are
+# intentionally EXCLUDED — they are not forced liquidations.
+_LIQ_CATEGORIES = {"full_liquidation", "partial_liquidation", "adl"}
+
+
+def _okx_liquidation_event(row: dict, *, venue: str, symbol: str, ct_val: float) -> PositionLiquidated:
+    px_raw = row.get("fillPx") or row.get("px") or 0
+    return PositionLiquidated(
+        venue=venue,
+        symbol=str(row.get("instId", symbol)),
+        position_side=_POSSIDE_MAP.get(str(row.get("posSide", "net")), "BOTH"),
+        qty=float(row.get("fillSz", 0) or 0) * ct_val,   # contracts -> base, same rescale as fills
+        liq_price=float(px_raw or 0),
+        fee=abs(float(row.get("fillFee", 0) or 0)),
+        ts=int(row.get("fillTime") or row.get("uTime") or 0),
+    )
 
 
 def _enrich_perp_okx(events: list[object], row: dict, ct_val: float) -> list[object]:
@@ -64,6 +82,9 @@ def map_okx_perp(frame: dict, *, venue: str = "okx", symbol: str = "", ct_val: f
 
     events: list[object] = []
     for item in frame.get("data", []):
+        if str(item.get("category", "")) in _LIQ_CATEGORIES:
+            events.append(_okx_liquidation_event(item, venue=venue, symbol=symbol, ct_val=ct_val))
+            continue   # liquidation -> PositionLiquidated ONLY; never a FillEvent
         row_events = map_okx_order(item, venue=venue, symbol=symbol)
         events.extend(_enrich_perp_okx(row_events, item, ct_val))
     return events

@@ -10,6 +10,7 @@ Scripted frames — no socket. Tests verify:
   - per-row reject delegates to map_okx_order UNCHANGED
   - non-orders channel -> []
   - event ack frames and non-dict pong -> []
+  - liquidation category rows -> PositionLiquidated ONLY (no FillEvent double-fold)
 """
 from __future__ import annotations
 
@@ -22,6 +23,7 @@ from vike_trader_app.exec.events import (
     OrderFilled,
     OrderPartiallyFilled,
     OrderRejected,
+    PositionLiquidated,
 )
 
 _ct_val = 0.01
@@ -135,3 +137,47 @@ def test_non_orders_channel_empty():
 def test_event_ack_and_pong_empty():
     assert map_okx_perp({"event": "subscribe"}, venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val) == []
     assert map_okx_perp("pong", venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val) == []
+
+
+# ---------------------------------------------------------------------------
+# 2A — liquidation category rows must emit PositionLiquidated ONLY (5e)
+# ---------------------------------------------------------------------------
+
+def test_full_liquidation_emits_liquidation_only():
+    # tradeId POPULATED: the current mapper WOULD emit [FillEvent, OrderFilled] for this row, so the
+    # category branch suppressing it is load-bearing (verified live).
+    evs = map_okx_perp(
+        _orders_frame(category="full_liquidation", fillSz="5", fillPx="60000",
+                      fillFee="-0.5", posSide="net", tradeId="T9"),
+        venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["PositionLiquidated"]
+    ev = evs[0]
+    assert isinstance(ev, PositionLiquidated)
+    assert ev.qty == pytest.approx(0.05)     # 5 contracts × 0.01 (same rescale as fills)
+    assert ev.liq_price == 60000.0
+    assert ev.fee == 0.5                      # abs of fillFee
+    assert ev.position_side == "BOTH"
+    assert not any(isinstance(e, FillEvent) for e in evs)
+
+
+def test_partial_liquidation_emits_liquidation_only():
+    evs = map_okx_perp(_orders_frame(category="partial_liquidation", fillSz="2", fillPx="61000",
+                                     tradeId="T8"),
+                       venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["PositionLiquidated"]
+    assert evs[0].qty == pytest.approx(0.02)
+
+
+def test_adl_emits_liquidation_only_and_posside_maps():
+    evs = map_okx_perp(_orders_frame(category="adl", fillSz="3", posSide="long", tradeId="T7"),
+                       venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["PositionLiquidated"]
+    assert evs[0].position_side == "LONG"
+
+
+def test_normal_category_fill_unchanged():
+    # fill-regression guard: a normal (category='normal') fill row still dual-publishes.
+    evs = map_okx_perp(_orders_frame(category="normal"), venue="okx",
+                       symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["FillEvent", "OrderFilled"]
+    assert evs[1].fill is evs[0]
