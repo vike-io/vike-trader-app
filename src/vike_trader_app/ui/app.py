@@ -91,6 +91,7 @@ _TOOL_ATTR = {"screener": "screener", "journal": "journal", "alerts": "alerts",
               "options": "options", "studio": "studio"}
 _SESSION_PATH = "storage/session.json"  # last-session snapshot (geometry/space/symbol/indicators)
 _ROLLUP_REFRESH_MS = 60_000       # backstop: keep pinned rollups current (incremental, cheap)
+_FUNDING_POLL_MS = 5 * 60 * 1000  # 5e: REST funding poll cadence (~5 min); funding settles ~8h
 _FORWARD_SEED_BARS = 250  # warm-up history pulled before a forward run starts
 _FORWARD_FEE = 0.001
 _FORWARD_CASH = 10_000.0
@@ -357,6 +358,11 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self._live_timer = QtCore.QTimer(self)  # auto-updates the chart for the live symbol
         self._live_timer.timeout.connect(self._live_tick)
+        # 5e: poll REST funding (OKX bills / Bybit transaction-log) on the MAIN thread — the
+        # poller.publish() must run on the single-writer thread (same as LiveExecutionSession._on_report).
+        self._funding_pollers: list[object] = []
+        self._funding_timer = QtCore.QTimer(self)
+        self._funding_timer.timeout.connect(self._funding_tick)
 
         self._rollup_timer = QtCore.QTimer(self)  # keep pinned rollups precomputed (main thread)
         self._rollup_timer.timeout.connect(self._refresh_pinned_tick)
@@ -1915,6 +1921,14 @@ class MainWindow(QtWidgets.QMainWindow):
         # Recorded-run / hand-loaded views still show data — say CACHED, not a bare dot.
         self._set_feed_health("cached" if self._bars else "idle")
 
+    def _funding_tick(self) -> None:
+        """Poll each REST funding poller on the MAIN thread (single-writer); publish on the bus.
+        No-op when no live-exec funding poller is registered."""
+        if self._closing:
+            return
+        for poller in self._funding_pollers:
+            poller.poll()   # synchronous signed GET + main-thread bus.publish (no worker thread)
+
     def _live_tick(self) -> None:
         """Spawn an off-thread fetch of the latest bars for the live symbol (non-blocking).
 
@@ -3236,6 +3250,15 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("bybit", worker)
+            from ..exec.bybit.funding import BybitFundingPoller
+            bybit_funding_poller = BybitFundingPoller(bus=bus, client=client, symbol=client_symbol)
+            self._funding_pollers.append(bybit_funding_poller)
+            # NO opportunistic poll at arm time — that would issue a real signed REST GET on the main
+            # thread the instant a session arms (incl. the offscreen GUI arm-tests that delete
+            # VIKE_DISABLE_LIVE), violating the no-network-in-headless rule. The QTimer does the first
+            # poll within _FUNDING_POLL_MS — negligible vs the ~8h funding cadence.
+            if not os.environ.get("VIKE_DISABLE_LIVE"):
+                self._funding_timer.start(_FUNDING_POLL_MS)
         elif venue == "bybit" and cfg.ws_base_url:
             from ..exec.bybit.user_data import make_bybit_run_core
             from ..ui.private_user_data import PrivateUserDataWorker
@@ -3262,6 +3285,13 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("okx", worker)
+            from ..exec.okx.funding import OkxFundingPoller
+            okx_funding_poller = OkxFundingPoller(bus=bus, client=client, symbol=client_symbol)
+            self._funding_pollers.append(okx_funding_poller)
+            # NO opportunistic poll at arm time (see the bybit arm) — the QTimer does the first poll
+            # within _FUNDING_POLL_MS, keeping the headless arm-tests network-free.
+            if not os.environ.get("VIKE_DISABLE_LIVE"):
+                self._funding_timer.start(_FUNDING_POLL_MS)   # ~ every 5 min; funding settles ~8h
         elif venue == "okx" and cfg.ws_base_url:
             from ..exec.okx.user_data import make_okx_run_core
             from ..ui.private_user_data import PrivateUserDataWorker
@@ -3739,6 +3769,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_exec_session", None) is not None:
             self._exec_session.shutdown()        # live exec workers + LiveOmsHub detach (Phase 3b)
             self._exec_session = None
+        self._funding_pollers = []               # 5e: drop the REST funding pollers (no thread to join)
         self._stop_live_updates()
         if getattr(self, "_live_worker", None) is not None:
             self._live_worker.wait(2000)
@@ -3770,7 +3801,7 @@ class MainWindow(QtWidgets.QMainWindow):
         """Stop every MainWindow QTimer so no tick fires during/after teardown. (The live/forward/hub
         timers are stopped by _stop_live_updates / _stop_forward / _live_hub.shutdown in shutdown.)"""
         for name in ("_rollup_timer", "_timer", "_clock",
-                     "_price_timer", "_refresh_timer"):
+                     "_price_timer", "_refresh_timer", "_funding_timer"):
             t = getattr(self, name, None)
             if t is not None:
                 try:

@@ -13,7 +13,9 @@ Scripted frames — no socket.  Tests verify:
 from __future__ import annotations
 
 from vike_trader_app.exec.bybit.perp_mapper import map_bybit_perp
-from vike_trader_app.exec.events import FillEvent, OrderFilled, OrderPartiallyFilled
+from vike_trader_app.exec.events import (
+    FillEvent, FundingEvent, OrderFilled, OrderPartiallyFilled, PositionLiquidated,
+)
 
 
 def _exec_frame(**over):
@@ -70,8 +72,45 @@ def test_mark_price_none_when_absent():
     assert evs[1].fill is evs[0]
 
 
-def test_non_trade_exectype_dropped():
-    assert map_bybit_perp(_exec_frame(execType="Funding"), venue="bybit", symbol="BTCUSDT") == []
+def test_bust_trade_emits_liquidation_only():
+    evs = map_bybit_perp(
+        _exec_frame(execType="BustTrade", execQty="0.01", execPrice="60000",
+                    execFee="0.5", side="Sell"),
+        venue="bybit", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["PositionLiquidated"]
+    ev = evs[0]
+    assert isinstance(ev, PositionLiquidated)
+    assert ev.qty == 0.01
+    assert ev.liq_price == 60000.0
+    assert ev.fee == 0.5                       # execFee POSITIVE on a non-Trade row (a cost); no flip
+    assert ev.position_side == "BOTH"
+    assert not any(isinstance(e, FillEvent) for e in evs)
+
+
+def test_adl_trade_emits_liquidation_only():
+    evs = map_bybit_perp(_exec_frame(execType="AdlTrade", execQty="0.02", execPrice="61000"),
+                         venue="bybit", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["PositionLiquidated"]
+    assert evs[0].qty == 0.02
+
+
+def test_funding_exectype_not_decoded_on_ws():
+    # The WS 'Funding' row is intentionally DROPPED here — its execFee is the negated cashflow,
+    # so we never decode it. Funding is sourced from /v5/account/transaction-log (1B).
+    assert map_bybit_perp(_exec_frame(execType="Funding", execFee="0.42"),
+                          venue="bybit", symbol="BTCUSDT") == []
+
+
+def test_unknown_exectype_still_dropped():
+    assert map_bybit_perp(_exec_frame(execType="Settle"), venue="bybit", symbol="BTCUSDT") == []
+
+
+def test_normal_trade_row_still_dual_publishes():
+    # fill-regression guard: the existing Trade path is byte-equivalent.
+    evs = map_bybit_perp(_exec_frame(), venue="bybit", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["FillEvent", "OrderFilled"]
+    assert evs[1].fill is evs[0]
+    assert evs[0].mark_price == 65123.4
 
 
 def test_order_topic_delegates_unchanged():

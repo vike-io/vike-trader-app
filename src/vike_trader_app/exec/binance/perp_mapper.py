@@ -7,17 +7,40 @@ from X). On a fill we emit BOTH a bare FillEvent AND the wrapping OrderFilled|Or
 (the dual-publish contract); wrap.fill IS the bare fill object. mark_price stays None (the event
 carries no mark — it arrives from reconcile/mark feed, like Bybit's null-safe behavior). The spot
 binance/mapper.py is NOT edited (byte-identical). Mirrors okx/perp_mapper.py + bybit/perp_mapper.py.
+
+ACCOUNT_UPDATE with m=='FUNDING_FEE': emit one FundingEvent per non-zero 'bc' balance row.
+  Key off a['B'], NEVER a['P'] (cross-margin FUNDING_FEE has no a['P']).
+  bc is received-positive (+received / -paid) — pass through with no sign flip.
+x=='TRADE' with autoclose- clientOrderId: emit PositionLiquidated ONLY (suppresses FillEvent to
+  prevent double-fold in apply_liquidation).
 """
 from __future__ import annotations
 
 from vike_trader_app.exec.events import (
-    FillEvent, OrderAccepted, OrderCanceled, OrderExpired, OrderFilled, OrderPartiallyFilled,
+    FillEvent, FundingEvent, OrderAccepted, OrderCanceled, OrderExpired,
+    OrderFilled, OrderPartiallyFilled, PositionLiquidated,
 )
+
+_LIQ_COID_PREFIXES = ("autoclose-", "adl_autoclose", "settlement_autoclose-")
 
 
 def map_binance_perp(frame, *, venue: str = "binance", symbol: str = "") -> list[object]:
     if not isinstance(frame, dict):
         return []
+    if frame.get("e") == "ACCOUNT_UPDATE":
+        a = frame.get("a") or {}
+        if a.get("m") != "FUNDING_FEE":
+            return []                                  # ORDER/ADJUSTMENT/... -> fill-driven, ignore
+        ts = int(frame.get("T", 0) or 0)
+        out: list[object] = []
+        for b in a.get("B", []):
+            bc = float(b.get("bc", 0) or 0)
+            if bc == 0.0:
+                continue
+            out.append(FundingEvent(
+                venue=venue, symbol=symbol, position_side="BOTH",
+                funding_rate=0.0, amount=bc, mark_price=None, ts=ts))
+        return out
     if frame.get("e") != "ORDER_TRADE_UPDATE":
         return []
     o = frame.get("o")
@@ -35,6 +58,16 @@ def map_binance_perp(frame, *, venue: str = "binance", symbol: str = "") -> list
     if x == "EXPIRED":
         return [OrderExpired(client_order_id=coid, ts=ts)]
     if x == "TRADE":
+        if str(o.get("c", "")).startswith(_LIQ_COID_PREFIXES):
+            return [PositionLiquidated(
+                venue=venue,
+                symbol=str(o.get("s", symbol) or symbol),
+                position_side=str(o.get("ps", "BOTH")),
+                qty=float(o.get("l", 0) or 0),
+                liq_price=float(o.get("L", 0) or 0),
+                fee=float(o.get("n", 0) or 0),
+                ts=ts,
+            )]                                          # liquidation -> PositionLiquidated ONLY
         fill = FillEvent(
             trade_id=str(o.get("t", "")),
             client_order_id=coid,
