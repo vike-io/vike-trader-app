@@ -70,7 +70,7 @@ from vike_trader_app.exec.okx.mapper import map_okx_order, map_okx_private  # no
 # ---------------------------------------------------------------------------
 
 def test_buy_fill_full():
-    """Full buy fill: [FillEvent, OrderFilled] with correct field values including ABS commission."""
+    """Full buy fill: [FillEvent, OrderFilled] with correct field values including SIGNED commission."""
     row = _order_row(
         side="buy",
         state="filled",
@@ -97,7 +97,7 @@ def test_buy_fill_full():
     assert fill.side == +1
     assert fill.last_qty == 0.001
     assert fill.last_px == 50000.0
-    assert fill.commission == 0.05           # ABS of negative fillFee
+    assert fill.commission == 0.05           # -fillFee: -(-0.05) = 0.05 (positive cost)
     assert fill.liquidity_side == "taker"   # execType='T' -> taker
     # Wrap correctness: client_order_id matches; .fill IS the same FillEvent object
     assert wrap.client_order_id == "coid-1"
@@ -319,8 +319,8 @@ def test_orders_channel_dispatches_to_map_okx_order():
     assert isinstance(result[1], OrderFilled)
 
 
-def test_commission_abs_sign():
-    """fillFee is negative from OKX; FillEvent.commission must be positive (abs value)."""
+def test_commission_signed_charge():
+    """fillFee<0 from OKX (taker charge); FillEvent.commission must be positive (cost) via -fillFee."""
     row = _order_row(fillFee="-1.23", fillSz="0.001", tradeId="Tabc", accFillSz="0.001", sz="0.001")
     result = map_okx_order(row, venue="okx", symbol="BTC-USDT")
     fill = result[0]
