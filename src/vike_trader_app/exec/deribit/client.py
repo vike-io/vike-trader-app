@@ -98,3 +98,16 @@ class DeribitExecutionClient:
         """6a: empty snapshot (no creds/socket yet). 6d iterates private/get_positions(currency,
         kind='option') + private/get_open_orders_by_currency into positions/open_orders."""
         return ReconcileSnapshot()
+
+    def detach(self) -> None:
+        """Close the live order transport (the persistent authed order WS) on teardown.
+
+        LiveOmsHub.shutdown() (live_oms.py:117) calls getattr(client, 'detach', None)() — Deribit is the
+        FIRST client to use this dormant, pre-wired hook. Tolerant of a transport with no close() (the 6a
+        fake injected in unit tests has none): only calls close() if it's callable. Runs on the MAIN
+        thread AFTER the fill worker is stop()+wait()-joined (LiveExecutionSession.shutdown), so the
+        socket close is bounded + race-free (0xC0000409-safe)."""
+        transport = getattr(self, "_transport", None)
+        close = getattr(transport, "close", None)
+        if callable(close):
+            close()
