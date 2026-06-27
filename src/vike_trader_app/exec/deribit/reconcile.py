@@ -2,9 +2,10 @@
 unit-tested). 6d's connect() calls private/get_positions + private/get_open_orders_by_instrument over
 the authed transport and hands the two result LISTs here.
 
-KEY DIVERGENCE from the crypto perps: Deribit get_positions `size` is an UNSIGNED magnitude and
-`direction` ('buy'/'sell'/'zero') is a SEPARATE field — NOT a pre-signed `pos`/`positionAmt` like
-OKX/Binance. We apply the sign here. size/avg/mark are COIN units for options (no ct_val rescale).
+LIKE Binance positionAmt: Deribit get_positions `size` is ALREADY SIGNED (negative=short,
+positive=long); `direction` ('buy'/'sell'/'zero') is a redundant companion we read ONLY for the flat
+guard — NOT for the sign (re-signing it would invert every short). size/avg/mark are COIN units for
+options (no ct_val rescale).
 
 Options are ONE-WAY: a single row per instrument, position_side='BOTH' -> position_sides left ()
 (byte-equivalent default). The result is filtered to the armed `symbol` (the hub is per-instrument and
@@ -36,17 +37,18 @@ def _numeric_or_none(value) -> float | None:
 
 
 def _build_positions(positions_result, symbol: str):
-    """Filter to `symbol`, sign size by direction, drop zero/flat rows. Returns the live leg tuple
-    (signed_size, avg_px, mark_px) or None when flat."""
+    """Filter to `symbol`, read the ALREADY-SIGNED size, drop zero/flat rows. Returns the live leg
+    tuple (signed_size, avg_px, mark_px) or None when flat."""
     for row in positions_result or ():
         if str(row.get("instrument_name", "")) != symbol:
             continue
         direction = str(row.get("direction", ""))
+        # Deribit `size` is already signed (negative=short, positive=long); `direction` is redundant.
+        # Read size DIRECTLY — re-signing by direction inverts shorts. `direction`=='zero' guards flat.
         size = float(row.get("size", 0) or 0)
         if direction == "zero" or size == 0.0:
             continue
-        signed = size if direction == "buy" else -size
-        return (signed,
+        return (size,
                 float(row.get("average_price", 0) or 0),
                 float(row.get("mark_price", 0) or 0))
     return None

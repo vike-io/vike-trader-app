@@ -86,3 +86,6 @@ logs/
 
 CLAUDE.md
 
+
+# graphify code-knowledge-graph artifacts (local, machine-specific — never commit)
+graphify-out/

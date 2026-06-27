@@ -23,8 +23,9 @@ def test_long_position_signed_positive():
 
 
 def test_short_position_signed_negative():
-    """size is UNSIGNED; direction=='sell' makes it negative (the #1 trap)."""
-    pos = [{"instrument_name": _SYM, "direction": "sell", "size": 3.0,
+    """Deribit `size` is ALREADY SIGNED — a real short sends size=-3.0 (NOT a positive magnitude).
+    Read it directly; do NOT re-sign by direction or every short inverts to a long (the #1 trap)."""
+    pos = [{"instrument_name": _SYM, "direction": "sell", "size": -3.0,
             "average_price": 0.04, "mark_price": 0.038}]
     snap = build_reconcile_snapshot(pos, [], _SYM)
     assert snap.positions == ((_SYM, -3.0),)
