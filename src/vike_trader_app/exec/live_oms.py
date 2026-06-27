@@ -50,6 +50,7 @@ class LiveOmsHub:
         self._trading_state = TradingState.ACTIVE
         self._seen_trade_ids: set[str] = set()
         self._seen_fsm_trade_ids: set[str] = set()
+        self._seen_liq_ids: set[str] = set()
         self.bus.subscribe(self._on_event)
 
     def submit_ticket(self, request: OrderRequest) -> None:
@@ -157,6 +158,13 @@ class LiveOmsHub:
         if isinstance(event, PositionLiquidated):
             if event.symbol != self.symbol:
                 return
+            # Liquidation dedup: a WS reconnect can replay a partial liq frame. Mirror the FillEvent
+            # _seen_trade_ids guard (above) — an empty trade_id skips dedup and always applies (the
+            # legacy whole-flatten path), a distinct id closes its own clamped qty exactly once.
+            if event.trade_id:
+                if event.trade_id in self._seen_liq_ids:
+                    return  # reconnect replay — drop
+                self._seen_liq_ids.add(event.trade_id)
             self.account.apply_liquidation(event)
             coid = self._coid_for_position(event)
             if coid is not None:

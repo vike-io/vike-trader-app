@@ -105,6 +105,46 @@ def test_apply_liquidation_noop_when_flat():
     assert acc.balance == 0.0      # TRUE no-op: no fee when there is nothing to liquidate
 
 
+def test_apply_liquidation_partial_closes_only_ev_qty():
+    """A partial liquidation closes only ev.qty and leaves the residual at the same cost basis."""
+    acc = Account()
+    acc.apply_fill(_fill(+1, 2.0, 100.0))          # long 2 @ 100
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=1.0, liq_price=60.0, fee=0.5, trade_id="p1"))
+    # only 1.0 closed: realized (60-100)*1 = -40 ; residual long 1.0 @ 100 ; fee -0.5
+    assert acc.realized_pnl == -40.0
+    assert acc.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 1.0
+    assert acc.positions[("binance", "BTCUSDT", "BOTH")]["avg_px"] == 100.0
+    assert acc.balance == -0.5
+
+
+def test_apply_liquidation_two_partials_sum_to_full():
+    """Two distinct partials summing to the held size flatten it; each realizes + charges its own fee."""
+    acc = Account()
+    acc.apply_fill(_fill(+1, 2.0, 100.0))          # long 2 @ 100
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=1.0, liq_price=60.0, fee=0.5, trade_id="p1"))
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=1.0, liq_price=60.0, fee=0.5, trade_id="p2"))
+    assert acc.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.0
+    assert acc.realized_pnl == -80.0               # -40 + -40
+    assert acc.balance == -1.0                     # 0.5 per partial, twice
+
+
+def test_apply_liquidation_qty_exceeds_size_clamps_to_held():
+    """An over-reported qty (> held) clamps to the held size — never flips the position negative."""
+    acc = Account()
+    acc.apply_fill(_fill(+1, 1.0, 100.0))          # long 1 @ 100
+    acc.apply_liquidation(PositionLiquidated(
+        venue="binance", symbol="BTCUSDT", position_side="BOTH",
+        qty=5.0, liq_price=60.0, fee=0.0, trade_id="big"))
+    assert acc.positions[("binance", "BTCUSDT", "BOTH")]["size"] == 0.0  # flat, not -4
+    assert acc.realized_pnl == -40.0
+
+
 def test_apply_liquidation_replay_does_not_double_charge_fee():
     """A reconnect-replayed PositionLiquidated must not deduct the fee (or realize PnL) twice."""
     acc = Account()

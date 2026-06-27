@@ -63,17 +63,23 @@ class Account:
         self.funding_paid += ev.amount
 
     def apply_liquidation(self, ev: "PositionLiquidated") -> None:
-        """Forced close: realize PnL at the liq price, flatten the position, deduct the liq fee.
+        """Forced close: realize PnL at the liq price, close min(ev.qty, held), deduct the liq fee.
 
-        Idempotent — a no-op if the keyed position is already flat/absent (replayed liquidation).
+        Closes only the venue-reported quantity (``ev.qty``); the residual keeps its cost basis. When
+        ``ev.qty`` is falsy (legacy whole-flatten callers / one-way full closes that omit qty) the WHOLE
+        held size is closed — byte-equivalent to the pre-5g-1 behavior. ``ev.qty`` is clamped to the held
+        size so an over-reported frame can never flip the position. Idempotent on a flat position (a
+        same-object replay of a FULL close no-ops via the early return); replay safety for PARTIALs lives
+        in LiveOmsHub._seen_liq_ids, mirroring FillEvent's _seen_trade_ids (the Account has no dedup layer).
         """
         key = (ev.venue, ev.symbol, ev.position_side)
         pos = self.positions.get(key)
         if pos is None or pos["size"] == 0.0:
-            return   # true no-op: nothing to liquidate (idempotent on a replayed liquidation —
+            return   # true no-op: nothing to liquidate (idempotent on a replayed FULL close —
             # the fee was already deducted on the real close; deducting it here would double-charge)
         close_side = -1 if pos["size"] > 0.0 else 1      # close on the opposite side
-        out = compute_fill(pos["size"], pos["avg_px"], close_side, abs(pos["size"]),
+        close_qty = min(abs(ev.qty), abs(pos["size"])) if ev.qty else abs(pos["size"])
+        out = compute_fill(pos["size"], pos["avg_px"], close_side, close_qty,
                            ev.liq_price, self.multiplier)
         self.positions[key] = {"size": out.new_size, "avg_px": out.new_avg_px}
         if out.closing_qty > 0.0:
