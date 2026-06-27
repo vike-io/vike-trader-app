@@ -54,7 +54,7 @@ def _frame(rows: list[dict], channel: str = "user.trades.option.BTC.raw") -> dic
 # ---------------------------------------------------------------------------
 
 def test_buy_fill_full():
-    """Full taker buy fill: [FillEvent, OrderFilled] with correct fields including ABS commission."""
+    """Full taker buy fill: [FillEvent, OrderFilled] with correct fields including SIGNED commission."""
     result = map_deribit_trade(_trade(), venue="deribit", symbol="BTC-25SEP20-9000-C")
     assert len(result) == 2
     fill, wrap = result
@@ -88,13 +88,17 @@ def test_sell_maker_fill():
     assert isinstance(wrap, OrderFilled)
 
 
-def test_negative_fee_is_abs_commission():
-    """Deribit fee can be NEGATIVE (maker rebate); commission must be positive (abs)."""
+def test_negative_fee_is_negative_commission():
+    """Deribit fee can be NEGATIVE (maker rebate); commission must be NEGATIVE (income/rebate).
+
+    Previously this test asserted abs(fee) = positive, which encoded the bug.
+    Fixed: commission is now SIGNED — fee<0 stays negative (maker rebate).
+    """
     result = map_deribit_trade(
         _trade(fee=-2.1e-7, trade_id="T3"), venue="deribit", symbol="BTC-25SEP20-9000-C",
     )
     fill = result[0]
-    assert fill.commission == pytest.approx(2.1e-7)
+    assert fill.commission == pytest.approx(-2.1e-7)
 
 
 def test_open_state_is_partial():

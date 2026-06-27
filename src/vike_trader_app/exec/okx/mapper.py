@@ -15,7 +15,8 @@ Output contract (mirrors bybit/mapper.map_execution EXACTLY for fill rows):
       state in ('filled','partially_filled')  -> []  (fill already folded via tradeId dedup)
   per-row code not in ('','0')               -> [OrderRejected(reason=msg)]
 
-Commission: OKX fillFee is NEGATIVE for a charge; FillEvent.commission is positive (abs value).
+Commission: OKX fillFee is NEGATIVE for a charge; FillEvent.commission is SIGNED (>0 = charge/cost,
+<0 = maker rebate/income). Implemented as -fillFee so a negative fillFee becomes positive cost.
 Side: +1 for 'buy', -1 for 'sell'. Symbol: item.get('instId', symbol) — hub guards filtering.
 """
 
@@ -66,7 +67,7 @@ def map_okx_order(item: dict, *, venue: str, symbol: str) -> list[object]:
             side=+1 if item.get("side") == "buy" else -1,
             last_qty=float(item["fillSz"]),
             last_px=float(item["fillPx"]),
-            commission=abs(float(item.get("fillFee") or 0)),
+            commission=-float(item.get("fillFee") or 0),   # OKX fillFee<0 = charge -> positive cost; >0 = rebate -> negative
             liquidity_side="maker" if item.get("execType") == "M" else "taker",
             ts=ts,
         )

@@ -15,7 +15,8 @@ Terminality: is_filled = (trade['state'] == 'filled'). user.trades carries no cu
 OKX/Bybit accFillSz>=sz fallback is N/A — state=='filled' is the sole signal; an intermediate partial
 reads state=='open' -> OrderPartiallyFilled (the FSM tolerates a missing-terminal; apply is idempotent).
 
-Commission: Deribit 'fee' can be NEGATIVE (maker rebate); FillEvent.commission is the abs value.
+Commission: Deribit 'fee' is SIGNED (>0 = taker charge, <0 = maker rebate); FillEvent.commission
+carries the value unchanged (SIGNED: >0 = charge/cost, <0 = maker rebate/income).
 Side: +1 for 'buy', -1 for 'sell'. Symbol: item.get('instrument_name', symbol) — hub guards filtering.
 client_order_id = item.get('label', '') (Deribit 'label' IS the client order id; tolerate absence).
 Options are one-way -> position_side stays the default 'BOTH' (spot-identical; no perp_mapper variant).
@@ -39,7 +40,7 @@ def map_deribit_trade(item: dict, *, venue: str, symbol: str) -> list[object]:
         side=+1 if item.get("direction") == "buy" else -1,
         last_qty=float(item.get("amount", 0) or 0),          # COIN units (options) — no rescale
         last_px=float(item.get("price", 0) or 0),
-        commission=abs(float(item.get("fee", 0) or 0)),      # fee can be negative (maker rebate)
+        commission=float(item.get("fee", 0) or 0),           # SIGNED: fee>0 charge, fee<0 maker rebate (kept)
         liquidity_side="maker" if item.get("liquidity") == "M" else "taker",
         ts=ts,
     )
