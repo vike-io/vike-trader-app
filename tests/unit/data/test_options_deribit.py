@@ -88,3 +88,20 @@ def test_build_chain_from_summary_groups_and_enriches():
     assert row.call.bid == 0.05 * 104000.0 and row.call.mark == 0.055 * 104000.0
     assert row.call.delta is not None                          # greeks enriched from IV
     assert chain.rows[1].put is None                           # only a call at 110000
+
+
+def test_chain_carries_exact_instrument_name():
+    """6e: instrument_name is threaded through verbatim so the arm path can use the exact id."""
+    chain = build_chain_from_summary("BTC", _summary(), "2026-06-27", _ms(2026, 6, 2))
+    assert chain.rows[0].call.instrument_name == "BTC-27JUN26-100000-C"
+    assert chain.rows[0].put.instrument_name == "BTC-27JUN26-100000-P"
+    # A strike-only row (no put) still carries the call name
+    assert chain.rows[1].call.instrument_name == "BTC-27JUN26-110000-C"
+
+
+def test_sol_chain_carries_usdc_settlement_name():
+    """6e: the _USDC suffix must survive verbatim (it is NOT reconstructable from parsed fields)."""
+    chain = build_chain_from_summary(
+        "SOL", _usdc_summary(), "2026-06-26", _ms(2026, 6, 2), usd_quoted=True)
+    assert chain.rows[0].put.instrument_name == "SOL_USDC-26JUN26-90-P"
+    assert chain.rows[0].call.instrument_name == "SOL_USDC-26JUN26-90-C"
