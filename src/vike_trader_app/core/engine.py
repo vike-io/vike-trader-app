@@ -12,7 +12,7 @@ from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .model import Bar, Position, Trade
 from .fill_model import BarFillModel
-from .orders import Order, order_fill_price
+from .orders import Order
 from .timeframe import parse_timeframe, resample
 
 _BAR_TS = attrgetter("ts")   # bisect key: higher-TF reads slice a ts-ascending list in O(log n)
