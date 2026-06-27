@@ -181,3 +181,24 @@ def test_normal_category_fill_unchanged():
                        symbol="BTC-USDT-SWAP", ct_val=_ct_val)
     assert [type(e).__name__ for e in evs] == ["FillEvent", "OrderFilled"]
     assert evs[1].fill is evs[0]
+
+
+def test_liq_category_on_nonfill_lifecycle_frame_does_not_liquidate():
+    # REGRESSION (whole-branch review, CRITICAL): OKX pushes `category` on EVERY orders frame,
+    # INCLUDING the non-fill placement (state='live', fillSz='0', tradeId='') and cancel of a
+    # liquidation order. Without the has_fill gate, that frame built PositionLiquidated(qty=0,
+    # liq_price=0) and apply_liquidation (which ignores ev.qty) flattened the WHOLE book at price 0.
+    # A non-fill liq-category frame MUST fall through to its normal lifecycle event, never liquidate.
+    live = map_okx_perp(
+        _orders_frame(category="full_liquidation", state="live", fillSz="0", tradeId="",
+                      clOrdId="c-liq", ordId="L9"),
+        venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert not any(isinstance(e, PositionLiquidated) for e in live)
+    assert [type(e).__name__ for e in live] == ["OrderAccepted"]
+    assert live[0].venue_order_id == "L9"
+    # A canceled liquidation-order frame (no fill) likewise must not flatten the book.
+    canceled = map_okx_perp(
+        _orders_frame(category="full_liquidation", state="canceled", fillSz="0", tradeId="",
+                      clOrdId="c-liq"),
+        venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert not any(isinstance(e, PositionLiquidated) for e in canceled)

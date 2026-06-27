@@ -82,9 +82,17 @@ def map_okx_perp(frame: dict, *, venue: str = "okx", symbol: str = "", ct_val: f
 
     events: list[object] = []
     for item in frame.get("data", []):
-        if str(item.get("category", "")) in _LIQ_CATEGORIES:
+        # OKX pushes `category` on EVERY orders-channel frame — INCLUDING non-fill lifecycle frames
+        # (state=='live' placement, state in {canceled,mmp_canceled}), which carry fillSz=''/tradeId=''.
+        # Only a real liquidation FILL (gated on the SAME has_fill map_okx_order uses) becomes a
+        # PositionLiquidated; a non-fill liq-category frame MUST fall through to its normal
+        # OrderAccepted/OrderCanceled lifecycle — else _okx_liquidation_event would build qty=0 /
+        # liq_price=0 and apply_liquidation (which ignores ev.qty) would flatten the WHOLE book at 0.
+        fill_sz_raw = str(item.get("fillSz") or "0")
+        has_fill = fill_sz_raw not in ("", "0") and bool(item.get("tradeId"))
+        if has_fill and str(item.get("category", "")) in _LIQ_CATEGORIES:
             events.append(_okx_liquidation_event(item, venue=venue, symbol=symbol, ct_val=ct_val))
-            continue   # liquidation -> PositionLiquidated ONLY; never a FillEvent
+            continue   # liquidation FILL -> PositionLiquidated ONLY; never a FillEvent
         row_events = map_okx_order(item, venue=venue, symbol=symbol)
         events.extend(_enrich_perp_okx(row_events, item, ct_val))
     return events

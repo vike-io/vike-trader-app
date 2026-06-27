@@ -3253,7 +3253,10 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.bybit.funding import BybitFundingPoller
             bybit_funding_poller = BybitFundingPoller(bus=bus, client=client, symbol=client_symbol)
             self._funding_pollers.append(bybit_funding_poller)
-            bybit_funding_poller.poll()  # opportunistic first poll on connect (main thread)
+            # NO opportunistic poll at arm time — that would issue a real signed REST GET on the main
+            # thread the instant a session arms (incl. the offscreen GUI arm-tests that delete
+            # VIKE_DISABLE_LIVE), violating the no-network-in-headless rule. The QTimer does the first
+            # poll within _FUNDING_POLL_MS — negligible vs the ~8h funding cadence.
             if not os.environ.get("VIKE_DISABLE_LIVE"):
                 self._funding_timer.start(_FUNDING_POLL_MS)
         elif venue == "bybit" and cfg.ws_base_url:
@@ -3285,7 +3288,8 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.okx.funding import OkxFundingPoller
             okx_funding_poller = OkxFundingPoller(bus=bus, client=client, symbol=client_symbol)
             self._funding_pollers.append(okx_funding_poller)
-            okx_funding_poller.poll()  # opportunistic first poll on connect (main thread)
+            # NO opportunistic poll at arm time (see the bybit arm) — the QTimer does the first poll
+            # within _FUNDING_POLL_MS, keeping the headless arm-tests network-free.
             if not os.environ.get("VIKE_DISABLE_LIVE"):
                 self._funding_timer.start(_FUNDING_POLL_MS)   # ~ every 5 min; funding settles ~8h
         elif venue == "okx" and cfg.ws_base_url:
