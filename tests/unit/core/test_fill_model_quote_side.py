@@ -27,7 +27,8 @@ def test_sell_stop_triggers_on_bid():
     assert M.fill_price(Order("stop", -1, 1.0, price=10.00), _q(10.05, 10.07)) is None  # bid>stop
 
 
-def test_consolidated_bar_delegates_unchanged():
-    # high != low -> NOT a single tick -> Slice-1 path (order_fill_price): market fills at open.
+def test_consolidated_bar_market_crosses_resting_delegates():
     cbar = Bar(ts=0, open=10.0, high=11.0, low=9.0, close=10.5, bid=9.99, ask=10.01)
-    assert M.fill_price(Order("market", +1, 1.0), cbar) == 10.0   # bar.open, not ask
+    assert M.fill_price(Order("market", +1, 1.0), cbar) == 10.01          # market still crosses spread
+    # a resting limit delegates to order_fill_price (mid/OHLC), NOT quote-side, on a consolidated bar
+    assert M.fill_price(Order("limit", +1, 1.0, price=9.5), cbar) == 9.5  # buy limit @9.5: low(9)<=9.5 -> 9.5
