@@ -33,3 +33,17 @@ def build_refresh_token_auth(*, refresh_token: str, rpc_id: int) -> dict:
         "method": "public/auth",
         "params": {"grant_type": "refresh_token", "refresh_token": refresh_token},
     }
+
+
+def build_private_subscribe(*, channels: list[str], rpc_id: int) -> dict:
+    """Build the private/subscribe frame for the authed socket's user channels.
+
+    On Deribit the subscription is bound to the AUTHENTICATED socket; a later refresh_token renews
+    the session in place WITHOUT re-subscribing. Safe to log (carries no creds — only channel names).
+    """
+    return {
+        "jsonrpc": "2.0",
+        "id": rpc_id,
+        "method": "private/subscribe",
+        "params": {"channels": list(channels)},
+    }
