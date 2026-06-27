@@ -1358,6 +1358,27 @@ class MainWindow(QtWidgets.QMainWindow):
                                       ("calendar", "Calendar", "calendar"), ("options", "Options", "options")):
             self.topbar.add_launcher(icon_name, f"{label} window",
                                      lambda *_a, k=key: self.open_tool(k))
+        # Task 5 — ExecArmBar: venue/product/env/leverage selectors + Arm/Disarm.
+        # The widget is thin; armRequested emits None and MainWindow resolves the spec with the live
+        # symbol. _restore_arm_selection restores the saved selection only (never auto-arms).
+        from .exec_arm import ExecArmBar
+        self.exec_arm = ExecArmBar()
+        self.exec_arm.armRequested.connect(
+            lambda _=None: self._on_arm_requested(
+                self.exec_arm.current_spec(self._symbol)
+            )
+        )
+        self.exec_arm.disarmRequested.connect(self._on_disarm_requested)
+        self._restore_arm_selection()   # QSettings restore — NEVER auto-arms
+        # Mount the arm bar as an always-visible top toolbar — the production surface that finally
+        # makes live exec user-reachable (it was env-var-only). NOT the lazily-re-parented Studio
+        # strip: exec-arm is a GLOBAL control. setMovable(False) keeps it stable below the title bar.
+        self._exec_toolbar = QtWidgets.QToolBar("Execution", self)
+        self._exec_toolbar.setObjectName("exec_arm_toolbar")
+        self._exec_toolbar.setMovable(False)
+        self._exec_toolbar.addWidget(self.exec_arm)
+        self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, self._exec_toolbar)
+
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -3372,6 +3393,92 @@ class MainWindow(QtWidgets.QMainWindow):
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("binance", worker)
         return True
+
+    # ------------------------------------------------------------------
+    # Task 5 — ExecArmBar call sites
+    # ------------------------------------------------------------------
+
+    def _on_arm_requested(self, spec) -> bool:
+        """Production call site: called when the user clicks Arm in ExecArmBar.
+
+        If a session is already armed, ignores the request (Disarm first). Otherwise
+        persists the non-secret selection, starts live exec and updates the feed badge.
+        Returns True when a LiveExecutionSession was successfully built.
+        """
+        if getattr(self, "_exec_session", None) is not None:
+            return True                      # already armed — ignore (Disarm first)
+        self._persist_arm_selection(spec)    # QSettings (non-secret only)
+        ok = self._maybe_start_live_exec(spec=spec)
+        if ok:
+            self._refresh_feed_badge_for_exec(spec)
+        return ok
+
+    def _on_disarm_requested(self) -> None:
+        """Tear down the live-exec session cleanly.
+
+        Stops the funding timer and clears the pollers list so _funding_tick no longer
+        fires signed REST GETs against a detached client/bus. Re-arming after a disarm
+        is safe: _maybe_start_live_exec restarts the timer on the next arm.
+        """
+        sess = getattr(self, "_exec_session", None)
+        if sess is not None:
+            sess.shutdown()
+            self._exec_session = None
+        # Stop the funding timer and clear pollers so _funding_tick no longer fires
+        # synchronous signed REST GETs against a now-detached client/bus (live network
+        # after teardown).  Mirrors the cleanup done in shutdown() / _stop_all_timers().
+        self._funding_timer.stop()
+        self._funding_pollers = []
+        self._update_feed_health()           # back to CACHED/LIVE data-feed badge
+
+    def _refresh_feed_badge_for_exec(self, spec) -> None:
+        """Update the status-bar feed badge to show the armed venue, product and leverage."""
+        suffix = f" · PERP {int(spec.leverage)}x" if spec.product == "perp" else " · SPOT"
+        warn = spec.environment == "MAINNET"
+        self._feed_badge.setText(
+            f"● {spec.venue.upper()}{suffix} · {spec.environment}"
+        )
+        # reuse theme.DOWN accent for MAINNET warning; theme.UP for DEMO
+        # (do NOT edit theme.py — constraint from the project guide)
+        self._feed_badge.setStyleSheet(
+            f"color: {theme.DOWN if warn else theme.UP};"
+            f"font-size:10px;background:transparent;border:none;"
+            f"padding:3px 6px;margin-right:6px;"
+        )
+
+    def _persist_arm_selection(self, spec) -> None:
+        """Write the non-secret exec selector state to QSettings.
+
+        Saved: venue / product / environment / leverage.
+        NEVER written: api_key / secret / passphrase — creds live in .env via load_credentials.
+        """
+        from PySide6 import QtCore
+        s = QtCore.QSettings("vike", "trader")
+        s.setValue("exec/venue", spec.venue)
+        s.setValue("exec/product", spec.product)
+        s.setValue("exec/environment", spec.environment)
+        s.setValue("exec/leverage", spec.leverage)
+
+    def _restore_arm_selection(self) -> None:
+        """Restore saved exec selector state into exec_arm combos.
+
+        Restores the SELECTION only — never calls _on_arm_requested (no auto-arm at launch).
+        """
+        from PySide6 import QtCore
+        s = QtCore.QSettings("vike", "trader")
+        v = s.value("exec/venue")
+        if not v:
+            return
+        product_raw = str(s.value("exec/product", "Spot"))
+        # Normalize to title-case for the combo ("spot"/"perp" -> "Spot"/"Perp")
+        product = product_raw.capitalize()
+        self.exec_arm.set_selection(
+            venue=str(v),
+            product=product,
+            environment=str(s.value("exec/environment", "DEMO")),
+            leverage=int(float(s.value("exec/leverage", 1))),
+        )
+        # restore selection ONLY — never call _on_arm_requested here (no auto-arm at launch).
 
     def showEvent(self, event):  # noqa: N802 - Qt override
         super().showEvent(event)
