@@ -45,6 +45,11 @@ BINANCE_MAINNET_FAPI_REST = "https://fapi.binance.com"
 BINANCE_DEMO_FAPI_WS_DEFAULT = "wss://fstream.binancefuture.com/ws"
 BINANCE_MAINNET_FAPI_WS_DEFAULT = "wss://fstream.binance.com/ws"
 
+DERIBIT_MAINNET_WS = "wss://www.deribit.com/ws/api/v2"
+DERIBIT_TESTNET_WS = "wss://test.deribit.com/ws/api/v2"
+DERIBIT_MAINNET_REST = "https://www.deribit.com"
+DERIBIT_TESTNET_REST = "https://test.deribit.com"
+
 
 def binance_fapi_rest(env: Environment) -> str:
     """Return the env-overridable fapi REST base URL for the given Environment."""
@@ -67,7 +72,7 @@ class VenueConfig:
     rest_base_url: str
     ws_base_url: str
     credentials: Credentials
-    signer: object
+    signer: object | None = None
 
 
 def _resolve_binance(venue: str, env: Environment, creds: Credentials,
@@ -110,7 +115,20 @@ def _resolve_okx(venue: str, env: Environment, creds: Credentials,
                        credentials=creds, signer=signer)
 
 
-_VENUE_BUILDERS = {"binance": _resolve_binance, "bybit": _resolve_bybit, "okx": _resolve_okx}
+def _resolve_deribit(venue: str, env: Environment, creds: Credentials,
+                     now_ms: Callable[[], int]) -> VenueConfig:
+    if env is Environment.MAINNET:
+        rest = os.environ.get("DERIBIT_MAINNET_REST_URL") or DERIBIT_MAINNET_REST
+        ws = os.environ.get("DERIBIT_MAINNET_WS_URL") or DERIBIT_MAINNET_WS
+    else:
+        rest = os.environ.get("DERIBIT_TESTNET_REST_URL") or DERIBIT_TESTNET_REST
+        ws = os.environ.get("DERIBIT_TESTNET_WS_URL") or DERIBIT_TESTNET_WS
+    return VenueConfig(venue=venue, environment=env, rest_base_url=rest, ws_base_url=ws,
+                       credentials=creds, signer=None)
+
+
+_VENUE_BUILDERS = {"binance": _resolve_binance, "bybit": _resolve_bybit, "okx": _resolve_okx,
+                   "deribit": _resolve_deribit}
 
 
 def resolve_venue_config(venue: str, env: Environment, *, now_ms: Callable[[], int],
