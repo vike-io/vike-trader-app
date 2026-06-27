@@ -3,8 +3,9 @@
 A pure, Qt-free subscriber. ``apply_fill`` reproduces ``core.engine.BacktestEngine._apply_fill``'s
 position branches (open / add-same-direction averaged cost / reduce / close-and-flip) so the realized
 PnL on each closing portion — ``(price - avg_px) * (sign * closing) * multiplier`` — equals the
-engine's ``Trade.pnl`` exactly (gross price PnL; commissions are carried on the FillEvent, not netted
-here, mirroring the engine). Positions are keyed ``(venue, symbol, position_side)`` with
+engine's ``Trade.pnl`` exactly (GROSS price PnL). The SIGNED ``FillEvent.commission`` (>0 charge /
+<0 maker rebate) is netted into ``balance`` (and tracked in ``fees_paid``), NOT into the gross
+``realized_pnl`` — see ``apply_fill``. Positions are keyed ``(venue, symbol, position_side)`` with
 ``position_side="BOTH"`` for one-way/spot — the tuple reserves the hedge-mode dimension for perps.
 """
 
