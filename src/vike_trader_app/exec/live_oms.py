@@ -96,9 +96,36 @@ class LiveOmsHub:
             detach()
 
     # --- internals ---
-    def _position_size(self) -> float:
-        pos = self.account.positions.get((self.venue, self.symbol, "BOTH"))
+    def _position_size(self, position_side: str = "BOTH") -> float:
+        """Signed size of one leg (default 'BOTH' -> the one-way/spot leg).
+
+        submit_ticket calls this with the default so its RiskContext.position_size is
+        byte-identical to pre-5g-2. In a hedge account the default returns 0.0 (no BOTH leg
+        exists); callers that need per-leg sizing pass position_side='LONG' or 'SHORT'.
+        """
+        pos = self.account.positions.get((self.venue, self.symbol, position_side))
         return pos["size"] if pos is not None else 0.0
+
+    def total_exposure(self) -> float:
+        """Gross notional across ALL legs of this hub's symbol at the current mark.
+
+        Sums abs(size)*mark over every position_side present for this (venue, symbol) pair
+        (LONG, SHORT, and/or BOTH). A hedge account holds a long AND a short leg simultaneously,
+        so this SUMS abs() values — it NEVER nets LONG against SHORT (netting would hide gross
+        exposure). A one-way account (single BOTH leg) produces the same result as abs(size)*mark.
+        Returns 0.0 if no mark has been recorded yet.
+
+        Note (5g-3 follow-up): submit_ticket's gate uses _position_size() with the default 'BOTH'
+        key. In a hedge account this returns 0.0 (no BOTH leg), so the gate would mis-project
+        exposure as flat. submit_ticket has ZERO production callers today — threading real
+        LONG/SHORT through OrderRequest + RiskContext is 5g-3 / the order-ticket slice.
+        """
+        mark = self.account.marks.get((self.venue, self.symbol), 0.0)
+        return sum(
+            abs(pos["size"]) * mark
+            for (v, s, _ps), pos in self.account.positions.items()
+            if v == self.venue and s == self.symbol
+        )
 
     def _mark(self) -> float:
         """Latest recorded mark for this venue/symbol (0.0 if none yet). Seeds the gate's notional
@@ -192,15 +219,36 @@ class LiveOmsHub:
             filled_qty=mo.filled_qty, avg_fill_px=mo.avg_fill_px, updated_ts=self._now_ms())
 
     def _coid_for_position(self, ev) -> str | None:
-        """The most-recent live order on this symbol/side — the leg the liquidation force-closed.
+        """Most-recent live order on this symbol/side — the leg a liquidation force-closed.
 
-        One-way mode (slice 5a) has at most one open order per symbol; hedge mode (5f) will key
-        off ev.position_side. Returns None if nothing matches (Account still flattens regardless).
+        One-way (position_side BOTH) keys by symbol only — the EXACT pre-5g-2 predicate
+        (byte-equivalent; reversed() scan, first non-terminal wins). Hedge (LONG/SHORT) ALSO
+        requires the order's leg (derived from request.side: +1 -> 'LONG', -1 -> 'SHORT') to
+        match the event's position_side, so a LONG liquidation advances the LONG order and not
+        the SHORT.
+
+        Limitation (5g-3): a reduce_only/flatten order opens against the position direction
+        (side=-1 to flatten a long). Its request.side would map it to 'SHORT' even though it
+        conceptually owns the LONG leg. In 5g-2 hedge-open orders are side-pure so this
+        heuristic is correct; carrying a real position_side on OrderRequest (which would make
+        reduce-only flatten orders unambiguous) is deferred to 5g-3.
+
+        Returns None if nothing matches; Account still flattens by key regardless.
         """
+        want_side = (
+            ev.position_side
+            if getattr(ev, "position_side", "BOTH") in ("LONG", "SHORT")
+            else None
+        )
         for coid, mo in reversed(list(self.registry.items())):
-            if mo.request.symbol == ev.symbol and mo.status not in (
+            if mo.request.symbol != ev.symbol or mo.status in (
                     OrderStatus.LIQUIDATED, OrderStatus.FILLED, OrderStatus.CANCELED):
-                return coid
+                continue
+            if want_side is not None:
+                order_leg = "LONG" if mo.request.side > 0 else "SHORT"
+                if order_leg != want_side:
+                    continue
+            return coid
         return None
 
     def _journal(self, kind: str, event) -> None:
