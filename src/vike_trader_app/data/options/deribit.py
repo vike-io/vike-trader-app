@@ -101,6 +101,7 @@ def build_chain_from_summary(
             mark=_usd(r.get("mark_price"), scale),
             iv=(iv / 100.0) if iv is not None else None,
             open_interest=r.get("open_interest"), volume=r.get("volume"),
+            instrument_name=r.get("instrument_name"),
         )
         q = enrich_quote(q, spot, t)
         by_strike.setdefault(strike, {})[typ] = q

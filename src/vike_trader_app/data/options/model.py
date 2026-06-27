@@ -30,6 +30,7 @@ class OptionQuote:
     theta: float | None = None      # per calendar day
     vega: float | None = None       # per 1pp change in IV (0.01 decimal)
     in_the_money: bool | None = None
+    instrument_name: str | None = None   # venue contract id (Deribit); None for yfinance/equity
 
 
 @dataclass(frozen=True)

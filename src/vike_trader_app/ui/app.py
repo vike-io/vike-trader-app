@@ -233,6 +233,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self._replay = Replay(0)
         self._strategy_factory = default_strategy_factory()
         self._symbol = self._session.symbol if self._session else "BTCUSDT"
+        # 6e: a Deribit options-chain pick sets this; the arm path prefers it over self._symbol so a
+        # picked contract arms WITHOUT typing it as the chart symbol. None for spot/perp (byte-identical).
+        self._exec_symbol_override: str | None = None
         self._interval = self._session.interval if self._session else "1m"
 
         # forward (paper) mode state
@@ -1365,7 +1368,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.exec_arm = ExecArmBar()
         self.exec_arm.armRequested.connect(
             lambda _=None: self._on_arm_requested(
-                self.exec_arm.current_spec(self._symbol)
+                # 6e: venue-guarded override: only use the option pick when the venue selector
+                # is "deribit" — if the user flips venue to binance after picking an option, the
+                # arm path falls back to self._symbol (the spot/perp chart symbol), NOT the option.
+                self.exec_arm.current_spec(
+                    (self._exec_symbol_override
+                     if self.exec_arm._venue.currentText() == "deribit"
+                     else None) or self._symbol
+                )
             )
         )
         self.exec_arm.disarmRequested.connect(self._on_disarm_requested)
@@ -1471,6 +1481,35 @@ class MainWindow(QtWidgets.QMainWindow):
             except RuntimeError:   # already torn down with the dock — nothing to rescue
                 pass
 
+    def _on_option_instrument_chosen(self, instrument_name: str) -> None:
+        """6e: A Deribit options-chain row was picked for trading — pre-stage the arm bar to
+        deribit/Option/<instrument_name> and stash it as the symbol the NEXT Arm uses.
+
+        Does NOT arm, does NOT open a dock, does NOT auto-arrange (the user clicks Arm).
+        Inert for non-Deribit/equity picks (pick_to_arm_selection returns None).
+        If already armed (live hub can't be retargeted), reports to the status line and returns
+        WITHOUT mutating _exec_symbol_override (no auto-disarm — the user disarms first).
+        """
+        from ..exec.arm_select import pick_to_arm_selection
+
+        sel = pick_to_arm_selection(instrument_name)
+        tab = getattr(self, "options", None)
+        if sel is None:
+            if tab is not None:
+                tab.set_status("Not a tradable Deribit option — pick a Deribit chain row")
+            return
+        if getattr(self, "_exec_session", None) is not None:
+            # Per-instrument hub: a live session can't be retargeted. Report; the user disarms first.
+            if tab is not None:
+                tab.set_status(f"Disarm to switch contract (armed; picked {sel.symbol})")
+            return
+        self._exec_symbol_override = sel.symbol
+        self.exec_arm.set_selection(
+            venue=sel.venue, product=sel.product,
+            environment=self.exec_arm._env.currentText(), leverage=1)
+        if tab is not None:
+            tab.set_status(f"Selected {sel.symbol} — click Arm (deribit / Option)")
+
     def _wire_options(self, tab) -> None:
         """Connect an Options tab <-> the app-level service, then lazy-start its fetch.
 
@@ -1540,6 +1579,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tab.expiryChanged.connect(_select)
         tab.rangeChanged.connect(lambda: tab.set_expiries(_filtered()))
         tab.refreshRequested.connect(_refresh)
+        tab.instrumentChosen.connect(self._on_option_instrument_chosen)   # 6e: chain-row pick
         self._load_options_underlying = _load_underlying
         # Options-as-dock: start the fetch right after wiring (the old space-switch lazy-start site
         # in _on_tab_changed is now inert — it keyed on the retired Options space).
@@ -3514,6 +3554,8 @@ class MainWindow(QtWidgets.QMainWindow):
             sess.shutdown()
             self._exec_session = None
         self._armed_env = ""              # clear single-source-of-truth env
+        self._exec_symbol_override = None   # 6e: drop a consumed/stale option pick so the next
+                                            # arm re-reads self._symbol (or a fresh pick)
         # Stop the funding timer and clear pollers so _funding_tick no longer fires
         # synchronous signed REST GETs against a now-detached client/bus (live network
         # after teardown).  Mirrors the cleanup done in shutdown() / _stop_all_timers().

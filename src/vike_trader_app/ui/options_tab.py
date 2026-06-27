@@ -250,6 +250,10 @@ class OptionsTab(QtWidgets.QWidget):
     expiryChanged = QtCore.Signal(str)       # expiry ISO date
     rangeChanged = QtCore.Signal()           # expiration-range filter changed
     refreshRequested = QtCore.Signal()
+    instrumentChosen = QtCore.Signal(str)    # 6e: a chain row picked for trading (Deribit name)
+
+    _NAME_ROLE = int(QtCore.Qt.UserRole) + 1  # stashes the cell's instrument_name (None=not tradable)
+    # (UserRole itself is used for the volume-bar fraction at _fill_side; use a distinct role here)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -353,6 +357,10 @@ class OptionsTab(QtWidgets.QWidget):
         self.view_toggle.activated.connect(self._on_view_changed)
         self.refresh_btn.clicked.connect(lambda *_: self.refreshRequested.emit())
         self.table.horizontalHeader().sectionClicked.connect(self._on_header_clicked)
+        # 6e: double-click a tradable cell -> instrumentChosen; right-click -> context-menu action.
+        self.table.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
         self._apply_provider(emit=False)   # populate the underlying list for the default provider
 
     # --- signals out ---------------------------------------------------------
@@ -508,6 +516,34 @@ class OptionsTab(QtWidgets.QWidget):
             self._sort = (field, side, field in ("volume", "oi"))  # volume/OI default to desc
         self._render()
 
+    # --- 6e: pick a chain row for trading -----------------------------------
+
+    def _name_at(self, row: int, col: int) -> str | None:
+        """The instrument_name stashed on the cell, or None (marker row / spine / blank / yfinance)."""
+        item = self.table.item(row, col)
+        return item.data(self._NAME_ROLE) if item is not None else None
+
+    def _on_cell_double_clicked(self, row: int, col: int) -> None:
+        """Double-click a tradable Deribit cell -> emit instrumentChosen(name).
+        Cells without a stashed name (ATM marker / Strike spine / yfinance) are inert."""
+        name = self._name_at(row, col)
+        if name:
+            self.instrumentChosen.emit(name)
+
+    def _on_table_context_menu(self, pos) -> None:
+        # The menu.exec() path is interactive-only / UNTESTED-by-design (like the live legend-gear).
+        # The shared _name_at read IS covered by the double-click GUI tests: both code paths call
+        # _name_at(row, col) so the name-resolution logic is exercised headlessly even though the
+        # context menu itself only appears on an explicit user right-click.
+        index = self.table.indexAt(pos)
+        name = self._name_at(index.row(), index.column())
+        if not name:
+            return
+        menu = QtWidgets.QMenu(self.table)
+        act = menu.addAction(f"Trade {name}")
+        act.triggered.connect(lambda _=False, n=name: self.instrumentChosen.emit(n))
+        menu.exec(self.table.viewport().mapToGlobal(pos))
+
     def _render(self) -> None:
         self._bar.atm_row = -1
         call_fields, put_fields, ncols, strike_col = self._setup_columns()
@@ -553,6 +589,11 @@ class OptionsTab(QtWidgets.QWidget):
                 hatch = QtGui.QColor(_ITM)
                 hatch.setAlpha(150)   # soften the diagonal hatch so ITM reads subtly, not busy
                 item.setBackground(QtGui.QBrush(hatch, QtCore.Qt.BDiagPattern))
+            # 6e: stash the exact Deribit instrument_name on every cell of a tradable strike+side
+            # so _name_at(row, col) can retrieve it without index math. Marker / spine / blank /
+            # yfinance cells carry no name -> double-click / context-menu are inert for them.
+            if q is not None and q.instrument_name:
+                item.setData(self._NAME_ROLE, q.instrument_name)
             self.table.setItem(ri, base + i, item)
 
     @staticmethod
