@@ -11,7 +11,8 @@ from operator import attrgetter
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .model import Bar, Position, Trade
-from .orders import Order, order_fill_price
+from .fill_model import BarFillModel
+from .orders import Order
 from .timeframe import parse_timeframe, resample
 
 _BAR_TS = attrgetter("ts")   # bisect key: higher-TF reads slice a ts-ascending list in O(log n)
@@ -49,6 +50,7 @@ class BacktestEngine:
         cashflows=None,
         on_fill=None,
         risk=None,
+        fill_model=None,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -62,6 +64,7 @@ class BacktestEngine:
         self.maint_margin = maint_margin
         self._cashflows = cashflows
         self._on_fill = on_fill   # optional: called per fill (side, size, price, fee, ts, is_maker)
+        self._fill_model = fill_model if fill_model is not None else BarFillModel()
         self.cash = cash
         self.position = Position()
         self.trades: list[Trade] = []
@@ -234,7 +237,7 @@ class BacktestEngine:
         triggered: list[tuple[Order, float]] = []
         still: list[Order] = []
         for o in self._pending:
-            fill_price = order_fill_price(o, bar)
+            fill_price = self._fill_model.fill_price(o, bar)
             if fill_price is None:
                 still.append(o)  # rest until triggered
             else:

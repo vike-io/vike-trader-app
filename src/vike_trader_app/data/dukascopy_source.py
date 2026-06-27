@@ -155,3 +155,20 @@ def fetch_bars_range(symbol: str, interval: str, start_ms: int, end_ms: int,
     """Fetch tick history and aggregate to ``interval`` bars. Matches binance_source's signature."""
     ticks = fetch_ticks_range(symbol, start_ms, end_ms, fetch_hour=fetch_hour, progress=progress)
     return ticks_to_bars(ticks, interval_ms(interval))
+
+
+def cache_quote_ticks_range(symbol: str, start_ms: int, end_ms: int, root: str,
+                            fetch_hour=None, progress=None) -> int:
+    """Fetch FX ticks for ``[start_ms, end_ms]`` and PERSIST them as QuoteTicks (no longer discarded).
+
+    Returns the number of ticks written. The raw Dukascopy ``Tick`` carries bid/ask volumes,
+    mapped to ``QuoteTick.bid_size``/``ask_size``.
+    """
+    from ..core.ticks import QuoteTick
+    from . import tick_store
+
+    raw = fetch_ticks_range(symbol, start_ms, end_ms, fetch_hour=fetch_hour, progress=progress)
+    quotes = [QuoteTick(ts=t.ts, bid=t.bid, ask=t.ask, bid_size=t.bid_vol, ask_size=t.ask_vol)
+              for t in raw]
+    tick_store.write_quotes(quotes, root, symbol)
+    return len(quotes)

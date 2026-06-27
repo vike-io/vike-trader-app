@@ -141,6 +141,12 @@ class Strategy:
     def on_bar(self, bar: Bar) -> None:  # noqa: ARG002 - overridden by users
         """Called once per bar, after pending orders for this bar have filled."""
 
+    def on_quote_tick(self, tick) -> None:  # noqa: ARG002 - overridden by the per-tick engine (Slice 2)
+        """Per-quote-tick hook. No-op in the bar/consolidator path; used by the Slice-2 per-tick engine."""
+
+    def on_trade_tick(self, tick) -> None:  # noqa: ARG002 - overridden by the per-tick engine (Slice 2)
+        """Per-trade-tick hook. No-op in the bar/consolidator path; used by the Slice-2 per-tick engine."""
+
     # --- optional: declare indicator lines to overlay on the price chart ---
     def chart_overlays(self, closes: list[float]) -> dict[str, list]:  # noqa: ARG002
         """Return ``{label: series}`` (each series aligned to ``closes``) to plot.
