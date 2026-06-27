@@ -65,6 +65,12 @@ class LiveExecutionSession(QtCore.QObject):
         self._workers: dict[str, PrivateUserDataWorker] = {}
         self._closing = False
 
+    @property
+    def hub(self):
+        """The live LiveOmsHub while armed; None after shutdown(). The order ticket reaches the armed
+        hub (.symbol/.venue/.bus/.account/.submit_ticket) through this single accessor."""
+        return self._hub
+
     def add_worker(self, key: str, worker: PrivateUserDataWorker) -> None:
         worker.report.connect(self._on_report)        # queued: slot is on this main-thread QObject
         worker.failed.connect(self._on_failed)

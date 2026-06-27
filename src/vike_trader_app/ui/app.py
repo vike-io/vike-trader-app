@@ -1379,6 +1379,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self._exec_toolbar.addWidget(self.exec_arm)
         self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, self._exec_toolbar)
 
+        # Live order ticket — the production caller of LiveOmsHub.submit_ticket (was unreachable).
+        from .order_ticket import OrderTicket
+        from ..exec.coid import CoidMinter
+        from ..exec.order_ticket import OrderTicketStatus
+        self._coid = CoidMinter()
+        self._ticket_status = OrderTicketStatus()
+        self._armed_env: str = ""          # set in _on_arm_requested; read in _confirm_order (single source of truth)
+        self.order_ticket = OrderTicket()
+        self.order_ticket.submitRequested.connect(self._on_submit_ticket)
+        self._order_ticket_toolbar = QtWidgets.QToolBar("Order ticket", self)
+        self._order_ticket_toolbar.setObjectName("order_ticket_toolbar")
+        self._order_ticket_toolbar.setMovable(False)
+        self._order_ticket_toolbar.addWidget(self.order_ticket)
+        self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, self._order_ticket_toolbar)
+
         # S6: the command bar lives IN the window's title bar (MC16) — one merged caption row
         # with the brand, ≡, command box, launchers and (frameless mode) min/□/✕. On Windows the
         # native caption is removed and a Win32 filter keeps move/Snap/resize/dbl-click native;
@@ -3412,6 +3427,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if ok:
             self._refresh_feed_badge_for_exec(spec)
             self.exec_arm.set_armed(True)    # flip the button to Disarm (teardown now user-reachable)
+            self._armed_env = spec.environment   # single source of truth for _confirm_order
+            sess = getattr(self, "_exec_session", None)
+            if sess is not None and sess.hub is not None:
+                self.order_ticket.set_armed(
+                    True, venue=sess.hub.venue, symbol=sess.hub.symbol,
+                    environment=spec.environment)
+                sess.hub.bus.subscribe(self._on_exec_event)   # main-thread feedback subscriber
         return ok
 
     def _on_disarm_requested(self) -> None:
@@ -3423,8 +3445,14 @@ class MainWindow(QtWidgets.QMainWindow):
         """
         sess = getattr(self, "_exec_session", None)
         if sess is not None:
+            if sess.hub is not None:
+                try:
+                    sess.hub.bus.unsubscribe(self._on_exec_event)   # detach feedback before teardown
+                except Exception:
+                    pass
             sess.shutdown()
             self._exec_session = None
+        self._armed_env = ""              # clear single-source-of-truth env
         # Stop the funding timer and clear pollers so _funding_tick no longer fires
         # synchronous signed REST GETs against a now-detached client/bus (live network
         # after teardown).  Mirrors the cleanup done in shutdown() / _stop_all_timers().
@@ -3432,6 +3460,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._funding_pollers = []
         self._update_feed_health()           # back to CACHED/LIVE data-feed badge
         self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
+        self.order_ticket.set_armed(False)
 
     def _refresh_feed_badge_for_exec(self, spec) -> None:
         """Update the status-bar feed badge to show the armed venue, product and leverage."""
@@ -3447,6 +3476,78 @@ class MainWindow(QtWidgets.QMainWindow):
             f"font-size:10px;background:transparent;border:none;"
             f"padding:3px 6px;margin-right:6px;"
         )
+
+    def _on_submit_ticket(self, inputs: dict) -> None:
+        """Production caller of LiveOmsHub.submit_ticket. Inert unless a session is armed (which cannot
+        happen under VIKE_DISABLE_LIVE — _maybe_start_live_exec returns False there, so _exec_session
+        stays None). Confirms before sending a real order; routes through the existing gate+bus."""
+        import time
+
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or sess.hub is None:
+            return  # not armed / headless -> inert (no dialog, no network)
+        hub = sess.hub
+        from ..exec.order_ticket import build_order_request
+        try:
+            req = build_order_request(
+                hub_venue=hub.venue, hub_symbol=hub.symbol,
+                side=int(inputs["side"]), qty=float(inputs["qty"]),
+                order_type=str(inputs["order_type"]),
+                price=inputs.get("price"),
+                reduce_only=bool(inputs.get("reduce_only", False)),
+                client_order_id=self._coid.mint(), now_ms=int(time.time() * 1000),
+            )
+        except ValueError as exc:
+            self.order_ticket.set_status(f"invalid: {exc}")
+            return
+        if not self._confirm_order(req):
+            return
+        self._ticket_status.arm(req.client_order_id)
+        self.order_ticket.set_status("sending…")
+        hub.submit_ticket(req)   # synchronous REST-ACK on the GUI thread (no new worker thread)
+
+    def _confirm_order(self, req) -> bool:
+        """Modal confirm — reachable ONLY from the live armed path (never under VIKE_DISABLE_LIVE).
+        Shows venue/symbol/side/qty/type/price/ENV; no secrets. MAINNET gets a warning icon.
+
+        Uses ``self._armed_env`` (stored in ``_on_arm_requested``) as the single source of truth for
+        the environment — NOT ``exec_arm._env.currentText()``, which reflects the CURRENTLY SELECTED
+        (not necessarily armed) environment and couples to ExecArmBar internals."""
+        env_text = getattr(self, "_armed_env", "") or "DEMO"
+        side = "BUY" if req.side > 0 else "SELL"
+        px = "MKT" if req.price is None else f"{req.price:,.2f}"
+        box = QtWidgets.QMessageBox(self)
+        box.setIcon(QtWidgets.QMessageBox.Icon.Warning
+                    if env_text == "MAINNET" else QtWidgets.QMessageBox.Icon.Question)
+        box.setWindowTitle("Confirm live order")
+        box.setText(
+            f"{env_text} · {req.venue.upper()} · {req.symbol}\n"
+            f"{side} {req.qty} @ {px} ({req.order_type})"
+            + ("  reduce-only" if req.reduce_only else ""))
+        box.setStandardButtons(QtWidgets.QMessageBox.StandardButton.Ok
+                               | QtWidgets.QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(QtWidgets.QMessageBox.StandardButton.Cancel)
+        return box.exec() == QtWidgets.QMessageBox.StandardButton.Ok
+
+    def _on_exec_event(self, event) -> None:
+        """Main-thread bus subscriber driving the ticket's status + position lines. Read-and-render
+        ONLY — never bus.publish (the bus defers nested publishes; re-publishing here would enqueue
+        into the live drain). Inert if the ticket/session has gone (late event during teardown)."""
+        if getattr(self, "_closing", False):
+            return
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or sess.hub is None:
+            return
+        text = self._ticket_status.on_event(event)
+        if text:
+            self.order_ticket.set_status(text)
+        # refresh the one-line position read (BOTH leg — correct for spot + one-way perp)
+        hub = sess.hub
+        pos = hub.account.positions.get((hub.venue, hub.symbol, "BOTH"))
+        if pos is not None:
+            upnl = hub.account.unrealized_pnl(hub.venue, hub.symbol)
+            self.order_ticket.set_position(
+                f"pos: {pos['size']} @ {pos['avg_px']:.2f}  uPnL {upnl:.2f}")
 
     def _persist_arm_selection(self, spec) -> None:
         """Write the non-secret exec selector state to QSettings.
@@ -3915,7 +4016,13 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_live_hub", None) is not None:
             self._live_hub.shutdown()            # chart-document live round-robin + its worker
         if getattr(self, "_exec_session", None) is not None:
-            self._exec_session.shutdown()        # live exec workers + LiveOmsHub detach (Phase 3b)
+            sess = self._exec_session
+            if getattr(sess, "hub", None) is not None:
+                try:
+                    sess.hub.bus.unsubscribe(self._on_exec_event)
+                except Exception:
+                    pass
+            sess.shutdown()        # live exec workers + LiveOmsHub detach (Phase 3b)
             self._exec_session = None
         self._funding_pollers = []               # 5e: drop the REST funding pollers (no thread to join)
         self._stop_live_updates()
