@@ -159,3 +159,16 @@ def test_normal_trade_not_liquidation():
     evs = map_binance_perp(_evt(c="c-0"), venue="binance", symbol="BTCUSDT")
     assert [type(e).__name__ for e in evs] == ["FillEvent", "OrderFilled"]
     assert evs[1].fill is evs[0]
+
+
+def test_binance_liquidation_carries_otu_trade_id():
+    from vike_trader_app.exec.binance.perp_mapper import map_binance_perp
+    from vike_trader_app.exec.events import PositionLiquidated
+
+    frame = {"e": "ORDER_TRADE_UPDATE", "T": 2, "o": {
+        "s": "BTCUSDT", "c": "autoclose-123", "x": "TRADE", "X": "FILLED",
+        "S": "SELL", "ps": "BOTH", "l": "2.0", "L": "60.0", "n": "0.5", "t": 9}}
+    evs = map_binance_perp(frame, venue="binance", symbol="BTCUSDT")
+    assert len(evs) == 1
+    assert isinstance(evs[0], PositionLiquidated)
+    assert evs[0].trade_id == "9"
