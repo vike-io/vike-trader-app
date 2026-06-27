@@ -14,6 +14,7 @@ from .model import Bar, Position, Trade
 from .fill_model import BarFillModel
 from .orders import Order
 from .timeframe import parse_timeframe, resample
+from .ticks import QuoteTick
 
 _BAR_TS = attrgetter("ts")   # bisect key: higher-TF reads slice a ts-ascending list in O(log n)
 
@@ -200,6 +201,29 @@ class BacktestEngine:
         return Result(self.trades, equity_curve, self.equity_now(),
                       intrabar_both_hit=self.intrabar_both_hit)
 
+    def run_ticks(self, ticks) -> Result:
+        """Per-tick run: drive the strategy tick-by-tick (Bar Magnifier + per-tick decisions).
+
+        Shares the bar engine's fill/cost/account core via ``_advance``; ``on_bar`` does NOT fire.
+        Fills resolve in true tick order, so stop-vs-target ordering is exact (no pessimistic guess).
+        """
+        from .consolidator import tick_to_bar
+        curve = [self.step_tick(tick_to_bar(t), t, i) for i, t in enumerate(ticks)]
+        return Result(self.trades, curve, self.equity_now(),
+                      intrabar_both_hit=self.intrabar_both_hit)
+
+    def step_tick(self, event: Bar, tick, i: int) -> float:
+        """Advance by one tick; fill pending BEFORE the handler (no look-ahead), then fire the
+        per-tick handler by tick type. Returns equity after the tick."""
+        self.strategy.index = i
+        self._advance(event)   # no cashflows in tick mode
+        if i >= self.strategy.WARMUP:
+            if isinstance(tick, QuoteTick):
+                self.strategy.on_quote_tick(tick)
+            else:
+                self.strategy.on_trade_tick(tick)
+        return self.equity_now()
+
     def add_live_bar(self, bar: Bar) -> None:
         """Append a live bar to history and refresh higher-TF aggregates (forward mode).
 
@@ -214,24 +238,29 @@ class BacktestEngine:
     def step(self, bar: Bar, i: int) -> float:
         """Advance the engine by exactly one bar; return equity after it.
 
-        Identical to one iteration of ``run`` — the shared primitive the forward
-        (paper) loop drives live, so strategies behave the same backtest↔forward.
         Pending orders fill at this bar's open *before* the strategy runs (next-open).
-        The strategy is gated until ``i >= strategy.WARMUP`` (never act on NaN).
+        The strategy is gated until ``i >= strategy.WARMUP``. Shares ``_advance`` with the
+        per-tick loop (``step_tick``); only the handler that fires differs.
         """
-        self._fill_pending(bar)  # fills before decisions => next-open semantics
         self.strategy.index = i
-        self._now = bar.ts
-        self._price = bar.close
-        if bar.funding is not None and self.position.size != 0:
-            self.cash -= funding_charge(self.position.size, bar.close, bar.funding, self.multiplier)
-        if self._cashflows is not None:
-            self.cash += self._cashflows[i]
-        self._check_liquidation(bar)
-        self._peak = max(self._peak, self.equity_now())
+        cashflow = self._cashflows[i] if self._cashflows is not None else 0.0
+        self._advance(bar, cashflow)
         if i >= self.strategy.WARMUP:  # warm-up gate: skip until indicators have history
             self.strategy.on_bar(bar)
         return self.equity_now()
+
+    def _advance(self, event, cashflow: float = 0.0) -> None:
+        """Shared per-event core (bar OR tick): fill pending, mark price, funding, cashflow,
+        liquidation, peak. The caller fires the strategy handler. ``event`` must expose
+        ``ts``/``open``/``high``/``low``/``close``/``funding``/``bid``/``ask`` (a ``Bar``)."""
+        self._fill_pending(event)  # fills before decisions => next-open / next-tick semantics
+        self._now = event.ts
+        self._price = event.close
+        if event.funding is not None and self.position.size != 0:
+            self.cash -= funding_charge(self.position.size, event.close, event.funding, self.multiplier)
+        self.cash += cashflow
+        self._check_liquidation(event)
+        self._peak = max(self._peak, self.equity_now())
 
     def _fill_pending(self, bar: Bar) -> None:
         triggered: list[tuple[Order, float]] = []
