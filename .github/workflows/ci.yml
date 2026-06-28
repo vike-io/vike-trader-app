@@ -28,10 +28,13 @@ jobs:
           cache-dependency-glob: "uv.lock"    # re-key only when locked deps change
 
       # Non-UI extras: enough for the engine / analysis / indicators / ml / ai-tool
-      # tests. The `ui` extra (PySide6/pyqtgraph) is omitted here for a fast gate; the
-      # UI tests run in the separate `ui-test` job below, headless via QT_QPA_PLATFORM=offscreen.
+      # tests. `duck` is included so the unit gate exercises the DEFAULT thread-safe read
+      # path (per-call DuckDB) the shipped app uses — without it the read primitive falls
+      # back to Polars and the thread-safe concurrency proof would skip. The `ui` extra
+      # (PySide6/pyqtgraph) is omitted here for a fast gate; the UI tests run in the
+      # separate `ui-test` job below, headless via QT_QPA_PLATFORM=offscreen.
       - name: Sync dependencies
-        run: uv sync --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli
+        run: uv sync --extra fast --extra analysis --extra ai --extra mcp --extra opt --extra cli --extra duck
 
       # The Qt-free unit tree (tests/unit/{core,data,analysis,ai,tester}). Kept as its OWN
       # process, separate from the gui tree: collecting both in one run imports the PySide6/Qt
