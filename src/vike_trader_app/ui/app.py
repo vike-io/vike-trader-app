@@ -3182,67 +3182,50 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..exec.accounting import Account
         from ..ui.private_user_data import LiveExecutionSession
 
-        symbol = spec.symbol
         product = spec.product
-        # Basket arm: one Account is shared across ALL hubs so that position/balance accounting is
-        # unified.  For the single-symbol path (N==1) this is unchanged — one hub, one account.
+        # One Account shared across ALL hubs so position/balance accounting is unified.
+        # For the single-symbol path (N==1) this is unchanged — one hub, one account.
         account = Account()
-        try:
-            hub, client_symbol, bus, ct_val, currency = self._build_hub_for_symbol(
-                sym=symbol, account=account, cfg=cfg, venue=venue,
-                environment=environment, product=product, spec=spec,
-            )
-        except Exception as _exc:  # noqa: BLE001
-            logging.getLogger(__name__).error(
-                "live exec: failed to build hub for %r — aborting: %s", symbol, _exc)
-            return False
-        # Build the hubs dict: primary hub keyed by its client_symbol; additional symbols are
-        # added after the session is created (basket path below).
-        _all_hubs: dict = {client_symbol: hub}
-        self._exec_session = LiveExecutionSession(hub, hubs=_all_hubs)
-        self._register_user_data_worker(
-            client_symbol=client_symbol, hub=hub, bus=bus, cfg=cfg,
-            venue=venue, product=product, environment=environment,
-            ct_val=ct_val, currency=currency, is_primary=True,
-        )
+        _all_hubs: dict = {}
 
         # ------------------------------------------------------------------
-        # Basket arm — additional symbols (spec.all_symbols[1:])
-        # Each extra symbol gets its own EventBus + LiveOmsHub (same venue/product/cfg) ALL sharing
-        # the ONE Account created above.  The single-symbol path (N==1) skips this block entirely
-        # so the result is byte-identical to the pre-basket code.
+        # Unified arm loop — iterates spec.all_symbols (primary first, then basket extras).
+        # i==0 is the primary; i>0 are basket extras (same venue/product/cfg, shared account).
+        # Deribit options basket is not supported; break on the 2nd deribit symbol.
         # ------------------------------------------------------------------
-        _extra_symbols = [s for s in spec.all_symbols if s != spec.symbol]
-        if _extra_symbols and venue not in ("deribit",):  # deribit options basket not yet supported
-            import logging as _log
-            _basket_log = _log.getLogger(__name__)
-            for _extra_sym in _extra_symbols:
-                try:
-                    _extra_hub, _extra_client_sym, _extra_bus, _extra_ct_val, _extra_currency = \
-                        self._build_hub_for_symbol(
-                            sym=_extra_sym,
-                            account=account,
-                            cfg=cfg,
-                            venue=venue,
-                            environment=environment,
-                            product=product,
-                            spec=spec,
-                        )
-                except Exception as _exc:  # noqa: BLE001
-                    _basket_log.error(
+        for i, sym in enumerate(spec.all_symbols):
+            is_primary = (i == 0)
+            if not is_primary and venue in ("deribit",):
+                break   # deribit options basket not yet supported
+            try:
+                _hub, _client_sym, _bus, _ct_val, _currency = self._build_hub_for_symbol(
+                    sym=sym, account=account, cfg=cfg, venue=venue,
+                    environment=environment, product=product, spec=spec,
+                )
+            except Exception as _exc:  # noqa: BLE001
+                if is_primary:
+                    logging.getLogger(__name__).error(
+                        "live exec: failed to build hub for %r — aborting: %s", sym, _exc)
+                    return False
+                else:
+                    logging.getLogger(__name__).error(
                         "basket arm: failed to build hub for %r — aborting basket arm: %s",
-                        _extra_sym, _exc)
+                        sym, _exc)
                     # Partial basket failure: tear down the session cleanly and abort
                     self._exec_session.shutdown()
                     self._exec_session = None
                     return False
-                self._exec_session._hubs[_extra_client_sym] = _extra_hub
-                # Register per-symbol user-data workers for the basket hub
-                self._register_user_data_worker(
-                    client_symbol=_extra_client_sym, hub=_extra_hub, bus=_extra_bus, cfg=cfg,
-                    venue=venue, product=product, environment=environment,
-                    ct_val=_extra_ct_val, currency=_extra_currency, is_primary=False,
-                )
+            _all_hubs[_client_sym] = _hub
+            if is_primary:
+                # Session is created once the primary hub is ready; basket extras are added below.
+                self._exec_session = LiveExecutionSession(_hub, hubs=_all_hubs)
+            else:
+                self._exec_session._hubs[_client_sym] = _hub
+            self._register_user_data_worker(
+                client_symbol=_client_sym, hub=_hub, bus=_bus, cfg=cfg,
+                venue=venue, product=product, environment=environment,
+                ct_val=_ct_val, currency=_currency, is_primary=is_primary,
+            )
         return True
 
     def _build_hub_for_symbol(self, *, sym, account, cfg, venue, environment, product, spec):
