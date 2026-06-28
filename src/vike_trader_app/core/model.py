@@ -33,6 +33,19 @@ class Position:
         return (price - self.avg_price) * self.size
 
 
+@dataclass(frozen=True)
+class Fill:
+    """One execution delivered to ``Strategy.on_order_filled`` (and ``on_liquidation`` for a forced close)."""
+
+    side: int        # +1 buy / -1 sell
+    size: float
+    price: float     # fill price after slippage
+    fee: float
+    ts: int          # epoch milliseconds (UTC)
+    is_maker: bool = False
+    symbol: str = ""
+
+
 @dataclass
 class Trade:
     """A completed round-trip. ``pnl`` is gross price PnL; ``fees`` is the round-trip cost."""
