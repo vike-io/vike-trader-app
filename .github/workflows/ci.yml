@@ -18,7 +18,7 @@ jobs:
         os: [windows-latest]   # macOS/Linux paused per user directive (2026-06-11) — re-add to re-enable
         python: ["3.14"]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v7
@@ -59,7 +59,7 @@ jobs:
       # we set it job-wide so every UI test (and PySide6 import) runs without a display, on all OSes.
       QT_QPA_PLATFORM: offscreen
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v7
@@ -109,7 +109,7 @@ jobs:
     # `if:` below back to re-enable. (Records hot-path timings from tests/bench, non-gating.)
     if: false
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install uv + Python
         uses: astral-sh/setup-uv@v7
         with:
