@@ -14,6 +14,15 @@ class ExecArmSpec:
     product: str
     symbol: str
     leverage: float
+    symbols: tuple[str, ...] = ()
+    """Additional symbols for a basket arm.  When empty the basket is ``(symbol,)``
+    (single-symbol, back-compat). When non-empty every entry is armed as a separate
+    LiveOmsHub sharing ONE Account under LiveExecutionSession.hubs."""
+
+    @property
+    def all_symbols(self) -> tuple[str, ...]:
+        """Canonical symbol list: ``symbols`` when set, else the single ``symbol``."""
+        return self.symbols if self.symbols else (self.symbol,)
 
 
 def _pick(value, env_key: str, env: Mapping[str, str]):
