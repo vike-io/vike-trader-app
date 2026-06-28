@@ -177,6 +177,10 @@ class _MultiSymbolDriver(PortfolioStrategy):
                 continue
             inner.index = self.index
             inner.on_bar(bar)
+            sched = getattr(inner, "schedule", None)
+            if sched is not None:
+                for _cb in sched.check_due(ts, self.index):
+                    _cb()
 
 
 class MultiSymbolStrategyRunner:

@@ -272,6 +272,10 @@ class BacktestEngine:
         self._advance(bar, cashflow)
         if i >= self.strategy.WARMUP:  # warm-up gate: skip until indicators have history
             self.strategy.on_bar(bar)
+            sched = getattr(self.strategy, "schedule", None)
+            if sched is not None:
+                for _cb in sched.check_due(self._now, i):
+                    _cb()
         return self.equity_now()
 
     def _advance(self, event, cashflow: float = 0.0) -> None:

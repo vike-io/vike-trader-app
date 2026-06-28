@@ -45,6 +45,8 @@ class Strategy:
     def __init__(self) -> None:
         self._engine = None  # set by the engine in run()
         self.index = 0  # current bar index
+        from .schedule import Schedule
+        self.schedule = Schedule()
 
     @classmethod
     def make(cls, **params) -> "Strategy":

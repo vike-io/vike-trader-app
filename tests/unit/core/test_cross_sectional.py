@@ -207,3 +207,47 @@ def test_rebalance_on_none_reproduces_bar_count_behavior():
 
     # Both strategies should produce the same final equity
     assert result_none.final_equity == pytest.approx(result_default.final_equity)
+
+
+def test_rebalance_every_still_gates():
+    """rebalance_every=3 (no rebalance_on) must rebalance only on bars 0, 3, 6 — identical
+    behavior to the pre-Schedule inline gate."""
+
+    class _Every3(CrossSectionalStrategy):
+        k = 1
+        rebalance_every = 3
+        rebalance_on = None
+        lookback = 1
+
+        def __init__(self):
+            super().__init__()
+            self.rebalance_calls: list[int] = []  # bar indices where _rebalance fires
+
+        def score(self, symbol, history):
+            if len(history) <= self.lookback:
+                return None
+            return history[-1]
+
+        def rebalance(self, weights: dict) -> None:  # type: ignore[override]
+            self.rebalance_calls.append(self.index)
+            super().rebalance(weights)
+
+        def weights(self, winners):
+            return {winners[0]: 1.0}
+
+    # 9 bars -> rebalance eligible at indices 0, 3, 6; index 0 skipped (warmup: score returns None)
+    bars = {
+        "A": _series([100] * 9),
+        "B": _series([101] * 9),
+    }
+    strat = _Every3()
+    PortfolioEngine(bars, strat, cash=10_000.0).run()
+
+    # rebalance() fires only on bars 3 and 6 (bar 0 is skipped by warmup — score returns None for
+    # len(history)==1 <= lookback==1); bar-count gate of 3 is preserved through Schedule.
+    assert all(idx % 3 == 0 for idx in strat.rebalance_calls), (
+        f"rebalance fired on non-multiple-of-3 bars: {strat.rebalance_calls}"
+    )
+    # At least bars 3 and 6 must fire (proving the gate works, not just that it never fires)
+    assert 3 in strat.rebalance_calls
+    assert 6 in strat.rebalance_calls
