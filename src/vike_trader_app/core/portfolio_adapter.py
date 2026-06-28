@@ -75,6 +75,10 @@ class SymbolEngineShim:
     def position(self):
         return self._engine.position_of(self._symbol)
 
+    @property
+    def now(self) -> int:
+        return self._engine.now
+
     def equity_now(self) -> float:
         return self._engine.equity_now()
 
