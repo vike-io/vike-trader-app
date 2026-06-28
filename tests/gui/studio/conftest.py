@@ -16,6 +16,14 @@ VIKE_DISABLE_LIVE).
 Fix: neutralise the client build so ``_agent_client`` stays None regardless of QSettings/env. Tests
 that exercise the AI path set a fake client explicitly via ``set_agent_client()`` AFTER construction,
 which this does not touch.
+
+Additionally, ``BacktestWorker`` (the async single-backtest QThread) is run SYNCHRONOUSLY here for
+the same reason ChatWorker and OptimizeWorker are: a real QThread running backtests + GC can
+hard-segfault under full-suite load on py3.14 (0xC0000409). ``done`` + ``finished`` are delivered
+inline on the main thread so the ``run_code()`` -> ``_on_backtest_done`` -> ``results.add_run`` flow
+runs deterministically without ``wait()`` / event-pump gymnastics, and ``_backtest_worker`` is cleared
+exactly as in production. Tests that explicitly exercise the async contract (test_offthread_backtest.py)
+skip this fixture via their own module-level monkeypatches.
 """
 import sys
 
@@ -31,4 +39,22 @@ def _no_ai_client_from_local_state(monkeypatch):
         studio.StudioTab, "_rebuild_agent_client",
         lambda self, **kw: setattr(self, "_agent_client", None),
     )
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _sync_backtest_worker(monkeypatch):
+    """Run BacktestWorker SYNCHRONOUSLY: done + finished delivered on the main thread so
+    run_code() -> _on_backtest_done -> results.add_run completes before the next line in the test,
+    and _backtest_worker is cleared exactly as in production — without a real QThread."""
+    studio = sys.modules.get("vike_trader_app.ui.studio")
+    if studio is None:
+        import vike_trader_app.ui.studio as studio
+
+    def _sync_start(self):
+        self.run()             # compile + StrategyTester.run() + done.emit -> _on_backtest_done
+        self.finished.emit()   # -> _clear_backtest_worker -> _backtest_worker = None
+
+    monkeypatch.setattr(studio.BacktestWorker, "start", _sync_start)
+    monkeypatch.setattr(studio.BacktestWorker, "isRunning", lambda self: False)
     yield
