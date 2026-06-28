@@ -3200,113 +3200,11 @@ class MainWindow(QtWidgets.QMainWindow):
         # added after the session is created (basket path below).
         _all_hubs: dict = {client_symbol: hub}
         self._exec_session = LiveExecutionSession(hub, hubs=_all_hubs)
-        if venue == "bybit" and product == "perp" and cfg.ws_base_url:
-            from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
-            run_core = make_bybit_perp_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("bybit", worker)
-            from ..exec.bybit.funding import BybitFundingPoller
-            bybit_funding_poller = BybitFundingPoller(bus=bus, client=hub.client, symbol=client_symbol)
-            self._funding_pollers.append(bybit_funding_poller)
-            # NO opportunistic poll at arm time — that would issue a real signed REST GET on the main
-            # thread the instant a session arms (incl. the offscreen GUI arm-tests that delete
-            # VIKE_DISABLE_LIVE), violating the no-network-in-headless rule. The QTimer does the first
-            # poll within _FUNDING_POLL_MS — negligible vs the ~8h funding cadence.
-            if not os.environ.get("VIKE_DISABLE_LIVE"):
-                self._funding_timer.start(_FUNDING_POLL_MS)
-        elif venue == "bybit" and cfg.ws_base_url:
-            from ..exec.bybit.user_data import make_bybit_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
-            run_core = make_bybit_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("bybit", worker)
-        if venue == "okx" and product == "perp" and cfg.ws_base_url:
-            from ..exec.okx.perp_user_data import make_okx_perp_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
-            run_core = make_okx_perp_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                passphrase=cfg.credentials.passphrase,
-                symbol=client_symbol,                        # BTC-USDT-SWAP
-                ct_val=ct_val,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("okx", worker)
-            from ..exec.okx.funding import OkxFundingPoller
-            okx_funding_poller = OkxFundingPoller(bus=bus, client=hub.client, symbol=client_symbol)
-            self._funding_pollers.append(okx_funding_poller)
-            # NO opportunistic poll at arm time (see the bybit arm) — the QTimer does the first poll
-            # within _FUNDING_POLL_MS, keeping the headless arm-tests network-free.
-            if not os.environ.get("VIKE_DISABLE_LIVE"):
-                self._funding_timer.start(_FUNDING_POLL_MS)   # ~ every 5 min; funding settles ~8h
-        elif venue == "okx" and cfg.ws_base_url:
-            from ..exec.okx.user_data import make_okx_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
-            run_core = make_okx_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                passphrase=cfg.credentials.passphrase,      # EXTRA arg the OKX arm needs
-                symbol=client_symbol,                        # dashed inst_id 'BTC-USDT' — matches hub.symbol
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("okx", worker)
-        if venue == "binance" and product == "perp":
-            from ..exec.venue_config import binance_fapi_rest, binance_fapi_ws
-            _fapi_ws = binance_fapi_ws(environment)
-            if _fapi_ws:
-                from ..exec.binance.perp_user_data import make_binance_perp_run_core
-                from ..ui.private_user_data import PrivateUserDataWorker
-                run_core = make_binance_perp_run_core(
-                    fapi_rest_url=binance_fapi_rest(environment),
-                    ws_base_url=_fapi_ws,
-                    api_key=cfg.credentials.api_key,
-                    symbol=client_symbol,                        # plain BTCUSDT — no dash, no -SWAP
-                    now_ms=lambda: int(time.time() * 1000),
-                )
-                worker = PrivateUserDataWorker(run_core)
-                self._exec_session.add_worker_if_enabled("binance", worker)
-        elif venue == "binance" and product != "perp" and cfg.ws_base_url:
-            from ..exec.binance.user_data import make_binance_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
-            run_core = make_binance_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,                        # plain 'BTCUSDT' — no dashed inst_id, no passphrase
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("binance", worker)
-        if venue == "deribit" and cfg.ws_base_url:
-            from ..exec.deribit.user_data import make_deribit_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
-            run_core = make_deribit_run_core(
-                ws_url=cfg.ws_base_url,
-                client_id=cfg.credentials.api_key,
-                client_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                currency=currency,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("deribit", worker)
+        self._register_user_data_worker(
+            client_symbol=client_symbol, hub=hub, bus=bus, cfg=cfg,
+            venue=venue, product=product, environment=environment,
+            ct_val=ct_val, currency=currency, is_primary=True,
+        )
 
         # ------------------------------------------------------------------
         # Basket arm — additional symbols (spec.all_symbols[1:])
@@ -3340,8 +3238,11 @@ class MainWindow(QtWidgets.QMainWindow):
                     return False
                 self._exec_session._hubs[_extra_client_sym] = _extra_hub
                 # Register per-symbol user-data workers for the basket hub
-                self._register_basket_worker(
-                    _extra_sym, _extra_client_sym, _extra_hub, _extra_bus, cfg, venue, product)
+                self._register_user_data_worker(
+                    client_symbol=_extra_client_sym, hub=_extra_hub, bus=_extra_bus, cfg=cfg,
+                    venue=venue, product=product, environment=environment,
+                    ct_val=_extra_ct_val, currency=_extra_currency, is_primary=False,
+                )
         return True
 
     def _build_hub_for_symbol(self, *, sym, account, cfg, venue, environment, product, spec):
@@ -3564,14 +3465,25 @@ class MainWindow(QtWidgets.QMainWindow):
         hub.apply_snapshot(client.connect())
         return hub, client_symbol, bus, ct_val, currency
 
-    def _register_basket_worker(self, sym, client_symbol, hub, bus, cfg, venue, product):
-        """Register per-symbol user-data worker for an extra basket hub.
+    def _register_user_data_worker(self, *, client_symbol, hub, bus, cfg, venue, product,
+                                   environment, ct_val, currency, is_primary):
+        """Register venue-specific user-data WS worker for a hub.
 
-        Mirrors the venue-dispatch worker registration in _maybe_start_live_exec but uses
-        the per-symbol *bus* (not the primary hub's bus) so fills route correctly.
-        No funding pollers for basket extras (A2d scope — funding is a single-venue concern).
+        Used for BOTH the primary arm (is_primary=True) and each extra basket symbol
+        (is_primary=False).
+
+        is_primary=True  → worker key = plain venue name ("bybit", "okx", …);
+                           no bus kwarg (primary hub owns its bus); funding pollers registered.
+        is_primary=False → worker key = f"{venue}_{client_symbol}"; bus=bus forwarded;
+                           no funding pollers (basket extras — funding is a single-venue concern).
         """
+        import os as _os
+        import time as _time
         from ..ui.private_user_data import PrivateUserDataWorker
+
+        worker_key = venue if is_primary else f"{venue}_{client_symbol}"
+        bus_kwarg = {} if is_primary else {"bus": bus}
+
         if venue == "bybit" and product == "perp" and cfg.ws_base_url:
             from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
             run_core = make_bybit_perp_run_core(
@@ -3579,10 +3491,21 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+            if is_primary:
+                from ..exec.bybit.funding import BybitFundingPoller
+                bybit_funding_poller = BybitFundingPoller(
+                    bus=bus, client=hub.client, symbol=client_symbol)
+                self._funding_pollers.append(bybit_funding_poller)
+                # NO opportunistic poll at arm time — that would issue a real signed REST GET on
+                # the main thread the instant a session arms (incl. the offscreen GUI arm-tests
+                # that delete VIKE_DISABLE_LIVE), violating the no-network-in-headless rule. The
+                # QTimer does the first poll within _FUNDING_POLL_MS — negligible vs the ~8h cadence.
+                if not _os.environ.get("VIKE_DISABLE_LIVE"):
+                    self._funding_timer.start(_FUNDING_POLL_MS)
         elif venue == "bybit" and cfg.ws_base_url:
             from ..exec.bybit.user_data import make_bybit_run_core
             run_core = make_bybit_run_core(
@@ -3590,62 +3513,81 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
-        elif venue == "okx" and product == "perp" and cfg.ws_base_url:
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+        if venue == "okx" and product == "perp" and cfg.ws_base_url:
             from ..exec.okx.perp_user_data import make_okx_perp_run_core
             run_core = make_okx_perp_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 passphrase=cfg.credentials.passphrase,
-                symbol=client_symbol,
-                ct_val=getattr(hub.client, "_ct_val", 1.0),
-                now_ms=lambda: int(time.time() * 1000),
+                symbol=client_symbol,                        # BTC-USDT-SWAP
+                ct_val=ct_val,
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+            if is_primary:
+                from ..exec.okx.funding import OkxFundingPoller
+                okx_funding_poller = OkxFundingPoller(
+                    bus=bus, client=hub.client, symbol=client_symbol)
+                self._funding_pollers.append(okx_funding_poller)
+                # NO opportunistic poll at arm time (see the bybit arm) — the QTimer does the
+                # first poll within _FUNDING_POLL_MS, keeping the headless arm-tests network-free.
+                if not _os.environ.get("VIKE_DISABLE_LIVE"):
+                    self._funding_timer.start(_FUNDING_POLL_MS)  # ~ every 5 min; funding settles ~8h
         elif venue == "okx" and cfg.ws_base_url:
             from ..exec.okx.user_data import make_okx_run_core
             run_core = make_okx_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
-                passphrase=cfg.credentials.passphrase,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
+                passphrase=cfg.credentials.passphrase,      # EXTRA arg the OKX arm needs
+                symbol=client_symbol,                        # dashed inst_id 'BTC-USDT' — matches hub.symbol
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
-        elif venue == "binance" and product == "perp":
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+        if venue == "binance" and product == "perp":
             from ..exec.venue_config import binance_fapi_rest, binance_fapi_ws
-            _fapi_ws = binance_fapi_ws(cfg.environment)
+            _fapi_ws = binance_fapi_ws(environment)
             if _fapi_ws:
                 from ..exec.binance.perp_user_data import make_binance_perp_run_core
                 run_core = make_binance_perp_run_core(
-                    fapi_rest_url=binance_fapi_rest(cfg.environment),
+                    fapi_rest_url=binance_fapi_rest(environment),
                     ws_base_url=_fapi_ws,
                     api_key=cfg.credentials.api_key,
-                    symbol=client_symbol,
-                    now_ms=lambda: int(time.time() * 1000),
+                    symbol=client_symbol,                        # plain BTCUSDT — no dash, no -SWAP
+                    now_ms=lambda: int(_time.time() * 1000),
                 )
                 worker = PrivateUserDataWorker(run_core)
-                self._exec_session.add_worker_if_enabled(
-                    f"binance_{client_symbol}", worker, bus=bus)
+                self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
         elif venue == "binance" and product != "perp" and cfg.ws_base_url:
             from ..exec.binance.user_data import make_binance_run_core
             run_core = make_binance_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
+                symbol=client_symbol,                        # plain 'BTCUSDT' — no dashed inst_id, no passphrase
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(
-                f"binance_{client_symbol}", worker, bus=bus)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+        if venue == "deribit" and cfg.ws_base_url:
+            from ..exec.deribit.user_data import make_deribit_run_core
+            run_core = make_deribit_run_core(
+                ws_url=cfg.ws_base_url,
+                client_id=cfg.credentials.api_key,
+                client_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                currency=currency,
+                now_ms=lambda: int(_time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
 
     # ------------------------------------------------------------------
     # Task 5 — ExecArmBar call sites
