@@ -30,8 +30,11 @@ per engine instance, unique per submission, collision-safe when N engines share 
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Callable
+
+log = logging.getLogger(__name__)
 
 from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
@@ -327,6 +330,12 @@ class LivePortfolioEngine:
         for buys).
         """
         extreme = self.price_of(sym)
+        if extreme <= 0.0:
+            log.warning(
+                "trailing stop armed with no mark yet (%s); not registered",
+                sym,
+            )
+            return
         self._books.setdefault(sym, ConditionalBook()).add_trailing(
             side_sign, size, trail, extreme=extreme, weight=weight
         )

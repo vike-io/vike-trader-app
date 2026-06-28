@@ -616,3 +616,41 @@ def test_cancel_all_eth_clears_eth_book_only():
     # BTC still active
     fired_btc = eng.check_conditionals(_BTC, _hbar(ts=1, high=120.0, low=108.0))
     assert len(fired_btc) == 1
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT fix (review wave 1): no-mark guard on submit_trailing
+# ---------------------------------------------------------------------------
+
+def test_buy_trailing_no_mark_does_not_register():
+    """A BUY trailing armed when mark=0 (no mark set) must NOT register in the book."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    # acct.marks has no entry for BTC → price_of returns 0.0
+    assert acct.marks.get(("binance", _BTC)) is None
+    eng.submit_trailing(_BTC, +1, 1.0, trail=5.0)
+    # Must NOT register (book not created or empty)
+    assert _BTC not in eng._books or len(eng._books[_BTC]) == 0
+
+
+def test_buy_trailing_no_mark_does_not_fire_on_next_bar():
+    """A BUY trailing armed with no mark must not route any order on the next normal bar."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    eng.submit_trailing(_BTC, +1, 1.0, trail=5.0)
+    # Feed a normal-priced bar (high >> trail, would have triggered the bug)
+    fired = eng.check_conditionals(_BTC, _hbar(ts=1, high=50_000.0, low=49_000.0))
+    assert fired == []
+    assert len(hub_btc.submitted) == 0
+
+
+def test_buy_trailing_with_mark_registers_and_fires():
+    """Positive regression: a BUY trailing WITH a mark registers and fires on retrace."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    acct.marks[("binance", _BTC)] = 100.0
+    # BUY trailing: extreme=100, trail=5 → trigger at 105; fires when high >= 105
+    eng.submit_trailing(_BTC, +1, 1.0, trail=5.0)
+    assert _BTC in eng._books and len(eng._books[_BTC]) == 1
+    # Bar with high=106 >= 105 → fires
+    fired = eng.check_conditionals(_BTC, _hbar(ts=1, high=106.0, low=99.0))
+    assert len(fired) == 1
+    assert hub_btc.submitted[0].side == +1 and hub_btc.submitted[0].qty == 1.0
+    assert len(hub_eth.submitted) == 0

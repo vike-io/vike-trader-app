@@ -242,12 +242,6 @@ class LivePortfolioPump:
         if self._i >= warmup:
             try:
                 self.strategy.on_bar(complete_ts, fired_bucket)
-            except NotImplementedError:
-                log.warning(
-                    "LivePortfolioPump: strategy used a not-yet-supported order type "
-                    "(stop/trailing → A2e); skipped for ts=%d",
-                    complete_ts,
-                )
             except Exception:  # noqa: BLE001
                 log.exception(
                     "LivePortfolioPump: strategy.on_bar raised at ts=%d; "

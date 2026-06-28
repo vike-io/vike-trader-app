@@ -284,3 +284,45 @@ def test_cancel_all_clears_conditional_book():
     # Crossing bar fires nothing — book was cleared.
     fired = e.check_conditionals(_bar(1, 100, 200, 50, 150))
     assert fired == [] and len(hub.submitted) == 0
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT fix (review wave 1): no-mark guard on submit_trailing
+# ---------------------------------------------------------------------------
+
+def test_buy_trailing_no_mark_does_not_register():
+    """A BUY trailing armed when mark=0 (no mark set) must NOT register in the book."""
+    hub = _Hub()
+    acct = _Acct()  # marks={} → _mark() returns 0.0
+    e = _eng(acct=acct, hub=hub)
+    # side>0 = BUY trailing; without this guard extreme+trail would be a tiny trigger
+    e.submit_trailing(+1, 1.0, trail=5.0)
+    # Must NOT register
+    assert len(e._book) == 0
+
+
+def test_buy_trailing_no_mark_does_not_fire_on_next_bar():
+    """A BUY trailing armed with no mark must not route any order on the next normal bar."""
+    hub = _Hub()
+    acct = _Acct()  # no mark
+    e = _eng(acct=acct, hub=hub)
+    e.submit_trailing(+1, 1.0, trail=5.0)
+    # Feed a normal-priced bar (high > trail, would have triggered the bug)
+    fired = e.check_conditionals(_bar(1, 1000.0, 1010.0, 990.0, 1000.0))
+    assert fired == []
+    assert len(hub.submitted) == 0
+
+
+def test_buy_trailing_with_mark_registers_and_fires():
+    """Positive regression: a BUY trailing WITH a mark registers and fires on retrace."""
+    hub = _Hub()
+    acct = _Acct()
+    acct.marks[("binance", "BTCUSDT")] = 100.0
+    e = _eng(acct=acct, hub=hub)
+    # BUY trailing: extreme=100, trail=5 → trigger at 100+5=105; fires when high >= 105
+    e.submit_trailing(+1, 1.0, trail=5.0)
+    assert len(e._book) == 1
+    # Bar with high=106 >= 105 → fires
+    fired = e.check_conditionals(_bar(1, 100.0, 106.0, 99.0, 104.0))
+    assert len(fired) == 1
+    assert hub.submitted[0].side == +1 and hub.submitted[0].qty == 1.0

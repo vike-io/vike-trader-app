@@ -25,11 +25,12 @@ collisions when multiple engines run concurrently on the same symbol.
 Resting-order note:
   ``submit_limit`` / ``submit_market_close`` / ``submit_limit_close`` build the correct
   ``OrderRequest.order_type`` and route to the hub.
-  ``submit_stop`` and ``submit_trailing`` both raise ``NotImplementedError`` — stop orders are
-  deferred to slice A2e because NO venue client honors ``order_type="stop"`` in
-  ``build_order_params`` (every branch only checks ``is_limit``); submitting as-is would fire a
-  plain MARKET immediately with the trigger silently dropped — a real-money mis-order.  Raising
-  is deliberate: fail safe until A2e wires client-side emulated conditionals.
+  ``submit_stop`` and ``submit_trailing`` register client-side emulated conditionals on a
+  ``ConditionalBook`` checked per closed bar (call ``check_conditionals(bar)`` from the pump).
+  When the trigger is hit, a plain MARKET order is fired through the existing ``submit`` path
+  (RiskGate inside the hub).  No native stop order type is used — venue adapters only check
+  ``is_limit`` in ``build_order_params``; submitting a native stop would fire as an immediate
+  MARKET with the trigger silently dropped (a real-money mis-order).
 
 MTF buffer:
   ``add_live_bar`` / ``bars_for`` / ``forming_for`` mirror ``BacktestEngine`` directly.
@@ -40,8 +41,11 @@ MTF buffer:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Callable
+
+log = logging.getLogger(__name__)
 
 from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
@@ -285,6 +289,12 @@ class StrategyLiveEngine:
         for buys).
         """
         extreme = self._mark()
+        if extreme <= 0.0:
+            log.warning(
+                "trailing stop armed with no mark yet (%s); not registered",
+                self._symbol,
+            )
+            return
         self._book.add_trailing(side_sign, size, trail, extreme=extreme, weight=weight)
 
     def check_conditionals(self, bar: Bar) -> list:
