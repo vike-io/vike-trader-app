@@ -3606,6 +3606,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_feed_health()           # back to CACHED/LIVE data-feed badge
         self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
         self._live_strat_bar.set_armed(False)
+        # E: explicitly disable Studio Run-live after disarm so it doesn't remain clickable
+        # when _stop_live_strategy's armed-check fired while the session was still alive.
+        if self.studio is not None:
+            self.studio.set_live_armed(False)
         self.order_ticket.set_armed(False)
         self.positions_panel.set_armed(False)   # clears rows + disables Cancel (no cancel when no session)
 
@@ -3629,7 +3633,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
         Errors are surfaced via the status bar only — no modals (the headless rule).
         Does nothing (with a status message) when not armed or already running.
+
+        Cold-start seed (A): REST-backfills max(WARMUP+50, 250) closed bars and calls
+        pump.prime() so the strategy's indicator lookbacks are pre-populated before the
+        first live bar arrives.  A fetch failure is logged and shown on the status bar but
+        the pump still starts cold (best-effort — live must not be blocked by a data error).
         """
+        import logging
         sess = getattr(self, "_exec_session", None)
         if sess is None or sess.hub is None:
             self.statusBar().showMessage("Arm live execution first.", 3000)
@@ -3641,20 +3651,37 @@ class MainWindow(QtWidgets.QMainWindow):
         from ..exec.live_strategy_pump import LiveStrategyPump
         from .live_feed_worker import LiveBarFeedWorker
         from ..data.vike_live import make_live_feed
+        from ..data.sources import select_source
         try:
             strategy_cls = load_strategy_from_string(code)
             strategy = strategy_cls()
         except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
             self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
             return
+        interval = self._interval
         pump = LiveStrategyPump(
             strategy, sess.hub,
             timeframes=getattr(strategy, "timeframes", None),
         )
+        # A: REST backfill to warm indicator lookbacks before the first live bar.
+        seed_count = max(getattr(strategy, "WARMUP", 0) + 50, _FORWARD_SEED_BARS)
+        try:
+            now = int(time.time() * 1000)
+            start = now - seed_count * interval_ms(interval)
+            history = select_source(sess.hub.symbol).fetch_bars_range(
+                sess.hub.symbol, interval, start, now)
+            pump.prime(history)
+        except Exception as exc:  # noqa: BLE001 - data error must not block live start
+            logging.getLogger(__name__).warning(
+                "live strategy cold-start backfill failed (%s); starting without history", exc)
+            self.statusBar().showMessage(
+                f"Backfill failed ({exc}); strategy starting cold.", 4000)
         pump.start()
-        feed = make_live_feed(sess.hub.symbol, self._interval)
+        feed = make_live_feed(sess.hub.symbol, interval)
         worker = LiveBarFeedWorker(feed)
         worker.barClosed.connect(pump.feed_bar)
+        # G: auto-stop the pump if the WS feed thread dies unexpectedly.
+        worker.finished.connect(self._on_live_feed_worker_finished)
         sess.add_aux_worker("live_strategy", worker)
         worker.start()
         self._strat_pump = pump
@@ -3663,18 +3690,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self._live_strat_bar.set_running(name)
         if self.studio is not None:
             self.studio.set_live_armed(False)   # disable Run Live while running
-        self.statusBar().showMessage(f"Live strategy {name} running.", 3000)
+        # H: surface the interval in the running status label.
+        self.statusBar().showMessage(f"Live strategy {name} running ({interval}).", 3000)
+
+    def _on_live_feed_worker_finished(self) -> None:
+        """G: Auto-stop the strategy if the live bar-feed thread exits unexpectedly.
+
+        This slot is connected to LiveBarFeedWorker.finished (QThread.finished signal).
+        If a clean _stop_live_strategy() already nil'd the pump, this is a no-op.
+        """
+        if getattr(self, "_strat_pump", None) is not None:
+            import logging
+            logging.getLogger(__name__).warning(
+                "live bar-feed worker exited while strategy was running; auto-stopping")
+            self._stop_live_strategy()
+            self.statusBar().showMessage(
+                "Live bar feed disconnected — strategy stopped automatically.", 5000)
 
     def _stop_live_strategy(self) -> None:
         """Stop the running live strategy pump and its bar-feed worker.
 
         Safe to call when nothing is running — all guards use getattr-None checks.
         Worker is stopped BEFORE the pump so the pump's on_stop() sees no more bars.
+
+        B: barClosed is disconnected BEFORE stop() so late queued signals cannot call
+        feed_bar after the pump's _started flag is cleared by stop().  The pump's own
+        feed_bar guard (``if not self._started: return``) is a second-line defence.
+        F: wait() return value is checked; a False (timeout) is logged as a warning.
         """
+        import logging
         worker = getattr(self, "_strat_worker", None)
         pump = getattr(self, "_strat_pump", None)
         if worker is not None:
-            worker.stop()   # sets stop flag + wait()s the thread
+            # B: disconnect BEFORE stop() to prevent late queued barClosed calls.
+            try:
+                if pump is not None:
+                    worker.barClosed.disconnect(pump.feed_bar)
+            except (TypeError, RuntimeError):
+                pass   # already disconnected
+            worker.stop()   # sets stop flag + cancels the async task + wait()s the thread
+            # F: log a warning when the thread does not join within stop()'s timeout.
+            if worker.isRunning():
+                logging.getLogger(__name__).warning(
+                    "live bar-feed worker did not join in stop()'s timeout; it may orphan")
         if pump is not None:
             pump.stop()
         self._strat_pump = None

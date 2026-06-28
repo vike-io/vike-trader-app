@@ -86,6 +86,7 @@ class _FakeWorker(QtWidgets.QWidget):
     """Stub for LiveBarFeedWorker — QObject subclass so barClosed signal can exist."""
 
     barClosed = QtCore.Signal(object)
+    finished = QtCore.Signal()   # mirrors QThread.finished; needed by _start_live_strategy fix G
 
     def __init__(self, feed=None, parent=None):
         super().__init__(parent)
@@ -362,4 +363,85 @@ def test_disarm_stops_strategy_before_session_shutdown(app, monkeypatch):
         # worker must stop before pump
         assert stop_order.index("worker") < stop_order.index("pump")
     finally:
+        win.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Fix E: disarm disables Studio Run-live control
+# ---------------------------------------------------------------------------
+
+def test_disarm_disables_studio_run_live(app, monkeypatch):
+    """After _on_disarm_requested, the Studio Run-live button must be disabled (fix E)."""
+    import vike_trader_app.data.vike_live as vike_live_mod
+
+    monkeypatch.setattr(
+        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _FakePump)
+    monkeypatch.setattr(
+        "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
+    monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
+
+    win = MainWindow()
+    try:
+        _arm_window(win, monkeypatch)
+        # Studio's Run-live button should be enabled after arming.
+        if win.studio is not None:
+            assert win.studio._btn_run_live.isEnabled(), \
+                "Studio Run-live should be enabled after arming"
+
+        win._on_disarm_requested()
+
+        # After disarm, Studio Run-live must be disabled regardless of running state.
+        if win.studio is not None:
+            assert not win.studio._btn_run_live.isEnabled(), \
+                "Studio Run-live should be disabled after disarm (fix E)"
+    finally:
+        win.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Fix A: backfill-fetch failure still starts the pump + shows status message
+# ---------------------------------------------------------------------------
+
+def test_backfill_failure_starts_pump_cold(app, monkeypatch):
+    """When REST backfill raises, the pump still starts and status bar shows a message (fix A)."""
+    import vike_trader_app.data.vike_live as vike_live_mod
+    import vike_trader_app.data.sources as sources_mod
+
+    captured_pump = []
+    messages = []
+
+    class _SpyPump(_FakePump):
+        def __init__(self, strategy, hub, **kw):
+            super().__init__(strategy, hub, **kw)
+            captured_pump.append(self)
+
+    class _FailSource:
+        def fetch_bars_range(self, symbol, interval, start, end):
+            raise RuntimeError("network down")
+
+    monkeypatch.setattr(
+        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _SpyPump)
+    monkeypatch.setattr(
+        "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
+    monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
+    monkeypatch.setattr(sources_mod, "select_source", lambda sym: _FailSource())
+
+    win = MainWindow()
+    try:
+        _arm_window(win, monkeypatch)
+        monkeypatch.setattr(win.statusBar(), "showMessage",
+                            lambda m, t=0: messages.append(m))
+        win._start_live_strategy(_TRIVIAL_STRATEGY)
+
+        # Pump must still be created and started despite backfill failure.
+        assert len(captured_pump) == 1, "pump should be created even if backfill fails"
+        assert captured_pump[0].started, "pump should be started even if backfill fails"
+        assert win._strat_pump is not None
+
+        # Status bar must mention the failure (no modal).
+        assert any("Backfill" in m or "backfill" in m or "cold" in m for m in messages), \
+            f"expected backfill-failure status message, got: {messages}"
+    finally:
+        if win._strat_worker is not None:
+            win._strat_worker.stopped = True
         win.shutdown()
