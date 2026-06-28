@@ -221,13 +221,14 @@ class LivePortfolioEngine:
             )
             hub.submit_ticket(req)
 
-    def submit_market_close(self, sym: str, side_sign: int, size: float, weight: float = 0.0) -> None:
+    def submit_market_close(self, sym: str, side_sign: int, size: float, weight: float = 0.0,
+                            raw: bool = False) -> None:
         """Submit a market order to reduce/close the position (explicit direction + size).
 
-        ``weight`` is accepted for signature-parity with the backtest ``PortfolioEngine`` and
-        is IGNORED here.
+        ``weight``/``raw`` are accepted for signature-parity with the backtest ``PortfolioEngine``
+        (no sizer/leverage-cap on the live path) and are IGNORED here.
         """
-        del weight
+        del weight, raw
         if size > 0.0:
             hub = self._hub(sym)
             req = OrderRequest(
@@ -249,13 +250,14 @@ class LivePortfolioEngine:
         size: float,
         price: float,
         weight: float = 0.0,
+        raw: bool = False,
     ) -> None:
         """Submit a limit order to reduce/close the position at the given price.
 
-        ``weight`` is accepted for signature-parity with the backtest ``PortfolioEngine`` and
-        is IGNORED here.
+        ``weight``/``raw`` are accepted for signature-parity with the backtest ``PortfolioEngine``
+        (no sizer/leverage-cap on the live path) and are IGNORED here.
         """
-        del weight
+        del weight, raw
         if size > 0.0:
             hub = self._hub(sym)
             req = OrderRequest(
