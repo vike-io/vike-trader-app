@@ -6,6 +6,13 @@ verbs; here they build an ``OrderRequest`` and hand it to ``LiveOmsHub.submit_ti
 runs the RiskGate internally — do NOT gate again). Position and equity are read from the live
 ``Account`` fill-model rather than from a simulation ledger.
 
+Strategy handler firing (``on_order_submitted``, ``on_order_rejected``, etc.) is intentionally
+NOT done here.  That is slice A2b's responsibility: A2b subscribes to the real EventBus events
+(``OrderSubmitted``, ``OrderDenied``, …) and fires the appropriate handler from the venue's
+confirmation.  Firing synchronously here would cause a double-fire once A2b is wired, and would
+incorrectly report "submitted" even when the RiskGate vetoes the order (veto publishes
+``OrderDenied`` and returns — no raise).
+
 Order-target sizing mirrors BacktestEngine exactly:
   target_size = pct * equity_now() / (mark * multiplier)
 The mark comes from ``account.marks.get((venue, symbol))``, the same dict that the perp-mark feed
@@ -59,8 +66,6 @@ class StrategyLiveEngine:
 
     Parameters
     ----------
-    strategy:
-        The strategy object. Must implement ``on_order_submitted(req)``.
     hub:
         ``LiveOmsHub`` (or a duck-compatible stub). Provides ``submit_ticket``,
         ``cancel_ticket``, and ``registry``.
@@ -74,11 +79,13 @@ class StrategyLiveEngine:
         Applied identically to BacktestEngine so ``order_target_value`` sizing matches.
     now_ms:
         Clock injection. Called on every ``submit``; defaults to wall-clock ms.
+
+    Note: strategy handler callbacks (``on_order_submitted`` etc.) are fired by slice A2b
+    via the real EventBus — NOT synchronously here.  See module docstring for rationale.
     """
 
     def __init__(
         self,
-        strategy,
         hub: "LiveOmsHub",
         account: "Account",
         venue: str,
@@ -88,7 +95,6 @@ class StrategyLiveEngine:
         now_ms: Callable[[], int] | None = None,
         timeframes: list[str] | None = None,
     ) -> None:
-        self._strategy = strategy
         self._hub = hub
         self._account = account
         self._venue = venue
@@ -183,9 +189,13 @@ class StrategyLiveEngine:
         )
 
     def _route(self, req: OrderRequest) -> None:
-        """Submit to hub (RiskGate is INSIDE submit_ticket — do not gate here) and fire callback."""
+        """Submit to hub. RiskGate is INSIDE submit_ticket — do NOT gate here.
+
+        Handler firing (on_order_submitted / on_order_rejected / …) is A2b's job, driven by
+        the real EventBus events so it fires only on actual venue confirmation and a RiskGate
+        veto fires on_order_rejected instead.  Do NOT add handler calls here.
+        """
         self._hub.submit_ticket(req)
-        self._strategy.on_order_submitted(req)
 
     # ------------------------------------------------------------------
     # Order verbs (mirror BacktestEngine's public surface)

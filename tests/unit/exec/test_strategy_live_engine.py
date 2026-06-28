@@ -1,4 +1,9 @@
-"""Tests for StrategyLiveEngine — market/target order verbs -> LiveOmsHub + Account reads."""
+"""Tests for StrategyLiveEngine — market/target order verbs -> LiveOmsHub + Account reads.
+
+Handler firing (on_order_submitted, on_order_rejected, …) is A2b's responsibility, driven by
+the real EventBus events.  StrategyLiveEngine does NOT fire strategy callbacks — tests here
+verify only that orders reach the hub and that account reads are correct.
+"""
 from vike_trader_app.exec.strategy_live_engine import StrategyLiveEngine
 from vike_trader_app.exec.events import OrderRequest
 
@@ -18,13 +23,8 @@ class _Acct:
     def unrealized_pnl(self, venue, symbol, position_side="BOTH"): return self._u
 
 
-class _Strat:
-    def __init__(self): self.submitted_events = []
-    def on_order_submitted(self, order): self.submitted_events.append(order)
-
-
-def _eng(acct=None, hub=None, strat=None):
-    return StrategyLiveEngine(strat or _Strat(), hub or _Hub(), acct or _Acct(),
+def _eng(acct=None, hub=None):
+    return StrategyLiveEngine(hub or _Hub(), acct or _Acct(),
                               venue="binance", symbol="BTCUSDT", now_ms=lambda: 123)
 
 
@@ -37,12 +37,6 @@ def test_submit_builds_orderrequest_and_routes_to_hub():
     assert (req.venue, req.symbol, req.side, req.qty, req.order_type, req.ts) == \
            ("binance", "BTCUSDT", 1, 2.0, "market", 123)
     assert req.client_order_id  # unique id present
-
-
-def test_submit_fires_on_order_submitted_sync():
-    strat = _Strat(); e = _eng(strat=strat)
-    e.submit(-1, 1.0)
-    assert len(strat.submitted_events) == 1
 
 
 def test_position_and_equity_from_account():
@@ -171,22 +165,13 @@ def test_submit_trailing_raises_not_implemented():
         e.submit_trailing(+1, 1.0, trail=5.0)
 
 
-def test_resting_verbs_fire_on_order_submitted():
-    strat = _Strat(); hub = _Hub(); e = _eng(strat=strat, hub=hub)
-    e.submit_limit(+1, 1.0, price=90.0)
-    e.submit_stop(-1, 1.0, price=80.0)
-    e.submit_market_close(-1, 1.0)
-    e.submit_limit_close(-1, 1.0, price=85.0)
-    assert len(strat.submitted_events) == 4
-
-
 # ---------------------------------------------------------------------------
 # Task 2: MTF buffer
 # ---------------------------------------------------------------------------
 
 def test_mtf_buffer_bars_for():
     from vike_trader_app.core.model import Bar
-    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+    e = StrategyLiveEngine(_Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
                            now_ms=lambda: 0, timeframes=["1h"])
     for t in range(120):  # 1-min bars (60_000 ms each); feed 2h worth
         e.add_live_bar(Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
@@ -195,7 +180,7 @@ def test_mtf_buffer_bars_for():
 
 def test_mtf_buffer_bars_for_returns_completed_bars_only():
     from vike_trader_app.core.model import Bar
-    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+    e = StrategyLiveEngine(_Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
                            now_ms=lambda: 0, timeframes=["1h"])
     # Feed 61 1-min bars: bars 0..59 cover the first hour (ts=0..3_540_000),
     # bar 60 (ts=3_600_000) falls in the second hour — so the first hour is now completed
@@ -208,7 +193,7 @@ def test_mtf_buffer_bars_for_returns_completed_bars_only():
 
 def test_mtf_buffer_forming_for():
     from vike_trader_app.core.model import Bar
-    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+    e = StrategyLiveEngine(_Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
                            now_ms=lambda: 0, timeframes=["1h"])
     # Feed 30 1-min bars — halfway through the first hour
     for t in range(30):
@@ -221,7 +206,7 @@ def test_mtf_buffer_forming_for():
 def test_mtf_buffer_empty_without_timeframes():
     """Engine without timeframes= still has bars list."""
     from vike_trader_app.core.model import Bar
-    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+    e = StrategyLiveEngine(_Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
                            now_ms=lambda: 0)
     e.add_live_bar(Bar(ts=0, open=1, high=1, low=1, close=1))
     assert len(e.bars) == 1
