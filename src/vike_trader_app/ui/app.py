@@ -309,6 +309,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._exec_session = None   # LiveExecutionSession when live exec is gated ON (Phase 3b)
         self._strat_pump = None     # LiveStrategyPump while a strategy is running live
         self._strat_worker = None   # LiveBarFeedWorker that drives the pump (registered on session)
+        self._strat_workers: list = []  # N LiveBarFeedWorkers for portfolio pump (A2d)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
@@ -1475,7 +1476,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio_price.pairsRequested.connect(
             lambda n, ch=self.studio_price: self._add_pairs(ch, n))
         self.studio = StudioTab()
-        self.studio.runLiveRequested.connect(self._start_live_strategy)
+        self.studio.runLiveRequested.connect(self._on_run_live_requested)
         # Sync the Run Live button to the current arm state (Studio may open after arm).
         sess = getattr(self, "_exec_session", None)
         armed = sess is not None and sess.hub is not None
@@ -3881,6 +3882,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Stop any running live strategy BEFORE shutting down the session (the pump needs
         # the hub to be alive to unsubscribe its event adapter cleanly).
         self._stop_live_strategy()
+        self._stop_live_portfolio()
         sess = getattr(self, "_exec_session", None)
         if sess is not None:
             if sess.hub is not None:
@@ -3909,19 +3911,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self.positions_panel.set_armed(False)   # clears rows + disables Cancel (no cancel when no session)
 
     # ------------------------------------------------------------------
-    # Live-strategy pump wiring (A2c Task 3)
+    # Live-strategy pump wiring (A2c Task 3 + A2d Task 4)
     # ------------------------------------------------------------------
 
     def _on_live_strat_start_requested(self) -> None:
         """Handle the LiveStrategyBar "Run live" button click.
 
-        Pulls the current editor code from Studio and forwards to _start_live_strategy.
+        Pulls the current editor code from Studio and forwards to the router.
         If Studio is not open we report via the status bar — no modal.
         """
         if self.studio is None:
             self.statusBar().showMessage("Open Studio to edit a strategy first.", 3000)
             return
-        self._start_live_strategy(self.studio.editor.text())
+        self._on_run_live_requested(self.studio.editor.text())
+
+    def _on_run_live_requested(self, code: str) -> None:
+        """Route Run-live to _start_live_portfolio or _start_live_strategy.
+
+        Detects whether the loaded strategy is a ``PortfolioStrategy`` subclass
+        and dispatches to the matching implementation.  The single-symbol A2c
+        path is unchanged for plain ``Strategy`` subclasses.
+        """
+        from ..core.strategy_loader import load_any_strategy_from_string
+        from ..core.portfolio import PortfolioStrategy
+        try:
+            strategy_cls = load_any_strategy_from_string(code)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
+            return
+        if issubclass(strategy_cls, PortfolioStrategy):
+            self._start_live_portfolio(code)
+        else:
+            self._start_live_strategy(code)
 
     def _start_live_strategy(self, code: str) -> None:
         """Load the strategy from *code* and start driving it with live bars.
@@ -4019,7 +4040,9 @@ class MainWindow(QtWidgets.QMainWindow):
         F: wait() return value is checked; a False (timeout) is logged as a warning.
         """
         worker = getattr(self, "_strat_worker", None)
-        pump = getattr(self, "_strat_pump", None)
+        # Only owns _strat_pump when running a SINGLE-SYMBOL strategy (A2c).
+        # Portfolio pump is owned by _strat_workers (the LIST — A2d); skip here.
+        pump = getattr(self, "_strat_pump", None) if worker is not None else None
         if worker is not None:
             # B: disconnect BEFORE stop() to prevent late queued barClosed calls.
             try:
@@ -4034,8 +4057,151 @@ class MainWindow(QtWidgets.QMainWindow):
                     "live bar-feed worker did not join in stop()'s timeout; it may orphan")
         if pump is not None:
             pump.stop()
-        self._strat_pump = None
+        if worker is not None:
+            # Only clear the pump ref when handling the single-symbol case.
+            self._strat_pump = None
         self._strat_worker = None
+        if getattr(self, "_live_strat_bar", None) is not None:
+            self._live_strat_bar.set_running(None)
+            sess = getattr(self, "_exec_session", None)
+            armed = sess is not None and getattr(sess, "hub", None) is not None
+            self._live_strat_bar.set_armed(armed)
+        if self.studio is not None:
+            sess = getattr(self, "_exec_session", None)
+            armed = sess is not None and getattr(sess, "hub", None) is not None
+            self.studio.set_live_armed(armed)
+
+    # ------------------------------------------------------------------
+    # Live-portfolio pump wiring (A2d Task 4)
+    # ------------------------------------------------------------------
+
+    def _start_live_portfolio(self, code: str) -> None:
+        """Load a PortfolioStrategy from *code* and start driving it with N live feeds.
+
+        One ``LiveBarFeedWorker`` per symbol in the armed basket; all feed bars into a
+        shared ``LivePortfolioPump`` which aligns them (wait-for-all) before calling
+        ``strategy.on_bar(ts, {symbol: bar})``.
+
+        Errors are surfaced via the status bar only — no modals (the headless rule).
+        Does nothing (with a status message) when not armed with a multi-symbol basket
+        or when a strategy is already running.
+
+        Cold-start seed (A): REST-backfills max(WARMUP+50, 250) closed bars PER SYMBOL and
+        feeds them through ``engine.add_live_bar`` so indicator lookbacks are pre-populated.
+        A fetch failure for a symbol is logged and shown on the status bar but the pump still
+        starts — that symbol just begins cold (best-effort).
+
+        M1 (mirror A2c): REST fetch may include the still-forming candle — ``closed_bars``
+        drops it to avoid a ghost duplicate when the WS feed later emits the same bar.
+        """
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or not getattr(sess, "hubs", {}):
+            self.statusBar().showMessage("Arm a basket first.", 3000)
+            return
+        if getattr(self, "_strat_pump", None) is not None:
+            self.statusBar().showMessage("A live strategy is already running. Stop it first.", 3000)
+            return
+        from ..core.strategy_loader import load_any_strategy_from_string
+        from ..exec.live_portfolio_pump import LivePortfolioPump
+        from .live_feed_worker import LiveBarFeedWorker
+        from ..data.vike_live import make_live_feed
+        from ..data.sources import select_source
+        try:
+            strategy_cls = load_any_strategy_from_string(code)
+            strategy = strategy_cls()
+        except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
+            self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
+            return
+
+        # Shared account is the same object across all hubs in the basket.
+        account = next(iter(sess.hubs.values())).account
+        pump = LivePortfolioPump(strategy, sess.hubs, account)
+
+        interval = self._interval
+        seed_count = max(getattr(strategy, "WARMUP", 0) + 50, _FORWARD_SEED_BARS)
+
+        # A + M1: REST-backfill each symbol; feed history bars through the engine buffer only
+        # (not through pump.feed_bar — that would try to align them and would never complete
+        # until all symbols have bars for the same ts; instead prime the engine directly).
+        for sym, hub in sess.hubs.items():
+            try:
+                now = int(time.time() * 1000)
+                start = now - seed_count * interval_ms(interval)
+                history = select_source(sym).fetch_bars_range(sym, interval, start, now)
+                # M1: drop the still-forming tail candle (same as A2c).
+                history = closed_bars(history, interval_ms(interval), now)
+                for bar in history:
+                    pump.engine.add_live_bar(sym, bar)
+            except Exception as exc:  # noqa: BLE001 - data error must not block live start
+                logging.getLogger(__name__).warning(
+                    "live portfolio cold-start backfill failed for %s (%s); starting cold", sym, exc)
+                self.statusBar().showMessage(
+                    f"Backfill failed for {sym} ({exc}); starting cold.", 4000)
+
+        pump.start()
+
+        workers: list = []
+        for sym in sess.hubs:
+            feed = make_live_feed(sym, interval)
+            worker = LiveBarFeedWorker(feed)
+            # Bind sym per-worker so each lambda captures its own sym value.
+            worker.barClosed.connect(lambda b, s=sym: pump.feed_bar(s, b))
+            # G: auto-stop the pump if ANY feed thread dies unexpectedly.
+            worker.finished.connect(self._on_live_portfolio_worker_finished)
+            sess.add_aux_worker(f"live_strat_{sym}", worker)
+            worker.start()
+            workers.append(worker)
+
+        self._strat_pump = pump
+        self._strat_workers = workers
+        name = type(strategy).__name__
+        self._live_strat_bar.set_running(name)
+        if self.studio is not None:
+            self.studio.set_live_armed(False)   # disable Run Live while running
+        self.statusBar().showMessage(
+            f"Live portfolio strategy {name} running ({interval}, {len(workers)} symbols).", 3000)
+
+    def _on_live_portfolio_worker_finished(self) -> None:
+        """G: Auto-stop the portfolio strategy if ANY live bar-feed thread exits unexpectedly.
+
+        Connected to each ``LiveBarFeedWorker.finished``.  If a clean ``_stop_live_portfolio()``
+        already nil'd the pump, this is a no-op.
+        """
+        if getattr(self, "_strat_pump", None) is not None:
+            logging.getLogger(__name__).warning(
+                "a portfolio live bar-feed worker exited while strategy was running; auto-stopping")
+            self._stop_live_portfolio()
+            self.statusBar().showMessage(
+                "A live bar feed disconnected — portfolio strategy stopped automatically.", 5000)
+
+    def _stop_live_portfolio(self) -> None:
+        """Stop the running portfolio pump and ALL its bar-feed workers.
+
+        Safe to call when nothing is running — all guards use getattr-None checks.
+        All workers are stopped (waited) BEFORE the pump so on_stop() sees no more bars.
+
+        B: barClosed signals are disconnected before stop() to prevent late queued calls.
+        F: each worker.isRunning() is checked post-stop and a warning logged on timeout.
+        """
+        pump = getattr(self, "_strat_pump", None)
+        workers = list(getattr(self, "_strat_workers", []))
+        for worker in workers:
+            # B: disconnect BEFORE stop() to prevent late queued barClosed calls.
+            try:
+                # Disconnect all slots from barClosed (the lambda bound sym can't be named
+                # individually — disconnect() with no args disconnects all receivers).
+                worker.barClosed.disconnect()
+            except (TypeError, RuntimeError):
+                pass   # already disconnected
+            worker.stop()
+            # F: log a warning when the thread does not join within stop()'s timeout.
+            if worker.isRunning():
+                logging.getLogger(__name__).warning(
+                    "live portfolio bar-feed worker did not join in stop()'s timeout; it may orphan")
+        if pump is not None:
+            pump.stop()
+        self._strat_pump = None
+        self._strat_workers = []
         if getattr(self, "_live_strat_bar", None) is not None:
             self._live_strat_bar.set_running(None)
             sess = getattr(self, "_exec_session", None)
@@ -4649,6 +4815,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._live_hub.shutdown()            # chart-document live round-robin + its worker
         # Stop any running live strategy BEFORE shutting down the session.
         self._stop_live_strategy()
+        self._stop_live_portfolio()
         if getattr(self, "_exec_session", None) is not None:
             sess = self._exec_session
             if getattr(sess, "hub", None) is not None:
