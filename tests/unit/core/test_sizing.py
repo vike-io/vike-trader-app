@@ -1,4 +1,6 @@
-"""Unit tests for the swappable PositionSizer abstraction."""
+"""Unit tests for the swappable PositionSizer abstraction + pure sizing helpers."""
+
+import pytest
 
 from vike_trader_app.core.sizing import (
     DrawdownThrottleSizer,
@@ -191,3 +193,64 @@ def test_portfolio_heat_budget_exhausted_returns_zero():
 def test_portfolio_heat_no_stop_passes_base_through():
     sizer = PortfolioHeatSizer(FixedSharesSizer(100.0), max_heat=0.02)
     assert sizer.size(_rctx(basis_price=100.0, risk_stop=None)) == 100.0
+
+
+# ---------------------------------------------------------------------------
+# Pure sizing helpers: units_from_percent / units_from_value
+# ---------------------------------------------------------------------------
+
+from vike_trader_app.core.sizing import units_from_percent, units_from_value  # noqa: E402
+
+
+def test_units_from_percent_basic():
+    # 50% of $10,000 equity at price $100, multiplier 1 -> 50 units
+    assert units_from_percent(0.5, equity=10_000.0, price=100.0, multiplier=1.0) == pytest.approx(50.0)
+
+
+def test_units_from_percent_respects_multiplier():
+    # 50% of $10,000 at price $100, multiplier 2 -> 25 contracts
+    assert units_from_percent(0.5, equity=10_000.0, price=100.0, multiplier=2.0) == pytest.approx(25.0)
+
+
+def test_units_from_percent_zero_price_returns_zero():
+    assert units_from_percent(0.5, equity=10_000.0, price=0.0, multiplier=1.0) == 0.0
+
+
+def test_units_from_percent_zero_multiplier_returns_zero():
+    assert units_from_percent(0.5, equity=10_000.0, price=100.0, multiplier=0.0) == 0.0
+
+
+def test_units_from_percent_zero_pct_returns_zero():
+    assert units_from_percent(0.0, equity=10_000.0, price=100.0, multiplier=1.0) == 0.0
+
+
+def test_units_from_value_basic():
+    # $500 notional at price $50, multiplier 1 -> 10 units
+    assert units_from_value(500.0, price=50.0, multiplier=1.0) == pytest.approx(10.0)
+
+
+def test_units_from_value_respects_multiplier():
+    # $500 notional at price $50, multiplier 2 -> 5 contracts
+    assert units_from_value(500.0, price=50.0, multiplier=2.0) == pytest.approx(5.0)
+
+
+def test_units_from_value_zero_price_returns_zero():
+    assert units_from_value(500.0, price=0.0, multiplier=1.0) == 0.0
+
+
+def test_units_from_value_zero_multiplier_returns_zero():
+    assert units_from_value(500.0, price=50.0, multiplier=0.0) == 0.0
+
+
+def test_units_from_value_matches_engine_formula():
+    """units_from_value must match BacktestEngine's raw order_target_value formula."""
+    price, multiplier, value = 73.5, 2.0, 1_000.0
+    expected = value / (price * multiplier)
+    assert units_from_value(value, price, multiplier) == pytest.approx(expected)
+
+
+def test_units_from_percent_matches_engine_formula():
+    """units_from_percent must match BacktestEngine's raw order_target_percent formula."""
+    pct, equity, price, multiplier = 0.25, 8_500.0, 42.0, 1.5
+    expected = pct * equity / (price * multiplier)
+    assert units_from_percent(pct, equity, price, multiplier) == pytest.approx(expected)

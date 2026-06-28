@@ -4,19 +4,16 @@ Look-ahead guard: orders submitted during bar *i* fill at the **open of bar i+1*
 because pending orders are filled at the start of each bar *before* the strategy runs.
 """
 
-import bisect
 from dataclasses import dataclass
-from operator import attrgetter
 
+from .bar_buffer import BarSeriesBuffer
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .model import Bar, Fill, Position, Trade
 from .fill_model import BarFillModel
 from .orders import Order
-from .timeframe import parse_timeframe, resample
+from .sizing import units_from_percent, units_from_value
 from .ticks import QuoteTick
-
-_BAR_TS = attrgetter("ts")   # bisect key: higher-TF reads slice a ts-ascending list in O(log n)
 
 
 @dataclass
@@ -78,11 +75,8 @@ class BacktestEngine:
         self._now = bars[0].ts if bars else 0
         self._catalog_arg = catalog
         self._peak = cash  # peak equity, for drawdown
-        # Precompute each higher timeframe once: tf -> (target_ms, [coarse bars]).
-        self._tf: dict[str, tuple[int, list]] = {}
-        for tf in timeframes or []:
-            ms = parse_timeframe(tf)
-            self._tf[tf] = (ms, resample(bars, ms))
+        # Multi-timeframe buffer — self.bars is the shared list reference.
+        self._buf = BarSeriesBuffer(self.bars, timeframes)
         if risk is not None:
             from .order_router import OrderRouter
             strategy._engine = OrderRouter(self, risk)
@@ -162,10 +156,10 @@ class BacktestEngine:
             self.submit(-1, -delta)
 
     def order_target_value(self, value: float) -> None:
-        self.order_target(value / (self._price * self.multiplier))
+        self.order_target(units_from_value(value, self._price, self.multiplier))
 
     def order_target_percent(self, pct: float) -> None:
-        self.order_target(pct * self.equity_now() / (self._price * self.multiplier))
+        self.order_target(units_from_percent(pct, self.equity_now(), self._price, self.multiplier))
 
     @property
     def now(self) -> int:
@@ -190,31 +184,11 @@ class BacktestEngine:
 
     def bars_for(self, tf: str):
         """Completed higher-TF bars visible at the current base bar (deliver-on-complete)."""
-        ms, coarse = self._tf[tf]
-        window_start = self._now - self._now % ms
-        # coarse is ts-ascending: bisect to the first bar at/after window_start instead of rescanning
-        # the whole list every bar (was O(n) per call -> O(n^2) per run on a multi-timeframe strategy).
-        return coarse[:bisect.bisect_left(coarse, window_start, key=_BAR_TS)]
+        return self._buf.bars_for(tf, self._now)
 
     def forming_for(self, tf: str):
         """The still-building coarse bar for ``tf`` from base bars seen so far, or None."""
-        ms, _ = self._tf[tf]
-        window_start = self._now - self._now % ms
-        # self.bars is ts-ascending: slice the [window_start, _now] window via bisect rather than
-        # scanning the whole base series each call (the dominant MTF O(n^2) hot path).
-        lo = bisect.bisect_left(self.bars, window_start, key=_BAR_TS)
-        hi = bisect.bisect_right(self.bars, self._now, key=_BAR_TS)
-        window = self.bars[lo:hi]
-        if not window:
-            return None
-        return Bar(
-            ts=window_start,
-            open=window[0].open,
-            high=max(b.high for b in window),
-            low=min(b.low for b in window),
-            close=window[-1].close,
-            volume=sum(b.volume for b in window),
-        )
+        return self._buf.forming_for(tf, self._now)
 
     # --- run loop ---
     def run(self) -> Result:
@@ -256,9 +230,7 @@ class BacktestEngine:
         same data a backtest would at this bar. Re-resampling each live bar is O(n) but the
         forward cadence is one bar per interval, so it's negligible.
         """
-        self.bars.append(bar)
-        for tf, (ms, _) in list(self._tf.items()):
-            self._tf[tf] = (ms, resample(self.bars, ms))
+        self._buf.add_live_bar(bar)
 
     def step(self, bar: Bar, i: int) -> float:
         """Advance the engine by exactly one bar; return equity after it.
