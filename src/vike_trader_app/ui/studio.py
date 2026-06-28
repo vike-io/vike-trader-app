@@ -1804,6 +1804,8 @@ class DiffDialog(QtWidgets.QDialog):
 class StudioTab(QtWidgets.QWidget):
     """Three-pane studio: ChatPanel | CodeEditor | ResultsPanel with a Run toolbar."""
 
+    runLiveRequested = QtCore.Signal(str)   # emitted with the current editor code
+
     def __init__(self, parent: QtWidgets.QWidget | None = None):
         super().__init__(parent)
 
@@ -1876,6 +1878,11 @@ class StudioTab(QtWidgets.QWidget):
         self._btn_export.setToolTip("Export CSV")
         self._btn_export.clicked.connect(self._export_csv)
         toolbar.addWidget(self._btn_export)
+        self._btn_run_live = QtWidgets.QPushButton("▶ Run live")
+        self._btn_run_live.setToolTip("Run the current strategy live against the armed venue (arm first)")
+        self._btn_run_live.setEnabled(False)   # disabled until armed
+        self._btn_run_live.clicked.connect(lambda: self.runLiveRequested.emit(self.editor.text()))
+        toolbar.addWidget(self._btn_run_live)
         # Collapse / expand the top chart+report panel to hand its height to the editor + AI cards.
         # Wired now; _toggle_top_panel reads self._vsplit at click-time (created further below).
         # NOT added to the FlowLayout — it's pushed to the FAR RIGHT of the toolbar row below
@@ -2478,6 +2485,16 @@ class StudioTab(QtWidgets.QWidget):
         worker, self._worker = self._worker, None
         if worker is not None:
             worker.deleteLater()
+
+    def set_live_armed(self, armed: bool) -> None:
+        """Enable/disable the Run Live button based on arm state.
+
+        Called by MainWindow when the arm state changes so the Studio toolbar
+        reflects whether live execution is available.
+        """
+        btn = getattr(self, "_btn_run_live", None)
+        if btn is not None:
+            btn.setEnabled(armed)
 
     def shutdown(self) -> None:
         """Wait for any in-flight worker so we never destroy a running QThread on close (the
