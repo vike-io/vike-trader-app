@@ -69,6 +69,8 @@ class PortfolioStrategy:
     def __init__(self) -> None:
         self._engine = None  # set by the engine in run()
         self.index = 0
+        from .schedule import Schedule
+        self.schedule = Schedule()
 
     @property
     def equity(self) -> float:
@@ -560,6 +562,10 @@ class PortfolioEngine:
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
             self.strategy.on_bar(ts, cur)
+            sched = getattr(self.strategy, "schedule", None)
+            if sched is not None:
+                for _cb in sched.check_due(ts, i):
+                    _cb()
             eq = self.equity_now()
             self._equity_peak = max(self._equity_peak, eq)  # track running peak for drawdown
             equity_curve.append(eq)
