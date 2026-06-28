@@ -7,7 +7,7 @@ types (Fill/Position); the strategy never sees exec wire types except via the on
 
 import logging
 
-from ..core.model import Fill
+from ..core.model import Fill, Position
 from . import events as ev
 
 log = logging.getLogger(__name__)
@@ -48,5 +48,17 @@ class StrategyEventAdapter:
             s.on_order_expired(e)
         elif t is ev.OrderFilled or t is ev.OrderPartiallyFilled:
             s.on_order_filled(_fill(e.fill))
-        # (position + perp events added in Task 2)
+        elif t is ev.PositionOpened:
+            s.on_position_opened(Position(e.qty, e.avg_px))
+        elif t is ev.PositionChanged:
+            s.on_position_changed(Position(e.qty, e.avg_px))
+        elif t is ev.PositionClosed:
+            s.on_position_closed(Position(0.0, 0.0))
+        elif t is ev.PositionLiquidated:
+            # position_side "LONG" → sell (-1) to close; "SHORT" → buy (+1) to close.
+            # "BOTH" (one-way contract) doesn't carry the held sign in the event → side=0 (best-effort).
+            side = -1 if e.position_side == "LONG" else (+1 if e.position_side == "SHORT" else 0)
+            s.on_liquidation(Fill(side=side, size=e.qty, price=e.liq_price, fee=e.fee,
+                                  ts=e.ts, symbol=e.symbol))
+        # FundingEvent / OrderTriggered / OrderLiquidated / AccountState → on_event only (below)
         s.on_event(e)

@@ -64,3 +64,31 @@ def test_handler_exception_does_not_break_bus():
     StrategyEventAdapter(_Boom(), bus)
     bus.publish(ev.OrderFilled(client_order_id="c1", fill=_fe()))   # must not raise
     assert other                                # the other subscriber still got the event
+
+
+def test_position_events_map_to_core_position():
+    bus, s = _wire()
+    bus.publish(ev.PositionOpened(venue="binance", symbol="BTCUSDT", position_side="BOTH", qty=3.0, avg_px=100.0))
+    bus.publish(ev.PositionChanged(venue="binance", symbol="BTCUSDT", position_side="BOTH", qty=5.0, avg_px=101.0))
+    bus.publish(ev.PositionClosed(venue="binance", symbol="BTCUSDT", position_side="BOTH"))
+    opened = [v for k, v in s.calls if k == "opened"]; changed = [v for k, v in s.calls if k == "changed"]
+    closed = [v for k, v in s.calls if k == "closed"]
+    assert opened[0].size == 3.0 and opened[0].avg_price == 100.0
+    assert changed[0].size == 5.0
+    assert closed[0].size == 0.0
+
+
+def test_liquidation_fires_on_liquidation():
+    bus, s = _wire()
+    bus.publish(ev.PositionLiquidated(venue="binance", symbol="BTCUSDT", position_side="LONG",
+                                      qty=4.0, liq_price=90.0, fee=0.5, ts=9, trade_id="L1"))
+    liq = [v for k, v in s.calls if k == "liq"]
+    assert len(liq) == 1 and liq[0].size == 4.0 and liq[0].price == 90.0
+
+
+def test_funding_is_on_event_only():
+    bus, s = _wire()
+    bus.publish(ev.FundingEvent(venue="binance", symbol="BTCUSDT", position_side="BOTH",
+                                funding_rate=0.0001, amount=-1.5))
+    assert not any(k in ("filled", "opened", "changed", "closed", "liq") for k, _ in s.calls)
+    assert any(k == "event" and v == "FundingEvent" for k, v in s.calls)
