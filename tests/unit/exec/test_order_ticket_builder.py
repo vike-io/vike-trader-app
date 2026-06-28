@@ -81,3 +81,18 @@ def test_client_order_id_and_ts_are_passthrough():
     req = _build(client_order_id="abc123", now_ms=999)
     assert req.client_order_id == "abc123"
     assert req.ts == 999
+
+
+def test_build_close_request_long_sells_full_size_market():
+    from vike_trader_app.exec.order_ticket import build_close_request
+    req = build_close_request(hub_venue="binance", hub_symbol="BTCUSDT", held_size=4.0,
+                              reduce_only=True, client_order_id="c-1", now_ms=123)
+    assert (req.side, req.qty, req.order_type, req.reduce_only, req.price) == (-1, 4.0, "market", True, None)
+    assert (req.venue, req.symbol, req.client_order_id, req.ts) == ("binance", "BTCUSDT", "c-1", 123)
+
+
+def test_build_close_request_short_buys_full_size():
+    from vike_trader_app.exec.order_ticket import build_close_request
+    req = build_close_request(hub_venue="binance", hub_symbol="BTCUSDT", held_size=-3.0,
+                              reduce_only=False, client_order_id="c-2", now_ms=9)
+    assert (req.side, req.qty, req.reduce_only) == (+1, 3.0, False)

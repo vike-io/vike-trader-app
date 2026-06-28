@@ -61,6 +61,28 @@ def build_order_request(
     )
 
 
+def build_close_request(
+    *,
+    hub_venue: str,
+    hub_symbol: str,
+    held_size: float,
+    reduce_only: bool,
+    client_order_id: str,
+    now_ms: int,
+) -> OrderRequest:
+    """Build a market OrderRequest that flattens ``held_size``: opposite side, full size.
+
+    ``reduce_only`` should be True on perps so a flatten can never overshoot/flip the position
+    (spot clients ignore the field). The caller MUST guard ``held_size != 0`` — a flat position has
+    nothing to close. Delegates to ``build_order_request`` for validation + the market price=None rule.
+    """
+    side = -1 if held_size > 0.0 else 1
+    return build_order_request(
+        hub_venue=hub_venue, hub_symbol=hub_symbol, side=side, qty=abs(held_size),
+        order_type="market", reduce_only=reduce_only,
+        client_order_id=client_order_id, now_ms=now_ms)
+
+
 class OrderTicketStatus:
     """Maps order-lifecycle events for the last-submitted order to a one-line status string.
 

@@ -326,3 +326,23 @@ def test_buy_trailing_with_mark_registers_and_fires():
     fired = e.check_conditionals(_bar(1, 100.0, 106.0, 99.0, 104.0))
     assert len(fired) == 1
     assert hub.submitted[0].side == +1 and hub.submitted[0].qty == 1.0
+
+
+# ---------------------------------------------------------------------------
+# slice 1b: submit_close reduce_only via hub flag
+# ---------------------------------------------------------------------------
+
+def test_submit_close_spot_not_reduce_only():
+    """No hub flag (spot) → close is a plain market order, reduce_only False."""
+    acct = _Acct(size=4.0); hub = _Hub(); e = _eng(acct=acct, hub=hub)
+    e.submit_close()
+    assert hub.submitted[0].reduce_only is False
+
+
+def test_submit_close_perp_sets_reduce_only():
+    """Hub flag set (perp) → the flatten is reduce_only so it can't overshoot/flip."""
+    acct = _Acct(size=4.0); hub = _Hub(); hub.reduce_only_on_close = True
+    e = _eng(acct=acct, hub=hub)
+    e.submit_close()
+    req = hub.submitted[0]
+    assert req.reduce_only is True and req.side == -1 and req.qty == 4.0 and req.order_type == "market"
