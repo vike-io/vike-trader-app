@@ -10,7 +10,7 @@ from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
-from .model import Bar, Position, Trade
+from .model import Bar, Fill, Position, Trade
 from .fill_model import BarFillModel
 from .orders import Order
 from .timeframe import parse_timeframe, resample
@@ -303,13 +303,35 @@ class BacktestEngine:
                     remaining -= take
         return triggered
 
-    def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> None:
+    def _emit_fill_events(self, fill: Fill, kind: str) -> Fill:
+        """Fire on_order_filled + on_position_* + on_event for one applied fill (position already updated)."""
+        s = self.strategy
+        s.on_order_filled(fill)
+        s.on_event(fill)
+        if kind == "open":
+            pos = Position(self.position.size, self.position.avg_price)
+            s.on_position_opened(pos); s.on_event(pos)
+        elif kind in ("add", "reduce"):
+            pos = Position(self.position.size, self.position.avg_price)
+            s.on_position_changed(pos); s.on_event(pos)
+        elif kind == "close":
+            pos = Position(0.0, 0.0)
+            s.on_position_closed(pos); s.on_event(pos)
+        elif kind == "flip":
+            closed = Position(0.0, 0.0)
+            s.on_position_closed(closed); s.on_event(closed)
+            opened = Position(self.position.size, self.position.avg_price)
+            s.on_position_opened(opened); s.on_event(opened)
+        return fill
+
+    def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> Fill:
         price = adverse_fill_price(price, side_sign, self.slippage)  # adverse: buys up, sells down
         rate = self.maker_fee if is_maker else self.taker_fee
         fee = _fee(size, price, rate, self.multiplier)
         self.cash -= fee
         if self._on_fill is not None:
             self._on_fill(side_sign, size, price, fee, ts, is_maker)
+        fill = Fill(side_sign, size, price, fee, ts, is_maker)
         delta = side_sign * size
         self.cash -= delta * price * self.multiplier   # signed notional moves cash in every case
         pos = self.position
@@ -319,12 +341,12 @@ class BacktestEngine:
             pos.avg_price = out.new_avg_px
             self._entry_fee = fee
             self._entry_ts = ts
-            return
+            return self._emit_fill_events(fill, "open")
         if out.kind == "add":
             pos.size = out.new_size
             pos.avg_price = out.new_avg_px
             self._entry_fee += fee
-            return
+            return self._emit_fill_events(fill, "add")
         # reduce / close / flip: record the closed portion, then update the position
         entry_fee_portion = self._entry_fee * out.portion
         exit_fee_portion = fee * (out.closing_qty / size)   # closing / abs(delta); abs(delta) == size
@@ -349,6 +371,7 @@ class BacktestEngine:
         else:  # close -> flat
             self._entry_fee = 0.0
             self._entry_ts = 0
+        return self._emit_fill_events(fill, out.kind)
 
     def _check_liquidation(self, bar: Bar) -> None:
         """Force-close the position at the bar's adverse extreme if equity there is below maint margin."""
@@ -360,4 +383,4 @@ class BacktestEngine:
         notional_ex = abs(pos.size) * adverse * self.multiplier
         if eq_ex <= self.maint_margin * notional_ex:
             side = -1 if pos.size > 0 else 1
-            self._apply_fill(side, abs(pos.size), adverse, bar.ts, is_maker=False)
+            fill = self._apply_fill(side, abs(pos.size), adverse, bar.ts, is_maker=False)  # noqa: F841 (Task 3 uses fill)
