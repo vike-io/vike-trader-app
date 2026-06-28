@@ -37,13 +37,14 @@ class LiveOmsHub:
     """Live composition root. Drive orders with submit_ticket(); read .account / .registry."""
 
     def __init__(self, *, bus, account, gate, client, venue: str, symbol: str,
-                 exec_db_conn=None, now_ms=lambda: 0) -> None:
+                 exec_db_conn=None, now_ms=lambda: 0, reduce_only_on_close: bool = False) -> None:
         self.bus = bus
         self.account = account
         self.gate = gate
         self.client = client
         self.venue = venue
         self.symbol = symbol
+        self.reduce_only_on_close = reduce_only_on_close  # perp: force reduce_only on submit_close flattens
         self._exec_db = exec_db_conn
         self._now_ms = now_ms
         self.registry: dict = {}

@@ -3412,7 +3412,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # unified.  For the single-symbol path (N==1) this is unchanged — one hub, one account.
         account = Account()
         hub = LiveOmsHub(bus=bus, account=account, gate=gate, client=client,
-                         venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
+                         venue=venue, symbol=client_symbol,
+                         now_ms=lambda: int(time.time() * 1000), reduce_only_on_close=_is_perp)
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
         # Build the hubs dict: primary hub keyed by its client_symbol; additional symbols are
         # added after the session is created (basket path below).
@@ -3728,7 +3729,7 @@ class MainWindow(QtWidgets.QMainWindow):
             block_reduce_only_overshoot=_is_perp))
         hub = LiveOmsHub(bus=bus, account=account, gate=gate, client=client,
                          venue=venue, symbol=client_symbol,
-                         now_ms=lambda: int(_time.time() * 1000))
+                         now_ms=lambda: int(_time.time() * 1000), reduce_only_on_close=_is_perp)
         hub.apply_snapshot(client.connect())
         return hub, client_symbol, bus
 

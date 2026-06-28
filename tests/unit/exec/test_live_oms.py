@@ -273,3 +273,21 @@ def test_submit_registers_rounded_request():
     registered_qty = hub.registry["c-4"].request.qty
     submitted_qty = client.submitted[0].qty
     assert registered_qty == submitted_qty  # both use the rounded verdict.request
+
+
+# ---------------------------------------------------------------------------
+# Task 1 (slice 1b) — reduce_only_on_close flag
+# ---------------------------------------------------------------------------
+
+def test_reduce_only_on_close_defaults_false():
+    """Spot default: the hub does not force reduce_only on closes."""
+    assert _hub().reduce_only_on_close is False
+
+
+def test_reduce_only_on_close_stored_when_set():
+    """Perp arm: the flag is carried on the hub for the close path to read."""
+    from vike_trader_app.exec.bus import EventBus
+    hub = LiveOmsHub(bus=EventBus(), account=Account(), gate=RiskGate(RiskLimits()),
+                     client=_SpyClient(), venue="binance", symbol="BTCUSDT",
+                     reduce_only_on_close=True)
+    assert hub.reduce_only_on_close is True
