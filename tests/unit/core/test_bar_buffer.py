@@ -198,7 +198,7 @@ def test_forming_for_returns_none_after_window_completes():
 # ---------------------------------------------------------------------------
 
 def test_parity_with_engine_bars_for(subtests):
-    """bars_for via BarSeriesBuffer must match BacktestEngine.bars_for exactly."""
+    """bars_for via BarSeriesBuffer must match BacktestEngine._buf.bars_for element-for-element."""
     from vike_trader_app.core.engine import BacktestEngine
     from vike_trader_app.core.strategy import Strategy
 
@@ -208,10 +208,7 @@ def test_parity_with_engine_bars_for(subtests):
     all_bars = [_bar(t) for t in range(65)]  # 65 1-min bars
     engine = BacktestEngine(all_bars, _S(), timeframes=["1h"])
 
-    buf = BarSeriesBuffer(list(all_bars), timeframes=["1h"])
-    for b in all_bars:
-        buf.add_live_bar.__func__  # just check attribute access
-    # Re-seed the buffer from scratch with the same bars.
+    # Build a standalone buffer seeded with identical bars via add_live_bar.
     bars2: list[Bar] = []
     buf2 = BarSeriesBuffer(bars2, timeframes=["1h"])
     for b in all_bars:
@@ -222,4 +219,13 @@ def test_parity_with_engine_bars_for(subtests):
         engine_result = engine._buf.bars_for("1h", now_ts)
         buf_result = buf2.bars_for("1h", now_ts)
         with subtests.test(i=i):
-            assert len(engine_result) == len(buf_result)
+            # Element-wise parity: same count AND same ts/ohlcv for every bar.
+            assert len(engine_result) == len(buf_result), (
+                f"bar {i} (now={now_ts}): engine={len(engine_result)} buf={len(buf_result)}"
+            )
+            for j, (eb, bb) in enumerate(zip(engine_result, buf_result)):
+                assert eb.ts == bb.ts, f"bar {i} result[{j}] ts mismatch: {eb.ts} vs {bb.ts}"
+                assert eb.open == bb.open, f"bar {i} result[{j}] open mismatch"
+                assert eb.high == bb.high, f"bar {i} result[{j}] high mismatch"
+                assert eb.low == bb.low, f"bar {i} result[{j}] low mismatch"
+                assert eb.close == bb.close, f"bar {i} result[{j}] close mismatch"

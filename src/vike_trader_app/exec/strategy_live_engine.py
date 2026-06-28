@@ -23,12 +23,13 @@ instance, unique per submission, deterministic-enough for dedup / logging withou
 collisions when multiple engines run concurrently on the same symbol.
 
 Resting-order note:
-  ``submit_limit`` / ``submit_stop`` / ``submit_market_close`` / ``submit_limit_close`` build the
-  correct ``OrderRequest.order_type`` and route to the hub.
-  ``submit_trailing`` raises ``NotImplementedError`` — true trailing-stop emulation (tracking the
-  extreme and computing the trigger price as the market moves) is deferred to slice A2e.  Raising
-  here is deliberate: silently routing a trailing order as a fixed-price stop would mis-order and
-  cause real-money harm.
+  ``submit_limit`` / ``submit_market_close`` / ``submit_limit_close`` build the correct
+  ``OrderRequest.order_type`` and route to the hub.
+  ``submit_stop`` and ``submit_trailing`` both raise ``NotImplementedError`` — stop orders are
+  deferred to slice A2e because NO venue client honors ``order_type="stop"`` in
+  ``build_order_params`` (every branch only checks ``is_limit``); submitting as-is would fire a
+  plain MARKET immediately with the trigger silently dropped — a real-money mis-order.  Raising
+  is deliberate: fail safe until A2e wires client-side emulated conditionals.
 
 MTF buffer:
   ``add_live_bar`` / ``bars_for`` / ``forming_for`` mirror ``BacktestEngine`` directly.
@@ -259,9 +260,17 @@ class StrategyLiveEngine:
         self._route(self._build_resting_request(side_sign, size, "limit", price))
 
     def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        """Submit a stop order at the given trigger price."""
-        del weight
-        self._route(self._build_resting_request(side_sign, size, "stop", price))
+        """Stop orders are emulated in slice A2e — deferred to avoid a real-money mis-order.
+
+        No venue client (binance/bybit/okx/deribit) honors ``order_type="stop"`` in
+        ``build_order_params`` — every branch only checks ``is_limit``, so a "stop" would be
+        submitted as a plain MARKET that fires immediately with the trigger price silently
+        dropped.  Raises ``NotImplementedError`` to fail safe, exactly like ``submit_trailing``.
+        Wire slice A2e (client-side emulated conditionals) to replace this stub.
+        """
+        raise NotImplementedError(
+            "stop orders are emulated in A2e (no venue client honors native stops yet)"
+        )
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         """Trailing stops are emulated in slice A2e.

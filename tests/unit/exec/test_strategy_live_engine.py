@@ -137,11 +137,17 @@ def test_submit_limit_weight_accepted():
     assert req.order_type == "limit" and req.price == 105.0 and req.side == -1
 
 
-def test_submit_stop_builds_stop_request():
-    hub = _Hub(); e = _eng(hub=hub)
-    e.submit_stop(-1, 1.0, price=90.0)
-    req = hub.submitted[0]
-    assert req.order_type == "stop" and req.price == 90.0
+def test_submit_stop_raises_not_implemented():
+    """submit_stop must raise NotImplementedError — no venue client honors native stops yet.
+
+    Stops are deferred to A2e (client-side emulated conditionals).  Submitting as-is would
+    silently route a stop as a plain MARKET (every build_order_params branch only checks
+    is_limit), which fires immediately with the trigger price dropped — a real-money mis-order.
+    """
+    import pytest
+    e = _eng()
+    with pytest.raises(NotImplementedError, match="A2e"):
+        e.submit_stop(-1, 1.0, price=90.0)
 
 
 def test_submit_market_close_builds_market_request():
