@@ -129,8 +129,9 @@ def test_live_toggle_starts_timer_and_hide_stops_it(app, tmp_path, monkeypatch):
 
 
 def test_scan_survives_catalog_read_error(app, tmp_path, monkeypatch):
-    # A corrupt/locked shard raising mid-read must NOT escape the (live-timer) slot — it is caught,
-    # surfaced in the status line, and the wait-cursor is restored.
+    # A corrupt/locked shard raising mid-read must NOT crash the scan (the live-timer slot).
+    # read_series_many isolates per-symbol errors: the failing symbol maps to [] and is skipped
+    # by screen(), so the scan completes gracefully with 0 results rather than "Scan failed".
     _wire(tmp_path, monkeypatch)
     tab = ScreenerTab()
 
@@ -141,10 +142,12 @@ def test_scan_survives_catalog_read_error(app, tmp_path, monkeypatch):
         def intervals(self, _s):
             return ["1m"]
 
-        def query(self, _s, _iv):
+        def query(self, _s, _iv, start=None, end=None):
             raise RuntimeError("corrupt shard")
 
     monkeypatch.setattr(tab, "_catalog", lambda: _Boom())
     tab.scan()  # must not raise
-    assert "Scan failed" in tab._status.text()
+    status = tab._status.text()
+    assert "Scan failed" not in status           # graceful: no hard failure surfaced
+    assert status.startswith("0 symbols")        # empty result, not a crash
     assert QtWidgets.QApplication.overrideCursor() is None  # cursor balanced

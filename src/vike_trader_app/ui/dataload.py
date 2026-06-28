@@ -5,9 +5,9 @@ a *fresh* cached tail (newest bar within ``FRESH_MS``) paints instantly with zer
 otherwise ``get_bars`` tops up just the missing recent gap (it is incremental). A failed
 top-up falls back to whatever is cached rather than returning nothing.
 
-MUST be called on the main thread: the Parquet/Catalog reader is not thread-safe (see
-CLAUDE.md) — concurrent background reads segfault. Imports of the data layer happen inside
-the function so tests can monkeypatch ``data.catalog.Catalog`` / ``ui.dataload.get_bars``.
+Reads are thread-safe (the parquet primitive uses per-call DuckDB connections); writes still
+run on the main thread. Imports of the data layer happen inside the function so tests can
+monkeypatch ``data.catalog.Catalog`` / ``ui.dataload.get_bars``.
 """
 
 from __future__ import annotations

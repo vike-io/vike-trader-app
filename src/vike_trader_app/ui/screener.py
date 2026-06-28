@@ -5,8 +5,9 @@ Reads the local Parquet cache READ-ONLY via ``data.catalog.Catalog``; the rankin
 user-built AND/OR composite), and fills a sorted, colour-coded table (longs grouped first).
 
 Enrichments over the basic scan: multi-condition composite rules (built in a small dialog, saved to
-disk), a minimum-average-volume liquidity filter, near-real-time auto-rescan (a MAIN-THREAD QTimer —
-the data layer is not thread-safe, so we never read Parquet off-thread), and CSV export.
+disk), a minimum-average-volume liquidity filter, near-real-time auto-rescan (a MAIN-THREAD QTimer;
+reads now fan out across threads via read_series_many — reads are thread-safe, writes stay
+main-thread), and CSV export.
 """
 
 import csv
@@ -22,6 +23,7 @@ from ..analysis.screener import (
     composites,
     screen,
 )
+from ..data.parallel_read import read_series_many
 from . import theme
 from .panels import TablePlaceholder
 
@@ -279,7 +281,7 @@ class ScreenerTab(QtWidgets.QWidget):
             return
         QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
         try:
-            bars_by = {s: cat.query(s, interval) for s in syms}
+            bars_by = read_series_many(cat, syms, interval)
             closes = {s: [b.close for b in bars] for s, bars in bars_by.items()}
             volumes = {s: [b.volume for b in bars] for s, bars in bars_by.items()}
             min_vol = self._min_vol.value()
@@ -311,7 +313,7 @@ class ScreenerTab(QtWidgets.QWidget):
                 self._table.setItem(r, c, item)
         self._placeholder.sync()
 
-    # --- live auto-rescan (MAIN-THREAD timer; data layer is not thread-safe) ---
+    # --- live auto-rescan (MAIN-THREAD QTimer; reads now fan out via read_series_many) ---
 
     def _on_live_toggled(self, on: bool) -> None:
         if on:

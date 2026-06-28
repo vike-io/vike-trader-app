@@ -7,8 +7,8 @@ the session/workspace manifest.
 
 ``LiveHub`` keeps every registered document's live edge ticking with ONE in-flight fetch
 worker, round-robin across visible documents. The fetch itself is network-only (thread-safe
-off the UI thread); merges land back on the main thread. Cache/Parquet reads (the
-``dataload`` path) stay strictly on the main thread per the data-layer constraint.
+off the UI thread); merges land back on the main thread. Cache/Parquet reads are now thread-safe (per-call DuckDB); writes (append_series) stay on the
+main thread.
 """
 
 from __future__ import annotations

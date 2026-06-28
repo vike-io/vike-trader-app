@@ -12,6 +12,17 @@ from pathlib import Path
 
 import polars as pl
 
+try:
+    import duckdb
+    _HAS_DUCK = True
+except ImportError:  # headless/no-[duck] install: fall back to Polars reads
+    _HAS_DUCK = False
+
+# Exceptions that mean "this partition is unreadable -> quarantine it".
+_READ_ERRORS: tuple[type[BaseException], ...] = (pl.exceptions.PolarsError, OSError)
+if _HAS_DUCK:
+    _READ_ERRORS = _READ_ERRORS + (duckdb.Error,)
+
 from ..core.model import Bar
 from .partition import month_key, partition_by_month
 
@@ -51,7 +62,22 @@ def write_bars_parquet(bars: list[Bar], path) -> None:
 
 
 def read_bars_parquet(path) -> list[Bar]:
-    return dataframe_to_bars(pl.read_parquet(path))
+    """Read one parquet file -> list[Bar]. Uses a per-call DuckDB connection (thread-safe;
+    DuckDB connections are cheap and hold no shared state) so reads can run off the main thread.
+    Falls back to Polars when the [duck] extra is absent. Bar construction is identical either
+    way (DuckDB `.pl()` reuses `dataframe_to_bars`)."""
+    if not _HAS_DUCK:
+        return dataframe_to_bars(pl.read_parquet(path))
+    p = str(path).replace("'", "''")            # quote-safe literal (matches DuckCatalog._src)
+    con = duckdb.connect(database=":memory:")
+    try:
+        df = con.execute(
+            f"SELECT ts, open, high, low, close, volume "
+            f"FROM read_parquet('{p}') ORDER BY ts"
+        ).pl()
+    finally:
+        con.close()
+    return dataframe_to_bars(df)
 
 
 def _read_partition(path) -> list[Bar]:
@@ -63,7 +89,7 @@ def _read_partition(path) -> list[Bar]:
     append it is overwritten with fresh data (self-heal) rather than left as a permanent crash."""
     try:
         return read_bars_parquet(path)
-    except (pl.exceptions.PolarsError, OSError) as e:
+    except _READ_ERRORS as e:
         log.warning("skipping unreadable parquet partition %s: %s", path, e)
         return []
 
