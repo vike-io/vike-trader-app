@@ -57,8 +57,14 @@ def dataframe_to_bars(df: pl.DataFrame) -> list[Bar]:
 
 
 def write_bars_parquet(bars: list[Bar], path) -> None:
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    bars_to_dataframe(bars).write_parquet(path)
+    """Write bars to a parquet partition ATOMICALLY: write a sibling .tmp then rename. Readers glob
+    ``*.parquet`` so a torn/in-progress write is never observed, and a crash-leftover .tmp self-heals
+    on the next append (it's overwritten / ignored)."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + ".tmp")
+    bars_to_dataframe(bars).write_parquet(tmp)
+    tmp.replace(path)            # atomic rename
 
 
 def read_bars_parquet(path) -> list[Bar]:
@@ -205,9 +211,7 @@ def truncate_series(root: str, symbol: str, interval: str, *,
         if not kept:
             path.unlink()                    # whole month cut away
         else:
-            tmp = path.with_suffix(".parquet.tmp")
-            write_bars_parquet(kept, tmp)    # atomic: write temp then replace
-            tmp.replace(path)
+            write_bars_parquet(kept, path)   # write_bars_parquet is now atomic
     return removed
 
 
