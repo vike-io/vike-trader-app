@@ -7,6 +7,7 @@ up the verdict banner — the differentiator.
 """
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -3638,8 +3639,12 @@ class MainWindow(QtWidgets.QMainWindow):
         pump.prime() so the strategy's indicator lookbacks are pre-populated before the
         first live bar arrives.  A fetch failure is logged and shown on the status bar but
         the pump still starts cold (best-effort — live must not be blocked by a data error).
+
+        M1: the REST fetch's last element may be the still-FORMING candle (venue-dependent —
+        Binance returns it). ``closed_bars`` drops it so that when the WS feed later emits that
+        same candle as the first ``feed_bar``, it does NOT land in ``engine.bars`` a second time
+        (a ghost duplicate that would feed warmup indicators the same bar twice).
         """
-        import logging
         sess = getattr(self, "_exec_session", None)
         if sess is None or sess.hub is None:
             self.statusBar().showMessage("Arm live execution first.", 3000)
@@ -3670,6 +3675,8 @@ class MainWindow(QtWidgets.QMainWindow):
             start = now - seed_count * interval_ms(interval)
             history = select_source(sess.hub.symbol).fetch_bars_range(
                 sess.hub.symbol, interval, start, now)
+            # M1: drop the still-forming tail candle so the WS feed's first bar isn't a dup.
+            history = closed_bars(history, interval_ms(interval), now)
             pump.prime(history)
         except Exception as exc:  # noqa: BLE001 - data error must not block live start
             logging.getLogger(__name__).warning(
@@ -3700,7 +3707,6 @@ class MainWindow(QtWidgets.QMainWindow):
         If a clean _stop_live_strategy() already nil'd the pump, this is a no-op.
         """
         if getattr(self, "_strat_pump", None) is not None:
-            import logging
             logging.getLogger(__name__).warning(
                 "live bar-feed worker exited while strategy was running; auto-stopping")
             self._stop_live_strategy()
@@ -3718,7 +3724,6 @@ class MainWindow(QtWidgets.QMainWindow):
         feed_bar guard (``if not self._started: return``) is a second-line defence.
         F: wait() return value is checked; a False (timeout) is logged as a warning.
         """
-        import logging
         worker = getattr(self, "_strat_worker", None)
         pump = getattr(self, "_strat_pump", None)
         if worker is not None:

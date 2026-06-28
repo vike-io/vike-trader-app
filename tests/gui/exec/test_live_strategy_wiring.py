@@ -100,7 +100,7 @@ class _FakeWorker(QtWidgets.QWidget):
         self.stopped = True
 
     def wait(self, ms=2000):
-        pass
+        return True
 
     def isRunning(self):
         return self.started and not self.stopped
@@ -441,6 +441,95 @@ def test_backfill_failure_starts_pump_cold(app, monkeypatch):
         # Status bar must mention the failure (no modal).
         assert any("Backfill" in m or "backfill" in m or "cold" in m for m in messages), \
             f"expected backfill-failure status message, got: {messages}"
+    finally:
+        if win._strat_worker is not None:
+            win._strat_worker.stopped = True
+        win.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# M1: forming-tail candle in backfill must NOT duplicate when re-fed by the WS feed
+# ---------------------------------------------------------------------------
+
+def test_backfill_drops_forming_candle_no_dup(app, monkeypatch):
+    """The REST backfill's still-forming tail bar is filtered (closed_bars) so that when
+    the WS feed later emits that same candle as the first feed_bar, it lands in engine.bars
+    exactly once — no ghost duplicate (M1).
+
+    Uses the REAL LiveStrategyPump + a REAL Account so engine.bars is genuinely populated.
+    """
+    import vike_trader_app.data.vike_live as vike_live_mod
+    import vike_trader_app.data.sources as sources_mod
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.exec.accounting import Account
+    from vike_trader_app.exec.bus import EventBus
+
+    interval = "1m"
+    iv_ms = 60_000
+    now = 5 * iv_ms + 30_000   # 30s into the 6th window -> ts=5*iv is the FORMING candle
+
+    # History: 5 closed bars (ts 0..4*iv) + 1 forming bar (ts 5*iv, window not elapsed).
+    closed_history = [
+        Bar(ts=i * iv_ms, open=100.0, high=101.0, low=99.0, close=100.0 + i, volume=1.0)
+        for i in range(5)
+    ]
+    forming = Bar(ts=5 * iv_ms, open=104.0, high=106.0, low=103.0, close=105.0, volume=1.0)
+    history = closed_history + [forming]
+
+    class _RealHub:
+        """Minimal real-ish hub: real Account + EventBus so the pump's engine is real."""
+        def __init__(self):
+            self.account = Account()
+            self.bus = EventBus()
+            self.venue = "binance"
+            self.symbol = "BTCUSDT"
+            self.registry = {}
+            self.tickets = []
+
+        def submit_ticket(self, req):
+            self.tickets.append(req)
+
+        def cancel_ticket(self, coid):
+            pass
+
+        def shutdown(self):
+            pass
+
+    class _FixedSource:
+        def fetch_bars_range(self, symbol, ivl, start, end):
+            return list(history)
+
+    monkeypatch.setattr(
+        "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
+    monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
+    monkeypatch.setattr(sources_mod, "select_source", lambda sym: _FixedSource())
+    # Freeze the clock so closed_bars treats ts=5*iv as still forming (now < 5*iv + iv_ms).
+    monkeypatch.setattr("vike_trader_app.ui.app.time.time", lambda: now / 1000.0)
+
+    win = MainWindow()
+    try:
+        hub = _RealHub()
+        sess = LiveExecutionSession(hub)
+        win._exec_session = sess
+        win._interval = interval
+        win._live_strat_bar.set_armed(True)
+
+        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        pump = win._strat_pump
+        assert pump is not None
+
+        # After priming, only the 5 CLOSED bars should be in the engine buffer.
+        assert len(pump.engine.bars) == 5, \
+            f"forming candle should be dropped; got {[b.ts for b in pump.engine.bars]}"
+
+        # Now the WS feed emits the candle that was forming, now CLOSED.
+        pump.feed_bar(forming)
+
+        ts_list = [b.ts for b in pump.engine.bars]
+        # The formerly-forming candle (ts=5*iv) must appear exactly ONCE — no ghost dup.
+        assert ts_list.count(5 * iv_ms) == 1, f"duplicate forming-candle ts in {ts_list}"
+        assert len(ts_list) == 6, f"expected 6 unique bars, got {ts_list}"
+        assert ts_list == sorted(ts_list), "bars should be ts-ascending with no dup"
     finally:
         if win._strat_worker is not None:
             win._strat_worker.stopped = True
