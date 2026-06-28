@@ -759,3 +759,33 @@ def test_runner_guard_non_positive_first_close_falls_back():
     )
     result = runner.run()
     assert result.benchmark_label == "Equal-weight buy & hold"
+
+
+# --- Fix 1: inner Strategy schedules fire in portfolio (MultiSymbolStrategyRunner) mode ---
+
+def test_inner_schedule_fires_in_portfolio_mode():
+    """A single-symbol Strategy using self.schedule.on(EveryNBars(2), cb) must fire its
+    scheduled callbacks when run via MultiSymbolStrategyRunner (portfolio adapter path).
+
+    Before the fix, _MultiSymbolDriver.on_bar never called inner.schedule.check_due,
+    so callbacks silently no-oped in portfolio mode even though they fire in BacktestEngine.
+    """
+    from vike_trader_app.core.schedule import EveryNBars
+
+    fired_at: list[int] = []
+
+    class RecorderInit(Strategy):
+        def __init__(self):
+            super().__init__()
+            self.schedule.on(EveryNBars(2), lambda: fired_at.append(self.index))
+
+        def on_bar(self, bar):
+            pass
+
+    # 5 bars: EveryNBars(2) fires at indices 0, 2, 4 (where index % 2 == 0).
+    bars = [_bar(i, 10.0) for i in range(5)]
+    runner = MultiSymbolStrategyRunner(RecorderInit, {"A": bars}, TesterConfig(cash=1_000.0))
+    runner.run()
+
+    # EveryNBars(2) is due when bar_index % 2 == 0: indices 0, 2, 4
+    assert fired_at == [0, 2, 4], f"Expected [0, 2, 4] but got {fired_at}"

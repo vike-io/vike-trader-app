@@ -2,7 +2,8 @@ from vike_trader_app.core.schedule import (
     EveryNBars, MonthStart, PeriodStart, Schedule, WeekStart,
 )
 
-_DAY = 86_400_000
+import pytest
+
 
 def test_period_start_fires_once_per_month():
     r = PeriodStart("monthly")
@@ -35,3 +36,8 @@ def test_schedule_fires_due_callbacks_once_per_bar():
     fired.clear()
     for cb in s.check_due(1705708800000, 1): cb()
     assert fired == []
+
+
+def test_every_n_bars_zero_raises():
+    with pytest.raises(ValueError):
+        EveryNBars(0)
