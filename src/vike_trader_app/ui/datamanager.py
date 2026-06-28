@@ -5,7 +5,7 @@ drives the data engine: Download/Extend (``cache.get_bars``), Repair gaps (``cac
 Pin/Unpin a precomputed rollup (``data.rollup``), Delete (``parquet_source.delete_series``).
 
 Self-contained like ScreenerTab/JournalTab; ``root``/``pins_path`` are injectable for tests.
-All data access runs on the main thread (the Parquet reader isn't thread-safe).
+Writes run on the main thread; reads are thread-safe (per-call DuckDB).
 """
 
 import time
