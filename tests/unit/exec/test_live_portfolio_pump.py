@@ -27,14 +27,19 @@ from vike_trader_app.exec.live_portfolio_pump import LivePortfolioPump
 # ---------------------------------------------------------------------------
 
 class _Hub:
-    """Minimal hub stub (only needs venue + symbol + submit_ticket)."""
+    """Minimal hub stub (needs venue + symbol + submit_ticket; tracks submitted for A2e tests)."""
 
     def __init__(self, venue: str, symbol: str):
         self.venue = venue
         self.symbol = symbol
         self.account = _Acct()
+        self.submitted: list = []
+        self.registry: dict = {}
 
     def submit_ticket(self, req) -> None:
+        self.submitted.append(req)
+
+    def cancel_ticket(self, coid: str) -> None:
         pass
 
 
@@ -577,3 +582,112 @@ def test_prime_feeds_engine_buffer():
     pump.prime({_BTC: btc_bars, _ETH: eth_bars})
     assert len(pump.engine._bufs[_BTC].bars) == 4
     assert len(pump.engine._bufs[_ETH].bars) == 4
+
+
+# ---------------------------------------------------------------------------
+# A2e: check_conditionals called BEFORE on_bar for each symbol in a fired bucket
+# ---------------------------------------------------------------------------
+
+def _hbar(ts: int, high: float, low: float) -> Bar:
+    """Bar with explicit high/low for trigger testing."""
+    close = (high + low) / 2
+    return Bar(ts=ts, open=close, high=high, low=low, close=close)
+
+
+def test_pump_calls_check_conditionals_before_on_bar():
+    """A stop armed before the bar fires; the fill reaches hub BEFORE on_bar runs.
+
+    The strategy's on_bar records the hub's submitted count at the time it runs.
+    If check_conditionals fires first, submitted_at_on_bar == 1; if after, it is 0.
+    """
+    from vike_trader_app.exec.events import OrderRequest
+
+    acct = _Acct()
+    hub_btc = _Hub(venue="binance", symbol=_BTC)
+    hub_eth = _Hub(venue="binance", symbol=_ETH)
+
+    submitted_count_at_on_bar: list[int] = []
+
+    class _ObservingStrategy(_RecordingStrategy):
+        def on_bar(self, ts: int, bars: dict) -> None:
+            submitted_count_at_on_bar.append(len(hub_btc.submitted))
+            super().on_bar(ts, bars)
+
+    strat = _ObservingStrategy()
+    hubs = {_BTC: hub_btc, _ETH: hub_eth}
+    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+
+    # Arm a buy-stop on BTC at 110 — triggers when high >= 110
+    pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
+
+    pump.start()
+
+    # Feed a crossing bar for BOTH symbols (so the bucket completes)
+    pump.feed_bar(_BTC, _hbar(ts=1000, high=115.0, low=109.0))
+    pump.feed_bar(_ETH, _hbar(ts=1000, high=200.0, low=190.0))
+
+    # on_bar was called once
+    assert len(strat.bar_calls) == 1
+    # The hub already had the submitted request when on_bar ran (conditionals fire FIRST)
+    assert submitted_count_at_on_bar[0] == 1
+    assert len(hub_btc.submitted) == 1
+    req = hub_btc.submitted[0]
+    assert req.side == +1
+    assert req.qty == 2.0
+    assert req.order_type == "market"
+
+
+def test_pump_check_conditionals_fires_for_each_symbol_independently():
+    """Both BTC and ETH conditionals fire in the same aligned bar bucket."""
+    acct = _Acct()
+    hub_btc = _Hub(venue="binance", symbol=_BTC)
+    hub_eth = _Hub(venue="binance", symbol=_ETH)
+    hubs = {_BTC: hub_btc, _ETH: hub_eth}
+    strat = _RecordingStrategy()
+    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+
+    pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
+    pump.engine.submit_stop(_ETH, -1, 1.0, 180.0)
+
+    pump.start()
+
+    # BTC bar crosses 110 (high=115); ETH bar crosses 180 (low=175)
+    pump.feed_bar(_BTC, _hbar(ts=1000, high=115.0, low=109.0))
+    pump.feed_bar(_ETH, _hbar(ts=1000, high=185.0, low=175.0))
+
+    assert len(hub_btc.submitted) == 1
+    assert hub_btc.submitted[0].side == +1
+    assert len(hub_eth.submitted) == 1
+    assert hub_eth.submitted[0].side == -1
+
+
+def test_pump_check_conditionals_fires_regardless_of_warmup():
+    """Conditionals fire even before the warmup gate (on_bar is suppressed but fills happen)."""
+    acct = _Acct()
+    hub_btc = _Hub(venue="binance", symbol=_BTC)
+    hub_eth = _Hub(venue="binance", symbol=_ETH)
+    hubs = {_BTC: hub_btc, _ETH: hub_eth}
+    strat = _RecordingStrategy()
+    strat.WARMUP = 5   # large warmup — on_bar suppressed for 5 bars
+    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+
+    pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
+    pump.start()
+
+    # First bar — warmup gate should suppress on_bar but NOT check_conditionals
+    pump.feed_bar(_BTC, _hbar(ts=1000, high=115.0, low=109.0))
+    pump.feed_bar(_ETH, _hbar(ts=1000, high=200.0, low=190.0))
+
+    # on_bar suppressed (WARMUP=5, _i=0)
+    assert strat.bar_calls == []
+    # But the conditional DID fire
+    assert len(hub_btc.submitted) == 1
+
+
+def test_pump_no_conditionals_on_bar_runs_normally():
+    """When no conditionals are armed, on_bar still fires normally (no regression)."""
+    pump, strat, _ = _make_pump()
+    pump.start()
+    pump.feed_bar(_BTC, _bar(ts=1000))
+    pump.feed_bar(_ETH, _bar(ts=1000))
+    assert len(strat.bar_calls) == 1

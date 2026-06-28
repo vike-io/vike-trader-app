@@ -232,6 +232,12 @@ class LivePortfolioPump:
         self._i += 1
         self.strategy.index = self._i
 
+        # Check conditionals for each symbol BEFORE on_bar (fills precede decisions,
+        # matching backtest semantics).  Conditionals fire regardless of the warmup gate
+        # — they were armed by the strategy and must trigger on the crossing bar.
+        for sym, bar in fired_bucket.items():
+            self.engine.check_conditionals(sym, bar)
+
         warmup = getattr(self.strategy, "WARMUP", 0)
         if self._i >= warmup:
             try:
