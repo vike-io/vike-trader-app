@@ -8,6 +8,7 @@ the month(s) that changed (and migrates a legacy file into partitions on first a
 
 import logging
 import shutil
+import threading
 from pathlib import Path
 
 import polars as pl
@@ -27,6 +28,20 @@ from ..core.model import Bar
 from .partition import month_key, partition_by_month
 
 log = logging.getLogger(__name__)
+
+_LOCKS: dict[tuple[str, str], threading.RLock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _series_lock(symbol: str, interval: str) -> threading.RLock:
+    """A per-(symbol, interval) re-entrant lock serializing writes to one series. Different series
+    never block each other; RLock so append_series -> _migrate_legacy (same series) can nest."""
+    key = (symbol, interval)
+    with _LOCKS_GUARD:
+        lock = _LOCKS.get(key)
+        if lock is None:
+            lock = _LOCKS[key] = threading.RLock()
+        return lock
 
 
 def bars_to_dataframe(bars: list[Bar]) -> pl.DataFrame:
@@ -159,27 +174,30 @@ def read_series_since(root: str, symbol: str, interval: str, start_ms: int) -> l
 
 def _migrate_legacy(root: str, symbol: str, interval: str) -> None:
     """Split a legacy single file into month partitions, then remove it (one-time, on first append)."""
-    legacy = legacy_path(root, symbol, interval)
-    if not legacy.exists():
-        return
-    d = series_dir(root, symbol, interval)
-    for month, month_bars in partition_by_month(_read_partition(legacy)).items():
-        path = d / f"{month}.parquet"
-        existing = _read_partition(path) if path.exists() else []
-        write_bars_parquet(_merge(existing, month_bars), path)
-    legacy.unlink()
+    with _series_lock(symbol, interval):
+        legacy = legacy_path(root, symbol, interval)
+        if not legacy.exists():
+            return
+        d = series_dir(root, symbol, interval)
+        for month, month_bars in partition_by_month(_read_partition(legacy)).items():
+            path = d / f"{month}.parquet"
+            existing = _read_partition(path) if path.exists() else []
+            write_bars_parquet(_merge(existing, month_bars), path)
+        legacy.unlink()
 
 
 def append_series(new_bars: list[Bar], root: str, symbol: str, interval: str) -> None:
-    """Merge ``new_bars`` into the series, rewriting only the month partition(s) they fall in."""
+    """Merge ``new_bars`` into the series, rewriting only the month partition(s) they fall in.
+    Serialized per (symbol, interval) so concurrent appends can't clobber a partition."""
     if not new_bars:
         return
-    _migrate_legacy(root, symbol, interval)
-    d = series_dir(root, symbol, interval)
-    for month, month_bars in partition_by_month(new_bars).items():
-        path = d / f"{month}.parquet"
-        existing = _read_partition(path) if path.exists() else []   # corrupt month -> overwrite (self-heal)
-        write_bars_parquet(_merge(existing, month_bars), path)
+    with _series_lock(symbol, interval):
+        _migrate_legacy(root, symbol, interval)
+        d = series_dir(root, symbol, interval)
+        for month, month_bars in partition_by_month(new_bars).items():
+            path = d / f"{month}.parquet"
+            existing = _read_partition(path) if path.exists() else []   # corrupt month -> overwrite (self-heal)
+            write_bars_parquet(_merge(existing, month_bars), path)
 
 
 def truncate_series(root: str, symbol: str, interval: str, *,
@@ -190,36 +208,40 @@ def truncate_series(root: str, symbol: str, interval: str, *,
     any partition emptied by the cut. A legacy single file is migrated to partitions first so the
     cut is partition-aware. ``before_ts``/``after_ts`` are inclusive bounds on what is KEPT
     (a bar at exactly ``before_ts`` or ``after_ts`` is kept).
+    Serialized per (symbol, interval) so a truncate can't race with an append.
     """
     if before_ts is None and after_ts is None:
         return 0
-    _migrate_legacy(root, symbol, interval)
-    d = series_dir(root, symbol, interval)
-    if not d.is_dir():
-        return 0
+    with _series_lock(symbol, interval):
+        _migrate_legacy(root, symbol, interval)
+        d = series_dir(root, symbol, interval)
+        if not d.is_dir():
+            return 0
 
-    def keep(ts: int) -> bool:
-        return (before_ts is None or ts >= before_ts) and (after_ts is None or ts <= after_ts)
+        def keep(ts: int) -> bool:
+            return (before_ts is None or ts >= before_ts) and (after_ts is None or ts <= after_ts)
 
-    removed = 0
-    for path in sorted(d.glob("*.parquet")):
-        bars = _read_partition(path)         # corrupt partition -> [] (skipped) rather than a crash
-        kept = [b for b in bars if keep(b.ts)]
-        if len(kept) == len(bars):
-            continue                         # untouched partition
-        removed += len(bars) - len(kept)
-        if not kept:
-            path.unlink()                    # whole month cut away
-        else:
-            write_bars_parquet(kept, path)   # write_bars_parquet is now atomic
-    return removed
+        removed = 0
+        for path in sorted(d.glob("*.parquet")):
+            bars = _read_partition(path)         # corrupt partition -> [] (skipped) rather than a crash
+            kept = [b for b in bars if keep(b.ts)]
+            if len(kept) == len(bars):
+                continue                         # untouched partition
+            removed += len(bars) - len(kept)
+            if not kept:
+                path.unlink()                    # whole month cut away
+            else:
+                write_bars_parquet(kept, path)   # write_bars_parquet is now atomic
+        return removed
 
 
 def delete_series(root: str, symbol: str, interval: str) -> None:
-    """Remove a cached series — the legacy single file and the whole month-partition directory."""
-    legacy = legacy_path(root, symbol, interval)
-    if legacy.exists():
-        legacy.unlink()
-    d = series_dir(root, symbol, interval)
-    if d.is_dir():
-        shutil.rmtree(d)
+    """Remove a cached series — the legacy single file and the whole month-partition directory.
+    Serialized per (symbol, interval) so a delete can't race with an append."""
+    with _series_lock(symbol, interval):
+        legacy = legacy_path(root, symbol, interval)
+        if legacy.exists():
+            legacy.unlink()
+        d = series_dir(root, symbol, interval)
+        if d.is_dir():
+            shutil.rmtree(d)
