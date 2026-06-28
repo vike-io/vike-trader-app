@@ -84,3 +84,32 @@ def test_worker_never_started_stop_is_safe(app):
     w = LiveBarFeedWorker(feed)
     w.stop()  # must not raise
     assert not w.isRunning()
+
+
+class _BlockedFeed:
+    """A feed that NEVER checks the stop predicate — it parks in an awaitable forever (mirrors a
+    quiet ``await ws.recv()`` on a silent socket). Only task cancellation can end it."""
+
+    async def run_forever(self, on_bar, *, stop=None, max_backoff: float = 30.0):
+        await asyncio.Event().wait()   # blocks forever; stop() must CANCEL, not just signal
+
+
+def test_worker_stop_cancels_blocked_feed(app):
+    """0xC0000409 fix: even when the feed is BLOCKED in an await that never checks the stop
+    predicate, stop() must cancel the task cross-thread and tear the thread down within timeout.
+    If stop() relied on the predicate alone this would hang and leave an orphan QThread."""
+    import time
+
+    w = LiveBarFeedWorker(_BlockedFeed())
+    w.start()
+
+    # Give the worker thread a moment to actually enter the blocking await.
+    elapsed = 0
+    while not w.isRunning() and elapsed < 2000:
+        app.processEvents()
+        time.sleep(0.01)
+        elapsed += 10
+    assert w.isRunning(), "worker never started running"
+
+    w.stop(timeout_ms=3000)   # must cancel the blocked task, not wait on the predicate
+    assert not w.isRunning(), "stop() failed to cancel a blocked feed — orphan QThread (0xC0000409)"
