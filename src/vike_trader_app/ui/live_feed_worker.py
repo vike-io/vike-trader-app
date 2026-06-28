@@ -40,6 +40,7 @@ class LiveBarFeedWorker(QtCore.QThread):
     """
 
     barClosed = QtCore.Signal(object)   # Bar; queued connection -> delivered on the main thread
+    failed = QtCore.Signal(str)         # error message on a non-cancellation crash (forward tester surfaces it)
 
     def __init__(self, feed, parent=None) -> None:
         super().__init__(parent)
@@ -70,8 +71,9 @@ class LiveBarFeedWorker(QtCore.QThread):
             self._loop.run_until_complete(self._task)
         except asyncio.CancelledError:
             pass   # clean cancel-driven teardown (stop() cancelled the task)
-        except Exception:   # noqa: BLE001
+        except Exception as exc:   # noqa: BLE001
             log.exception("LiveBarFeedWorker crashed")
+            self.failed.emit(str(exc))
         finally:
             if self._loop is not None:
                 self._loop.close()
