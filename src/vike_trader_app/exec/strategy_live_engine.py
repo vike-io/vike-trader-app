@@ -14,19 +14,38 @@ populates via ``account.set_mark(venue, symbol, px)``.
 client_order_id scheme: ``<symbol>-<8-hex-engine-id>-<monotonic-seq>`` — stable prefix per engine
 instance, unique per submission, deterministic-enough for dedup / logging without wall-clock
 collisions when multiple engines run concurrently on the same symbol.
+
+Resting-order note:
+  ``submit_limit`` / ``submit_stop`` / ``submit_market_close`` / ``submit_limit_close`` build the
+  correct ``OrderRequest.order_type`` and route to the hub.
+  ``submit_trailing`` raises ``NotImplementedError`` — true trailing-stop emulation (tracking the
+  extreme and computing the trigger price as the market moves) is deferred to slice A2e.  Raising
+  here is deliberate: silently routing a trailing order as a fixed-price stop would mis-order and
+  cause real-money harm.
+
+MTF buffer:
+  ``add_live_bar`` / ``bars_for`` / ``forming_for`` mirror ``BacktestEngine`` directly.
+  ``parse_timeframe`` and ``resample`` are *imported* from ``core.timeframe`` (the same shared
+  helpers BacktestEngine uses) so the resampling logic is not duplicated.  The only live-specific
+  difference is that ``_now`` tracks the last bar's ts rather than the backtest loop variable.
 """
 
 from __future__ import annotations
 
+import bisect
 import os
+from operator import attrgetter
 from typing import TYPE_CHECKING, Callable
 
-from vike_trader_app.core.model import Position
+from vike_trader_app.core.model import Bar, Position
+from vike_trader_app.core.timeframe import parse_timeframe, resample
 from vike_trader_app.exec.events import OrderRequest
 
 if TYPE_CHECKING:
     from vike_trader_app.exec.accounting import Account
     from vike_trader_app.exec.live_oms import LiveOmsHub
+
+_BAR_TS = attrgetter("ts")
 
 
 def _default_clock() -> int:
@@ -67,6 +86,7 @@ class StrategyLiveEngine:
         *,
         multiplier: float = 1.0,
         now_ms: Callable[[], int] | None = None,
+        timeframes: list[str] | None = None,
     ) -> None:
         self._strategy = strategy
         self._hub = hub
@@ -79,6 +99,15 @@ class StrategyLiveEngine:
         self._seq: int = 0
         # Short 8-hex id derived from the process random pool — stable for this engine's lifetime.
         self._engine_tag: str = os.urandom(4).hex()
+        # MTF buffer: live bar history + higher-TF aggregates (mirrors BacktestEngine).
+        self.bars: list[Bar] = []
+        # _now tracks the ts of the last live bar fed (used by bars_for / forming_for slicing).
+        self._now: int = 0
+        # tf -> (target_ms, [coarse bars]); populated for each requested timeframe.
+        self._tf: dict[str, tuple[int, list]] = {}
+        for tf in timeframes or []:
+            ms = parse_timeframe(tf)
+            self._tf[tf] = (ms, [])
 
     # ------------------------------------------------------------------
     # Read-model helpers (mirror BacktestEngine.position / equity_now)
@@ -136,6 +165,20 @@ class StrategyLiveEngine:
             qty=qty,
             order_type="market",
             price=None,
+            ts=self._now_ms(),
+        )
+
+    def _build_resting_request(
+        self, side: int, qty: float, order_type: str, price: float | None
+    ) -> OrderRequest:
+        return OrderRequest(
+            client_order_id=self._next_coid(),
+            venue=self._venue,
+            symbol=self._symbol,
+            side=side,
+            qty=qty,
+            order_type=order_type,
+            price=price,
             ts=self._now_ms(),
         )
 
@@ -200,3 +243,87 @@ class StrategyLiveEngine:
         """Cancel every order currently in the hub's registry."""
         for coid in list(self._hub.registry):
             self._hub.cancel_ticket(coid)
+
+    # ------------------------------------------------------------------
+    # Resting-order verbs (limit / stop / trailing / market_close / limit_close)
+    # ------------------------------------------------------------------
+
+    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        """Submit a resting limit order."""
+        del weight
+        self._route(self._build_resting_request(side_sign, size, "limit", price))
+
+    def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+        """Submit a stop order at the given trigger price."""
+        del weight
+        self._route(self._build_resting_request(side_sign, size, "stop", price))
+
+    def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
+        """Trailing stops are emulated in slice A2e.
+
+        A2a does NOT silently mis-route a trailing order as a fixed-price stop (that would
+        require tracking the running extreme and recomputing the trigger as the market moves).
+        Raising ``NotImplementedError`` here is deliberate: a silent mis-order causes real-money
+        harm.  Wire slice A2e to replace this stub.
+        """
+        raise NotImplementedError(
+            "submit_trailing: trailing-stop emulation (extreme tracking + dynamic trigger) "
+            "is deferred to slice A2e.  Use submit_stop with an explicit price for now."
+        )
+
+    def submit_market_close(self, side_sign: int, size: float) -> None:
+        """Submit a market order to reduce/close the position (explicit direction + size)."""
+        self._route(self._build_request(side_sign, size))
+
+    def submit_limit_close(self, side_sign: int, size: float, price: float) -> None:
+        """Submit a limit order to reduce/close the position at the given price."""
+        self._route(self._build_resting_request(side_sign, size, "limit", price))
+
+    # ------------------------------------------------------------------
+    # Multi-timeframe (MTF) buffer — mirrors BacktestEngine.add_live_bar /
+    # bars_for / forming_for using the shared core.timeframe helpers.
+    # ------------------------------------------------------------------
+
+    def add_live_bar(self, bar: Bar) -> None:
+        """Append a live base bar and refresh higher-TF aggregates (forward mode).
+
+        Mirrors ``BacktestEngine.add_live_bar`` exactly: appends to ``self.bars`` and
+        re-resamples each registered timeframe.  ``_now`` is updated to the bar's ts so
+        that ``bars_for``/``forming_for`` slice correctly without look-ahead.
+        """
+        self.bars.append(bar)
+        self._now = bar.ts
+        for tf, (ms, _) in list(self._tf.items()):
+            self._tf[tf] = (ms, resample(self.bars, ms))
+
+    def bars_for(self, tf: str):
+        """Completed higher-TF bars visible at the current base bar (no look-ahead).
+
+        Mirrors ``BacktestEngine.bars_for``: slices the coarse list up to (but not
+        including) the window that contains ``_now``.
+        """
+        ms, coarse = self._tf[tf]
+        window_start = self._now - self._now % ms
+        return coarse[:bisect.bisect_left(coarse, window_start, key=_BAR_TS)]
+
+    def forming_for(self, tf: str):
+        """The still-building coarse bar for ``tf`` from base bars seen so far, or None.
+
+        Mirrors ``BacktestEngine.forming_for``: aggregates the base bars in the current
+        higher-TF window into a synthetic Bar.
+        """
+        ms, _ = self._tf[tf]
+        window_start = self._now - self._now % ms
+        lo = bisect.bisect_left(self.bars, window_start, key=_BAR_TS)
+        hi = bisect.bisect_right(self.bars, self._now, key=_BAR_TS)
+        window = self.bars[lo:hi]
+        if not window:
+            return None
+        return Bar(
+            ts=window_start,
+            open=window[0].open,
+            high=max(b.high for b in window),
+            low=min(b.low for b in window),
+            close=window[-1].close,
+            volume=sum(b.volume for b in window),
+        )

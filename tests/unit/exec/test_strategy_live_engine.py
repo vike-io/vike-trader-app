@@ -123,3 +123,114 @@ def test_drawdown_now_zero_when_no_peak_drawdown():
 def test_now_returns_injected_clock():
     e = _eng()
     assert e.now == 123
+
+
+# ---------------------------------------------------------------------------
+# Task 2: resting-order verbs
+# ---------------------------------------------------------------------------
+
+def test_submit_limit_builds_limit_request():
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_limit(+1, 1.0, price=95.0)
+    req = hub.submitted[0]
+    assert req.order_type == "limit" and req.price == 95.0 and req.side == +1
+
+
+def test_submit_limit_weight_accepted():
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_limit(-1, 2.0, price=105.0, weight=0.5)
+    req = hub.submitted[0]
+    assert req.order_type == "limit" and req.price == 105.0 and req.side == -1
+
+
+def test_submit_stop_builds_stop_request():
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_stop(-1, 1.0, price=90.0)
+    req = hub.submitted[0]
+    assert req.order_type == "stop" and req.price == 90.0
+
+
+def test_submit_market_close_builds_market_request():
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_market_close(-1, 1.5)
+    req = hub.submitted[0]
+    assert req.order_type == "market" and req.side == -1 and req.qty == 1.5
+
+
+def test_submit_limit_close_builds_limit_request():
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_limit_close(-1, 2.0, price=98.0)
+    req = hub.submitted[0]
+    assert req.order_type == "limit" and req.price == 98.0 and req.side == -1
+
+
+def test_submit_trailing_raises_not_implemented():
+    import pytest
+    e = _eng()
+    with pytest.raises(NotImplementedError):
+        e.submit_trailing(+1, 1.0, trail=5.0)
+
+
+def test_resting_verbs_fire_on_order_submitted():
+    strat = _Strat(); hub = _Hub(); e = _eng(strat=strat, hub=hub)
+    e.submit_limit(+1, 1.0, price=90.0)
+    e.submit_stop(-1, 1.0, price=80.0)
+    e.submit_market_close(-1, 1.0)
+    e.submit_limit_close(-1, 1.0, price=85.0)
+    assert len(strat.submitted_events) == 4
+
+
+# ---------------------------------------------------------------------------
+# Task 2: MTF buffer
+# ---------------------------------------------------------------------------
+
+def test_mtf_buffer_bars_for():
+    from vike_trader_app.core.model import Bar
+    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+                           now_ms=lambda: 0, timeframes=["1h"])
+    for t in range(120):  # 1-min bars (60_000 ms each); feed 2h worth
+        e.add_live_bar(Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
+    assert isinstance(e.bars_for("1h"), list)   # completed 1h bars visible (no look-ahead)
+
+
+def test_mtf_buffer_bars_for_returns_completed_bars_only():
+    from vike_trader_app.core.model import Bar
+    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+                           now_ms=lambda: 0, timeframes=["1h"])
+    # Feed 61 1-min bars: bars 0..59 cover the first hour (ts=0..3_540_000),
+    # bar 60 (ts=3_600_000) falls in the second hour — so the first hour is now completed
+    # and bars_for("1h") must return at least 1 completed bar.
+    for t in range(61):
+        e.add_live_bar(Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
+    completed = e.bars_for("1h")
+    assert len(completed) >= 1
+
+
+def test_mtf_buffer_forming_for():
+    from vike_trader_app.core.model import Bar
+    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+                           now_ms=lambda: 0, timeframes=["1h"])
+    # Feed 30 1-min bars — halfway through the first hour
+    for t in range(30):
+        e.add_live_bar(Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
+    forming = e.forming_for("1h")
+    # Should return a forming bar (not None) since we have data in the current window
+    assert forming is not None
+
+
+def test_mtf_buffer_empty_without_timeframes():
+    """Engine without timeframes= still has bars list."""
+    from vike_trader_app.core.model import Bar
+    e = StrategyLiveEngine(_Strat(), _Hub(), _Acct(), venue="binance", symbol="BTCUSDT",
+                           now_ms=lambda: 0)
+    e.add_live_bar(Bar(ts=0, open=1, high=1, low=1, close=1))
+    assert len(e.bars) == 1
+
+
+# ---------------------------------------------------------------------------
+# Task 2: StrategyEngine protocol conformance
+# ---------------------------------------------------------------------------
+
+def test_conforms_to_strategy_engine_protocol():
+    from vike_trader_app.core.strategy_engine import StrategyEngine
+    assert isinstance(_eng(), StrategyEngine)
