@@ -240,3 +240,77 @@ def test_generation_guard_drops_superseded_cache(app, monkeypatch):
 
     assert paint_calls == [], "_on_cache_loaded with stale gen must not paint"
     assert doc._bars == [], "_on_cache_loaded with stale gen must not set bars"
+
+
+# ---------------------------------------------------------------------------
+# Fix wave 1 tests — IMP-1 + IMP-2
+# ---------------------------------------------------------------------------
+
+
+def test_load_network_false_with_hub_is_synchronous(app, monkeypatch):
+    """IMP-1: load(network=False) with a hub attached must paint SYNCHRONOUSLY (no event-loop pump)
+    so that a following apply_state() sees the bars.  This is the session-restore path — if it
+    went off-thread, apply_state would see an empty chart and saved indicators would be silently
+    dropped."""
+    import vike_trader_app.ui.chartdoc as chartdoc_mod
+    import vike_trader_app.ui.dataload as dataload_mod
+    from vike_trader_app.ui.chartdoc import ChartDocument, LiveHub
+    from vike_trader_app.ui.dataload import LoadResult
+
+    bars = _make_bars()
+    monkeypatch.setattr(chartdoc_mod, "load_symbol_bars",
+                        lambda *a, **k: LoadResult(bars))
+    monkeypatch.setattr(dataload_mod, "load_symbol_bars",
+                        lambda *a, **k: LoadResult(bars))
+
+    # Remove VIKE_DISABLE_LIVE so the hub code-path would be active IF network=True.
+    monkeypatch.delenv("VIKE_DISABLE_LIVE", raising=False)
+
+    hub = LiveHub()
+    doc = ChartDocument("BTCUSDT", "1h")
+    hub.register(doc)
+
+    paint_calls = []
+    original_set_data = doc.chart.set_data
+    monkeypatch.setattr(doc.chart, "set_data",
+                        lambda *a, **k: paint_calls.append(1) or original_set_data(*a, **k))
+
+    # load(network=False) with hub + no VIKE_DISABLE_LIVE → must still be SYNCHRONOUS (no off-thread).
+    ret = doc.load(network=False)
+
+    # No event-loop pump: bars and paint must be present immediately.
+    assert paint_calls, "load(network=False) with hub must paint synchronously (restore path)"
+    assert doc._bars == bars, "load(network=False) with hub must set bars immediately (restore path)"
+    # Return value: sync path returns bool(res.bars) = True.
+    assert ret is True, "load(network=False) with hub and cached bars must return True"
+
+    hub.shutdown()
+
+
+def test_clear_cache_worker_identity_aware(app):
+    """IMP-2: _clear_cache_worker(w) only nils the slot when w IS the current worker.
+    A late finished from a superseded worker (different identity) must not orphan the live slot."""
+    from vike_trader_app.ui.chartdoc import LiveHub
+
+    hub = LiveHub()
+
+    class _StubWorker:
+        pass
+
+    worker_a = _StubWorker()
+    worker_b = _StubWorker()
+
+    # Install B as the current slot (simulates a newer worker superseding A).
+    hub._cache_worker = worker_b
+
+    # Superseded worker A fires its late finished → must NOT clear the slot.
+    hub._clear_cache_worker(worker_a)
+    assert hub._cache_worker is worker_b, (
+        "_clear_cache_worker(A) must not nil the slot when B is the current worker"
+    )
+
+    # Now the live worker B finishes normally → slot IS cleared.
+    hub._clear_cache_worker(worker_b)
+    assert hub._cache_worker is None, (
+        "_clear_cache_worker(B) must nil the slot when B is the current worker"
+    )

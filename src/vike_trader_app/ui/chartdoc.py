@@ -185,9 +185,11 @@ class ChartDocument(QtWidgets.QWidget):
         self._load_gen += 1  # supersede any in-flight worker for the old symbol
         self.symbolChanged.emit(self._symbol, self._interval)  # symbol is set immediately
         self._pending_network = network
-        # Off-thread Phase-1 cache read when a hub is attached (live app); synchronous otherwise
-        # (bare doc / unit tests / restore) — preserves the testable sync contract.
-        if self._hub is not None and not os.environ.get("VIKE_DISABLE_LIVE"):
+        # Off-thread Phase-1 cache read when a hub is attached AND this is a network load (live app);
+        # synchronous otherwise (bare doc / unit tests / restore / cache-only).
+        # network=False (session restore, cache-only) stays SYNCHRONOUS so _apply_cache runs before
+        # apply_state re-attaches saved indicators — otherwise indicators would be dropped silently.
+        if self._hub is not None and network and not os.environ.get("VIKE_DISABLE_LIVE"):
             self._hub.request_cache_read(self, self._load_gen)
             return False  # pending; paint happens in _on_cache_loaded
         now = int(time.time() * 1000)
@@ -473,11 +475,17 @@ class LiveHub(QtCore.QObject):
         worker = self._cache_worker = _CacheReadWorker(doc.symbol, doc.interval, now)
         worker.cacheLoaded.connect(lambda res, d=doc, g=gen: self._on_cache_fetched(d, g, res))
         worker.failed.connect(lambda msg, d=doc, g=gen: self._on_cache_failed(d, g, msg))
-        worker.finished.connect(self._clear_cache_worker)
+        # Identity-aware: bind the worker so a late finished from a superseded worker cannot nil
+        # the slot while a newer worker is still running (avoids orphaning the shutdown-tracked slot).
+        worker.finished.connect(lambda w=worker: self._clear_cache_worker(w))
         worker.start()
 
-    def _clear_cache_worker(self) -> None:
-        self._cache_worker = None
+    def _clear_cache_worker(self, w=None) -> None:
+        """Clear the cache-worker slot, but ONLY if ``w`` is still the current slot.
+        A superseded worker's late ``finished`` signal passes itself as ``w``; when a newer
+        worker already occupies the slot, the check fails and the live slot is left intact."""
+        if w is None or w is self._cache_worker:
+            self._cache_worker = None
 
     def _on_cache_fetched(self, doc: "ChartDocument", gen: int, res) -> None:
         if doc in self._docs:
