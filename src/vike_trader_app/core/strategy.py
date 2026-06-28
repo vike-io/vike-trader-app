@@ -5,12 +5,24 @@ Subclass ``Strategy`` and implement ``on_bar``. Place orders with ``buy``/``sell
 market orders at the next bar's open (no look-ahead).
 """
 
+import concurrent.futures
 from typing import TYPE_CHECKING
 
 from .model import Bar, Fill, Position
 
 if TYPE_CHECKING:
     from .strategy_engine import StrategyEngine
+
+_HISTORY_EXECUTOR: concurrent.futures.ThreadPoolExecutor | None = None
+
+
+def _history_executor() -> concurrent.futures.ThreadPoolExecutor:
+    """Lazy shared pool for Strategy.history_async (daemon workers; reads are thread-safe, #259)."""
+    global _HISTORY_EXECUTOR
+    if _HISTORY_EXECUTOR is None:
+        _HISTORY_EXECUTOR = concurrent.futures.ThreadPoolExecutor(
+            max_workers=4, thread_name_prefix="history")
+    return _HISTORY_EXECUTOR
 
 
 class Strategy:
@@ -60,9 +72,12 @@ class Strategy:
         """Look-ahead-safe historical bars up to the current sim time, as a polars DataFrame.
 
         Pass EXACTLY ONE of: ``count`` (int, last N bars), ``period`` (timedelta, trailing window),
-        or ``start``+``end`` (epoch-ms range). ``symbol`` may be a str (flat DataFrame) or a list of
-        symbols (adds a ``symbol`` column; read in parallel). Reads the LOCAL cache only — download
-        uncached symbols first (Data Manager). Columns: ts, open, high, low, close, volume.
+        or ``start``+``end`` (epoch-ms range). For the start/end form, either bound is optional:
+        ``start`` defaults to the beginning of the series and ``end`` defaults to ``self.now``; both
+        are look-ahead-clamped so the result never exceeds the current sim time. ``symbol`` may be a
+        str (flat DataFrame) or a list of symbols (adds a ``symbol`` column; read in parallel). Reads
+        the LOCAL cache only — download uncached symbols first (Data Manager). Columns: ts, open,
+        high, low, close, volume.
         """
         return self._history_at(self.now, symbol, interval, count, period, start, end)
 
@@ -98,6 +113,17 @@ class Strategy:
                 b = b[-count:]
             frames.append(bars_to_dataframe(b).with_columns(pl.lit(s).alias("symbol")))
         return pl.concat(frames) if frames else bars_to_dataframe([])
+
+    def history_async(self, symbol, interval, count=None, *, period=None, start=None, end=None):
+        """Off-thread ``history()`` returning a ``concurrent.futures.Future[pl.DataFrame]``.
+
+        The look-ahead clamp uses ``self.now`` captured AT CALL TIME, so the result is correct even
+        though sim time advances before you consume it. Fire on one bar, read ``fut.result()`` /
+        check ``fut.done()`` on a later bar — non-blocking. Safe because reads are thread-safe (#259).
+        """
+        now = self.now  # capture on the calling thread
+        return _history_executor().submit(
+            self._history_at, now, symbol, interval, count, period, start, end)
 
     def bars(self, tf: str):
         """Completed bars of higher timeframe ``tf`` visible now (no look-ahead)."""
