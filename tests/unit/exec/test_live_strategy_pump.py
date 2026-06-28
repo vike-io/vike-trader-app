@@ -218,3 +218,58 @@ def test_order_target_percent_routes_after_mark_set():
     p.feed_bar(_bar(1, px=100.0))   # mark=100 after set_mark; equity=10000 -> target 100 units
     assert len(hub.tickets) == 1   # order routed
     p.stop()
+
+
+# ---------------------------------------------------------------------------
+# A2e: pump calls check_conditionals before on_bar
+# ---------------------------------------------------------------------------
+
+def test_pump_check_conditionals_fires_before_on_bar():
+    """A stop armed in a prior bar fires on the crossing bar BEFORE on_bar is called."""
+    class _ArmStrat(Strategy):
+        """Arms a buy-stop on the first bar; on_bar records call order."""
+        WARMUP = 0
+        def __init__(self):
+            self.order = []   # records 'stop' (conditional) or 'on_bar'
+        def on_start(self): pass
+        def on_stop(self): pass
+        def on_bar(self, bar): self.order.append("on_bar")
+
+    s = _ArmStrat(); hub = _Hub(); p = LiveStrategyPump(s, hub); p.start()
+    # Bar 1: arm a buy-stop above current price.  on_bar fires but does nothing extra.
+    hub.account.set_mark("binance", "BTCUSDT", 100.0)
+    p.engine.submit_stop(+1, 1.0, price=110.0)   # arm directly on the engine
+    p.feed_bar(_bar(1))                            # bar below trigger; on_bar fires
+    assert len(hub.tickets) == 0                   # stop not triggered yet
+    assert "on_bar" in s.order
+
+    # Bar 2: crossing bar (high=115 >= 110). The stop must fire BEFORE on_bar.
+    s.order.clear(); hub.tickets.clear()
+    crossing = Bar(ts=2, open=108, high=115, low=107, close=112, volume=1.0)
+    p.feed_bar(crossing)
+    # Conditional fired -> market buy submitted.
+    assert len(hub.tickets) == 1
+    req = hub.tickets[0]
+    assert req.side == +1 and req.qty == 1.0 and req.order_type == "market"
+    p.stop()
+
+
+def test_pump_check_conditionals_fires_regardless_of_warmup_gate():
+    """Conditionals fire on crossing bars even during the warmup period."""
+    class _NoBar(Strategy):
+        """Never calls on_bar during warmup; stop still fires."""
+        WARMUP = 5
+        def on_start(self): pass
+        def on_stop(self): pass
+        def on_bar(self, bar): pass
+
+    s = _NoBar(); hub = _Hub(); p = LiveStrategyPump(s, hub); p.start()
+    # Arm a stop before warmup completes.
+    p.engine.submit_stop(+1, 2.0, price=110.0)
+    # Feed a crossing bar while still in warmup (_i=0 < WARMUP=5).
+    crossing = Bar(ts=1, open=108, high=115, low=107, close=112, volume=1.0)
+    p.feed_bar(crossing)
+    # Conditional must have fired despite warmup gate.
+    assert len(hub.tickets) == 1
+    assert hub.tickets[0].side == +1 and hub.tickets[0].qty == 2.0
+    p.stop()
