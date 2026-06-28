@@ -2,9 +2,46 @@
 
 A PositionSizer turns a strategy's entry *intent* into an actual quantity using live portfolio
 context, so the SAME strategy can be run under fixed-dollar / %-equity / fixed-shares sizing without
-editing it. The default PassThrough returns the strategy's literal size (today's behavior)."""
+editing it. The default PassThrough returns the strategy's literal size (today's behavior).
+
+Pure sizing helpers
+-------------------
+``units_from_percent`` and ``units_from_value`` are pure functions used by both
+``BacktestEngine`` and ``StrategyLiveEngine`` to convert a target fraction of
+equity (or a target notional value) into signed contract units.  Extracting them
+removes the formula duplication that existed when the two engines maintained their
+own copies of the ``order_target_percent`` / ``order_target_value`` formulas.
+"""
 
 from dataclasses import dataclass
+
+
+# ---------------------------------------------------------------------------
+# Pure sizing helpers (shared by BacktestEngine + StrategyLiveEngine)
+# ---------------------------------------------------------------------------
+
+def units_from_percent(pct: float, equity: float, price: float, multiplier: float) -> float:
+    """Convert a target equity fraction to contract units.
+
+    Mirrors the ``order_target_percent`` formula in both engines:
+        units = pct * equity / (price * multiplier)
+
+    Returns 0.0 if ``price`` or ``multiplier`` is non-positive (guards div-by-zero).
+    """
+    denom = price * multiplier
+    return (pct * equity) / denom if denom > 0.0 else 0.0
+
+
+def units_from_value(value: float, price: float, multiplier: float) -> float:
+    """Convert a target notional value to contract units.
+
+    Mirrors the ``order_target_value`` formula in both engines:
+        units = value / (price * multiplier)
+
+    Returns 0.0 if ``price`` or ``multiplier`` is non-positive (guards div-by-zero).
+    """
+    denom = price * multiplier
+    return value / denom if denom > 0.0 else 0.0
 
 
 @dataclass

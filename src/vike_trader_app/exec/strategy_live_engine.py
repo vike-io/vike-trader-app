@@ -39,20 +39,17 @@ MTF buffer:
 
 from __future__ import annotations
 
-import bisect
 import os
-from operator import attrgetter
 from typing import TYPE_CHECKING, Callable
 
+from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
-from vike_trader_app.core.timeframe import parse_timeframe, resample
+from vike_trader_app.core.sizing import units_from_percent, units_from_value
 from vike_trader_app.exec.events import OrderRequest
 
 if TYPE_CHECKING:
     from vike_trader_app.exec.accounting import Account
     from vike_trader_app.exec.live_oms import LiveOmsHub
-
-_BAR_TS = attrgetter("ts")
 
 
 def _default_clock() -> int:
@@ -109,11 +106,8 @@ class StrategyLiveEngine:
         self.bars: list[Bar] = []
         # _now tracks the ts of the last live bar fed (used by bars_for / forming_for slicing).
         self._now: int = 0
-        # tf -> (target_ms, [coarse bars]); populated for each requested timeframe.
-        self._tf: dict[str, tuple[int, list]] = {}
-        for tf in timeframes or []:
-            ms = parse_timeframe(tf)
-            self._tf[tf] = (ms, [])
+        # Shared BarSeriesBuffer — self.bars is passed by reference (not copied).
+        self._buf = BarSeriesBuffer(self.bars, timeframes)
 
     # ------------------------------------------------------------------
     # Read-model helpers (mirror BacktestEngine.position / equity_now)
@@ -231,23 +225,24 @@ class StrategyLiveEngine:
     def order_target_value(self, value: float) -> None:
         """Target a notional value. Converts via the current mark price and multiplier.
 
-        Mirrors ``BacktestEngine.order_target_value``:
+        Mirrors ``BacktestEngine.order_target_value`` via ``units_from_value``:
             target_size = value / (mark * multiplier)
         """
         mark = self._mark()
         if mark <= 0.0:
             return
-        self.order_target(value / (mark * self._multiplier))
+        self.order_target(units_from_value(value, mark, self._multiplier))
 
     def order_target_percent(self, pct: float) -> None:
-        """Target a fraction of live equity. Mirrors ``BacktestEngine.order_target_percent``:
+        """Target a fraction of live equity. Mirrors ``BacktestEngine.order_target_percent``
+        via ``units_from_percent``:
 
             target_size = pct * equity_now() / (mark * multiplier)
         """
         mark = self._mark()
         if mark <= 0.0:
             return
-        self.order_target(pct * self.equity_now() / (mark * self._multiplier))
+        self.order_target(units_from_percent(pct, self.equity_now(), mark, self._multiplier))
 
     def cancel_all(self) -> None:
         """Cancel every order currently in the hub's registry."""
@@ -290,50 +285,24 @@ class StrategyLiveEngine:
         self._route(self._build_resting_request(side_sign, size, "limit", price))
 
     # ------------------------------------------------------------------
-    # Multi-timeframe (MTF) buffer — mirrors BacktestEngine.add_live_bar /
-    # bars_for / forming_for using the shared core.timeframe helpers.
+    # Multi-timeframe (MTF) buffer — delegates to BarSeriesBuffer so the
+    # logic is not duplicated from BacktestEngine.
     # ------------------------------------------------------------------
 
     def add_live_bar(self, bar: Bar) -> None:
         """Append a live base bar and refresh higher-TF aggregates (forward mode).
 
-        Mirrors ``BacktestEngine.add_live_bar`` exactly: appends to ``self.bars`` and
-        re-resamples each registered timeframe.  ``_now`` is updated to the bar's ts so
-        that ``bars_for``/``forming_for`` slice correctly without look-ahead.
+        Updates ``_now`` to the bar's ts, then delegates to ``_buf.add_live_bar``
+        (which appends to the shared ``self.bars`` list and re-resamples each
+        registered timeframe).
         """
-        self.bars.append(bar)
         self._now = bar.ts
-        for tf, (ms, _) in list(self._tf.items()):
-            self._tf[tf] = (ms, resample(self.bars, ms))
+        self._buf.add_live_bar(bar)
 
     def bars_for(self, tf: str):
-        """Completed higher-TF bars visible at the current base bar (no look-ahead).
-
-        Mirrors ``BacktestEngine.bars_for``: slices the coarse list up to (but not
-        including) the window that contains ``_now``.
-        """
-        ms, coarse = self._tf[tf]
-        window_start = self._now - self._now % ms
-        return coarse[:bisect.bisect_left(coarse, window_start, key=_BAR_TS)]
+        """Completed higher-TF bars visible at the current base bar (no look-ahead)."""
+        return self._buf.bars_for(tf, self._now)
 
     def forming_for(self, tf: str):
-        """The still-building coarse bar for ``tf`` from base bars seen so far, or None.
-
-        Mirrors ``BacktestEngine.forming_for``: aggregates the base bars in the current
-        higher-TF window into a synthetic Bar.
-        """
-        ms, _ = self._tf[tf]
-        window_start = self._now - self._now % ms
-        lo = bisect.bisect_left(self.bars, window_start, key=_BAR_TS)
-        hi = bisect.bisect_right(self.bars, self._now, key=_BAR_TS)
-        window = self.bars[lo:hi]
-        if not window:
-            return None
-        return Bar(
-            ts=window_start,
-            open=window[0].open,
-            high=max(b.high for b in window),
-            low=min(b.low for b in window),
-            close=window[-1].close,
-            volume=sum(b.volume for b in window),
-        )
+        """The still-forming coarse bar for ``tf`` from base bars seen so far, or None."""
+        return self._buf.forming_for(tf, self._now)
