@@ -10,6 +10,7 @@ import ast
 _ALLOWED_IMPORTS = {
     "math", "statistics", "datetime", "numpy",
     "vike_trader_app.core.strategy", "vike_trader_app.core.model", "vike_trader_app.core.indicators",
+    "vike_trader_app.core.portfolio",  # PortfolioStrategy base class (A2d live portfolio)
 }
 _FORBIDDEN_NAMES = {
     "eval", "exec", "compile", "__import__", "open", "globals", "locals", "vars",

@@ -309,6 +309,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._exec_session = None   # LiveExecutionSession when live exec is gated ON (Phase 3b)
         self._strat_pump = None     # LiveStrategyPump while a strategy is running live
         self._strat_worker = None   # LiveBarFeedWorker that drives the pump (registered on session)
+        self._strat_workers: list = []  # N LiveBarFeedWorkers for portfolio pump (A2d)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
@@ -1475,7 +1476,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio_price.pairsRequested.connect(
             lambda n, ch=self.studio_price: self._add_pairs(ch, n))
         self.studio = StudioTab()
-        self.studio.runLiveRequested.connect(self._start_live_strategy)
+        self.studio.runLiveRequested.connect(self._on_run_live_requested)
         # Sync the Run Live button to the current arm state (Studio may open after arm).
         sess = getattr(self, "_exec_session", None)
         armed = sess is not None and sess.hub is not None
@@ -3430,10 +3431,16 @@ class MainWindow(QtWidgets.QMainWindow):
             max_notional_per_order=_max_order,
             max_total_exposure=_max_expo,
             block_reduce_only_overshoot=_is_perp))
-        hub = LiveOmsHub(bus=bus, account=Account(), gate=gate, client=client,
+        # Basket arm: one Account is shared across ALL hubs so that position/balance accounting is
+        # unified.  For the single-symbol path (N==1) this is unchanged — one hub, one account.
+        account = Account()
+        hub = LiveOmsHub(bus=bus, account=account, gate=gate, client=client,
                          venue=venue, symbol=client_symbol, now_ms=lambda: int(time.time() * 1000))
         hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
-        self._exec_session = LiveExecutionSession(hub)
+        # Build the hubs dict: primary hub keyed by its client_symbol; additional symbols are
+        # added after the session is created (basket path below).
+        _all_hubs: dict = {client_symbol: hub}
+        self._exec_session = LiveExecutionSession(hub, hubs=_all_hubs)
         if venue == "bybit" and product == "perp" and cfg.ws_base_url:
             from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
             from ..ui.private_user_data import PrivateUserDataWorker
@@ -3541,7 +3548,295 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled("deribit", worker)
+
+        # ------------------------------------------------------------------
+        # Basket arm — additional symbols (spec.all_symbols[1:])
+        # Each extra symbol gets its own EventBus + LiveOmsHub (same venue/product/cfg) ALL sharing
+        # the ONE Account created above.  The single-symbol path (N==1) skips this block entirely
+        # so the result is byte-identical to the pre-basket code.
+        # ------------------------------------------------------------------
+        _extra_symbols = [s for s in spec.all_symbols if s != spec.symbol]
+        if _extra_symbols and venue not in ("deribit",):  # deribit options basket not yet supported
+            import logging as _log
+            _basket_log = _log.getLogger(__name__)
+            for _extra_sym in _extra_symbols:
+                try:
+                    _extra_hub, _extra_client_sym, _extra_bus = self._build_basket_hub(
+                        sym=_extra_sym,
+                        account=account,
+                        cfg=cfg,
+                        venue=venue,
+                        environment=environment,
+                        product=product,
+                        spec=spec,
+                    )
+                except Exception as _exc:  # noqa: BLE001
+                    _basket_log.error(
+                        "basket arm: failed to build hub for %r — aborting basket arm: %s",
+                        _extra_sym, _exc)
+                    # Partial basket failure: tear down the session cleanly and abort
+                    self._exec_session.shutdown()
+                    self._exec_session = None
+                    return False
+                self._exec_session._hubs[_extra_client_sym] = _extra_hub
+                # Register per-symbol user-data workers for the basket hub
+                self._register_basket_worker(
+                    _extra_sym, _extra_client_sym, _extra_hub, _extra_bus, cfg, venue, product)
         return True
+
+    def _build_basket_hub(self, *, sym, account, cfg, venue, environment, product, spec):
+        """Build a LiveOmsHub for one extra basket symbol.
+
+        Mirrors the venue dispatch in _maybe_start_live_exec but for a single *sym*.  The shared
+        *account* is passed in — do NOT create a new Account here.  Returns (hub, client_symbol, bus).
+
+        Only spot venues (bybit, okx, binance) and bybit/okx/binance perp are supported.
+        Deribit options basket is out of scope (caller guards on venue != 'deribit').
+        """
+        import time as _time
+        from ..exec.binance.transport import get_public_json
+        from ..exec.bus import EventBus
+        from ..exec.live_oms import LiveOmsHub
+        from ..exec.risk import RiskGate, RiskLimits
+
+        if venue == "bybit" and product == "perp":
+            import logging
+            from ..exec.bybit.perp_client import BybitPerpExecutionClient
+            from ..exec.bybit.perp_instruments import parse_bybit_perp_instruments
+            info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
+                                   {"category": "linear", "symbol": sym})
+            if info.get("retCode", 0) != 0:
+                raise RuntimeError(f"Bybit perp instruments-info retCode={info.get('retCode')}")
+            parsed = parse_bybit_perp_instruments(info)
+            if sym not in parsed:
+                raise RuntimeError(f"Bybit perp instruments: {sym!r} absent")
+            f = parsed[sym]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = sym
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
+            client = BybitPerpExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
+                filters=filters, base_asset=base_asset, leverage=leverage)
+            client.set_leverage()
+            ct_val = None
+        elif venue == "bybit":
+            from ..exec.bybit.client import BybitSpotExecutionClient
+            from ..exec.bybit.instruments import parse_bybit_instruments_info
+            info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
+                                   {"category": "spot", "symbol": sym})
+            if info.get("retCode", 0) != 0:
+                raise RuntimeError(f"Bybit instruments-info retCode={info.get('retCode')}")
+            parsed = parse_bybit_instruments_info(info)
+            if sym not in parsed:
+                raise RuntimeError(f"Bybit instruments: {sym!r} absent")
+            f = parsed[sym]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = sym
+            client = BybitSpotExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
+                filters=filters, base_asset=base_asset)
+            ct_val = None
+        elif venue == "okx" and product == "perp":
+            import functools
+            from ..exec.okx.perp_client import OKXPerpExecutionClient
+            from ..exec.okx.perp_instruments import parse_okx_perp_instruments
+            from ..exec.okx.transport import okx_public_get, okx_signed_request
+            from ..data.okx_source import market_symbol
+            from ..exec.credentials import Environment as _Env
+            inst_id = f"{market_symbol(sym)}-SWAP"
+            simulated = environment is not _Env.MAINNET
+            info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
+                                  {"instType": "SWAP", "instId": inst_id}, simulated=simulated)
+            if str(info.get("code", "0")) != "0":
+                raise RuntimeError(f"OKX SWAP instruments code={info.get('code')}")
+            parsed = parse_okx_perp_instruments(info)
+            if inst_id not in parsed:
+                raise RuntimeError(f"OKX SWAP instruments: {inst_id!r} absent")
+            f = parsed[inst_id]
+            ct_val = f.get("ct_val", 0.0)
+            if ct_val <= 0.0:
+                raise RuntimeError(f"OKX SWAP instruments: ctVal missing/zero for {inst_id!r}")
+            filters = {k: v for k, v in f.items() if k not in ("base_asset", "ct_val", "ct_mult")}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = inst_id
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
+            client = OKXPerpExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
+                filters=filters, base_asset=base_asset, ct_val=ct_val, leverage=leverage,
+                transport=functools.partial(okx_signed_request, simulated=simulated),
+                public_transport=functools.partial(okx_public_get, simulated=simulated))
+            client.set_leverage()
+        elif venue == "okx":
+            import functools
+            from ..exec.okx.client import OKXSpotExecutionClient
+            from ..exec.okx.instruments import parse_okx_instruments
+            from ..exec.okx.transport import okx_public_get, okx_signed_request
+            from ..data.okx_source import market_symbol
+            from ..exec.credentials import Environment as _Env
+            inst_id = market_symbol(sym)
+            simulated = environment is not _Env.MAINNET
+            info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
+                                  {"instType": "SPOT", "instId": inst_id}, simulated=simulated)
+            if str(info.get("code", "0")) != "0":
+                raise RuntimeError(f"OKX instruments code={info.get('code')}")
+            parsed = parse_okx_instruments(info)
+            if inst_id not in parsed:
+                raise RuntimeError(f"OKX instruments: {inst_id!r} absent")
+            f = parsed[inst_id]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = inst_id
+            client = OKXSpotExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
+                filters=filters, base_asset=base_asset,
+                transport=functools.partial(okx_signed_request, simulated=simulated),
+                public_transport=functools.partial(okx_public_get, simulated=simulated))
+            ct_val = None
+        elif venue == "binance" and product == "perp":
+            import logging
+            from ..exec.binance.perp_client import BinancePerpExecutionClient
+            from ..exec.binance.perp_instruments import parse_binance_perp_instruments
+            from ..exec.venue_config import binance_fapi_rest
+            fapi_rest = binance_fapi_rest(environment)
+            info = get_public_json(fapi_rest, "/fapi/v1/exchangeInfo", {"symbol": sym})
+            parsed = parse_binance_perp_instruments(info)
+            if sym not in parsed:
+                raise RuntimeError(f"Binance fapi exchangeInfo: {sym!r} absent")
+            f = parsed[sym]
+            filters = {k: v for k, v in f.items() if k != "base_asset"}
+            base_asset = f.get("base_asset", "")
+            bus = EventBus()
+            client_symbol = sym
+            from ..exec.risk import clamp_leverage
+            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
+            client = BinancePerpExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=sym,
+                filters=filters, base_asset=base_asset, leverage=leverage)
+            client.set_leverage()
+            ct_val = None
+        else:  # binance spot (default)
+            from ..data.instrument_db import parse_symbol_filters
+            from ..exec.binance.client import BinanceSpotExecutionClient
+            info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": sym})
+            filters = parse_symbol_filters(info).get(sym, {
+                "tick_size": 0.01, "step_size": 0.001, "min_qty": 0.0, "max_qty": 0.0,
+                "min_notional": 0.0})
+            base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
+                               if s.get("symbol") == sym), "")
+            bus = EventBus()
+            client_symbol = sym
+            client = BinanceSpotExecutionClient(
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
+                filters=filters, base_asset=base_asset)
+            ct_val = None
+        gate_lot_size = filters["step_size"]
+        if venue == "okx" and product == "perp" and ct_val is not None:
+            gate_lot_size = (filters["step_size"] or 0.0) * ct_val
+        _is_perp = (product == "perp")
+        _max_order = self._arm_float("VIKE_EXEC_MAX_ORDER_NOTIONAL")
+        _max_expo = self._arm_float("VIKE_EXEC_MAX_EXPOSURE")
+        gate = RiskGate(RiskLimits(
+            tick_size=filters["tick_size"] or None, lot_size=gate_lot_size or None,
+            min_notional=filters["min_notional"] or None,
+            max_notional_per_order=_max_order,
+            max_total_exposure=_max_expo,
+            block_reduce_only_overshoot=_is_perp))
+        hub = LiveOmsHub(bus=bus, account=account, gate=gate, client=client,
+                         venue=venue, symbol=client_symbol,
+                         now_ms=lambda: int(_time.time() * 1000))
+        hub.apply_snapshot(client.connect())
+        return hub, client_symbol, bus
+
+    def _register_basket_worker(self, sym, client_symbol, hub, bus, cfg, venue, product):
+        """Register per-symbol user-data worker for an extra basket hub.
+
+        Mirrors the venue-dispatch worker registration in _maybe_start_live_exec but uses
+        the per-symbol *bus* (not the primary hub's bus) so fills route correctly.
+        No funding pollers for basket extras (A2d scope — funding is a single-venue concern).
+        """
+        from ..ui.private_user_data import PrivateUserDataWorker
+        if venue == "bybit" and product == "perp" and cfg.ws_base_url:
+            from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
+            run_core = make_bybit_perp_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
+        elif venue == "bybit" and cfg.ws_base_url:
+            from ..exec.bybit.user_data import make_bybit_run_core
+            run_core = make_bybit_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
+        elif venue == "okx" and product == "perp" and cfg.ws_base_url:
+            from ..exec.okx.perp_user_data import make_okx_perp_run_core
+            run_core = make_okx_perp_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                passphrase=cfg.credentials.passphrase,
+                symbol=client_symbol,
+                ct_val=getattr(hub.client, "_ct_val", 1.0),
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
+        elif venue == "okx" and cfg.ws_base_url:
+            from ..exec.okx.user_data import make_okx_run_core
+            run_core = make_okx_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                passphrase=cfg.credentials.passphrase,
+                symbol=client_symbol,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
+        elif venue == "binance" and product == "perp":
+            from ..exec.venue_config import binance_fapi_rest, binance_fapi_ws
+            _fapi_ws = binance_fapi_ws(cfg.environment)
+            if _fapi_ws:
+                from ..exec.binance.perp_user_data import make_binance_perp_run_core
+                run_core = make_binance_perp_run_core(
+                    fapi_rest_url=binance_fapi_rest(cfg.environment),
+                    ws_base_url=_fapi_ws,
+                    api_key=cfg.credentials.api_key,
+                    symbol=client_symbol,
+                    now_ms=lambda: int(time.time() * 1000),
+                )
+                worker = PrivateUserDataWorker(run_core)
+                self._exec_session.add_worker_if_enabled(
+                    f"binance_{client_symbol}", worker, bus=bus)
+        elif venue == "binance" and product != "perp" and cfg.ws_base_url:
+            from ..exec.binance.user_data import make_binance_run_core
+            run_core = make_binance_run_core(
+                ws_url=cfg.ws_base_url,
+                api_key=cfg.credentials.api_key,
+                api_secret=cfg.credentials.api_secret,
+                symbol=client_symbol,
+                now_ms=lambda: int(time.time() * 1000),
+            )
+            worker = PrivateUserDataWorker(run_core)
+            self._exec_session.add_worker_if_enabled(
+                f"binance_{client_symbol}", worker, bus=bus)
 
     # ------------------------------------------------------------------
     # Task 5 — ExecArmBar call sites
@@ -3587,6 +3882,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Stop any running live strategy BEFORE shutting down the session (the pump needs
         # the hub to be alive to unsubscribe its event adapter cleanly).
         self._stop_live_strategy()
+        self._stop_live_portfolio()
         sess = getattr(self, "_exec_session", None)
         if sess is not None:
             if sess.hub is not None:
@@ -3615,21 +3911,40 @@ class MainWindow(QtWidgets.QMainWindow):
         self.positions_panel.set_armed(False)   # clears rows + disables Cancel (no cancel when no session)
 
     # ------------------------------------------------------------------
-    # Live-strategy pump wiring (A2c Task 3)
+    # Live-strategy pump wiring (A2c Task 3 + A2d Task 4)
     # ------------------------------------------------------------------
 
     def _on_live_strat_start_requested(self) -> None:
         """Handle the LiveStrategyBar "Run live" button click.
 
-        Pulls the current editor code from Studio and forwards to _start_live_strategy.
+        Pulls the current editor code from Studio and forwards to the router.
         If Studio is not open we report via the status bar — no modal.
         """
         if self.studio is None:
             self.statusBar().showMessage("Open Studio to edit a strategy first.", 3000)
             return
-        self._start_live_strategy(self.studio.editor.text())
+        self._on_run_live_requested(self.studio.editor.text())
 
-    def _start_live_strategy(self, code: str) -> None:
+    def _on_run_live_requested(self, code: str) -> None:
+        """Route Run-live to _start_live_portfolio or _start_live_strategy.
+
+        Detects whether the loaded strategy is a ``PortfolioStrategy`` subclass
+        and dispatches to the matching implementation.  The single-symbol A2c
+        path is unchanged for plain ``Strategy`` subclasses.
+        """
+        from ..core.strategy_loader import load_any_strategy_from_string
+        from ..core.portfolio import PortfolioStrategy
+        try:
+            strategy_cls = load_any_strategy_from_string(code)
+        except Exception as exc:  # noqa: BLE001
+            self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
+            return
+        if issubclass(strategy_cls, PortfolioStrategy):
+            self._start_live_portfolio(code, strategy_cls=strategy_cls)
+        else:
+            self._start_live_strategy(code, strategy_cls=strategy_cls)
+
+    def _start_live_strategy(self, code: str, *, strategy_cls=None) -> None:
         """Load the strategy from *code* and start driving it with live bars.
 
         Errors are surfaced via the status bar only — no modals (the headless rule).
@@ -3644,6 +3959,10 @@ class MainWindow(QtWidgets.QMainWindow):
         Binance returns it). ``closed_bars`` drops it so that when the WS feed later emits that
         same candle as the first ``feed_bar``, it does NOT land in ``engine.bars`` a second time
         (a ghost duplicate that would feed warmup indicators the same bar twice).
+
+        strategy_cls: optional already-loaded class (passed from ``_on_run_live_requested``
+        to avoid loading the strategy source twice per click; falls back to loading from
+        ``code`` when not provided, preserving standalone-call behavior).
         """
         sess = getattr(self, "_exec_session", None)
         if sess is None or sess.hub is None:
@@ -3652,13 +3971,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_strat_pump", None) is not None:
             self.statusBar().showMessage("A live strategy is already running. Stop it first.", 3000)
             return
-        from ..core.strategy_loader import load_strategy_from_string
         from ..exec.live_strategy_pump import LiveStrategyPump
         from .live_feed_worker import LiveBarFeedWorker
         from ..data.vike_live import make_live_feed
         from ..data.sources import select_source
         try:
-            strategy_cls = load_strategy_from_string(code)
+            if strategy_cls is None:
+                from ..core.strategy_loader import load_strategy_from_string
+                strategy_cls = load_strategy_from_string(code)
             strategy = strategy_cls()
         except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
             self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
@@ -3725,7 +4045,9 @@ class MainWindow(QtWidgets.QMainWindow):
         F: wait() return value is checked; a False (timeout) is logged as a warning.
         """
         worker = getattr(self, "_strat_worker", None)
-        pump = getattr(self, "_strat_pump", None)
+        # Only owns _strat_pump when running a SINGLE-SYMBOL strategy (A2c).
+        # Portfolio pump is owned by _strat_workers (the LIST — A2d); skip here.
+        pump = getattr(self, "_strat_pump", None) if worker is not None else None
         if worker is not None:
             # B: disconnect BEFORE stop() to prevent late queued barClosed calls.
             try:
@@ -3740,8 +4062,160 @@ class MainWindow(QtWidgets.QMainWindow):
                     "live bar-feed worker did not join in stop()'s timeout; it may orphan")
         if pump is not None:
             pump.stop()
-        self._strat_pump = None
+        if worker is not None:
+            # Only clear the pump ref when handling the single-symbol case.
+            self._strat_pump = None
         self._strat_worker = None
+        if getattr(self, "_live_strat_bar", None) is not None:
+            self._live_strat_bar.set_running(None)
+            sess = getattr(self, "_exec_session", None)
+            armed = sess is not None and getattr(sess, "hub", None) is not None
+            self._live_strat_bar.set_armed(armed)
+        if self.studio is not None:
+            sess = getattr(self, "_exec_session", None)
+            armed = sess is not None and getattr(sess, "hub", None) is not None
+            self.studio.set_live_armed(armed)
+
+    # ------------------------------------------------------------------
+    # Live-portfolio pump wiring (A2d Task 4)
+    # ------------------------------------------------------------------
+
+    def _start_live_portfolio(self, code: str, *, strategy_cls=None) -> None:
+        """Load a PortfolioStrategy from *code* and start driving it with N live feeds.
+
+        One ``LiveBarFeedWorker`` per symbol in the armed basket; all feed bars into a
+        shared ``LivePortfolioPump`` which aligns them (wait-for-all) before calling
+        ``strategy.on_bar(ts, {symbol: bar})``.
+
+        Errors are surfaced via the status bar only — no modals (the headless rule).
+        Does nothing (with a status message) when not armed with a multi-symbol basket
+        or when a strategy is already running.
+
+        Cold-start seed (A): REST-backfills max(WARMUP+50, 250) closed bars PER SYMBOL and
+        feeds them through ``pump.prime()`` so indicator lookbacks are pre-populated and
+        ``_i`` / ``strategy.index`` are advanced by the aligned step count.
+        A fetch failure for a symbol is logged and shown on the status bar but the pump still
+        starts — that symbol just begins cold (best-effort).
+
+        M1 (mirror A2c): REST fetch may include the still-forming candle — ``closed_bars``
+        drops it to avoid a ghost duplicate when the WS feed later emits the same bar.
+
+        strategy_cls: optional already-loaded class (passed from ``_on_run_live_requested``
+        to avoid loading the strategy source twice per click; falls back to loading from
+        ``code`` when not provided, preserving standalone-call behavior).
+        """
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or not getattr(sess, "hubs", {}):
+            self.statusBar().showMessage("Arm a basket first.", 3000)
+            return
+        if getattr(self, "_strat_pump", None) is not None:
+            self.statusBar().showMessage("A live strategy is already running. Stop it first.", 3000)
+            return
+        from ..exec.live_portfolio_pump import LivePortfolioPump
+        from .live_feed_worker import LiveBarFeedWorker
+        from ..data.vike_live import make_live_feed
+        from ..data.sources import select_source
+        try:
+            if strategy_cls is None:
+                from ..core.strategy_loader import load_any_strategy_from_string
+                strategy_cls = load_any_strategy_from_string(code)
+            strategy = strategy_cls()
+        except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
+            self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
+            return
+
+        # Shared account is the same object across all hubs in the basket.
+        account = next(iter(sess.hubs.values())).account
+        pump = LivePortfolioPump(strategy, sess.hubs, account)
+
+        interval = self._interval
+        seed_count = max(getattr(strategy, "WARMUP", 0) + 50, _FORWARD_SEED_BARS)
+
+        # A + M1: REST-backfill each symbol; collect per-symbol closed histories then prime
+        # the pump in one call so _i / strategy.index are advanced by the aligned step count
+        # (matching the wait-for-all contract).  prime() feeds through engine.add_live_bar
+        # WITHOUT firing on_bar — purely warms the indicator lookbacks.
+        history_by_symbol: dict = {}
+        now = int(time.time() * 1000)
+        for sym in sess.hubs:
+            try:
+                start = now - seed_count * interval_ms(interval)
+                history = select_source(sym).fetch_bars_range(sym, interval, start, now)
+                # M1: drop the still-forming tail candle (same as A2c).
+                history = closed_bars(history, interval_ms(interval), now)
+                history_by_symbol[sym] = list(history)
+            except Exception as exc:  # noqa: BLE001 - data error must not block live start
+                logging.getLogger(__name__).warning(
+                    "live portfolio cold-start backfill failed for %s (%s); starting cold", sym, exc)
+                self.statusBar().showMessage(
+                    f"Backfill failed for {sym} ({exc}); starting cold.", 4000)
+                history_by_symbol[sym] = []
+
+        pump.prime(history_by_symbol)
+        pump.start()
+
+        workers: list = []
+        for sym in sess.hubs:
+            feed = make_live_feed(sym, interval)
+            worker = LiveBarFeedWorker(feed)
+            # Bind sym per-worker so each lambda captures its own sym value.
+            worker.barClosed.connect(lambda b, s=sym: pump.feed_bar(s, b))
+            # G: auto-stop the pump if ANY feed thread dies unexpectedly.
+            worker.finished.connect(self._on_live_portfolio_worker_finished)
+            sess.add_aux_worker(f"live_strat_{sym}", worker)
+            worker.start()
+            workers.append(worker)
+
+        self._strat_pump = pump
+        self._strat_workers = workers
+        name = type(strategy).__name__
+        self._live_strat_bar.set_running(name)
+        if self.studio is not None:
+            self.studio.set_live_armed(False)   # disable Run Live while running
+        self.statusBar().showMessage(
+            f"Live portfolio strategy {name} running ({interval}, {len(workers)} symbols).", 3000)
+
+    def _on_live_portfolio_worker_finished(self) -> None:
+        """G: Auto-stop the portfolio strategy if ANY live bar-feed thread exits unexpectedly.
+
+        Connected to each ``LiveBarFeedWorker.finished``.  If a clean ``_stop_live_portfolio()``
+        already nil'd the pump, this is a no-op.
+        """
+        if getattr(self, "_strat_pump", None) is not None:
+            logging.getLogger(__name__).warning(
+                "a portfolio live bar-feed worker exited while strategy was running; auto-stopping")
+            self._stop_live_portfolio()
+            self.statusBar().showMessage(
+                "A live bar feed disconnected — portfolio strategy stopped automatically.", 5000)
+
+    def _stop_live_portfolio(self) -> None:
+        """Stop the running portfolio pump and ALL its bar-feed workers.
+
+        Safe to call when nothing is running — all guards use getattr-None checks.
+        All workers are stopped (waited) BEFORE the pump so on_stop() sees no more bars.
+
+        B: barClosed signals are disconnected before stop() to prevent late queued calls.
+        F: each worker.isRunning() is checked post-stop and a warning logged on timeout.
+        """
+        pump = getattr(self, "_strat_pump", None)
+        workers = list(getattr(self, "_strat_workers", []))
+        for worker in workers:
+            # B: disconnect BEFORE stop() to prevent late queued barClosed calls.
+            try:
+                # Disconnect all slots from barClosed (the lambda bound sym can't be named
+                # individually — disconnect() with no args disconnects all receivers).
+                worker.barClosed.disconnect()
+            except (TypeError, RuntimeError):
+                pass   # already disconnected
+            worker.stop()
+            # F: log a warning when the thread does not join within stop()'s timeout.
+            if worker.isRunning():
+                logging.getLogger(__name__).warning(
+                    "live portfolio bar-feed worker did not join in stop()'s timeout; it may orphan")
+        if pump is not None:
+            pump.stop()
+        self._strat_pump = None
+        self._strat_workers = []
         if getattr(self, "_live_strat_bar", None) is not None:
             self._live_strat_bar.set_running(None)
             sess = getattr(self, "_exec_session", None)
@@ -4355,6 +4829,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._live_hub.shutdown()            # chart-document live round-robin + its worker
         # Stop any running live strategy BEFORE shutting down the session.
         self._stop_live_strategy()
+        self._stop_live_portfolio()
         if getattr(self, "_exec_session", None) is not None:
             sess = self._exec_session
             if getattr(sess, "hub", None) is not None:

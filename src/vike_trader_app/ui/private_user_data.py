@@ -57,30 +57,79 @@ class PrivateUserDataWorker(QtCore.QThread):
 
 
 class LiveExecutionSession(QtCore.QObject):
-    """Owns the per-venue worker dict; its main-thread slot is the only bus.publish caller."""
+    """Owns the per-venue worker dict; its main-thread slot is the only bus.publish caller.
 
-    def __init__(self, hub) -> None:
+    Single-symbol path (back-compat):
+        ``LiveExecutionSession(hub)`` — ``sess.hub`` is the hub; ``sess.hubs`` = {symbol: hub}.
+
+    Basket path (N symbols):
+        ``LiveExecutionSession(hub, hubs={sym: hub, ...})`` — ``sess.hub`` is the PRIMARY (first)
+        hub for legacy UI reads; ``sess.hubs`` exposes the full dict.  All hubs share ONE Account.
+    """
+
+    def __init__(self, hub, hubs: "dict | None" = None) -> None:
         super().__init__()
         self._hub = hub
+        # Build _hubs: when a full dict is passed use it; otherwise seed from the primary hub.
+        if hubs is not None:
+            self._hubs: dict = dict(hubs)
+        elif hub is not None:
+            _sym = getattr(hub, "symbol", None)
+            self._hubs = {_sym: hub} if _sym is not None else {}
+        else:
+            self._hubs = {}
         self._workers: dict[str, PrivateUserDataWorker] = {}
         self._closing = False
 
     @property
     def hub(self):
-        """The live LiveOmsHub while armed; None after shutdown(). The order ticket reaches the armed
-        hub (.symbol/.venue/.bus/.account/.submit_ticket) through this single accessor."""
+        """The PRIMARY live LiveOmsHub while armed; None after shutdown(). The order ticket reaches
+        the armed hub (.symbol/.venue/.bus/.account/.submit_ticket) through this single accessor.
+        For basket sessions this is the first hub; all existing single-hub callers are unchanged."""
         return self._hub
 
-    def add_worker(self, key: str, worker: PrivateUserDataWorker) -> None:
-        worker.report.connect(self._on_report)        # queued: slot is on this main-thread QObject
+    @property
+    def hubs(self) -> "dict":
+        """All symbol→LiveOmsHub mappings for the session.  Single-symbol sessions expose one entry;
+        basket sessions expose N entries, all sharing ONE Account."""
+        return self._hubs
+
+    def add_worker(self, key: str, worker: PrivateUserDataWorker,
+                   bus=None) -> None:
+        """Register *worker* and connect its signals.
+
+        *bus* — optional explicit EventBus to route ``report`` events to.  When omitted the
+        primary hub's bus is used (single-symbol back-compat path).  Pass the per-symbol hub's
+        bus for basket arms so fills are routed to the correct hub.
+        """
+        if bus is not None:
+            # Basket path: connect to a per-symbol lambda that captures the exact bus.
+            # Use a queued connection (auto-detected because slot lives on this main-thread QObject
+            # via a wrapper slot) — the lambda is a Python object so Qt uses a direct connection
+            # here; we wrap it in _on_report_bus to keep the same queued semantics.
+            _bus = bus
+            _closing_ref = self
+
+            def _routed_report(event, _b=_bus, _s=_closing_ref):
+                if _s._closing:
+                    return
+                _b.publish(event)
+
+            worker.report.connect(_routed_report)
+        else:
+            worker.report.connect(self._on_report)        # queued: slot is on this main-thread QObject
         worker.failed.connect(self._on_failed)
         self._workers[key] = worker
 
-    def add_worker_if_enabled(self, key: str, worker: PrivateUserDataWorker) -> bool:
-        """Register + start a worker unless VIKE_DISABLE_LIVE is set (the headless kill-switch)."""
+    def add_worker_if_enabled(self, key: str, worker: PrivateUserDataWorker,
+                               bus=None) -> bool:
+        """Register + start a worker unless VIKE_DISABLE_LIVE is set (the headless kill-switch).
+
+        *bus* — pass the per-symbol hub's bus for basket arms (see ``add_worker``).
+        """
         if os.environ.get("VIKE_DISABLE_LIVE"):
             return False
-        self.add_worker(key, worker)
+        self.add_worker(key, worker, bus=bus)
         worker.start()
         return True
 
@@ -104,7 +153,12 @@ class LiveExecutionSession(QtCore.QObject):
         logging.getLogger("vike.exec").warning("live user-data worker failed: %s", message)
 
     def shutdown(self) -> None:
-        """stop()+wait() every worker (the 0xC0000409 invariant), then detach the hub."""
+        """stop()+wait() every worker (the 0xC0000409 invariant), then detach all hubs.
+
+        Basket sessions: ALL hubs in ``_hubs`` are shut down (each hub owns its own bus +
+        fill-event subscriptions).  The primary ``_hub`` reference is cleared last for
+        back-compat callers that check ``sess.hub is None`` after shutdown.
+        """
         self._closing = True
         for worker in self._workers.values():
             worker.stop()
@@ -117,6 +171,13 @@ class LiveExecutionSession(QtCore.QObject):
                     "user-data worker did not join in 2s; extending the join window")
                 worker.wait(8000)
         self._workers.clear()
-        if self._hub is not None:
-            self._hub.shutdown()
-            self._hub = None
+        # Shut down ALL hubs (basket: N hubs share one Account — each hub cleans its own bus).
+        # If the primary hub was not added to _hubs (e.g. no .symbol attribute — a test stub),
+        # ensure it is still shut down via the direct _hub reference.
+        _hubs_to_close = list(self._hubs.values())
+        if self._hub is not None and self._hub not in _hubs_to_close:
+            _hubs_to_close.insert(0, self._hub)
+        for hub in _hubs_to_close:
+            hub.shutdown()
+        self._hubs.clear()
+        self._hub = None
