@@ -309,6 +309,10 @@ class PortfolioEngine:
     def price_of(self, symbol: str) -> float:
         return self._sym[symbol].price
 
+    @property
+    def now(self) -> int:
+        return self._now
+
     def equity_now(self) -> float:
         return self.cash + sum(self._sym[s].pos.size * self._sym[s].price * self.multiplier for s in self.symbols)
 

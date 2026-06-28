@@ -51,6 +51,11 @@ class Strategy:
     def equity(self) -> float:
         return self._engine.equity_now()
 
+    @property
+    def now(self) -> int:
+        """Current simulation time (epoch ms): the ts of the bar/tick being processed."""
+        return self._engine.now
+
     def bars(self, tf: str):
         """Completed bars of higher timeframe ``tf`` visible now (no look-ahead)."""
         return self._engine.bars_for(tf)

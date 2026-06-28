@@ -52,6 +52,7 @@ class BacktestEngine:
         on_fill=None,
         risk=None,
         fill_model=None,
+        catalog=None,
     ) -> None:
         self.bars = bars
         self.strategy = strategy
@@ -75,6 +76,7 @@ class BacktestEngine:
         self._entry_ts = 0
         self._price = bars[0].open if bars else 0.0
         self._now = bars[0].ts if bars else 0
+        self._catalog_arg = catalog
         self._peak = cash  # peak equity, for drawdown
         # Precompute each higher timeframe once: tf -> (target_ms, [coarse bars]).
         self._tf: dict[str, tuple[int, list]] = {}
@@ -164,6 +166,19 @@ class BacktestEngine:
 
     def order_target_percent(self, pct: float) -> None:
         self.order_target(pct * self.equity_now() / (self._price * self.multiplier))
+
+    @property
+    def now(self) -> int:
+        """Current simulation time (epoch ms) — the ts of the bar/tick being processed."""
+        return self._now
+
+    @property
+    def catalog(self):
+        """Catalog for Strategy.history() reads; lazily defaults to the global parquet cache."""
+        if self._catalog_arg is None:
+            from ..data.catalog import Catalog
+            self._catalog_arg = Catalog()
+        return self._catalog_arg
 
     def equity_now(self) -> float:
         return self.cash + self.position.size * self._price * self.multiplier

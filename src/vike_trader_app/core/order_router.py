@@ -48,6 +48,14 @@ class OrderRouter:
     def position(self):
         return self._engine.position
 
+    @property
+    def now(self) -> int:
+        return self._engine.now
+
+    @property
+    def catalog(self):
+        return self._engine.catalog
+
     def equity_now(self) -> float:
         return self._engine.equity_now()
 
