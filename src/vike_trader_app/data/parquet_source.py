@@ -219,6 +219,3 @@ def delete_series(root: str, symbol: str, interval: str) -> None:
     d = series_dir(root, symbol, interval)
     if d.is_dir():
         shutil.rmtree(d)
-
-
-
