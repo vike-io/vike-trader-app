@@ -84,6 +84,14 @@ class LiveExecutionSession(QtCore.QObject):
         worker.start()
         return True
 
+    def add_aux_worker(self, key: str, worker) -> None:
+        """Register an aux worker (non-PrivateUserDataWorker) for teardown only.
+
+        shutdown() will stop()+wait() it like any worker but no signals are wired
+        (the caller wires any needed signals directly). Use for LiveBarFeedWorker.
+        """
+        self._workers[key] = worker
+
     def _on_report(self, event) -> None:
         if self._closing or self._hub is None:
             return  # a late queued event during teardown no-ops (mirror app.py:2960)

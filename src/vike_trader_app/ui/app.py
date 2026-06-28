@@ -7,6 +7,7 @@ up the verdict banner — the differentiator.
 """
 
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -306,6 +307,8 @@ class MainWindow(QtWidgets.QMainWindow):
         # LiveHub keeps the visible ones' live edges ticking with one round-robin fetch worker.
         self._live_hub = LiveHub(self)
         self._exec_session = None   # LiveExecutionSession when live exec is gated ON (Phase 3b)
+        self._strat_pump = None     # LiveStrategyPump while a strategy is running live
+        self._strat_worker = None   # LiveBarFeedWorker that drives the pump (registered on session)
         self._doc_seq = 0                  # monotonic id for stable dock objectNames (doc:N)
         self._doc_widgets: list[ChartDocument] = []
         self._chart_frames: list = []      # MC-style floating ChartWindowFrames (S7)
@@ -1409,6 +1412,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._exec_toolbar.setObjectName("exec_arm_toolbar")
         self._exec_toolbar.setMovable(False)
         self._exec_toolbar.addWidget(self.exec_arm)
+        # Live-strategy bar: label + "Run live" / "Stop live" buttons next to the arm bar.
+        from .live_strategy_bar import LiveStrategyBar
+        self._live_strat_bar = LiveStrategyBar()
+        self._live_strat_bar.startRequested.connect(self._on_live_strat_start_requested)
+        self._live_strat_bar.stopRequested.connect(self._stop_live_strategy)
+        self._exec_toolbar.addSeparator()
+        self._exec_toolbar.addWidget(self._live_strat_bar)
         self.addToolBar(QtCore.Qt.ToolBarArea.TopToolBarArea, self._exec_toolbar)
 
         # Live order ticket — the production caller of LiveOmsHub.submit_ticket (was unreachable).
@@ -1465,6 +1475,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.studio_price.pairsRequested.connect(
             lambda n, ch=self.studio_price: self._add_pairs(ch, n))
         self.studio = StudioTab()
+        self.studio.runLiveRequested.connect(self._start_live_strategy)
+        # Sync the Run Live button to the current arm state (Studio may open after arm).
+        sess = getattr(self, "_exec_session", None)
+        armed = sess is not None and sess.hub is not None
+        self.studio.set_live_armed(armed)
         self._wire_studio_agent()
         # Replay/data controls: a vertical button strip docked to the chart's RIGHT (fitted to its
         # height), with the scrubber on a full-width row BELOW the chart. Both are built eagerly and
@@ -3557,6 +3572,9 @@ class MainWindow(QtWidgets.QMainWindow):
                 self.positions_panel.set_armed(True)
                 self.positions_panel.set_rows(project_positions_orders(   # seed once at arm
                     sess.hub.account, sess.hub.registry, sess.hub.venue))
+            self._live_strat_bar.set_armed(True)
+            if self.studio is not None:
+                self.studio.set_live_armed(True)
         return ok
 
     def _on_disarm_requested(self) -> None:
@@ -3566,6 +3584,9 @@ class MainWindow(QtWidgets.QMainWindow):
         fires signed REST GETs against a detached client/bus. Re-arming after a disarm
         is safe: _maybe_start_live_exec restarts the timer on the next arm.
         """
+        # Stop any running live strategy BEFORE shutting down the session (the pump needs
+        # the hub to be alive to unsubscribe its event adapter cleanly).
+        self._stop_live_strategy()
         sess = getattr(self, "_exec_session", None)
         if sess is not None:
             if sess.hub is not None:
@@ -3585,8 +3606,151 @@ class MainWindow(QtWidgets.QMainWindow):
         self._funding_pollers = []
         self._update_feed_health()           # back to CACHED/LIVE data-feed badge
         self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
+        self._live_strat_bar.set_armed(False)
+        # E: explicitly disable Studio Run-live after disarm so it doesn't remain clickable
+        # when _stop_live_strategy's armed-check fired while the session was still alive.
+        if self.studio is not None:
+            self.studio.set_live_armed(False)
         self.order_ticket.set_armed(False)
         self.positions_panel.set_armed(False)   # clears rows + disables Cancel (no cancel when no session)
+
+    # ------------------------------------------------------------------
+    # Live-strategy pump wiring (A2c Task 3)
+    # ------------------------------------------------------------------
+
+    def _on_live_strat_start_requested(self) -> None:
+        """Handle the LiveStrategyBar "Run live" button click.
+
+        Pulls the current editor code from Studio and forwards to _start_live_strategy.
+        If Studio is not open we report via the status bar — no modal.
+        """
+        if self.studio is None:
+            self.statusBar().showMessage("Open Studio to edit a strategy first.", 3000)
+            return
+        self._start_live_strategy(self.studio.editor.text())
+
+    def _start_live_strategy(self, code: str) -> None:
+        """Load the strategy from *code* and start driving it with live bars.
+
+        Errors are surfaced via the status bar only — no modals (the headless rule).
+        Does nothing (with a status message) when not armed or already running.
+
+        Cold-start seed (A): REST-backfills max(WARMUP+50, 250) closed bars and calls
+        pump.prime() so the strategy's indicator lookbacks are pre-populated before the
+        first live bar arrives.  A fetch failure is logged and shown on the status bar but
+        the pump still starts cold (best-effort — live must not be blocked by a data error).
+
+        M1: the REST fetch's last element may be the still-FORMING candle (venue-dependent —
+        Binance returns it). ``closed_bars`` drops it so that when the WS feed later emits that
+        same candle as the first ``feed_bar``, it does NOT land in ``engine.bars`` a second time
+        (a ghost duplicate that would feed warmup indicators the same bar twice).
+        """
+        sess = getattr(self, "_exec_session", None)
+        if sess is None or sess.hub is None:
+            self.statusBar().showMessage("Arm live execution first.", 3000)
+            return
+        if getattr(self, "_strat_pump", None) is not None:
+            self.statusBar().showMessage("A live strategy is already running. Stop it first.", 3000)
+            return
+        from ..core.strategy_loader import load_strategy_from_string
+        from ..exec.live_strategy_pump import LiveStrategyPump
+        from .live_feed_worker import LiveBarFeedWorker
+        from ..data.vike_live import make_live_feed
+        from ..data.sources import select_source
+        try:
+            strategy_cls = load_strategy_from_string(code)
+            strategy = strategy_cls()
+        except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
+            self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
+            return
+        interval = self._interval
+        pump = LiveStrategyPump(
+            strategy, sess.hub,
+            timeframes=getattr(strategy, "timeframes", None),
+        )
+        # A: REST backfill to warm indicator lookbacks before the first live bar.
+        seed_count = max(getattr(strategy, "WARMUP", 0) + 50, _FORWARD_SEED_BARS)
+        try:
+            now = int(time.time() * 1000)
+            start = now - seed_count * interval_ms(interval)
+            history = select_source(sess.hub.symbol).fetch_bars_range(
+                sess.hub.symbol, interval, start, now)
+            # M1: drop the still-forming tail candle so the WS feed's first bar isn't a dup.
+            history = closed_bars(history, interval_ms(interval), now)
+            pump.prime(history)
+        except Exception as exc:  # noqa: BLE001 - data error must not block live start
+            logging.getLogger(__name__).warning(
+                "live strategy cold-start backfill failed (%s); starting without history", exc)
+            self.statusBar().showMessage(
+                f"Backfill failed ({exc}); strategy starting cold.", 4000)
+        pump.start()
+        feed = make_live_feed(sess.hub.symbol, interval)
+        worker = LiveBarFeedWorker(feed)
+        worker.barClosed.connect(pump.feed_bar)
+        # G: auto-stop the pump if the WS feed thread dies unexpectedly.
+        worker.finished.connect(self._on_live_feed_worker_finished)
+        sess.add_aux_worker("live_strategy", worker)
+        worker.start()
+        self._strat_pump = pump
+        self._strat_worker = worker
+        name = type(strategy).__name__
+        self._live_strat_bar.set_running(name)
+        if self.studio is not None:
+            self.studio.set_live_armed(False)   # disable Run Live while running
+        # H: surface the interval in the running status label.
+        self.statusBar().showMessage(f"Live strategy {name} running ({interval}).", 3000)
+
+    def _on_live_feed_worker_finished(self) -> None:
+        """G: Auto-stop the strategy if the live bar-feed thread exits unexpectedly.
+
+        This slot is connected to LiveBarFeedWorker.finished (QThread.finished signal).
+        If a clean _stop_live_strategy() already nil'd the pump, this is a no-op.
+        """
+        if getattr(self, "_strat_pump", None) is not None:
+            logging.getLogger(__name__).warning(
+                "live bar-feed worker exited while strategy was running; auto-stopping")
+            self._stop_live_strategy()
+            self.statusBar().showMessage(
+                "Live bar feed disconnected — strategy stopped automatically.", 5000)
+
+    def _stop_live_strategy(self) -> None:
+        """Stop the running live strategy pump and its bar-feed worker.
+
+        Safe to call when nothing is running — all guards use getattr-None checks.
+        Worker is stopped BEFORE the pump so the pump's on_stop() sees no more bars.
+
+        B: barClosed is disconnected BEFORE stop() so late queued signals cannot call
+        feed_bar after the pump's _started flag is cleared by stop().  The pump's own
+        feed_bar guard (``if not self._started: return``) is a second-line defence.
+        F: wait() return value is checked; a False (timeout) is logged as a warning.
+        """
+        worker = getattr(self, "_strat_worker", None)
+        pump = getattr(self, "_strat_pump", None)
+        if worker is not None:
+            # B: disconnect BEFORE stop() to prevent late queued barClosed calls.
+            try:
+                if pump is not None:
+                    worker.barClosed.disconnect(pump.feed_bar)
+            except (TypeError, RuntimeError):
+                pass   # already disconnected
+            worker.stop()   # sets stop flag + cancels the async task + wait()s the thread
+            # F: log a warning when the thread does not join within stop()'s timeout.
+            if worker.isRunning():
+                logging.getLogger(__name__).warning(
+                    "live bar-feed worker did not join in stop()'s timeout; it may orphan")
+        if pump is not None:
+            pump.stop()
+        self._strat_pump = None
+        self._strat_worker = None
+        if getattr(self, "_live_strat_bar", None) is not None:
+            self._live_strat_bar.set_running(None)
+            sess = getattr(self, "_exec_session", None)
+            armed = sess is not None and getattr(sess, "hub", None) is not None
+            self._live_strat_bar.set_armed(armed)
+        if self.studio is not None:
+            sess = getattr(self, "_exec_session", None)
+            armed = sess is not None and getattr(sess, "hub", None) is not None
+            self.studio.set_live_armed(armed)
 
     def _refresh_feed_badge_for_exec(self, spec) -> None:
         """Update the status-bar feed badge to show the armed venue, product and leverage."""
@@ -4189,6 +4353,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._stop_forward()
         if getattr(self, "_live_hub", None) is not None:
             self._live_hub.shutdown()            # chart-document live round-robin + its worker
+        # Stop any running live strategy BEFORE shutting down the session.
+        self._stop_live_strategy()
         if getattr(self, "_exec_session", None) is not None:
             sess = self._exec_session
             if getattr(sess, "hub", None) is not None:
