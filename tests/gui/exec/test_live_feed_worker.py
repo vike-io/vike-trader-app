@@ -113,3 +113,33 @@ def test_worker_stop_cancels_blocked_feed(app):
 
     w.stop(timeout_ms=3000)   # must cancel the blocked task, not wait on the predicate
     assert not w.isRunning(), "stop() failed to cancel a blocked feed — orphan QThread (0xC0000409)"
+
+
+class _CrashingFeed:
+    """A feed whose run_forever raises immediately — exercises the failed-signal path."""
+
+    async def run_forever(self, on_bar, *, stop=None, max_backoff: float = 30.0):
+        raise RuntimeError("feed exploded")
+
+
+def test_worker_emits_failed_on_crash(app):
+    """A non-cancellation crash emits failed(message), the thread ends, and no bars arrive."""
+    import time
+
+    w = LiveBarFeedWorker(_CrashingFeed())
+    errors = []
+    bars = []
+    w.failed.connect(lambda m: errors.append(m))
+    w.barClosed.connect(lambda b: bars.append(b))
+    w.start()
+
+    deadline, elapsed, step = 3000, 0, 20
+    while not errors and elapsed < deadline:
+        app.processEvents()
+        time.sleep(step / 1000)
+        elapsed += step
+
+    w.stop()  # idempotent — thread already ended
+    assert not w.isRunning()
+    assert errors and "feed exploded" in errors[0], f"expected failed signal, got {errors}"
+    assert bars == [], "a crashing feed must not emit bars"
