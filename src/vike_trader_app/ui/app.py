@@ -3197,6 +3197,8 @@ class MainWindow(QtWidgets.QMainWindow):
             is_primary = (i == 0)
             if not is_primary and venue in ("deribit",):
                 break   # deribit options basket not yet supported
+            if not is_primary and sym == spec.symbol:
+                continue   # primary symbol re-listed as an extra: OLD excluded it (dedup) — preserve
             try:
                 _hub, _client_sym, _bus, _ct_val, _currency = self._build_hub_for_symbol(
                     sym=sym, account=account, cfg=cfg, venue=venue,
