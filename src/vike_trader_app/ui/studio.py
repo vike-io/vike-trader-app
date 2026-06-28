@@ -2140,6 +2140,8 @@ class StudioTab(QtWidgets.QWidget):
         self.results.add_run(report, bars, overlays)
 
     def _clear_backtest_worker(self) -> None:
+        if self._backtest_worker is not None:
+            self._backtest_worker.deleteLater()
         self._backtest_worker = None
 
     def _effective_bars(self) -> list:

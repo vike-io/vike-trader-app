@@ -1,15 +1,12 @@
 """BacktestWorker: run_code() executes the single backtest off the GUI thread.
 
-Tests the async contract: run_code() spawns a BacktestWorker, the result arrives on the main thread
-via done -> _on_backtest_done -> results.add_run, errors arrive via failed -> results.show_error,
-and shutdown() waits the worker. Mirrors the OptimizeWorker test (test_studio_optimize_threaded.py)
-in structure: these tests deliberately do NOT use the conftest _sync_backtest_worker monkeypatch so
-they drive the real QThread (synchronised via worker.wait()) and test the async seam itself.
-
-We use the same synchronous-worker override approach as the optimize-threaded tests to avoid the
-py3.14 QThread+GC teardown crash (0xC0000409) under parallel load: start() calls run() + finished
-inline, so the worker finishes before we assert, but the signal wiring, re-entrancy guard, and
-shutdown path are all exercised through the real production code paths.
+Tests the async structural contract: run_code() spawns a BacktestWorker, the result arrives on the
+main thread via done -> _on_backtest_done -> results.add_run, errors arrive via failed ->
+results.show_error, and shutdown() waits the worker. Tests run the worker synchronously via the
+_sync_backtest_worker conftest patch (same as ChatWorker/OptimizeWorker, for py3.14 teardown-crash
+mitigation). The synchronous override (start() calls run() + finished inline) allows validation of
+the signal wiring, re-entrancy guard, and cleanup path without risking the QThread+GC crash
+(0xC0000409) that would occur with a real background QThread under parallel test load.
 """
 
 import math
