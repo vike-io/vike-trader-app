@@ -7,7 +7,7 @@ market orders at the next bar's open (no look-ahead).
 
 from typing import TYPE_CHECKING
 
-from .model import Bar, Position
+from .model import Bar, Fill, Position
 
 if TYPE_CHECKING:
     from .strategy_engine import StrategyEngine
@@ -146,6 +146,53 @@ class Strategy:
 
     def on_trade_tick(self, tick) -> None:  # noqa: ARG002 - overridden by the per-tick engine (Slice 2)
         """Per-trade-tick hook. No-op in the bar/consolidator path; used by the Slice-2 per-tick engine."""
+
+    # --- lifecycle ---
+    def on_start(self) -> None:
+        """Called once before the run begins (engine wired). Override for setup."""
+
+    def on_stop(self) -> None:
+        """Called once after the run completes. Override for teardown/finalization."""
+
+    # --- order lifecycle (granular, Nautilus-style). filled/submitted fire in backtest+live;
+    #     accepted/rejected/canceled/expired/updated are LIVE-only (wired in A2). ---
+    def on_order_submitted(self, order) -> None:  # noqa: ARG002
+        """An order was placed (added to the engine's pending book)."""
+
+    def on_order_accepted(self, event) -> None:  # noqa: ARG002
+        """LIVE: the venue accepted the order (no-op in backtest)."""
+
+    def on_order_rejected(self, event) -> None:  # noqa: ARG002
+        """LIVE: the venue (or risk gate) rejected the order (no-op in backtest)."""
+
+    def on_order_filled(self, fill: Fill) -> None:  # noqa: ARG002
+        """An order filled (partially or fully), AFTER the position updates."""
+
+    def on_order_canceled(self, event) -> None:  # noqa: ARG002
+        """LIVE: the order was canceled (no-op in backtest)."""
+
+    def on_order_expired(self, event) -> None:  # noqa: ARG002
+        """LIVE: the order expired per its time-in-force (no-op in backtest)."""
+
+    def on_order_updated(self, event) -> None:  # noqa: ARG002
+        """LIVE: an amend/replace was applied (no-op in backtest)."""
+
+    # --- position lifecycle ---
+    def on_position_opened(self, position) -> None:  # noqa: ARG002
+        """A flat position became non-flat."""
+
+    def on_position_changed(self, position) -> None:  # noqa: ARG002
+        """An existing position's size/avg-price changed (add or partial reduce)."""
+
+    def on_position_closed(self, position) -> None:  # noqa: ARG002
+        """A position returned to flat (``position.size == 0``)."""
+
+    # --- catch-all + forced close ---
+    def on_event(self, event) -> None:  # noqa: ARG002
+        """Catch-all: receives every order/position/fill event (isinstance-dispatch)."""
+
+    def on_liquidation(self, fill: Fill) -> None:  # noqa: ARG002
+        """The engine force-closed at maintenance margin (the close also fires on_order_filled/on_position_closed)."""
 
     # --- optional: declare indicator lines to overlay on the price chart ---
     def chart_overlays(self, closes: list[float]) -> dict[str, list]:  # noqa: ARG002
