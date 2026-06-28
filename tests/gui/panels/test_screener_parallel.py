@@ -8,8 +8,15 @@ import pytest
 
 pytest.importorskip("PySide6")
 
+from PySide6 import QtWidgets  # noqa: E402
+
 from vike_trader_app.core.model import Bar  # noqa: E402
 from vike_trader_app.ui.screener import ScreenerTab  # noqa: E402
+
+
+@pytest.fixture(scope="module")
+def app():
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
 class _Cat:
@@ -28,9 +35,8 @@ class _Cat:
                     close=1.0 + i, volume=100.0) for i in range(30)]
 
 
-def test_scan_fills_table_via_parallel_reads(qtbot):
+def test_scan_fills_table_via_parallel_reads(app):
     tab = ScreenerTab()
-    qtbot.addWidget(tab)
     tab._catalog = lambda: _Cat(["AAA", "BBB", "CCC"])   # override the collaborator seam
     tab._populate_intervals()
     tab.scan()

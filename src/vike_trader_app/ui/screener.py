@@ -313,7 +313,7 @@ class ScreenerTab(QtWidgets.QWidget):
                 self._table.setItem(r, c, item)
         self._placeholder.sync()
 
-    # --- live auto-rescan (MAIN-THREAD timer; data layer is not thread-safe) ---
+    # --- live auto-rescan (MAIN-THREAD QTimer; reads now fan out via read_series_many) ---
 
     def _on_live_toggled(self, on: bool) -> None:
         if on:
