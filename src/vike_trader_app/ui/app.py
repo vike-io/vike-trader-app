@@ -3180,39 +3180,97 @@ class MainWindow(QtWidgets.QMainWindow):
             return False
 
         from ..exec.accounting import Account
+        from ..ui.private_user_data import LiveExecutionSession
+
+        product = spec.product
+        # One Account shared across ALL hubs so position/balance accounting is unified.
+        # For the single-symbol path (N==1) this is unchanged — one hub, one account.
+        account = Account()
+        _all_hubs: dict = {}
+
+        # ------------------------------------------------------------------
+        # Unified arm loop — iterates spec.all_symbols (primary first, then basket extras).
+        # i==0 is the primary; i>0 are basket extras (same venue/product/cfg, shared account).
+        # Deribit options basket is not supported; break on the 2nd deribit symbol.
+        # ------------------------------------------------------------------
+        for i, sym in enumerate(spec.all_symbols):
+            is_primary = (i == 0)
+            if not is_primary and venue in ("deribit",):
+                break   # deribit options basket not yet supported
+            if not is_primary and sym == spec.symbol:
+                continue   # primary symbol re-listed as an extra: OLD excluded it (dedup) — preserve
+            try:
+                _hub, _client_sym, _bus, _ct_val, _currency = self._build_hub_for_symbol(
+                    sym=sym, account=account, cfg=cfg, venue=venue,
+                    environment=environment, product=product, spec=spec,
+                )
+            except Exception as _exc:  # noqa: BLE001
+                if is_primary:
+                    logging.getLogger(__name__).error(
+                        "live exec: failed to build hub for %r — aborting: %s", sym, _exc)
+                    return False
+                else:
+                    logging.getLogger(__name__).error(
+                        "basket arm: failed to build hub for %r — aborting basket arm: %s",
+                        sym, _exc)
+                    # Partial basket failure: tear down the session cleanly and abort
+                    self._exec_session.shutdown()
+                    self._exec_session = None
+                    return False
+            _all_hubs[_client_sym] = _hub
+            if is_primary:
+                # Session is created once the primary hub is ready; basket extras are added below.
+                self._exec_session = LiveExecutionSession(_hub, hubs=_all_hubs)
+            else:
+                self._exec_session._hubs[_client_sym] = _hub
+            self._register_user_data_worker(
+                client_symbol=_client_sym, hub=_hub, bus=_bus, cfg=cfg,
+                venue=venue, product=product, environment=environment,
+                ct_val=_ct_val, currency=_currency, is_primary=is_primary,
+            )
+        return True
+
+    def _build_hub_for_symbol(self, *, sym, account, cfg, venue, environment, product, spec):
+        """Build a LiveOmsHub for a single symbol, shared account.
+
+        Used for BOTH the primary arm and each extra basket symbol. RAISEs on any failure
+        (missing instrument / bad retCode/code / missing ctVal). Callers are responsible
+        for catching and converting to the appropriate error response.
+
+        Returns a 5-tuple: (hub, client_symbol, bus, ct_val, currency).
+        - ct_val: OKX perp contract value (float), None for all other branches.
+        - currency: Deribit settlement currency (str), None for all non-deribit branches.
+        """
+        import time as _time
         from ..exec.binance.transport import get_public_json
         from ..exec.bus import EventBus
         from ..exec.live_oms import LiveOmsHub
         from ..exec.risk import RiskGate, RiskLimits
-        from ..ui.private_user_data import LiveExecutionSession
 
-        symbol = spec.symbol
-        product = spec.product
+        currency = None   # deribit settlement currency; None for every non-deribit branch
+        ct_val = None     # OKX perp contract value; None for every non-OKX-perp branch
+
         if venue == "bybit" and product == "perp":
             import logging
             from ..exec.bybit.perp_client import BybitPerpExecutionClient
             from ..exec.bybit.perp_instruments import parse_bybit_perp_instruments
             info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
-                                   {"category": "linear", "symbol": symbol})
+                                   {"category": "linear", "symbol": sym})
             if info.get("retCode", 0) != 0:
-                logging.getLogger(__name__).error(
-                    "Bybit linear instruments-info error retCode=%s — aborting live exec",
-                    info.get("retCode"))
-                return False
+                raise RuntimeError(
+                    f"Bybit perp instruments-info retCode={info.get('retCode')}")
             parsed = parse_bybit_perp_instruments(info)
-            if symbol not in parsed:
-                logging.getLogger(__name__).error(
-                    "Bybit linear instruments: symbol %r absent — aborting live exec", symbol)
-                return False
-            f = parsed[symbol]
+            if sym not in parsed:
+                raise RuntimeError(f"Bybit perp instruments: {sym!r} absent")
+            f = parsed[sym]
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
             bus = EventBus()
-            client_symbol = symbol
+            client_symbol = sym
             from ..exec.risk import clamp_leverage
             leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = BybitPerpExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
                 filters=filters, base_asset=base_asset, leverage=leverage)
             client.set_leverage()   # MAIN thread, before connect/reconcile
             # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
@@ -3223,54 +3281,43 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.bybit.client import BybitSpotExecutionClient
             from ..exec.bybit.instruments import parse_bybit_instruments_info
             info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
-                                   {"category": "spot", "symbol": symbol})
+                                   {"category": "spot", "symbol": sym})
             if info.get("retCode", 0) != 0:
-                import logging
-                logging.getLogger(__name__).error(
-                    "Bybit instruments-info error retCode=%s msg=%s — aborting live exec",
-                    info.get("retCode"), info.get("retMsg"))
-                return False
+                raise RuntimeError(
+                    f"Bybit instruments-info retCode={info.get('retCode')} msg={info.get('retMsg')}")
             parsed = parse_bybit_instruments_info(info)
-            if symbol not in parsed:
-                import logging
-                logging.getLogger(__name__).error(
-                    "Bybit instruments-info: symbol %r absent from response — aborting live exec",
-                    symbol)
-                return False
-            f = parsed[symbol]
+            if sym not in parsed:
+                raise RuntimeError(f"Bybit instruments-info: {sym!r} absent from response")
+            f = parsed[sym]
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
             bus = EventBus()
-            client_symbol = symbol
+            client_symbol = sym
             client = BybitSpotExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
                 filters=filters, base_asset=base_asset)
         elif venue == "okx" and product == "perp":
-            import functools, logging
+            import functools
             from ..exec.okx.perp_client import OKXPerpExecutionClient
             from ..exec.okx.perp_instruments import parse_okx_perp_instruments
             from ..exec.okx.transport import okx_public_get, okx_signed_request
             from ..data.okx_source import market_symbol
+            from ..exec.credentials import Environment as _Env
 
-            inst_id = f"{market_symbol(symbol)}-SWAP"      # BTCUSDT -> BTC-USDT -> BTC-USDT-SWAP
-            simulated = environment is not Environment.MAINNET
+            inst_id = f"{market_symbol(sym)}-SWAP"      # BTCUSDT -> BTC-USDT -> BTC-USDT-SWAP
+            simulated = environment is not _Env.MAINNET
             info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
                                   {"instType": "SWAP", "instId": inst_id}, simulated=simulated)
             if str(info.get("code", "0")) != "0":
-                logging.getLogger(__name__).error(
-                    "OKX SWAP instruments error code=%s — aborting live exec", info.get("code"))
-                return False
+                raise RuntimeError(f"OKX SWAP instruments code={info.get('code')}")
             parsed = parse_okx_perp_instruments(info)
             if inst_id not in parsed:
-                logging.getLogger(__name__).error(
-                    "OKX SWAP instruments: instId %r absent — aborting live exec", inst_id)
-                return False
+                raise RuntimeError(f"OKX SWAP instruments: {inst_id!r} absent")
             f = parsed[inst_id]
             ct_val = f.get("ct_val", 0.0)
             if ct_val <= 0.0:                              # #1 trap: no ctVal -> 100x risk; abort
-                logging.getLogger(__name__).error(
-                    "OKX SWAP instruments: ctVal missing/zero for %r — aborting live exec", inst_id)
-                return False
+                raise RuntimeError(
+                    f"OKX SWAP instruments: ctVal missing/zero for {inst_id!r}")
             filters = {k: v for k, v in f.items() if k not in ("base_asset", "ct_val", "ct_mult")}
             base_asset = f.get("base_asset", "")
             bus = EventBus()
@@ -3293,23 +3340,18 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.okx.instruments import parse_okx_instruments
             from ..exec.okx.transport import okx_public_get, okx_signed_request
             from ..data.okx_source import market_symbol
+            from ..exec.credentials import Environment as _Env
 
-            inst_id = market_symbol(symbol)                 # BTCUSDT -> BTC-USDT
-            simulated = environment is not Environment.MAINNET   # DEMO -> x-simulated-trading:1
+            inst_id = market_symbol(sym)                 # BTCUSDT -> BTC-USDT
+            simulated = environment is not _Env.MAINNET   # DEMO -> x-simulated-trading:1
             info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
                                   {"instType": "SPOT", "instId": inst_id}, simulated=simulated)
             if str(info.get("code", "0")) != "0":
-                import logging
-                logging.getLogger(__name__).error(
-                    "OKX instruments error code=%s msg=%s — aborting live exec",
-                    info.get("code"), info.get("msg"))
-                return False
+                raise RuntimeError(
+                    f"OKX instruments code={info.get('code')} msg={info.get('msg')}")
             parsed = parse_okx_instruments(info)
             if inst_id not in parsed:
-                import logging
-                logging.getLogger(__name__).error(
-                    "OKX instruments: instId %r absent from response — aborting live exec", inst_id)
-                return False
+                raise RuntimeError(f"OKX instruments: {inst_id!r} absent from response")
             f = parsed[inst_id]
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
@@ -3326,21 +3368,19 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.binance.perp_instruments import parse_binance_perp_instruments
             from ..exec.venue_config import binance_fapi_rest
             fapi_rest = binance_fapi_rest(environment)
-            info = get_public_json(fapi_rest, "/fapi/v1/exchangeInfo", {"symbol": symbol})
+            info = get_public_json(fapi_rest, "/fapi/v1/exchangeInfo", {"symbol": sym})
             parsed = parse_binance_perp_instruments(info)
-            if symbol not in parsed:
-                logging.getLogger(__name__).error(
-                    "Binance fapi exchangeInfo: symbol %r absent — aborting live exec", symbol)
-                return False
-            f = parsed[symbol]
+            if sym not in parsed:
+                raise RuntimeError(f"Binance fapi exchangeInfo: {sym!r} absent")
+            f = parsed[sym]
             filters = {k: v for k, v in f.items() if k != "base_asset"}
             base_asset = f.get("base_asset", "")
             bus = EventBus()
-            client_symbol = symbol                              # plain BTCUSDT — no dash, no -SWAP
+            client_symbol = sym                              # plain BTCUSDT — no dash, no -SWAP
             from ..exec.risk import clamp_leverage
             leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
             client = BinancePerpExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=symbol,
+                bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=sym,
                 filters=filters, base_asset=base_asset, leverage=leverage)
             client.set_leverage()                               # MAIN thread, before connect/reconcile
             # Perp MARKET orders are now valued at the seeded Account mark in the gate (slice 5f):
@@ -3354,44 +3394,40 @@ class MainWindow(QtWidgets.QMainWindow):
             from ..exec.deribit.public import fetch_option_instruments
             from ..exec.deribit.transport import DeribitOrderTransport
 
-            currency = (parse_instrument_name(symbol) or [None])[0]
+            currency = (parse_instrument_name(sym) or [None])[0]
             if currency is None:
-                logging.getLogger(__name__).error(
-                    "Deribit arm: symbol %r is not a valid option instrument name — aborting live exec",
-                    symbol)
-                return False
+                raise RuntimeError(
+                    f"Deribit arm: {sym!r} is not a valid option instrument name")
             all_instruments = fetch_option_instruments(currency, base_url=cfg.rest_base_url)
-            if symbol not in all_instruments:
-                logging.getLogger(__name__).error(
-                    "Deribit arm: instrument %r not found in public/get_instruments — aborting live exec",
-                    symbol)
-                return False
-            filters = all_instruments[symbol]
+            if sym not in all_instruments:
+                raise RuntimeError(
+                    f"Deribit arm: instrument {sym!r} not found in public/get_instruments")
+            filters = all_instruments[sym]
             bus = EventBus()
-            client_symbol = symbol   # instrument_name IS the hub symbol — no market_symbol transform
+            client_symbol = sym   # instrument_name IS the hub symbol — no market_symbol transform
             transport = DeribitOrderTransport(
                 ws_url=cfg.ws_base_url,
                 client_id=cfg.credentials.api_key,
                 client_secret=cfg.credentials.api_secret,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             transport.connect()   # MAIN thread: open + auth the order socket
             client = DeribitExecutionClient(
-                bus, transport=transport, symbol=symbol, filters=filters,
+                bus, transport=transport, symbol=sym, filters=filters,
                 currency=currency)
         else:
             from ..data.instrument_db import parse_symbol_filters
             from ..exec.binance.client import BinanceSpotExecutionClient
-            info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": symbol})
-            filters = parse_symbol_filters(info).get(symbol, {
+            info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": sym})
+            filters = parse_symbol_filters(info).get(sym, {
                 "tick_size": 0.01, "step_size": 0.001, "min_qty": 0.0, "max_qty": 0.0,
                 "min_notional": 0.0})
             base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
-                               if s.get("symbol") == symbol), "")
+                               if s.get("symbol") == sym), "")
             bus = EventBus()
-            client_symbol = symbol
+            client_symbol = sym
             client = BinanceSpotExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=symbol,
+                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
                 filters=filters, base_asset=base_asset)
         # OKX SWAP: filters["step_size"] is the lotSz in CONTRACTS, but the order qty fed to the gate
         # is in BASE units. Quantize the gate on the true BASE granularity (lotSz * ctVal); the client's
@@ -3408,53 +3444,66 @@ class MainWindow(QtWidgets.QMainWindow):
             max_notional_per_order=_max_order,
             max_total_exposure=_max_expo,
             block_reduce_only_overshoot=_is_perp))
-        # Basket arm: one Account is shared across ALL hubs so that position/balance accounting is
-        # unified.  For the single-symbol path (N==1) this is unchanged — one hub, one account.
-        account = Account()
         hub = LiveOmsHub(bus=bus, account=account, gate=gate, client=client,
                          venue=venue, symbol=client_symbol,
-                         now_ms=lambda: int(time.time() * 1000), reduce_only_on_close=_is_perp)
-        hub.apply_snapshot(client.connect())   # reconcile on the MAIN thread before any fill
-        # Build the hubs dict: primary hub keyed by its client_symbol; additional symbols are
-        # added after the session is created (basket path below).
-        _all_hubs: dict = {client_symbol: hub}
-        self._exec_session = LiveExecutionSession(hub, hubs=_all_hubs)
+                         now_ms=lambda: int(_time.time() * 1000), reduce_only_on_close=_is_perp)
+        hub.apply_snapshot(client.connect())
+        return hub, client_symbol, bus, ct_val, currency
+
+    def _register_user_data_worker(self, *, client_symbol, hub, bus, cfg, venue, product,
+                                   environment, ct_val, currency, is_primary):
+        """Register venue-specific user-data WS worker for a hub.
+
+        Used for BOTH the primary arm (is_primary=True) and each extra basket symbol
+        (is_primary=False).
+
+        is_primary=True  → worker key = plain venue name ("bybit", "okx", …);
+                           no bus kwarg (primary hub owns its bus); funding pollers registered.
+        is_primary=False → worker key = f"{venue}_{client_symbol}"; bus=bus forwarded;
+                           no funding pollers (basket extras — funding is a single-venue concern).
+        """
+        import os as _os
+        import time as _time
+        from ..ui.private_user_data import PrivateUserDataWorker
+
+        worker_key = venue if is_primary else f"{venue}_{client_symbol}"
+        bus_kwarg = {} if is_primary else {"bus": bus}
+
         if venue == "bybit" and product == "perp" and cfg.ws_base_url:
             from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_bybit_perp_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("bybit", worker)
-            from ..exec.bybit.funding import BybitFundingPoller
-            bybit_funding_poller = BybitFundingPoller(bus=bus, client=client, symbol=client_symbol)
-            self._funding_pollers.append(bybit_funding_poller)
-            # NO opportunistic poll at arm time — that would issue a real signed REST GET on the main
-            # thread the instant a session arms (incl. the offscreen GUI arm-tests that delete
-            # VIKE_DISABLE_LIVE), violating the no-network-in-headless rule. The QTimer does the first
-            # poll within _FUNDING_POLL_MS — negligible vs the ~8h funding cadence.
-            if not os.environ.get("VIKE_DISABLE_LIVE"):
-                self._funding_timer.start(_FUNDING_POLL_MS)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+            if is_primary:
+                from ..exec.bybit.funding import BybitFundingPoller
+                bybit_funding_poller = BybitFundingPoller(
+                    bus=bus, client=hub.client, symbol=client_symbol)
+                self._funding_pollers.append(bybit_funding_poller)
+                # NO opportunistic poll at arm time — that would issue a real signed REST GET on
+                # the main thread the instant a session arms (incl. the offscreen GUI arm-tests
+                # that delete VIKE_DISABLE_LIVE), violating the no-network-in-headless rule. The
+                # QTimer does the first poll within _FUNDING_POLL_MS — negligible vs the ~8h cadence.
+                if not _os.environ.get("VIKE_DISABLE_LIVE"):
+                    self._funding_timer.start(_FUNDING_POLL_MS)
         elif venue == "bybit" and cfg.ws_base_url:
             from ..exec.bybit.user_data import make_bybit_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_bybit_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("bybit", worker)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
         if venue == "okx" and product == "perp" and cfg.ws_base_url:
             from ..exec.okx.perp_user_data import make_okx_perp_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_okx_perp_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
@@ -3462,359 +3511,68 @@ class MainWindow(QtWidgets.QMainWindow):
                 passphrase=cfg.credentials.passphrase,
                 symbol=client_symbol,                        # BTC-USDT-SWAP
                 ct_val=ct_val,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("okx", worker)
-            from ..exec.okx.funding import OkxFundingPoller
-            okx_funding_poller = OkxFundingPoller(bus=bus, client=client, symbol=client_symbol)
-            self._funding_pollers.append(okx_funding_poller)
-            # NO opportunistic poll at arm time (see the bybit arm) — the QTimer does the first poll
-            # within _FUNDING_POLL_MS, keeping the headless arm-tests network-free.
-            if not os.environ.get("VIKE_DISABLE_LIVE"):
-                self._funding_timer.start(_FUNDING_POLL_MS)   # ~ every 5 min; funding settles ~8h
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
+            if is_primary:
+                from ..exec.okx.funding import OkxFundingPoller
+                okx_funding_poller = OkxFundingPoller(
+                    bus=bus, client=hub.client, symbol=client_symbol)
+                self._funding_pollers.append(okx_funding_poller)
+                # NO opportunistic poll at arm time (see the bybit arm) — the QTimer does the
+                # first poll within _FUNDING_POLL_MS, keeping the headless arm-tests network-free.
+                if not _os.environ.get("VIKE_DISABLE_LIVE"):
+                    self._funding_timer.start(_FUNDING_POLL_MS)  # ~ every 5 min; funding settles ~8h
         elif venue == "okx" and cfg.ws_base_url:
             from ..exec.okx.user_data import make_okx_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_okx_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 passphrase=cfg.credentials.passphrase,      # EXTRA arg the OKX arm needs
                 symbol=client_symbol,                        # dashed inst_id 'BTC-USDT' — matches hub.symbol
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("okx", worker)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
         if venue == "binance" and product == "perp":
             from ..exec.venue_config import binance_fapi_rest, binance_fapi_ws
             _fapi_ws = binance_fapi_ws(environment)
             if _fapi_ws:
                 from ..exec.binance.perp_user_data import make_binance_perp_run_core
-                from ..ui.private_user_data import PrivateUserDataWorker
                 run_core = make_binance_perp_run_core(
                     fapi_rest_url=binance_fapi_rest(environment),
                     ws_base_url=_fapi_ws,
                     api_key=cfg.credentials.api_key,
                     symbol=client_symbol,                        # plain BTCUSDT — no dash, no -SWAP
-                    now_ms=lambda: int(time.time() * 1000),
+                    now_ms=lambda: int(_time.time() * 1000),
                 )
                 worker = PrivateUserDataWorker(run_core)
-                self._exec_session.add_worker_if_enabled("binance", worker)
+                self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
         elif venue == "binance" and product != "perp" and cfg.ws_base_url:
             from ..exec.binance.user_data import make_binance_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_binance_run_core(
                 ws_url=cfg.ws_base_url,
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,                        # plain 'BTCUSDT' — no dashed inst_id, no passphrase
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("binance", worker)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
         if venue == "deribit" and cfg.ws_base_url:
             from ..exec.deribit.user_data import make_deribit_run_core
-            from ..ui.private_user_data import PrivateUserDataWorker
             run_core = make_deribit_run_core(
                 ws_url=cfg.ws_base_url,
                 client_id=cfg.credentials.api_key,
                 client_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
                 currency=currency,
-                now_ms=lambda: int(time.time() * 1000),
+                now_ms=lambda: int(_time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled("deribit", worker)
-
-        # ------------------------------------------------------------------
-        # Basket arm — additional symbols (spec.all_symbols[1:])
-        # Each extra symbol gets its own EventBus + LiveOmsHub (same venue/product/cfg) ALL sharing
-        # the ONE Account created above.  The single-symbol path (N==1) skips this block entirely
-        # so the result is byte-identical to the pre-basket code.
-        # ------------------------------------------------------------------
-        _extra_symbols = [s for s in spec.all_symbols if s != spec.symbol]
-        if _extra_symbols and venue not in ("deribit",):  # deribit options basket not yet supported
-            import logging as _log
-            _basket_log = _log.getLogger(__name__)
-            for _extra_sym in _extra_symbols:
-                try:
-                    _extra_hub, _extra_client_sym, _extra_bus = self._build_basket_hub(
-                        sym=_extra_sym,
-                        account=account,
-                        cfg=cfg,
-                        venue=venue,
-                        environment=environment,
-                        product=product,
-                        spec=spec,
-                    )
-                except Exception as _exc:  # noqa: BLE001
-                    _basket_log.error(
-                        "basket arm: failed to build hub for %r — aborting basket arm: %s",
-                        _extra_sym, _exc)
-                    # Partial basket failure: tear down the session cleanly and abort
-                    self._exec_session.shutdown()
-                    self._exec_session = None
-                    return False
-                self._exec_session._hubs[_extra_client_sym] = _extra_hub
-                # Register per-symbol user-data workers for the basket hub
-                self._register_basket_worker(
-                    _extra_sym, _extra_client_sym, _extra_hub, _extra_bus, cfg, venue, product)
-        return True
-
-    def _build_basket_hub(self, *, sym, account, cfg, venue, environment, product, spec):
-        """Build a LiveOmsHub for one extra basket symbol.
-
-        Mirrors the venue dispatch in _maybe_start_live_exec but for a single *sym*.  The shared
-        *account* is passed in — do NOT create a new Account here.  Returns (hub, client_symbol, bus).
-
-        Only spot venues (bybit, okx, binance) and bybit/okx/binance perp are supported.
-        Deribit options basket is out of scope (caller guards on venue != 'deribit').
-        """
-        import time as _time
-        from ..exec.binance.transport import get_public_json
-        from ..exec.bus import EventBus
-        from ..exec.live_oms import LiveOmsHub
-        from ..exec.risk import RiskGate, RiskLimits
-
-        if venue == "bybit" and product == "perp":
-            import logging
-            from ..exec.bybit.perp_client import BybitPerpExecutionClient
-            from ..exec.bybit.perp_instruments import parse_bybit_perp_instruments
-            info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
-                                   {"category": "linear", "symbol": sym})
-            if info.get("retCode", 0) != 0:
-                raise RuntimeError(f"Bybit perp instruments-info retCode={info.get('retCode')}")
-            parsed = parse_bybit_perp_instruments(info)
-            if sym not in parsed:
-                raise RuntimeError(f"Bybit perp instruments: {sym!r} absent")
-            f = parsed[sym]
-            filters = {k: v for k, v in f.items() if k != "base_asset"}
-            base_asset = f.get("base_asset", "")
-            bus = EventBus()
-            client_symbol = sym
-            from ..exec.risk import clamp_leverage
-            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
-            client = BybitPerpExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
-                filters=filters, base_asset=base_asset, leverage=leverage)
-            client.set_leverage()
-            ct_val = None
-        elif venue == "bybit":
-            from ..exec.bybit.client import BybitSpotExecutionClient
-            from ..exec.bybit.instruments import parse_bybit_instruments_info
-            info = get_public_json(cfg.rest_base_url, "/v5/market/instruments-info",
-                                   {"category": "spot", "symbol": sym})
-            if info.get("retCode", 0) != 0:
-                raise RuntimeError(f"Bybit instruments-info retCode={info.get('retCode')}")
-            parsed = parse_bybit_instruments_info(info)
-            if sym not in parsed:
-                raise RuntimeError(f"Bybit instruments: {sym!r} absent")
-            f = parsed[sym]
-            filters = {k: v for k, v in f.items() if k != "base_asset"}
-            base_asset = f.get("base_asset", "")
-            bus = EventBus()
-            client_symbol = sym
-            client = BybitSpotExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
-                filters=filters, base_asset=base_asset)
-            ct_val = None
-        elif venue == "okx" and product == "perp":
-            import functools
-            from ..exec.okx.perp_client import OKXPerpExecutionClient
-            from ..exec.okx.perp_instruments import parse_okx_perp_instruments
-            from ..exec.okx.transport import okx_public_get, okx_signed_request
-            from ..data.okx_source import market_symbol
-            from ..exec.credentials import Environment as _Env
-            inst_id = f"{market_symbol(sym)}-SWAP"
-            simulated = environment is not _Env.MAINNET
-            info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
-                                  {"instType": "SWAP", "instId": inst_id}, simulated=simulated)
-            if str(info.get("code", "0")) != "0":
-                raise RuntimeError(f"OKX SWAP instruments code={info.get('code')}")
-            parsed = parse_okx_perp_instruments(info)
-            if inst_id not in parsed:
-                raise RuntimeError(f"OKX SWAP instruments: {inst_id!r} absent")
-            f = parsed[inst_id]
-            ct_val = f.get("ct_val", 0.0)
-            if ct_val <= 0.0:
-                raise RuntimeError(f"OKX SWAP instruments: ctVal missing/zero for {inst_id!r}")
-            filters = {k: v for k, v in f.items() if k not in ("base_asset", "ct_val", "ct_mult")}
-            base_asset = f.get("base_asset", "")
-            bus = EventBus()
-            client_symbol = inst_id
-            from ..exec.risk import clamp_leverage
-            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
-            client = OKXPerpExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
-                filters=filters, base_asset=base_asset, ct_val=ct_val, leverage=leverage,
-                transport=functools.partial(okx_signed_request, simulated=simulated),
-                public_transport=functools.partial(okx_public_get, simulated=simulated))
-            client.set_leverage()
-        elif venue == "okx":
-            import functools
-            from ..exec.okx.client import OKXSpotExecutionClient
-            from ..exec.okx.instruments import parse_okx_instruments
-            from ..exec.okx.transport import okx_public_get, okx_signed_request
-            from ..data.okx_source import market_symbol
-            from ..exec.credentials import Environment as _Env
-            inst_id = market_symbol(sym)
-            simulated = environment is not _Env.MAINNET
-            info = okx_public_get(cfg.rest_base_url, "/api/v5/public/instruments",
-                                  {"instType": "SPOT", "instId": inst_id}, simulated=simulated)
-            if str(info.get("code", "0")) != "0":
-                raise RuntimeError(f"OKX instruments code={info.get('code')}")
-            parsed = parse_okx_instruments(info)
-            if inst_id not in parsed:
-                raise RuntimeError(f"OKX instruments: {inst_id!r} absent")
-            f = parsed[inst_id]
-            filters = {k: v for k, v in f.items() if k != "base_asset"}
-            base_asset = f.get("base_asset", "")
-            bus = EventBus()
-            client_symbol = inst_id
-            client = OKXSpotExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=inst_id,
-                filters=filters, base_asset=base_asset,
-                transport=functools.partial(okx_signed_request, simulated=simulated),
-                public_transport=functools.partial(okx_public_get, simulated=simulated))
-            ct_val = None
-        elif venue == "binance" and product == "perp":
-            import logging
-            from ..exec.binance.perp_client import BinancePerpExecutionClient
-            from ..exec.binance.perp_instruments import parse_binance_perp_instruments
-            from ..exec.venue_config import binance_fapi_rest
-            fapi_rest = binance_fapi_rest(environment)
-            info = get_public_json(fapi_rest, "/fapi/v1/exchangeInfo", {"symbol": sym})
-            parsed = parse_binance_perp_instruments(info)
-            if sym not in parsed:
-                raise RuntimeError(f"Binance fapi exchangeInfo: {sym!r} absent")
-            f = parsed[sym]
-            filters = {k: v for k, v in f.items() if k != "base_asset"}
-            base_asset = f.get("base_asset", "")
-            bus = EventBus()
-            client_symbol = sym
-            from ..exec.risk import clamp_leverage
-            leverage = clamp_leverage(spec.leverage, self._exec_max_leverage())
-            client = BinancePerpExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=fapi_rest, symbol=sym,
-                filters=filters, base_asset=base_asset, leverage=leverage)
-            client.set_leverage()
-            ct_val = None
-        else:  # binance spot (default)
-            from ..data.instrument_db import parse_symbol_filters
-            from ..exec.binance.client import BinanceSpotExecutionClient
-            info = get_public_json(cfg.rest_base_url, "/api/v3/exchangeInfo", {"symbol": sym})
-            filters = parse_symbol_filters(info).get(sym, {
-                "tick_size": 0.01, "step_size": 0.001, "min_qty": 0.0, "max_qty": 0.0,
-                "min_notional": 0.0})
-            base_asset = next((s["baseAsset"] for s in info.get("symbols", [])
-                               if s.get("symbol") == sym), "")
-            bus = EventBus()
-            client_symbol = sym
-            client = BinanceSpotExecutionClient(
-                bus, signer=cfg.signer, rest_base_url=cfg.rest_base_url, symbol=sym,
-                filters=filters, base_asset=base_asset)
-            ct_val = None
-        gate_lot_size = filters["step_size"]
-        if venue == "okx" and product == "perp" and ct_val is not None:
-            gate_lot_size = (filters["step_size"] or 0.0) * ct_val
-        _is_perp = (product == "perp")
-        _max_order = self._arm_float("VIKE_EXEC_MAX_ORDER_NOTIONAL")
-        _max_expo = self._arm_float("VIKE_EXEC_MAX_EXPOSURE")
-        gate = RiskGate(RiskLimits(
-            tick_size=filters["tick_size"] or None, lot_size=gate_lot_size or None,
-            min_notional=filters["min_notional"] or None,
-            max_notional_per_order=_max_order,
-            max_total_exposure=_max_expo,
-            block_reduce_only_overshoot=_is_perp))
-        hub = LiveOmsHub(bus=bus, account=account, gate=gate, client=client,
-                         venue=venue, symbol=client_symbol,
-                         now_ms=lambda: int(_time.time() * 1000), reduce_only_on_close=_is_perp)
-        hub.apply_snapshot(client.connect())
-        return hub, client_symbol, bus
-
-    def _register_basket_worker(self, sym, client_symbol, hub, bus, cfg, venue, product):
-        """Register per-symbol user-data worker for an extra basket hub.
-
-        Mirrors the venue-dispatch worker registration in _maybe_start_live_exec but uses
-        the per-symbol *bus* (not the primary hub's bus) so fills route correctly.
-        No funding pollers for basket extras (A2d scope — funding is a single-venue concern).
-        """
-        from ..ui.private_user_data import PrivateUserDataWorker
-        if venue == "bybit" and product == "perp" and cfg.ws_base_url:
-            from ..exec.bybit.perp_user_data import make_bybit_perp_run_core
-            run_core = make_bybit_perp_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
-        elif venue == "bybit" and cfg.ws_base_url:
-            from ..exec.bybit.user_data import make_bybit_run_core
-            run_core = make_bybit_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
-        elif venue == "okx" and product == "perp" and cfg.ws_base_url:
-            from ..exec.okx.perp_user_data import make_okx_perp_run_core
-            run_core = make_okx_perp_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                passphrase=cfg.credentials.passphrase,
-                symbol=client_symbol,
-                ct_val=getattr(hub.client, "_ct_val", 1.0),
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
-        elif venue == "okx" and cfg.ws_base_url:
-            from ..exec.okx.user_data import make_okx_run_core
-            run_core = make_okx_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                passphrase=cfg.credentials.passphrase,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
-        elif venue == "binance" and product == "perp":
-            from ..exec.venue_config import binance_fapi_rest, binance_fapi_ws
-            _fapi_ws = binance_fapi_ws(cfg.environment)
-            if _fapi_ws:
-                from ..exec.binance.perp_user_data import make_binance_perp_run_core
-                run_core = make_binance_perp_run_core(
-                    fapi_rest_url=binance_fapi_rest(cfg.environment),
-                    ws_base_url=_fapi_ws,
-                    api_key=cfg.credentials.api_key,
-                    symbol=client_symbol,
-                    now_ms=lambda: int(time.time() * 1000),
-                )
-                worker = PrivateUserDataWorker(run_core)
-                self._exec_session.add_worker_if_enabled(
-                    f"binance_{client_symbol}", worker, bus=bus)
-        elif venue == "binance" and product != "perp" and cfg.ws_base_url:
-            from ..exec.binance.user_data import make_binance_run_core
-            run_core = make_binance_run_core(
-                ws_url=cfg.ws_base_url,
-                api_key=cfg.credentials.api_key,
-                api_secret=cfg.credentials.api_secret,
-                symbol=client_symbol,
-                now_ms=lambda: int(time.time() * 1000),
-            )
-            worker = PrivateUserDataWorker(run_core)
-            self._exec_session.add_worker_if_enabled(
-                f"binance_{client_symbol}", worker, bus=bus)
+            self._exec_session.add_worker_if_enabled(worker_key, worker, **bus_kwarg)
 
     # ------------------------------------------------------------------
     # Task 5 — ExecArmBar call sites
