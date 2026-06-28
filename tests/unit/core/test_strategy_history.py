@@ -101,3 +101,20 @@ def test_bad_args_raise(tmp_path):
     out = {}
     _engine(drv, S(), root).run()
     assert out.get("ok")
+
+
+def test_multi_symbol_mixed_cached_uncached(tmp_path):
+    root = tmp_path
+    _series(root, "AAA", 10)          # cached; BBB intentionally NOT cached
+    drv = [Bar(ts=9 * 60_000, open=1, high=1, low=1, close=1)]
+    out = {}
+
+    class S(Strategy):
+        def on_bar(self, bar):
+            out["df"] = self.history(["AAA", "BBB"], "1m", 3)
+
+    _engine(drv, S(), root).run()
+    df = out["df"]
+    assert "symbol" in df.columns
+    assert df.filter(pl.col("symbol") == "AAA").height == 3   # cached -> last 3
+    assert df.filter(pl.col("symbol") == "BBB").height == 0   # uncached -> empty, no crash
