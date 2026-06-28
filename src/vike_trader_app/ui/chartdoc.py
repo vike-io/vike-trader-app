@@ -374,6 +374,7 @@ class LiveHub(QtCore.QObject):
         self._docs: list[ChartDocument] = []
         self._worker = None              # round-robin LIVE-edge worker
         self._topup_worker = None        # one-shot INITIAL/STALE-load worker (a SECOND slot)
+        self._cache_worker = None        # one-shot CACHE-ONLY Phase-1 read worker (a THIRD slot)
         self._pending_topup = None       # (doc, gen) deferred while _topup_worker is busy (latest-wins)
         self._cursor = 0
         self._timer = QtCore.QTimer(self)
@@ -441,6 +442,32 @@ class LiveHub(QtCore.QObject):
         if doc in self._docs:
             doc.topup_failed(gen, msg)
 
+    def request_cache_read(self, doc: "ChartDocument", gen: int) -> None:
+        """Off-thread Phase-1 cache read of ``doc`` (no network) so a symbol switch doesn't block
+        the UI on a cold/large local read. THIRD worker slot; waited by shutdown(). One in-flight
+        at a time per hub — a superseded result is dropped by the doc's generation guard."""
+        from .app import _CacheReadWorker  # late import: avoids an app<->chartdoc cycle
+
+        if self._cache_worker is not None:
+            self._cache_worker.wait(2000)   # serialize: rare; cache reads are fast
+        now = int(time.time() * 1000)
+        worker = self._cache_worker = _CacheReadWorker(doc.symbol, doc.interval, now)
+        worker.cacheLoaded.connect(lambda res, d=doc, g=gen: self._on_cache_fetched(d, g, res))
+        worker.failed.connect(lambda msg, d=doc, g=gen: self._on_cache_failed(d, g, msg))
+        worker.finished.connect(self._clear_cache_worker)
+        worker.start()
+
+    def _clear_cache_worker(self) -> None:
+        self._cache_worker = None
+
+    def _on_cache_fetched(self, doc: "ChartDocument", gen: int, res) -> None:
+        if doc in self._docs:
+            doc._on_cache_loaded(gen, res)
+
+    def _on_cache_failed(self, doc: "ChartDocument", gen: int, _msg: str) -> None:
+        if doc in self._docs:
+            doc._on_cache_loaded(gen, None)   # treat as empty -> Phase-2 topup will fetch
+
     def is_live(self) -> bool:
         """The round-robin poller is running — windows are being live-topped-up (honest LIVE
         vs CACHED gate, matching the main feed badge)."""
@@ -479,9 +506,9 @@ class LiveHub(QtCore.QObject):
     def shutdown(self) -> None:
         self._timer.stop()
         self._pending_topup = None
-        # Wait BOTH worker slots: a top-up worker left running would race the interpreter's final
-        # GC during teardown — the native 0xC0000409 class. This is the mandatory hardening.
-        for attr in ("_worker", "_topup_worker"):
+        # Wait ALL THREE worker slots: an unwaited worker left running would race the interpreter's
+        # final GC during teardown — the native 0xC0000409 class. This is the mandatory hardening.
+        for attr in ("_worker", "_topup_worker", "_cache_worker"):
             w = getattr(self, attr)
             if w is not None:
                 w.wait(2000)

@@ -143,6 +143,28 @@ class _LiveFetchWorker(QtCore.QThread):
             self.failed.emit(str(exc))
 
 
+class _CacheReadWorker(QtCore.QThread):
+    """One-shot off-thread CACHE-ONLY read (no network) for a chart document's Phase-1 paint.
+    Safe off-thread since #259 made the Parquet/Catalog read thread-safe (per-call DuckDB). The
+    read runs here; the paint/persist marshal back to the main thread via the cacheLoaded signal.
+    """
+
+    cacheLoaded = QtCore.Signal(object)  # LoadResult
+    failed = QtCore.Signal(str)
+
+    def __init__(self, symbol, interval, end):
+        super().__init__()
+        self._symbol, self._interval, self._end = symbol, interval, end
+
+    def run(self):
+        try:
+            from .dataload import load_symbol_bars
+            self.cacheLoaded.emit(load_symbol_bars(self._symbol, self._interval, self._end,
+                                                   network=False))
+        except Exception as exc:  # noqa: BLE001 - surfaced to the UI thread (no modal)
+            self.failed.emit(str(exc))
+
+
 class _WorkspaceAgentWorker(QtCore.QThread):
     """Off-thread run of the layout agent (a Claude API call). Emits the captured spec dict (or
     None) back to the main thread, where the shell converts + applies it."""
