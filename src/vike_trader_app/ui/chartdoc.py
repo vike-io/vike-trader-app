@@ -102,6 +102,7 @@ class ChartDocument(QtWidgets.QWidget):
         self._load_gen = 0
         self._topup_prev: tuple | None = None
         self._topup_pending = False
+        self._pending_network: bool = True  # stashed by load(); read by _on_cache_loaded
 
         self.chart = PriceChart(title_controls=True)  # interval/ƒx/style/range live in the title bar
         # same rounded-card treatment as the Chart space — built by the shared make_chart_card.
@@ -168,48 +169,66 @@ class ChartDocument(QtWidgets.QWidget):
 
     def load(self, symbol: str | None = None, interval: str | None = None, *,
              network: bool = True) -> bool:
-        """(Re)load this document's series. NON-BLOCKING when ``network=True``.
+        """(Re)load this document's series. NON-BLOCKING when a hub is attached.
 
-        Phase 1 (MAIN THREAD): a cache-only read paints instantly — the Parquet/Catalog read is
-        the thread-unsafe path, so it stays here, and it's fast (partition-pruned tail). Phase 2:
-        if the cached tail is stale/cold AND ``network``, the gap fetch runs OFF-THREAD via the
-        LiveHub worker and merges back on the main thread (``apply_topup``) — so a cold-symbol
-        switch no longer freezes the UI on the inline REST pagination. ``network=False`` is a pure
-        cache read (restore path). Returns whether cache bars were painted synchronously."""
-        now = int(time.time() * 1000)
-        prev_symbol, prev_interval = self._symbol, self._interval
+        Phase 1 — when a hub is attached AND ``VIKE_DISABLE_LIVE`` is not set, the Parquet/cache
+        read is dispatched OFF-THREAD via ``LiveHub.request_cache_read`` so a large local read
+        doesn't stall the UI; paint happens on the main thread in ``_on_cache_loaded``. Phase 2:
+        if the cached tail is stale/cold AND ``network``, the gap fetch also runs off-thread via
+        ``LiveHub.request_topup``. Without a hub (bare doc / unit tests / session-restore) the
+        Phase-1 read is synchronous (backward-compatible). ``network=False`` is a pure cache read
+        (restore path). Returns ``False`` when pending (with-hub async path) or ``bool(res.bars)``
+        on the synchronous path."""
+        self._topup_prev = (self._symbol, self._interval)  # for switch-clear / rollback
         self._symbol = (symbol or self._symbol).upper()
         self._interval = interval or self._interval
-        self._load_gen += 1  # supersede any in-flight top-up for the old symbol
-
-        # Phase 1 — cache-only paint (main thread, fast). Never blocks on the network.
+        self._load_gen += 1  # supersede any in-flight worker for the old symbol
+        self.symbolChanged.emit(self._symbol, self._interval)  # symbol is set immediately
+        self._pending_network = network
+        # Off-thread Phase-1 cache read when a hub is attached (live app); synchronous otherwise
+        # (bare doc / unit tests / restore) — preserves the testable sync contract.
+        if self._hub is not None and not os.environ.get("VIKE_DISABLE_LIVE"):
+            self._hub.request_cache_read(self, self._load_gen)
+            return False  # pending; paint happens in _on_cache_loaded
+        now = int(time.time() * 1000)
         res = load_symbol_bars(self._symbol, self._interval, now, network=False)
-        switched = self._symbol != prev_symbol or self._interval != prev_interval
+        self._apply_cache(self._load_gen, res, network)
+        return bool(res.bars)
+
+    def _on_cache_loaded(self, gen: int, res) -> None:
+        """MAIN THREAD: the off-thread Phase-1 cache read returned. Paint + run Phase-2."""
+        if gen != self._load_gen:
+            return  # superseded by a later load() — discard
+        from .dataload import LoadResult
+        self._apply_cache(gen, res if res is not None else LoadResult([]),
+                          self._pending_network)
+
+    def _apply_cache(self, gen: int, res, network: bool) -> None:
+        """Shared Phase-1 paint + Phase-2 stale/topup logic. Called from both the sync path
+        (no hub / VIKE_DISABLE_LIVE) and the async callback (_on_cache_loaded)."""
+        switched = (self._symbol, self._interval) != self._topup_prev
         if res.bars:
             self._bars = res.bars
             self._paint()
         elif switched:
-            # Switched to a symbol/interval with NO cache: clear the stale view so the old series
-            # isn't shown under the new label. The async top-up fills it (apply_topup), or a failed
-            # fetch rolls back to the previous symbol (topup_failed).
+            # Switched to a symbol/interval with NO cache: clear the stale view so the old
+            # series isn't shown under the new label.  The async top-up fills it (apply_topup),
+            # or a failed fetch rolls back to the previous symbol (topup_failed).
             self._bars = []
             self._paint()
-        self.symbolChanged.emit(self._symbol, self._interval)
-
         if not network:
-            return bool(res.bars)
-        # Fresh cached tail -> done, zero network (the common path).
+            return
+        now = int(time.time() * 1000)
+        # Fresh cached tail → done, zero network (the common path).
         if res.bars and not is_stale(res.bars[-1].ts, now, FRESH_MS):
             self._loaded = True
-            return True
-        # Phase 2 — stale or cold: top up the gap OFF-THREAD via the hub (no UI freeze). The hub's
-        # worker is network-only + waited on by shutdown(); the merge/persist land on the main
-        # thread in apply_topup. No hub (bare doc, e.g. a unit test) -> stay cache-only.
+            return
+        # Phase 2 — stale or cold: top up the gap OFF-THREAD via the hub (no UI freeze).
+        # The hub's worker is network-only + waited on by shutdown(); the merge/persist land
+        # on the main thread in apply_topup. No hub (bare doc) → stay cache-only.
         if self._hub is not None:
-            self._topup_prev = (prev_symbol, prev_interval)
             self._topup_pending = True
-            self._hub.request_topup(self, self._load_gen)
-        return bool(res.bars)
+            self._hub.request_topup(self, gen)
 
     def _paint(self) -> None:
         """Push the current bars to the chart (shared by load + apply_topup)."""
