@@ -485,15 +485,28 @@ class DataManagerTab(QtWidgets.QWidget):
 
     def _on_test_dataset_req(self, dataset) -> None:
         self._log(f"Loading {len(dataset.symbols)} symbols for portfolio test '{dataset.name}'…")
-        bars_by_symbol = {}
-        for sym in dataset.symbols:
+        import os
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _load_one(sym):
+            # Runs on a worker thread: reads (per-call DuckDB) + fetches (network) + appends
+            # (per-(symbol,interval) lock) are all thread-safe across different symbols.
+            # NO Qt / _log calls here — return the outcome for main-thread logging.
             try:
-                b = self._load_symbol_bars(sym, dataset.interval)
-            except Exception as exc:  # noqa: BLE001 - skip a failing symbol, keep going
-                self._log(f"  {sym}: failed — {exc}")
-                continue
-            if b:
-                bars_by_symbol[sym] = b
+                return sym, self._load_symbol_bars(sym, dataset.interval), None
+            except Exception as exc:  # noqa: BLE001 - isolate a failing symbol
+                return sym, None, str(exc)
+
+        workers = min(8, (os.cpu_count() or 4))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            results = list(ex.map(_load_one, list(dataset.symbols)))
+
+        bars_by_symbol = {}
+        for sym, bars, err in results:          # main thread: log + assemble
+            if err is not None:
+                self._log(f"  {sym}: failed — {err}")
+            elif bars:
+                bars_by_symbol[sym] = bars
         self.test_dataset_requested.emit(dataset, bars_by_symbol)
 
     def _delete(self, symbol: str, interval: str) -> None:
