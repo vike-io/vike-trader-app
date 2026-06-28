@@ -88,13 +88,19 @@ class BacktestEngine:
             strategy._engine = self
 
     # --- order intake (called from the strategy) ---
+    def _add_pending(self, order: "Order") -> None:
+        """Append an order to the pending book and fire on_order_submitted + on_event."""
+        self._pending.append(order)
+        self.strategy.on_order_submitted(order)
+        self.strategy.on_event(order)
+
     def submit(self, side_sign: int, size: float, weight: float = 0.0, stop=None) -> None:
         # stop= is honored only in portfolio mode; the single-symbol engine accepts and ignores it
         # to keep this path (and the numba kernel parity) byte-for-byte unchanged.
         del stop
         size = self._cap_to_leverage(side_sign, size)
         if size > 0.0:
-            self._pending.append(Order("market", side_sign, size, weight=weight))
+            self._add_pending(Order("market", side_sign, size, weight=weight))
 
     def _cap_to_leverage(self, side_sign: int, size: float) -> float:
         """Shrink a market order so the resulting position notional <= leverage * equity.
@@ -123,19 +129,19 @@ class BacktestEngine:
         return size if size <= room else room
 
     def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        self._pending.append(Order("limit", side_sign, size, price=price, weight=weight))
+        self._add_pending(Order("limit", side_sign, size, price=price, weight=weight))
 
     def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        self._pending.append(Order("stop", side_sign, size, price=price, weight=weight))
+        self._add_pending(Order("stop", side_sign, size, price=price, weight=weight))
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
-        self._pending.append(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
+        self._add_pending(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
 
     def submit_market_close(self, side_sign: int, size: float) -> None:
-        self._pending.append(Order("market_close", side_sign, size))
+        self._add_pending(Order("market_close", side_sign, size))
 
     def submit_limit_close(self, side_sign: int, size: float, price: float) -> None:
-        self._pending.append(Order("limit_close", side_sign, size, price=price))
+        self._add_pending(Order("limit_close", side_sign, size, price=price))
 
     def cancel_all(self) -> None:
         self._pending = []
@@ -143,7 +149,7 @@ class BacktestEngine:
     def submit_close(self) -> None:
         if self.position.size != 0:
             side = -1 if self.position.size > 0 else 1
-            self._pending.append(Order("market", side, abs(self.position.size)))
+            self._add_pending(Order("market", side, abs(self.position.size)))
 
     def order_target(self, target_size: float) -> None:
         """Market order to move the position to ``target_size`` signed shares."""
@@ -197,7 +203,9 @@ class BacktestEngine:
 
     # --- run loop ---
     def run(self) -> Result:
+        self.strategy.on_start()
         equity_curve = [self.step(bar, i) for i, bar in enumerate(self.bars)]
+        self.strategy.on_stop()
         return Result(self.trades, equity_curve, self.equity_now(),
                       intrabar_both_hit=self.intrabar_both_hit)
 
@@ -208,7 +216,9 @@ class BacktestEngine:
         Fills resolve in true tick order, so stop-vs-target ordering is exact (no pessimistic guess).
         """
         from .consolidator import tick_to_bar
+        self.strategy.on_start()
         curve = [self.step_tick(tick_to_bar(t), t, i) for i, t in enumerate(ticks)]
+        self.strategy.on_stop()
         return Result(self.trades, curve, self.equity_now(),
                       intrabar_both_hit=self.intrabar_both_hit)
 
@@ -383,4 +393,6 @@ class BacktestEngine:
         notional_ex = abs(pos.size) * adverse * self.multiplier
         if eq_ex <= self.maint_margin * notional_ex:
             side = -1 if pos.size > 0 else 1
-            fill = self._apply_fill(side, abs(pos.size), adverse, bar.ts, is_maker=False)  # noqa: F841 (Task 3 uses fill)
+            fill = self._apply_fill(side, abs(pos.size), adverse, bar.ts, is_maker=False)
+            self.strategy.on_liquidation(fill)
+            self.strategy.on_event(fill)
