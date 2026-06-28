@@ -1,7 +1,7 @@
 # src/vike_trader_app/ui/private_user_data.py
 """Qt shell for the live user-data stream: a QThread worker + a main-thread marshalling QObject.
 
-PrivateUserDataWorker clones _LiveFeedWorker (app.py:99-119): run() drives the async core off-thread
+PrivateUserDataWorker mirrors the LiveBarFeedWorker pattern (ui/live_feed_worker.py): run() drives the
 and emits frozen events via report=Signal(object); failed=Signal(str) passes the message through a
 best-effort secret scrub (_scrub). The PRIMARY secrets-never-logged guarantee is STRUCTURAL — the
 worker closure is the only holder of the creds, events carry no creds, and UserDataAuthError carries

@@ -98,29 +98,6 @@ _FORWARD_FEE = 0.001
 _FORWARD_CASH = 10_000.0
 
 
-class _LiveFeedWorker(QtCore.QThread):
-    """Runs a LiveBarFeed's async loop off the UI thread; marshals bars back via a signal."""
-
-    barReceived = QtCore.Signal(object)  # Bar
-    failed = QtCore.Signal(str)
-
-    def __init__(self, feed):
-        super().__init__()
-        self._feed = feed
-        self._stop = False
-
-    def run(self):
-        import asyncio
-
-        try:
-            asyncio.run(self._feed.run_forever(self.barReceived.emit, stop=lambda: self._stop))
-        except Exception as exc:  # noqa: BLE001 - surfaced to the UI thread
-            self.failed.emit(str(exc))
-
-    def stop(self):
-        self._stop = True
-
-
 class _LiveFetchWorker(QtCore.QThread):
     """One-shot off-thread fetch of the latest bars for the live chart updater.
 
@@ -264,7 +241,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # forward (paper) mode state
         self._forward = None      # PaperTester while live, else None
         self._feed = None         # PollingBarFeed (poll fallback)
-        self._fwd_worker = None   # _LiveFeedWorker (push, preferred)
+        self._fwd_worker = None   # LiveBarFeedWorker (push WS feed, preferred over REST polling)
         self._fwd_bars = []       # live bars received this run (charted)
         self._refresh_timer = None  # round-robin live quote refresh (started after cache fill)
         self._refresh_q = []        # crypto symbols cycled by the quote refresh
@@ -3083,8 +3060,9 @@ class MainWindow(QtWidgets.QMainWindow):
             import websockets  # noqa: F401 - probe the optional [live] dep before threading
         except Exception:  # noqa: BLE001 - websockets not installed -> caller polls instead
             return False
-        worker = self._fwd_worker = _LiveFeedWorker(make_live_feed(symbol, interval))
-        worker.barReceived.connect(self._on_forward_bar)
+        from .live_feed_worker import LiveBarFeedWorker
+        worker = self._fwd_worker = LiveBarFeedWorker(make_live_feed(symbol, interval))
+        worker.barClosed.connect(self._on_forward_bar)
         worker.failed.connect(self._on_forward_failed)
         worker.start()
         return True
@@ -3130,8 +3108,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def _stop_forward(self):
         self._fwd_timer.stop()
         if self._fwd_worker is not None:
-            self._fwd_worker.stop()
-            self._fwd_worker.wait(2000)
+            self._fwd_worker.stop(2000)   # cancels the task cross-thread + wait()s (orphan-safe)
             self._fwd_worker = None
         if self._forward is not None:
             self._forward.stop()
