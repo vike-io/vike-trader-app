@@ -1406,6 +1406,37 @@ class OptimizeWorker(QtCore.QThread):
         self.done.emit(res)
 
 
+class BacktestWorker(QtCore.QThread):
+    """Background thread: compile + run a SINGLE backtest off the GUI thread, emit the result.
+
+    A long run must not freeze charts/indicators. The heavy lifting is the Qt-free
+    StrategyTester.run() (the deterministic bar loop) + the Qt-free overlay compute; only plain
+    result data crosses back via done/failed. Mirrors OptimizeWorker's lifetime contract (held on
+    the widget, released in _clear_backtest_worker, waited in shutdown). Determinism is unchanged
+    — the loop is single-threaded; only the thread it runs on differs."""
+
+    done = QtCore.Signal(object, object, object)   # (report, bars, overlays)
+    failed = QtCore.Signal(str)
+
+    def __init__(self, code: str, bars: list, config):
+        super().__init__()
+        self._code, self._bars, self._config = code, bars, config
+
+    def run(self) -> None:
+        from vike_trader_app.core.strategy_loader import load_strategy_from_string
+        from vike_trader_app.tester import StrategyTester
+        try:
+            cls = load_strategy_from_string(self._code, validate=True)
+            report = StrategyTester(cls(), self._bars, self._config).run()
+            try:
+                overlays = cls().chart_overlays([b.close for b in self._bars]) or {}
+            except Exception:  # noqa: BLE001 - overlays optional, never block the run
+                overlays = {}
+            self.done.emit(report, self._bars, overlays)
+        except Exception as exc:  # noqa: BLE001 - surfaced on the main thread (no modal)
+            self.failed.emit(f"{type(exc).__name__}: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # SegmentedControl
 # ---------------------------------------------------------------------------
@@ -1781,6 +1812,7 @@ class StudioTab(QtWidgets.QWidget):
         self._agent_client = None
         self._worker: ChatWorker | None = None  # keep a reference so GC doesn't collect it
         self._opt_worker: OptimizeWorker | None = None  # in-flight walk-forward/surface job (off-GUI)
+        self._backtest_worker: "BacktestWorker | None" = None  # in-flight single-backtest job (off-GUI)
         self._run_capital = None     # None -> use config.cash
         self._run_range = None       # None -> full bars, else (start_ts, end_ts)
         self._run_resolution = None  # None -> base bars, else coarse window ms to resample to
@@ -2080,34 +2112,35 @@ class StudioTab(QtWidgets.QWidget):
     # --- run ---
 
     def run_code(self) -> None:
-        """Load the strategy from the editor and run a single backtest, recording it.
+        """Load the strategy from the editor and run a single backtest OFF-THREAD, recording it.
 
         Honors the per-run config (starting capital + date-range slice) set via the
         Settings modal; falls back to the full bars + the tab's TesterConfig otherwise.
         A single-symbol run exits portfolio-optimize mode so the Walk-forward button follows
-        the latest action.
+        the latest action. The backtest runs in a BacktestWorker QThread so the GUI stays
+        responsive during long runs; results arrive on the main thread via the done signal.
         """
-
-        from vike_trader_app.core.strategy_loader import load_strategy_from_string
-        from vike_trader_app.tester import StrategyTester, TesterConfig
+        from vike_trader_app.tester import TesterConfig
 
         self._portfolio_bars = None  # exit portfolio mode on a single-symbol run
+        if self._backtest_worker is not None and self._backtest_worker.isRunning():
+            return  # a run is already in flight — ignore the re-trigger
         code = self.editor.text()
         config = self._config if self._config is not None else TesterConfig()
         if self._run_capital is not None:
             config = replace(config, cash=self._run_capital)
         bars = self._effective_bars()
-        try:
-            cls = load_strategy_from_string(code, validate=True)
-            report = StrategyTester(cls(), bars, config).run()
-            overlays = {}
-            try:
-                overlays = cls().chart_overlays([b.close for b in bars]) or {}
-            except Exception:  # noqa: BLE001 - overlays are optional, never block the run
-                overlays = {}
-            self.results.add_run(report, bars, overlays)
-        except Exception as exc:  # noqa: BLE001
-            self.results.show_error(f"{type(exc).__name__}: {exc}")
+        worker = self._backtest_worker = BacktestWorker(code, bars, config)
+        worker.done.connect(self._on_backtest_done)
+        worker.failed.connect(self.results.show_error)
+        worker.finished.connect(self._clear_backtest_worker)
+        worker.start()
+
+    def _on_backtest_done(self, report, bars, overlays) -> None:
+        self.results.add_run(report, bars, overlays)
+
+    def _clear_backtest_worker(self) -> None:
+        self._backtest_worker = None
 
     def _effective_bars(self) -> list:
         """Apply the per-run date slice + resolution resample to the loaded base bars."""
@@ -2446,7 +2479,8 @@ class StudioTab(QtWidgets.QWidget):
 
     def shutdown(self) -> None:
         """Wait for any in-flight worker so we never destroy a running QThread on close (the
-        AI ChatWorker AND the OptimizeWorker; a running QThread torn down crashes the process)."""
-        for worker in (self._worker, self._opt_worker):
+        AI ChatWorker, the OptimizeWorker, AND the BacktestWorker; a running QThread torn down
+        crashes the process with 0xC0000409 on Python 3.14)."""
+        for worker in (self._worker, self._opt_worker, self._backtest_worker):
             if worker is not None and worker.isRunning():
                 worker.wait(5000)
