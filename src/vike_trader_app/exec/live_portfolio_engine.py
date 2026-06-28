@@ -40,6 +40,7 @@ from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
 from vike_trader_app.exec.conditionals import ConditionalBook
 from vike_trader_app.exec.events import OrderRequest
+from vike_trader_app.exec.order_ticket import build_close_request
 
 if TYPE_CHECKING:
     from vike_trader_app.exec.accounting import Account
@@ -178,24 +179,18 @@ class LivePortfolioEngine:
             hub.submit_ticket(req)
 
     def submit_close(self, sym: str) -> None:
-        """Flatten the current position in ``sym`` with a market order (no-op if flat)."""
+        """Flatten the current position in ``sym`` with a market order (no-op if flat).
+
+        On a perp hub (``reduce_only_on_close``) the flatten is reduce_only; spot stays plain market.
+        """
         hub = self._hub(sym)
-        raw = self._account.positions.get((hub.venue, sym, "BOTH"), {})
-        held = raw.get("size", 0.0)
+        held = self._account.positions.get((hub.venue, sym, "BOTH"), {}).get("size", 0.0)
         if held == 0.0:
             return
-        side = -1 if held > 0.0 else +1
-        req = OrderRequest(
-            client_order_id=self._next_coid(sym),
-            venue=hub.venue,
-            symbol=hub.symbol,
-            side=side,
-            qty=abs(held),
-            order_type="market",
-            price=None,
-            ts=self._now_ms(),
-        )
-        hub.submit_ticket(req)
+        hub.submit_ticket(build_close_request(
+            hub_venue=hub.venue, hub_symbol=hub.symbol, held_size=held,
+            reduce_only=getattr(hub, "reduce_only_on_close", False),
+            client_order_id=self._next_coid(sym), now_ms=self._now_ms()))
 
     def submit_limit(
         self,

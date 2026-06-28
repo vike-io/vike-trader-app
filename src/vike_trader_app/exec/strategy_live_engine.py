@@ -52,6 +52,7 @@ from vike_trader_app.core.model import Bar, Position
 from vike_trader_app.core.sizing import units_from_percent, units_from_value
 from vike_trader_app.exec.conditionals import ConditionalBook
 from vike_trader_app.exec.events import OrderRequest
+from vike_trader_app.exec.order_ticket import build_close_request
 
 if TYPE_CHECKING:
     from vike_trader_app.exec.accounting import Account
@@ -210,11 +211,18 @@ class StrategyLiveEngine:
             self._route(self._build_request(side_sign, size))
 
     def submit_close(self) -> None:
-        """Flatten the current position with a market order (no-op if already flat)."""
-        pos = self.position
-        if pos.size != 0.0:
-            side = -1 if pos.size > 0.0 else 1
-            self._route(self._build_request(side, abs(pos.size)))
+        """Flatten the current position with a market order (no-op if already flat).
+
+        On a perp hub (``reduce_only_on_close``) the flatten is reduce_only so it can never
+        overshoot/flip; spot closes stay plain market orders.
+        """
+        held = self.position.size
+        if held == 0.0:
+            return
+        self._route(build_close_request(
+            hub_venue=self._venue, hub_symbol=self._symbol, held_size=held,
+            reduce_only=getattr(self._hub, "reduce_only_on_close", False),
+            client_order_id=self._next_coid(), now_ms=self._now_ms()))
 
     def order_target(self, target_size: float) -> None:
         """Market order to move the position to ``target_size`` signed units.

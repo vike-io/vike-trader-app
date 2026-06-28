@@ -654,3 +654,25 @@ def test_buy_trailing_with_mark_registers_and_fires():
     assert len(fired) == 1
     assert hub_btc.submitted[0].side == +1 and hub_btc.submitted[0].qty == 1.0
     assert len(hub_eth.submitted) == 0
+
+
+# ---------------------------------------------------------------------------
+# slice 1b: submit_close reduce_only via per-symbol hub flag
+# ---------------------------------------------------------------------------
+
+def _make_engine_parts(bal: float = 10_000.0):
+    """Return (engine, acct, hub_btc, hub_eth) — convenience alias for the reduce_only tests."""
+    eng, hub_btc, hub_eth, acct = _make_engine(bal=bal)
+    return eng, acct, hub_btc, hub_eth
+
+
+def test_portfolio_submit_close_perp_sets_reduce_only_per_hub():
+    """Per-symbol perp flag drives reduce_only on that symbol's close only."""
+    eng, acct, hub_btc, hub_eth = _make_engine_parts()
+    hub_btc.reduce_only_on_close = True                 # BTC = perp; ETH left spot
+    acct.positions[("binance", _BTC, "BOTH")] = {"size": 2.0, "avg_px": 100.0}
+    acct.positions[("binance", _ETH, "BOTH")] = {"size": 5.0, "avg_px": 100.0}
+    eng.submit_close(_BTC)
+    eng.submit_close(_ETH)
+    assert hub_btc.submitted[0].reduce_only is True and hub_btc.submitted[0].side == -1
+    assert hub_eth.submitted[0].reduce_only is False
