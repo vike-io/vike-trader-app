@@ -232,16 +232,16 @@ class LivePortfolioPump:
         self._i += 1
         self.strategy.index = self._i
 
+        # Check conditionals for each symbol BEFORE on_bar (fills precede decisions,
+        # matching backtest semantics).  Conditionals fire regardless of the warmup gate
+        # — they were armed by the strategy and must trigger on the crossing bar.
+        for sym, bar in fired_bucket.items():
+            self.engine.check_conditionals(sym, bar)
+
         warmup = getattr(self.strategy, "WARMUP", 0)
         if self._i >= warmup:
             try:
                 self.strategy.on_bar(complete_ts, fired_bucket)
-            except NotImplementedError:
-                log.warning(
-                    "LivePortfolioPump: strategy used a not-yet-supported order type "
-                    "(stop/trailing → A2e); skipped for ts=%d",
-                    complete_ts,
-                )
             except Exception:  # noqa: BLE001
                 log.exception(
                     "LivePortfolioPump: strategy.on_bar raised at ts=%d; "

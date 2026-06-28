@@ -19,8 +19,9 @@ Key design decisions (mirror the plan):
 - One ``BarSeriesBuffer`` per symbol (not shared across symbols); ``add_live_bar(sym, bar)``
   appends to that symbol's buffer and calls ``account.set_mark`` so the equity read is
   mark-accurate (the A2c spot-mark fix, extended per symbol).
-- ``submit_stop`` / ``submit_trailing`` raise ``NotImplementedError`` — deferred to A2e
-  (no venue client honors native stops yet; a silent mis-route would fire a plain MARKET).
+- ``submit_stop`` / ``submit_trailing`` register client-side emulated conditionals (A2e):
+  a ``ConditionalBook`` per symbol; ``check_conditionals(sym, bar)`` fires triggered
+  conditionals as plain MARKET orders through the existing ``submit`` path.
 - Qt-free.  All state is plain Python.
 
 ``client_order_id`` scheme: ``<symbol>-<8-hex-engine-id>-<monotonic-seq>`` — stable prefix
@@ -29,11 +30,15 @@ per engine instance, unique per submission, collision-safe when N engines share 
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Callable
 
+log = logging.getLogger(__name__)
+
 from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
+from vike_trader_app.exec.conditionals import ConditionalBook
 from vike_trader_app.exec.events import OrderRequest
 
 if TYPE_CHECKING:
@@ -79,6 +84,8 @@ class LivePortfolioEngine:
         }
         # Per-symbol last-seen ts (for bars_for / forming_for slicing; mirrors _now in StrategyLiveEngine).
         self._now_by_sym: dict[str, int] = {sym: 0 for sym in self.symbols}
+        # Per-symbol ConditionalBook — lazily created on first submit_stop/submit_trailing (A2e).
+        self._books: dict[str, ConditionalBook] = {}
         # Monotonic sequence counter for client_order_id uniqueness.
         self._seq: int = 0
         # Stable 8-hex tag for this engine instance — unique across concurrent engines.
@@ -273,10 +280,13 @@ class LivePortfolioEngine:
             hub.submit_ticket(req)
 
     def cancel_all(self, sym: str) -> None:
-        """Cancel every resting order for ``sym`` currently in its hub's registry."""
+        """Cancel every resting order for ``sym`` and clear its client-side conditional book (A2e)."""
         hub = self._hub(sym)
         for coid in list(hub.registry):
             hub.cancel_ticket(coid)
+        book = self._books.get(sym)
+        if book is not None:
+            book.clear()
 
     # ------------------------------------------------------------------
     # Higher-TF reads — delegate to the per-symbol BarSeriesBuffer
@@ -299,28 +309,53 @@ class LivePortfolioEngine:
         return self._bufs[sym].forming_for(tf, self._now_by_sym.get(sym, 0))
 
     def submit_stop(self, sym: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        """Stop orders are emulated in A2e — deferred to avoid a real-money mis-order.
+        """Register a client-side emulated stop order for ``sym`` (A2e).
 
-        No venue client (binance/bybit/okx/deribit) honors ``order_type="stop"`` in
-        ``build_order_params`` — every branch only checks ``is_limit``, so a "stop"
-        would be submitted as a plain MARKET that fires immediately with the trigger price
-        silently dropped.  Raises ``NotImplementedError`` to fail safe.
-        Wire slice A2e (client-side emulated conditionals) to replace this stub.
+        Vike emulates stop orders locally: each closed bar is checked by ``check_conditionals``
+        and, when ``bar.high >= price`` (buy-stop) or ``bar.low <= price`` (sell-stop), a plain
+        MARKET order is submitted via the existing ``submit`` path (which runs the RiskGate).
+        No venue client is contacted with a "stop" order type — every venue adapter only checks
+        ``is_limit`` in ``build_order_params``, so a native stop would fire as an immediate
+        MARKET with the trigger silently dropped (a real-money mis-order).
         """
-        raise NotImplementedError(
-            "stop orders are emulated in A2e (no venue client honors native stops yet)"
-        )
+        self._books.setdefault(sym, ConditionalBook()).add_stop(side_sign, size, price, weight=weight)
 
     def submit_trailing(self, sym: str, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
-        """Trailing stops are emulated in A2e.
+        """Register a client-side emulated trailing-stop order for ``sym`` (A2e).
 
-        A2d does NOT silently mis-route a trailing order as a fixed-price stop.
-        Raising ``NotImplementedError`` here is deliberate: a silent mis-order causes
-        real-money harm.  Wire slice A2e to replace this stub.
+        The trailing extreme is initialised from the symbol's current mark price at registration
+        time (mirrors ``BacktestEngine.submit_trailing`` which uses ``extreme=self._price``).
+        Each closed bar ratchets the extreme via ``order_fill_price`` and fires a MARKET order
+        when the retrace crosses the trigger (``extreme - trail`` for sells, ``extreme + trail``
+        for buys).
         """
-        raise NotImplementedError(
-            "submit_trailing: trailing-stop emulation is deferred to slice A2e."
+        extreme = self.price_of(sym)
+        if extreme <= 0.0:
+            log.warning(
+                "trailing stop armed with no mark yet (%s); not registered",
+                sym,
+            )
+            return
+        self._books.setdefault(sym, ConditionalBook()).add_trailing(
+            side_sign, size, trail, extreme=extreme, weight=weight
         )
+
+    def check_conditionals(self, sym: str, bar: Bar) -> list:
+        """Fire any triggered conditionals for ``sym`` against this closed bar (A2e).
+
+        Called by ``LivePortfolioPump._try_fire`` BEFORE ``strategy.on_bar`` for each symbol
+        in a complete aligned bucket, so fills precede decisions (matching backtest semantics).
+        Each fired conditional is submitted as a plain MARKET order through the existing
+        ``submit`` path (RiskGate inside that symbol's hub).
+        Returns the list of fired ``Order`` objects (fire-once: removed from the book).
+        """
+        book = self._books.get(sym)
+        if book is None:
+            return []
+        fired = book.check(bar)
+        for o in fired:
+            self.submit(sym, o.side, o.size)
+        return fired
 
     # ------------------------------------------------------------------
     # Bar buffer — per-symbol BarSeriesBuffer feed

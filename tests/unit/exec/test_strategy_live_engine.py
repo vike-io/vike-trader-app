@@ -137,17 +137,11 @@ def test_submit_limit_weight_accepted():
     assert req.order_type == "limit" and req.price == 105.0 and req.side == -1
 
 
-def test_submit_stop_raises_not_implemented():
-    """submit_stop must raise NotImplementedError — no venue client honors native stops yet.
-
-    Stops are deferred to A2e (client-side emulated conditionals).  Submitting as-is would
-    silently route a stop as a plain MARKET (every build_order_params branch only checks
-    is_limit), which fires immediately with the trigger price dropped — a real-money mis-order.
-    """
-    import pytest
+def test_submit_stop_registers_not_raises():
+    """submit_stop must register a conditional in the book (no longer raises NotImplementedError)."""
     e = _eng()
-    with pytest.raises(NotImplementedError, match="A2e"):
-        e.submit_stop(-1, 1.0, price=90.0)
+    e.submit_stop(-1, 1.0, price=90.0)   # must not raise
+    assert len(e._book) == 1
 
 
 def test_submit_market_close_builds_market_request():
@@ -164,11 +158,12 @@ def test_submit_limit_close_builds_limit_request():
     assert req.order_type == "limit" and req.price == 98.0 and req.side == -1
 
 
-def test_submit_trailing_raises_not_implemented():
-    import pytest
-    e = _eng()
-    with pytest.raises(NotImplementedError):
-        e.submit_trailing(+1, 1.0, trail=5.0)
+def test_submit_trailing_registers_not_raises():
+    """submit_trailing must register a conditional (no longer raises NotImplementedError)."""
+    acct = _Acct(); acct.marks[("binance", "BTCUSDT")] = 100.0
+    e = _eng(acct=acct)
+    e.submit_trailing(+1, 1.0, trail=5.0)   # must not raise
+    assert len(e._book) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +220,109 @@ def test_mtf_buffer_empty_without_timeframes():
 def test_conforms_to_strategy_engine_protocol():
     from vike_trader_app.core.strategy_engine import StrategyEngine
     assert isinstance(_eng(), StrategyEngine)
+
+
+# ---------------------------------------------------------------------------
+# Task A2e: submit_stop / submit_trailing register, check_conditionals fires
+# ---------------------------------------------------------------------------
+
+def _bar(ts, o, h, l, c):
+    from vike_trader_app.core.model import Bar
+    return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+
+def test_submit_stop_buy_check_conditionals_fires_market_buy():
+    """A buy-stop fires a market buy when bar.high >= price."""
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_stop(+1, 2.0, price=110.0)
+    # Bar below trigger: nothing submitted.
+    fired = e.check_conditionals(_bar(1, 100, 105, 99, 102))
+    assert fired == [] and len(hub.submitted) == 0
+    # Bar crossing: market buy of 2.0 submitted.
+    fired = e.check_conditionals(_bar(2, 106, 111, 105, 109))
+    assert len(fired) == 1
+    assert len(hub.submitted) == 1
+    req = hub.submitted[0]
+    assert req.side == +1 and req.qty == 2.0 and req.order_type == "market"
+    # Fire-once: book is now empty.
+    assert len(e._book) == 0
+
+
+def test_submit_stop_sell_check_conditionals_fires_market_sell():
+    """A sell-stop fires a market sell when bar.low <= price."""
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_stop(-1, 1.0, price=90.0)
+    fired = e.check_conditionals(_bar(1, 100, 101, 95, 98))  # low 95 > 90 -> no fire
+    assert fired == [] and len(hub.submitted) == 0
+    fired = e.check_conditionals(_bar(2, 96, 97, 89, 91))    # low 89 <= 90 -> fire
+    assert len(fired) == 1
+    assert hub.submitted[0].side == -1 and hub.submitted[0].qty == 1.0
+
+
+def test_submit_trailing_inits_extreme_from_mark_then_fires():
+    """submit_trailing initialises extreme from account.marks; ratchets; fires on retrace."""
+    acct = _Acct(); acct.marks[("binance", "BTCUSDT")] = 100.0
+    hub = _Hub(); e = _eng(acct=acct, hub=hub)
+    # Trailing sell-stop: trail=5, extreme starts at 100 (the mark).
+    e.submit_trailing(-1, 1.0, trail=5.0)
+    # Bar with new high 108: extreme ratchets to 108, trigger now 103. No fire yet.
+    fired = e.check_conditionals(_bar(1, 100, 108, 99, 107))
+    assert fired == [] and len(hub.submitted) == 0
+    # Bar with low 102 <= 103 triggers: market sell.
+    fired = e.check_conditionals(_bar(2, 106, 107, 102, 104))
+    assert len(fired) == 1
+    assert hub.submitted[0].side == -1 and hub.submitted[0].qty == 1.0
+
+
+def test_cancel_all_clears_conditional_book():
+    """cancel_all() must clear client-side conditionals (subsequent crossing bar fires nothing)."""
+    hub = _Hub(); e = _eng(hub=hub)
+    e.submit_stop(+1, 2.0, price=110.0)
+    assert len(e._book) == 1
+    e.cancel_all()
+    assert len(e._book) == 0
+    # Crossing bar fires nothing — book was cleared.
+    fired = e.check_conditionals(_bar(1, 100, 200, 50, 150))
+    assert fired == [] and len(hub.submitted) == 0
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT fix (review wave 1): no-mark guard on submit_trailing
+# ---------------------------------------------------------------------------
+
+def test_buy_trailing_no_mark_does_not_register():
+    """A BUY trailing armed when mark=0 (no mark set) must NOT register in the book."""
+    hub = _Hub()
+    acct = _Acct()  # marks={} → _mark() returns 0.0
+    e = _eng(acct=acct, hub=hub)
+    # side>0 = BUY trailing; without this guard extreme+trail would be a tiny trigger
+    e.submit_trailing(+1, 1.0, trail=5.0)
+    # Must NOT register
+    assert len(e._book) == 0
+
+
+def test_buy_trailing_no_mark_does_not_fire_on_next_bar():
+    """A BUY trailing armed with no mark must not route any order on the next normal bar."""
+    hub = _Hub()
+    acct = _Acct()  # no mark
+    e = _eng(acct=acct, hub=hub)
+    e.submit_trailing(+1, 1.0, trail=5.0)
+    # Feed a normal-priced bar (high > trail, would have triggered the bug)
+    fired = e.check_conditionals(_bar(1, 1000.0, 1010.0, 990.0, 1000.0))
+    assert fired == []
+    assert len(hub.submitted) == 0
+
+
+def test_buy_trailing_with_mark_registers_and_fires():
+    """Positive regression: a BUY trailing WITH a mark registers and fires on retrace."""
+    hub = _Hub()
+    acct = _Acct()
+    acct.marks[("binance", "BTCUSDT")] = 100.0
+    e = _eng(acct=acct, hub=hub)
+    # BUY trailing: extreme=100, trail=5 → trigger at 100+5=105; fires when high >= 105
+    e.submit_trailing(+1, 1.0, trail=5.0)
+    assert len(e._book) == 1
+    # Bar with high=106 >= 105 → fires
+    fired = e.check_conditionals(_bar(1, 100.0, 106.0, 99.0, 104.0))
+    assert len(fired) == 1
+    assert hub.submitted[0].side == +1 and hub.submitted[0].qty == 1.0

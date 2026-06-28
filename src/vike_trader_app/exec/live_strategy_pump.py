@@ -68,12 +68,16 @@ class LiveStrategyPump:
         self.strategy.index = self._i  # C: keep strategy.index in sync including across warmup gate
         # D: update the mark so order_target_percent / order_target_value has a valid reference price.
         self._hub.account.set_mark(self._hub.venue, self._hub.symbol, bar.close)
+        # E: fire triggered conditionals BEFORE on_bar (fills precede decisions, matching backtest).
+        # Conditionals are armed explicitly by the strategy and fire regardless of the warmup gate.
+        try:
+            self.engine.check_conditionals(bar)
+        except Exception:  # noqa: BLE001
+            log.exception("check_conditionals raised; pump continues")
         if self._i < getattr(self.strategy, "WARMUP", 0):
             return
         try:
             self.strategy.on_bar(bar)
-        except NotImplementedError:
-            log.warning("strategy used a not-yet-supported order type (stop/trailing -> A2e); skipped")
         except Exception:  # noqa: BLE001 - live robustness: a strategy bug must not crash the session
             log.exception("strategy.on_bar raised; pump continues (disarm to stop)")
 

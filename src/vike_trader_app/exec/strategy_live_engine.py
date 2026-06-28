@@ -25,11 +25,12 @@ collisions when multiple engines run concurrently on the same symbol.
 Resting-order note:
   ``submit_limit`` / ``submit_market_close`` / ``submit_limit_close`` build the correct
   ``OrderRequest.order_type`` and route to the hub.
-  ``submit_stop`` and ``submit_trailing`` both raise ``NotImplementedError`` — stop orders are
-  deferred to slice A2e because NO venue client honors ``order_type="stop"`` in
-  ``build_order_params`` (every branch only checks ``is_limit``); submitting as-is would fire a
-  plain MARKET immediately with the trigger silently dropped — a real-money mis-order.  Raising
-  is deliberate: fail safe until A2e wires client-side emulated conditionals.
+  ``submit_stop`` and ``submit_trailing`` register client-side emulated conditionals on a
+  ``ConditionalBook`` checked per closed bar (call ``check_conditionals(bar)`` from the pump).
+  When the trigger is hit, a plain MARKET order is fired through the existing ``submit`` path
+  (RiskGate inside the hub).  No native stop order type is used — venue adapters only check
+  ``is_limit`` in ``build_order_params``; submitting a native stop would fire as an immediate
+  MARKET with the trigger silently dropped (a real-money mis-order).
 
 MTF buffer:
   ``add_live_bar`` / ``bars_for`` / ``forming_for`` mirror ``BacktestEngine`` directly.
@@ -40,12 +41,16 @@ MTF buffer:
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Callable
+
+log = logging.getLogger(__name__)
 
 from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
 from vike_trader_app.core.sizing import units_from_percent, units_from_value
+from vike_trader_app.exec.conditionals import ConditionalBook
 from vike_trader_app.exec.events import OrderRequest
 
 if TYPE_CHECKING:
@@ -109,6 +114,8 @@ class StrategyLiveEngine:
         self._now: int = 0
         # Shared BarSeriesBuffer — self.bars is passed by reference (not copied).
         self._buf = BarSeriesBuffer(self.bars, timeframes)
+        # Client-side emulated conditionals (stop / trailing orders).
+        self._book = ConditionalBook()
 
     # ------------------------------------------------------------------
     # Read-model helpers (mirror BacktestEngine.position / equity_now)
@@ -246,9 +253,10 @@ class StrategyLiveEngine:
         self.order_target(units_from_percent(pct, self.equity_now(), mark, self._multiplier))
 
     def cancel_all(self) -> None:
-        """Cancel every order currently in the hub's registry."""
+        """Cancel every order currently in the hub's registry and clear client-side conditionals."""
         for coid in list(self._hub.registry):
             self._hub.cancel_ticket(coid)
+        self._book.clear()
 
     # ------------------------------------------------------------------
     # Resting-order verbs (limit / stop / trailing / market_close / limit_close)
@@ -260,30 +268,47 @@ class StrategyLiveEngine:
         self._route(self._build_resting_request(side_sign, size, "limit", price))
 
     def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        """Stop orders are emulated in slice A2e — deferred to avoid a real-money mis-order.
+        """Register a client-side emulated stop order (A2e).
 
-        No venue client (binance/bybit/okx/deribit) honors ``order_type="stop"`` in
-        ``build_order_params`` — every branch only checks ``is_limit``, so a "stop" would be
-        submitted as a plain MARKET that fires immediately with the trigger price silently
-        dropped.  Raises ``NotImplementedError`` to fail safe, exactly like ``submit_trailing``.
-        Wire slice A2e (client-side emulated conditionals) to replace this stub.
+        Vike emulates stop orders locally: each closed bar is checked by ``check_conditionals``
+        and, when ``bar.high >= price`` (buy-stop) or ``bar.low <= price`` (sell-stop), a plain
+        MARKET order is submitted via the existing ``submit`` path (which runs the RiskGate).
+        No venue client is contacted with a "stop" order type — every venue adapter only checks
+        ``is_limit`` in ``build_order_params``, so a native stop would fire as an immediate
+        MARKET with the trigger silently dropped (a real-money mis-order).
         """
-        raise NotImplementedError(
-            "stop orders are emulated in A2e (no venue client honors native stops yet)"
-        )
+        self._book.add_stop(side_sign, size, price, weight=weight)
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
-        """Trailing stops are emulated in slice A2e.
+        """Register a client-side emulated trailing-stop order (A2e).
 
-        A2a does NOT silently mis-route a trailing order as a fixed-price stop (that would
-        require tracking the running extreme and recomputing the trigger as the market moves).
-        Raising ``NotImplementedError`` here is deliberate: a silent mis-order causes real-money
-        harm.  Wire slice A2e to replace this stub.
+        The trailing extreme is initialised from the current mark price at registration time
+        (mirrors ``BacktestEngine.submit_trailing`` which uses ``extreme=self._price``).
+        Each closed bar ratchets the extreme via ``order_fill_price`` and fires a MARKET order
+        when the retrace crosses the trigger (``extreme - trail`` for sells, ``extreme + trail``
+        for buys).
         """
-        raise NotImplementedError(
-            "submit_trailing: trailing-stop emulation (extreme tracking + dynamic trigger) "
-            "is deferred to slice A2e.  Use submit_stop with an explicit price for now."
-        )
+        extreme = self._mark()
+        if extreme <= 0.0:
+            log.warning(
+                "trailing stop armed with no mark yet (%s); not registered",
+                self._symbol,
+            )
+            return
+        self._book.add_trailing(side_sign, size, trail, extreme=extreme, weight=weight)
+
+    def check_conditionals(self, bar: Bar) -> list:
+        """Fire any triggered conditionals for this closed bar.
+
+        Called by ``LiveStrategyPump.feed_bar`` BEFORE ``strategy.on_bar`` so that fills
+        precede decisions (matching backtest semantics).  Each fired conditional is submitted
+        as a plain MARKET order through the existing ``submit`` path (RiskGate inside the hub).
+        Returns the list of fired ``Order`` objects (fire-once: removed from the book).
+        """
+        fired = self._book.check(bar)
+        for o in fired:
+            self.submit(o.side, o.size)
+        return fired
 
     def submit_market_close(self, side_sign: int, size: float) -> None:
         """Submit a market order to reduce/close the position (explicit direction + size)."""

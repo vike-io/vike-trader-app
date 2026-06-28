@@ -1,4 +1,4 @@
-"""Tests for LivePortfolioEngine — multi-symbol live engine interface (A2d Task 1).
+"""Tests for LivePortfolioEngine — multi-symbol live engine interface (A2d Task 1 + A2e Task 3).
 
 Mirrors test_strategy_live_engine.py, extended for per-symbol routing isolation and
 shared-Account equity aggregation across N symbols.
@@ -11,7 +11,10 @@ Verifies:
 - equity_now() == account.balance + sum(unrealized_pnl per symbol)
 - add_live_bar(sym, bar) → buffer update + account.set_mark
 - unique client_order_id per submit
-- submit_stop / submit_trailing raise NotImplementedError (A2e deferred)
+- [A2e] submit_stop / submit_trailing register per-symbol conditionals (no longer raise)
+- [A2e] check_conditionals(sym, bar) fires triggered conditionals to the correct hub only
+- [A2e] cancel_all(sym) clears that symbol's conditional book
+- [A2e] per-symbol isolation: BTC book independent of ETH book
 """
 import pytest
 
@@ -269,22 +272,6 @@ def test_now_returns_injected_clock():
 
 
 # ---------------------------------------------------------------------------
-# submit_stop / submit_trailing raise NotImplementedError (A2e deferred)
-# ---------------------------------------------------------------------------
-
-def test_submit_stop_raises():
-    eng, _, _, _ = _make_engine()
-    with pytest.raises(NotImplementedError, match="A2e"):
-        eng.submit_stop(_BTC, -1, 1.0, 90.0)
-
-
-def test_submit_trailing_raises():
-    eng, _, _, _ = _make_engine()
-    with pytest.raises(NotImplementedError):
-        eng.submit_trailing(_BTC, +1, 1.0, 5.0)
-
-
-# ---------------------------------------------------------------------------
 # IMPORTANT-1: missing verbs (submit_limit, submit_market_close,
 #              submit_limit_close, cancel_all, bars_for, forming_for)
 # ---------------------------------------------------------------------------
@@ -430,3 +417,240 @@ def test_unknown_symbol_cancel_all_raises_value_error():
     eng, _, _, _ = _make_engine()
     with pytest.raises(ValueError, match="armed basket"):
         eng.cancel_all("SOLANA")
+
+
+# ---------------------------------------------------------------------------
+# A2e: submit_stop / submit_trailing — register conditionals (no longer raise)
+# ---------------------------------------------------------------------------
+
+def test_submit_stop_does_not_raise(monkeypatch):
+    """submit_stop must register the conditional, not raise NotImplementedError."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_BTC, +1, 2.0, 110.0)  # must not raise
+    assert len(hub_btc.submitted) == 0     # not immediately submitted
+    assert len(hub_eth.submitted) == 0
+
+
+def test_submit_trailing_does_not_raise():
+    """submit_trailing must register the conditional, not raise NotImplementedError."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    acct.marks[("binance", _BTC)] = 100.0   # give it a mark so extreme is set
+    eng.submit_trailing(_BTC, -1, 1.0, trail=5.0)  # must not raise
+    assert len(hub_btc.submitted) == 0
+    assert len(hub_eth.submitted) == 0
+
+
+# ---------------------------------------------------------------------------
+# A2e: check_conditionals — fires triggered → correct hub, per-symbol isolation
+# ---------------------------------------------------------------------------
+
+def _hbar(ts: int, high: float, low: float, close: float = None) -> Bar:
+    """Bar with explicit high/low for trigger testing."""
+    c = close if close is not None else (high + low) / 2
+    return Bar(ts=ts, open=c, high=high, low=low, close=c)
+
+
+def test_check_conditionals_fires_buy_stop_to_btc_hub_only():
+    """A buy-stop on BTC fires to BTC hub only when high crosses the trigger."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_BTC, +1, 2.0, 110.0)
+
+    # Bar that does NOT cross: high=105 < 110
+    no_fire = eng.check_conditionals(_BTC, _hbar(ts=1, high=105.0, low=99.0))
+    assert no_fire == []
+    assert len(hub_btc.submitted) == 0
+    assert len(hub_eth.submitted) == 0
+
+    # Bar that CROSSES: high=111 >= 110
+    fired = eng.check_conditionals(_BTC, _hbar(ts=2, high=111.0, low=105.0))
+    assert len(fired) == 1
+    assert fired[0].side == +1
+    assert fired[0].size == 2.0
+    assert len(hub_btc.submitted) == 1
+    req = hub_btc.submitted[0]
+    assert req.side == +1
+    assert req.qty == 2.0
+    assert req.order_type == "market"
+    # ETH hub must be untouched
+    assert len(hub_eth.submitted) == 0
+
+
+def test_check_conditionals_fires_sell_stop_to_btc_hub():
+    """A sell-stop on BTC fires when low crosses."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_BTC, -1, 1.0, 90.0)
+
+    # No fire — low=95 > 90
+    eng.check_conditionals(_BTC, _hbar(ts=1, high=101.0, low=95.0))
+    assert len(hub_btc.submitted) == 0
+
+    # Fire — low=89 <= 90
+    fired = eng.check_conditionals(_BTC, _hbar(ts=2, high=97.0, low=89.0))
+    assert len(fired) == 1 and fired[0].side == -1
+    assert len(hub_btc.submitted) == 1
+
+
+def test_btc_stop_does_not_affect_eth_hub():
+    """A stop on BTC must not touch ETH's hub even after firing."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_BTC, +1, 2.0, 110.0)
+    eng.check_conditionals(_BTC, _hbar(ts=1, high=120.0, low=109.0))
+    assert len(hub_btc.submitted) == 1
+    assert len(hub_eth.submitted) == 0
+
+
+def test_eth_stop_does_not_affect_btc_hub():
+    """A stop on ETH must not touch BTC's hub even after firing."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_ETH, -1, 3.0, 80.0)
+    eng.check_conditionals(_ETH, _hbar(ts=1, high=90.0, low=75.0))
+    assert len(hub_eth.submitted) == 1
+    assert len(hub_btc.submitted) == 0
+
+
+def test_fire_once_stop_does_not_re_fire():
+    """After a stop fires, a subsequent crossing bar must not re-fire (fire-once semantics)."""
+    eng, hub_btc, _, _ = _make_engine()
+    eng.submit_stop(_BTC, +1, 2.0, 110.0)
+    eng.check_conditionals(_BTC, _hbar(ts=1, high=115.0, low=109.0))
+    assert len(hub_btc.submitted) == 1
+    # Cross again — must be empty (removed from book)
+    eng.check_conditionals(_BTC, _hbar(ts=2, high=120.0, low=110.0))
+    assert len(hub_btc.submitted) == 1  # still 1, not 2
+
+
+def test_check_conditionals_unknown_symbol_returns_empty():
+    """check_conditionals on a symbol with no book returns [] without error."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    result = eng.check_conditionals(_BTC, _hbar(ts=1, high=200.0, low=50.0))
+    assert result == []
+    assert len(hub_btc.submitted) == 0
+
+
+# ---------------------------------------------------------------------------
+# A2e: trailing stop — per-symbol ratchet + fire
+# ---------------------------------------------------------------------------
+
+def test_trailing_ratchets_per_symbol_then_fires():
+    """Trailing on BTC ratchets extreme and fires on retrace; ETH book is independent."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    acct.marks[("binance", _BTC)] = 100.0
+    eng.submit_trailing(_BTC, -1, 1.0, trail=5.0)
+
+    # Ratchet: high=108 > 100, no retrace (low=99 > 108-5=103)
+    no_fire = eng.check_conditionals(_BTC, _hbar(ts=1, high=108.0, low=99.0))
+    assert no_fire == []
+    assert len(hub_btc.submitted) == 0
+
+    # Now extreme=108, trigger=103; low=102 <= 103 → fire
+    fired = eng.check_conditionals(_BTC, _hbar(ts=2, high=107.0, low=102.0))
+    assert len(fired) == 1 and fired[0].side == -1
+    assert len(hub_btc.submitted) == 1
+    assert len(hub_eth.submitted) == 0
+
+
+def test_trailing_extreme_initialized_from_mark():
+    """Trailing extreme at registration = symbol's current mark (price_of)."""
+    eng, hub_btc, _, acct = _make_engine()
+    acct.marks[("binance", _BTC)] = 200.0  # mark = 200
+    eng.submit_trailing(_BTC, -1, 10.0, trail=10.0)
+    # Trigger = 200 - 10 = 190; a bar with low>190 must NOT fire
+    no_fire = eng.check_conditionals(_BTC, _hbar(ts=1, high=201.0, low=191.0))
+    assert no_fire == []
+    # A bar with low<=190 must fire
+    fired = eng.check_conditionals(_BTC, _hbar(ts=2, high=195.0, low=188.0))
+    assert len(fired) == 1
+
+
+def test_two_symbols_independent_trailing_books():
+    """BTC and ETH each maintain independent trailing books."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    acct.marks[("binance", _BTC)] = 100.0
+    acct.marks[("binance", _ETH)] = 50.0
+    eng.submit_trailing(_BTC, -1, 1.0, trail=5.0)
+    eng.submit_trailing(_ETH, +1, 2.0, trail=3.0)
+
+    # Only check BTC — ETH book must be unaffected
+    eng.check_conditionals(_BTC, _hbar(ts=1, high=110.0, low=90.0))
+    # ETH hub still zero
+    assert len(hub_eth.submitted) == 0
+    # BTC fired (low=90 <= 100-5=95)
+    assert len(hub_btc.submitted) == 1
+
+
+# ---------------------------------------------------------------------------
+# A2e: cancel_all(sym) clears ONLY that symbol's book
+# ---------------------------------------------------------------------------
+
+def test_cancel_all_btc_clears_btc_book_only():
+    """cancel_all(BTC) clears BTC's conditional book; ETH's remains active."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_BTC, +1, 2.0, 110.0)
+    eng.submit_stop(_ETH, -1, 1.0, 80.0)
+
+    eng.cancel_all(_BTC)
+
+    # BTC's book cleared — crossing bar fires nothing on BTC hub
+    fired_btc = eng.check_conditionals(_BTC, _hbar(ts=1, high=120.0, low=108.0))
+    assert fired_btc == []
+    assert len(hub_btc.submitted) == 0
+
+    # ETH's book still active — crossing bar fires
+    fired_eth = eng.check_conditionals(_ETH, _hbar(ts=1, high=90.0, low=75.0))
+    assert len(fired_eth) == 1
+    assert len(hub_eth.submitted) == 1
+
+
+def test_cancel_all_eth_clears_eth_book_only():
+    """cancel_all(ETH) clears ETH's book; BTC remains active."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_stop(_BTC, +1, 2.0, 110.0)
+    eng.submit_stop(_ETH, -1, 1.0, 80.0)
+
+    eng.cancel_all(_ETH)
+
+    # ETH cleared
+    fired_eth = eng.check_conditionals(_ETH, _hbar(ts=1, high=90.0, low=75.0))
+    assert fired_eth == []
+
+    # BTC still active
+    fired_btc = eng.check_conditionals(_BTC, _hbar(ts=1, high=120.0, low=108.0))
+    assert len(fired_btc) == 1
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT fix (review wave 1): no-mark guard on submit_trailing
+# ---------------------------------------------------------------------------
+
+def test_buy_trailing_no_mark_does_not_register():
+    """A BUY trailing armed when mark=0 (no mark set) must NOT register in the book."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    # acct.marks has no entry for BTC → price_of returns 0.0
+    assert acct.marks.get(("binance", _BTC)) is None
+    eng.submit_trailing(_BTC, +1, 1.0, trail=5.0)
+    # Must NOT register (book not created or empty)
+    assert _BTC not in eng._books or len(eng._books[_BTC]) == 0
+
+
+def test_buy_trailing_no_mark_does_not_fire_on_next_bar():
+    """A BUY trailing armed with no mark must not route any order on the next normal bar."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    eng.submit_trailing(_BTC, +1, 1.0, trail=5.0)
+    # Feed a normal-priced bar (high >> trail, would have triggered the bug)
+    fired = eng.check_conditionals(_BTC, _hbar(ts=1, high=50_000.0, low=49_000.0))
+    assert fired == []
+    assert len(hub_btc.submitted) == 0
+
+
+def test_buy_trailing_with_mark_registers_and_fires():
+    """Positive regression: a BUY trailing WITH a mark registers and fires on retrace."""
+    eng, hub_btc, hub_eth, acct = _make_engine()
+    acct.marks[("binance", _BTC)] = 100.0
+    # BUY trailing: extreme=100, trail=5 → trigger at 105; fires when high >= 105
+    eng.submit_trailing(_BTC, +1, 1.0, trail=5.0)
+    assert _BTC in eng._books and len(eng._books[_BTC]) == 1
+    # Bar with high=106 >= 105 → fires
+    fired = eng.check_conditionals(_BTC, _hbar(ts=1, high=106.0, low=99.0))
+    assert len(fired) == 1
+    assert hub_btc.submitted[0].side == +1 and hub_btc.submitted[0].qty == 1.0
+    assert len(hub_eth.submitted) == 0
