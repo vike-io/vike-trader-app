@@ -433,3 +433,147 @@ def test_single_symbol_fires_immediately():
     pump.feed_bar(_BTC, _bar(ts=1000))
     assert len(strat.bar_calls) == 1
     assert strat.bar_calls[0][0] == 1000
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT-2: monotonic watermark (no time regression; _fired_ts removed)
+# ---------------------------------------------------------------------------
+
+def test_watermark_blocks_old_ts_after_newer_fired():
+    """An OLD ts re-fed after a NEWER ts already fired is silently dropped (watermark guard)."""
+    pump, strat, _ = _make_pump()
+    pump.start()
+
+    # Fire T2
+    pump.feed_bar(_BTC, _bar(ts=2000))
+    pump.feed_bar(_ETH, _bar(ts=2000))
+    assert pump._i == 0
+    assert strat.bar_calls[0][0] == 2000
+
+    # Now feed T1 (older) for BOTH symbols — must not re-fire or advance _i
+    pump.feed_bar(_BTC, _bar(ts=1000))
+    pump.feed_bar(_ETH, _bar(ts=1000))
+    # _i must remain 0, no additional on_bar
+    assert pump._i == 0
+    assert len(strat.bar_calls) == 1
+
+
+def test_watermark_blocks_equal_ts_replay():
+    """Re-feeding an already-fired ts (same ts, replay) is also dropped."""
+    pump, strat, _ = _make_pump()
+    pump.start()
+
+    pump.feed_bar(_BTC, _bar(ts=1000))
+    pump.feed_bar(_ETH, _bar(ts=1000))
+    assert len(strat.bar_calls) == 1
+
+    # Replay the same ts for both symbols — must be a no-op
+    pump.feed_bar(_BTC, _bar(ts=1000))
+    pump.feed_bar(_ETH, _bar(ts=1000))
+    assert len(strat.bar_calls) == 1
+    assert pump._i == 0
+
+
+def test_watermark_o1_no_set_attribute():
+    """_last_fired_ts exists; _fired_ts set must NOT exist (replaced by watermark)."""
+    pump, _, _ = _make_pump()
+    assert hasattr(pump, "_last_fired_ts"), "_last_fired_ts watermark attribute missing"
+    assert not hasattr(pump, "_fired_ts"), (
+        "_fired_ts set still present — must be replaced by _last_fired_ts watermark"
+    )
+
+
+def test_watermark_initial_value_allows_ts_zero():
+    """_last_fired_ts starts at -1 so ts=0 (a valid epoch bar) can fire normally."""
+    pump, strat, _ = _make_pump()
+    pump.start()
+    pump.feed_bar(_BTC, _bar(ts=0))
+    pump.feed_bar(_ETH, _bar(ts=0))
+    assert len(strat.bar_calls) == 1
+    assert strat.bar_calls[0][0] == 0
+
+
+def test_watermark_in_order_sequence_unaffected():
+    """Normal in-order sequence still fires correctly with the watermark."""
+    pump, strat, _ = _make_pump()
+    pump.start()
+    for t in [1000, 2000, 3000]:
+        pump.feed_bar(_BTC, _bar(ts=t))
+        pump.feed_bar(_ETH, _bar(ts=t))
+    assert pump._i == 2
+    assert len(strat.bar_calls) == 3
+    assert [c[0] for c in strat.bar_calls] == [1000, 2000, 3000]
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT-3: prime() method — warmup parity
+# ---------------------------------------------------------------------------
+
+def test_prime_advances_i_by_aligned_steps():
+    """prime({sym: bars}) advances _i by min(len(bars)) across symbols."""
+    pump, strat, _ = _make_pump(warmup=3)
+    btc_bars = [_bar(ts=i * 1000, close=float(i + 1) * 100) for i in range(5)]
+    eth_bars = [_bar(ts=i * 1000, close=float(i + 1) * 200) for i in range(5)]
+    pump.prime({_BTC: btc_bars, _ETH: eth_bars})
+    # 5 bars each → 5 aligned steps → _i = 5 - 1 + (-1) = ... actually: starts at -1, +5 = 4
+    assert pump._i == 4
+    assert strat.index == 4
+
+
+def test_prime_does_not_fire_on_bar():
+    """prime() must NOT call strategy.on_bar for any history bars."""
+    pump, strat, _ = _make_pump(warmup=0)
+    btc_bars = [_bar(ts=i * 1000) for i in range(3)]
+    eth_bars = [_bar(ts=i * 1000) for i in range(3)]
+    pump.prime({_BTC: btc_bars, _ETH: eth_bars})
+    # on_bar must NOT have been called even though warmup=0
+    assert strat.bar_calls == []
+    assert pump._i == 2  # 3 aligned steps, _i starts at -1 → -1 + 3 = 2
+
+
+def test_prime_then_feed_respects_warmup():
+    """After prime with WARMUP aligned bars, the first live feed_bar fires on_bar immediately."""
+    pump, strat, _ = _make_pump(warmup=3)
+    # Prime with exactly WARMUP bars (0-indexed _i becomes 2 after 3 bars)
+    btc_bars = [_bar(ts=i * 1000) for i in range(3)]
+    eth_bars = [_bar(ts=i * 1000) for i in range(3)]
+    pump.prime({_BTC: btc_bars, _ETH: eth_bars})
+    assert pump._i == 2
+    assert strat.bar_calls == []
+
+    pump.start()
+
+    # First live aligned bar → _i advances to 3 = WARMUP → gate satisfied → on_bar fires
+    pump.feed_bar(_BTC, _bar(ts=3000))
+    pump.feed_bar(_ETH, _bar(ts=3000))
+    assert pump._i == 3
+    assert len(strat.bar_calls) == 1
+    assert strat.bar_calls[0][0] == 3000
+
+
+def test_prime_with_unequal_history_uses_min():
+    """prime() uses min(len) when symbols have different-length histories."""
+    pump, strat, _ = _make_pump()
+    btc_bars = [_bar(ts=i * 1000) for i in range(5)]
+    eth_bars = [_bar(ts=i * 1000) for i in range(3)]  # shorter
+    pump.prime({_BTC: btc_bars, _ETH: eth_bars})
+    # min(5, 3) = 3 → _i = -1 + 3 = 2
+    assert pump._i == 2
+
+
+def test_prime_empty_history_noop():
+    """prime() with empty histories is a no-op (does not crash or advance _i)."""
+    pump, strat, _ = _make_pump()
+    pump.prime({_BTC: [], _ETH: []})
+    assert pump._i == -1
+    assert strat.index == 0  # PortfolioStrategy default
+
+
+def test_prime_feeds_engine_buffer():
+    """prime() feeds all bars through engine.add_live_bar so the buffers are populated."""
+    pump, strat, _ = _make_pump()
+    btc_bars = [_bar(ts=i * 1000, close=float(i + 1) * 100) for i in range(4)]
+    eth_bars = [_bar(ts=i * 1000, close=float(i + 1) * 50) for i in range(4)]
+    pump.prime({_BTC: btc_bars, _ETH: eth_bars})
+    assert len(pump.engine._bufs[_BTC].bars) == 4
+    assert len(pump.engine._bufs[_ETH].bars) == 4

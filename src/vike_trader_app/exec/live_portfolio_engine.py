@@ -77,6 +77,8 @@ class LivePortfolioEngine:
         self._bufs: dict[str, BarSeriesBuffer] = {
             sym: BarSeriesBuffer([], timeframes=None) for sym in self.symbols
         }
+        # Per-symbol last-seen ts (for bars_for / forming_for slicing; mirrors _now in StrategyLiveEngine).
+        self._now_by_sym: dict[str, int] = {sym: 0 for sym in self.symbols}
         # Monotonic sequence counter for client_order_id uniqueness.
         self._seq: int = 0
         # Stable 8-hex tag for this engine instance — unique across concurrent engines.
@@ -92,7 +94,12 @@ class LivePortfolioEngine:
         return f"{sym}-{self._engine_tag}-{self._seq}"
 
     def _hub(self, sym: str) -> "LiveOmsHub":
-        return self._hubs[sym]
+        try:
+            return self._hubs[sym]
+        except KeyError:
+            raise ValueError(
+                f"symbol {sym!r} is not in the armed basket {self.symbols}"
+            ) from None
 
     # ------------------------------------------------------------------
     # Read-model (the exact _engine.X surface PortfolioStrategy calls)
@@ -183,6 +190,112 @@ class LivePortfolioEngine:
         )
         hub.submit_ticket(req)
 
+    def submit_limit(
+        self,
+        sym: str,
+        side_sign: int,
+        size: float,
+        price: float,
+        weight: float = 0.0,
+        raw: bool = False,
+        stop=None,
+    ) -> None:
+        """Submit a resting limit order for ``sym``.
+
+        ``weight``, ``raw``, and ``stop`` are accepted for signature-parity with the backtest
+        ``PortfolioEngine.submit_limit`` and are IGNORED here (the strategy already computed
+        the desired size; we route it as a plain limit order).
+        """
+        del weight, raw, stop
+        if size > 0.0:
+            hub = self._hub(sym)
+            req = OrderRequest(
+                client_order_id=self._next_coid(sym),
+                venue=hub.venue,
+                symbol=hub.symbol,
+                side=side_sign,
+                qty=size,
+                order_type="limit",
+                price=price,
+                ts=self._now_ms(),
+            )
+            hub.submit_ticket(req)
+
+    def submit_market_close(self, sym: str, side_sign: int, size: float, weight: float = 0.0) -> None:
+        """Submit a market order to reduce/close the position (explicit direction + size).
+
+        ``weight`` is accepted for signature-parity with the backtest ``PortfolioEngine`` and
+        is IGNORED here.
+        """
+        del weight
+        if size > 0.0:
+            hub = self._hub(sym)
+            req = OrderRequest(
+                client_order_id=self._next_coid(sym),
+                venue=hub.venue,
+                symbol=hub.symbol,
+                side=side_sign,
+                qty=size,
+                order_type="market",
+                price=None,
+                ts=self._now_ms(),
+            )
+            hub.submit_ticket(req)
+
+    def submit_limit_close(
+        self,
+        sym: str,
+        side_sign: int,
+        size: float,
+        price: float,
+        weight: float = 0.0,
+    ) -> None:
+        """Submit a limit order to reduce/close the position at the given price.
+
+        ``weight`` is accepted for signature-parity with the backtest ``PortfolioEngine`` and
+        is IGNORED here.
+        """
+        del weight
+        if size > 0.0:
+            hub = self._hub(sym)
+            req = OrderRequest(
+                client_order_id=self._next_coid(sym),
+                venue=hub.venue,
+                symbol=hub.symbol,
+                side=side_sign,
+                qty=size,
+                order_type="limit",
+                price=price,
+                ts=self._now_ms(),
+            )
+            hub.submit_ticket(req)
+
+    def cancel_all(self, sym: str) -> None:
+        """Cancel every resting order for ``sym`` currently in its hub's registry."""
+        hub = self._hub(sym)
+        for coid in list(hub.registry):
+            hub.cancel_ticket(coid)
+
+    # ------------------------------------------------------------------
+    # Higher-TF reads — delegate to the per-symbol BarSeriesBuffer
+    # ------------------------------------------------------------------
+
+    def bars_for(self, sym: str, tf: str):
+        """Completed higher-TF bars for ``sym`` visible at the current step (no look-ahead).
+
+        Mirrors ``PortfolioEngine.bars_for(symbol, tf)`` and ``StrategyLiveEngine.bars_for(tf)``;
+        delegates to the per-symbol ``BarSeriesBuffer``.
+        """
+        return self._bufs[sym].bars_for(tf, self._now_by_sym.get(sym, 0))
+
+    def forming_for(self, sym: str, tf: str):
+        """The still-forming coarse bar for ``tf`` / ``sym`` from base bars seen so far, or None.
+
+        Mirrors ``PortfolioEngine.forming_for(symbol, tf)``; delegates to the per-symbol
+        ``BarSeriesBuffer``.
+        """
+        return self._bufs[sym].forming_for(tf, self._now_by_sym.get(sym, 0))
+
     def submit_stop(self, sym: str, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
         """Stop orders are emulated in A2e — deferred to avoid a real-money mis-order.
 
@@ -218,6 +331,7 @@ class LivePortfolioEngine:
         extended per symbol).  The per-symbol BarSeriesBuffer is separate from other
         symbols' buffers — no cross-symbol contamination.
         """
+        self._now_by_sym[sym] = bar.ts
         self._bufs[sym].add_live_bar(bar)
         hub = self._hub(sym)
         self._account.set_mark(hub.venue, sym, bar.close)

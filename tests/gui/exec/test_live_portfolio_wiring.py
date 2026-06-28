@@ -144,6 +144,9 @@ class _FakePump:
         self.stopped = False
         self._bars: list[tuple] = []  # (symbol, bar)
 
+    def prime(self, history_by_symbol):
+        """No-op stub (cold-start seeding not exercised in wiring tests)."""
+
     def feed_bar(self, symbol, bar):
         self._bars.append((symbol, bar))
 
@@ -445,11 +448,11 @@ def test_routing_portfolio_strategy_dispatches_to_portfolio_path(app, monkeypatc
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        # Spy on the two dispatch targets
+        # Spy on the two dispatch targets (accept strategy_cls kwarg from _on_run_live_requested)
         monkeypatch.setattr(win, "_start_live_portfolio",
-                            lambda code: portfolio_calls.append(code))
+                            lambda code, **kw: portfolio_calls.append(code))
         monkeypatch.setattr(win, "_start_live_strategy",
-                            lambda code: single_calls.append(code))
+                            lambda code, **kw: single_calls.append(code))
 
         win._on_run_live_requested(_TRIVIAL_PORTFOLIO_STRATEGY)
         assert len(portfolio_calls) == 1, "portfolio strategy must route to _start_live_portfolio"
@@ -472,9 +475,9 @@ def test_routing_single_strategy_dispatches_to_single_path(app, monkeypatch):
     try:
         _arm_basket_window(win, monkeypatch)
         monkeypatch.setattr(win, "_start_live_portfolio",
-                            lambda code: portfolio_calls.append(code))
+                            lambda code, **kw: portfolio_calls.append(code))
         monkeypatch.setattr(win, "_start_live_strategy",
-                            lambda code: single_calls.append(code))
+                            lambda code, **kw: single_calls.append(code))
 
         win._on_run_live_requested(_TRIVIAL_SINGLE_STRATEGY)
         assert len(single_calls) == 1, "plain strategy must route to _start_live_strategy"

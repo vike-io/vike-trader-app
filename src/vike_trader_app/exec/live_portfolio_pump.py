@@ -87,13 +87,54 @@ class LivePortfolioPump:
         self._n_symbols: int = len(self.engine.symbols)
         self._symbols: set[str] = set(self.engine.symbols)
 
-        # Set of ts values already fired — prevents re-firing if the same ts is re-fed
-        # (e.g., a WS reconnect replaying a bar that was already aligned and sent to on_bar).
-        self._fired_ts: set[int] = set()
+        # Monotonic watermark: the ts of the last on_bar that fired.
+        # Replaces the unbounded ``_fired_ts`` set (O(1) per bar vs O(N) set).
+        # Dual purpose:
+        #   1. Replay/dup guard: a bar whose ts <= _last_fired_ts was already aligned+fired;
+        #      discard it (equivalent to the old `if ts in _fired_ts: return`).
+        #   2. Time-regression guard: a late completion of an OLD ts (after a newer ts already
+        #      fired) cannot re-enter _try_fire at all — feed_bar drops it before it reaches
+        #      the bucket.
+        self._last_fired_ts: int = -1
 
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
+
+    def prime(self, history_by_symbol: "dict[str, list[Bar]]") -> None:
+        """Warm the engine buffers + advance the bar index WITHOUT firing ``on_bar``.
+
+        Call this BEFORE ``start()`` and before the live workers begin feeding bars.  Each
+        symbol's history bars are pushed through ``engine.add_live_bar`` (populating the per-
+        symbol ``BarSeriesBuffer`` and setting the Account mark), and ``_i`` / ``strategy.index``
+        are advanced by the number of ALIGNED timestamps — ``min(len(bars) for sym in symbols)``
+        — matching the wait-for-all alignment contract (``_i`` counts aligned steps, not raw
+        per-symbol bars).
+
+        After priming with ≥ WARMUP aligned bars, the very first live aligned ``on_bar`` fires
+        immediately (warmup gate already satisfied).  This mirrors ``LiveStrategyPump.prime``
+        extended to N symbols.
+
+        NOTE: ``on_start`` is NOT called here; call ``start()`` separately AFTER priming.
+        ``on_bar`` is intentionally NOT fired for primed bars — they are purely history.
+        """
+        symbols = self.engine.symbols
+        # Feed ALL history bars for each symbol into the engine buffer (mark + BarSeriesBuffer).
+        for sym in symbols:
+            bars = history_by_symbol.get(sym, [])
+            for bar in bars:
+                self.engine.add_live_bar(sym, bar)
+
+        # Advance _i / strategy.index by the number of ALIGNED (wait-for-all) steps.
+        # Each aligned step = one ts for which ALL symbols have a bar.  The number of such
+        # steps is min(len(bars)) over all symbols (mirrors the wait-for-all contract).
+        if symbols:
+            aligned_steps = min(
+                len(history_by_symbol.get(sym, [])) for sym in symbols
+            )
+            if aligned_steps > 0:
+                self._i += aligned_steps
+                self.strategy.index = self._i
 
     def start(self) -> None:
         """Arm the pump: call ``strategy.on_start()`` (if defined) and open the gate."""
@@ -139,10 +180,10 @@ class LivePortfolioPump:
         # B: update the engine buffer + set the account mark for this symbol.
         self.engine.add_live_bar(symbol, bar)
 
-        # C: slot into the per-timestamp bucket (skip if already fired for this ts).
+        # C: slot into the per-timestamp bucket (skip if already fired — replay/regression guard).
         ts = bar.ts
-        if ts in self._fired_ts:
-            return  # already aligned + fired; discard the replay bar
+        if ts <= self._last_fired_ts:
+            return  # already aligned+fired (replay) OR older than last fired (time regression)
         bucket = self._buckets.setdefault(ts, {})
         bucket[symbol] = bar  # last-writer-wins if same symbol arrives twice for same ts
 
@@ -187,7 +228,7 @@ class LivePortfolioPump:
 
         # Pop and fire the complete bucket.
         fired_bucket = self._buckets.pop(complete_ts)
-        self._fired_ts.add(complete_ts)  # guard against replay of already-fired ts
+        self._last_fired_ts = complete_ts  # advance monotonic watermark (replay + regression guard)
         self._i += 1
         self.strategy.index = self._i
 

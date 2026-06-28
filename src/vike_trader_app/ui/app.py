@@ -3770,7 +3770,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: 0,
+                now_ms=lambda: int(time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
@@ -3781,7 +3781,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: 0,
+                now_ms=lambda: int(time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled(f"bybit_{client_symbol}", worker, bus=bus)
@@ -3794,7 +3794,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 passphrase=cfg.credentials.passphrase,
                 symbol=client_symbol,
                 ct_val=getattr(hub.client, "_ct_val", 1.0),
-                now_ms=lambda: 0,
+                now_ms=lambda: int(time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
@@ -3806,7 +3806,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_secret=cfg.credentials.api_secret,
                 passphrase=cfg.credentials.passphrase,
                 symbol=client_symbol,
-                now_ms=lambda: 0,
+                now_ms=lambda: int(time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled(f"okx_{client_symbol}", worker, bus=bus)
@@ -3820,7 +3820,7 @@ class MainWindow(QtWidgets.QMainWindow):
                     ws_base_url=_fapi_ws,
                     api_key=cfg.credentials.api_key,
                     symbol=client_symbol,
-                    now_ms=lambda: 0,
+                    now_ms=lambda: int(time.time() * 1000),
                 )
                 worker = PrivateUserDataWorker(run_core)
                 self._exec_session.add_worker_if_enabled(
@@ -3832,7 +3832,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 api_key=cfg.credentials.api_key,
                 api_secret=cfg.credentials.api_secret,
                 symbol=client_symbol,
-                now_ms=lambda: 0,
+                now_ms=lambda: int(time.time() * 1000),
             )
             worker = PrivateUserDataWorker(run_core)
             self._exec_session.add_worker_if_enabled(
@@ -3940,11 +3940,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
             return
         if issubclass(strategy_cls, PortfolioStrategy):
-            self._start_live_portfolio(code)
+            self._start_live_portfolio(code, strategy_cls=strategy_cls)
         else:
-            self._start_live_strategy(code)
+            self._start_live_strategy(code, strategy_cls=strategy_cls)
 
-    def _start_live_strategy(self, code: str) -> None:
+    def _start_live_strategy(self, code: str, *, strategy_cls=None) -> None:
         """Load the strategy from *code* and start driving it with live bars.
 
         Errors are surfaced via the status bar only — no modals (the headless rule).
@@ -3959,6 +3959,10 @@ class MainWindow(QtWidgets.QMainWindow):
         Binance returns it). ``closed_bars`` drops it so that when the WS feed later emits that
         same candle as the first ``feed_bar``, it does NOT land in ``engine.bars`` a second time
         (a ghost duplicate that would feed warmup indicators the same bar twice).
+
+        strategy_cls: optional already-loaded class (passed from ``_on_run_live_requested``
+        to avoid loading the strategy source twice per click; falls back to loading from
+        ``code`` when not provided, preserving standalone-call behavior).
         """
         sess = getattr(self, "_exec_session", None)
         if sess is None or sess.hub is None:
@@ -3967,13 +3971,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_strat_pump", None) is not None:
             self.statusBar().showMessage("A live strategy is already running. Stop it first.", 3000)
             return
-        from ..core.strategy_loader import load_strategy_from_string
         from ..exec.live_strategy_pump import LiveStrategyPump
         from .live_feed_worker import LiveBarFeedWorker
         from ..data.vike_live import make_live_feed
         from ..data.sources import select_source
         try:
-            strategy_cls = load_strategy_from_string(code)
+            if strategy_cls is None:
+                from ..core.strategy_loader import load_strategy_from_string
+                strategy_cls = load_strategy_from_string(code)
             strategy = strategy_cls()
         except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
             self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
@@ -4075,7 +4080,7 @@ class MainWindow(QtWidgets.QMainWindow):
     # Live-portfolio pump wiring (A2d Task 4)
     # ------------------------------------------------------------------
 
-    def _start_live_portfolio(self, code: str) -> None:
+    def _start_live_portfolio(self, code: str, *, strategy_cls=None) -> None:
         """Load a PortfolioStrategy from *code* and start driving it with N live feeds.
 
         One ``LiveBarFeedWorker`` per symbol in the armed basket; all feed bars into a
@@ -4087,12 +4092,17 @@ class MainWindow(QtWidgets.QMainWindow):
         or when a strategy is already running.
 
         Cold-start seed (A): REST-backfills max(WARMUP+50, 250) closed bars PER SYMBOL and
-        feeds them through ``engine.add_live_bar`` so indicator lookbacks are pre-populated.
+        feeds them through ``pump.prime()`` so indicator lookbacks are pre-populated and
+        ``_i`` / ``strategy.index`` are advanced by the aligned step count.
         A fetch failure for a symbol is logged and shown on the status bar but the pump still
         starts — that symbol just begins cold (best-effort).
 
         M1 (mirror A2c): REST fetch may include the still-forming candle — ``closed_bars``
         drops it to avoid a ghost duplicate when the WS feed later emits the same bar.
+
+        strategy_cls: optional already-loaded class (passed from ``_on_run_live_requested``
+        to avoid loading the strategy source twice per click; falls back to loading from
+        ``code`` when not provided, preserving standalone-call behavior).
         """
         sess = getattr(self, "_exec_session", None)
         if sess is None or not getattr(sess, "hubs", {}):
@@ -4101,13 +4111,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if getattr(self, "_strat_pump", None) is not None:
             self.statusBar().showMessage("A live strategy is already running. Stop it first.", 3000)
             return
-        from ..core.strategy_loader import load_any_strategy_from_string
         from ..exec.live_portfolio_pump import LivePortfolioPump
         from .live_feed_worker import LiveBarFeedWorker
         from ..data.vike_live import make_live_feed
         from ..data.sources import select_source
         try:
-            strategy_cls = load_any_strategy_from_string(code)
+            if strategy_cls is None:
+                from ..core.strategy_loader import load_any_strategy_from_string
+                strategy_cls = load_any_strategy_from_string(code)
             strategy = strategy_cls()
         except Exception as exc:  # noqa: BLE001 - user-supplied strategy code
             self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
@@ -4120,24 +4131,27 @@ class MainWindow(QtWidgets.QMainWindow):
         interval = self._interval
         seed_count = max(getattr(strategy, "WARMUP", 0) + 50, _FORWARD_SEED_BARS)
 
-        # A + M1: REST-backfill each symbol; feed history bars through the engine buffer only
-        # (not through pump.feed_bar — that would try to align them and would never complete
-        # until all symbols have bars for the same ts; instead prime the engine directly).
-        for sym, hub in sess.hubs.items():
+        # A + M1: REST-backfill each symbol; collect per-symbol closed histories then prime
+        # the pump in one call so _i / strategy.index are advanced by the aligned step count
+        # (matching the wait-for-all contract).  prime() feeds through engine.add_live_bar
+        # WITHOUT firing on_bar — purely warms the indicator lookbacks.
+        history_by_symbol: dict = {}
+        now = int(time.time() * 1000)
+        for sym in sess.hubs:
             try:
-                now = int(time.time() * 1000)
                 start = now - seed_count * interval_ms(interval)
                 history = select_source(sym).fetch_bars_range(sym, interval, start, now)
                 # M1: drop the still-forming tail candle (same as A2c).
                 history = closed_bars(history, interval_ms(interval), now)
-                for bar in history:
-                    pump.engine.add_live_bar(sym, bar)
+                history_by_symbol[sym] = list(history)
             except Exception as exc:  # noqa: BLE001 - data error must not block live start
                 logging.getLogger(__name__).warning(
                     "live portfolio cold-start backfill failed for %s (%s); starting cold", sym, exc)
                 self.statusBar().showMessage(
                     f"Backfill failed for {sym} ({exc}); starting cold.", 4000)
+                history_by_symbol[sym] = []
 
+        pump.prime(history_by_symbol)
         pump.start()
 
         workers: list = []

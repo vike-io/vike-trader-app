@@ -29,9 +29,14 @@ class _Hub:
         self.venue = venue
         self.symbol = symbol
         self.submitted: list[OrderRequest] = []
+        self.canceled: list[str] = []
+        self.registry: dict = {}
 
     def submit_ticket(self, req: OrderRequest) -> None:
         self.submitted.append(req)
+
+    def cancel_ticket(self, coid: str) -> None:
+        self.canceled.append(coid)
 
 
 class _Acct:
@@ -277,3 +282,151 @@ def test_submit_trailing_raises():
     eng, _, _, _ = _make_engine()
     with pytest.raises(NotImplementedError):
         eng.submit_trailing(_BTC, +1, 1.0, 5.0)
+
+
+# ---------------------------------------------------------------------------
+# IMPORTANT-1: missing verbs (submit_limit, submit_market_close,
+#              submit_limit_close, cancel_all, bars_for, forming_for)
+# ---------------------------------------------------------------------------
+
+def test_submit_limit_routes_to_correct_hub():
+    """submit_limit(sym, side, size, price) → limit OrderRequest to the right hub only."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_limit(_BTC, +1, 2.0, 50_000.0)
+    assert len(hub_btc.submitted) == 1
+    assert len(hub_eth.submitted) == 0
+    req = hub_btc.submitted[0]
+    assert req.order_type == "limit"
+    assert req.price == 50_000.0
+    assert req.side == +1
+    assert req.qty == 2.0
+
+
+def test_submit_limit_eth_routes_to_eth_hub():
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_limit(_ETH, -1, 3.0, 2_000.0)
+    assert len(hub_eth.submitted) == 1
+    assert len(hub_btc.submitted) == 0
+    req = hub_eth.submitted[0]
+    assert req.order_type == "limit"
+    assert req.price == 2_000.0
+
+
+def test_submit_limit_weight_raw_stop_accepted():
+    """weight/raw/stop are parity params and must not raise."""
+    eng, hub_btc, _, _ = _make_engine()
+    eng.submit_limit(_BTC, +1, 1.0, 40_000.0, weight=0.5, raw=True, stop=None)
+    assert len(hub_btc.submitted) == 1
+
+
+def test_submit_market_close_routes_to_correct_hub():
+    """submit_market_close(sym, side, size) → market OrderRequest to the right hub."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_market_close(_BTC, -1, 2.0)
+    assert len(hub_btc.submitted) == 1
+    assert len(hub_eth.submitted) == 0
+    req = hub_btc.submitted[0]
+    assert req.order_type == "market"
+    assert req.side == -1
+    assert req.qty == 2.0
+
+
+def test_submit_market_close_noop_on_zero_size():
+    eng, hub_btc, _, _ = _make_engine()
+    eng.submit_market_close(_BTC, -1, 0.0)
+    assert len(hub_btc.submitted) == 0
+
+
+def test_submit_limit_close_routes_to_correct_hub():
+    """submit_limit_close(sym, side, size, price) → limit OrderRequest to the right hub."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    eng.submit_limit_close(_BTC, -1, 1.5, 48_000.0)
+    assert len(hub_btc.submitted) == 1
+    assert len(hub_eth.submitted) == 0
+    req = hub_btc.submitted[0]
+    assert req.order_type == "limit"
+    assert req.price == 48_000.0
+    assert req.qty == 1.5
+
+
+def test_cancel_all_calls_cancel_ticket_for_each_registry_entry():
+    """cancel_all(sym) cancels every coid in hub.registry for that symbol."""
+    eng, hub_btc, hub_eth, _ = _make_engine()
+    hub_btc.registry["coid-1"] = object()
+    hub_btc.registry["coid-2"] = object()
+    eng.cancel_all(_BTC)
+    assert set(hub_btc.canceled) == {"coid-1", "coid-2"}
+    # ETH hub must be untouched
+    assert hub_eth.canceled == []
+
+
+def test_cancel_all_noop_when_registry_empty():
+    eng, hub_btc, _, _ = _make_engine()
+    eng.cancel_all(_BTC)  # must not raise
+    assert hub_btc.canceled == []
+
+
+def _make_engine_with_tf(bal: float = 10_000.0, timeframes=("1h",)):
+    """Engine where the per-symbol buffers have a higher timeframe pre-registered."""
+    from vike_trader_app.core.bar_buffer import BarSeriesBuffer
+    acct = _Acct(bal=bal)
+    hub_btc = _Hub(venue="binance", symbol=_BTC)
+    hub_eth = _Hub(venue="binance", symbol=_ETH)
+    hubs = {_BTC: hub_btc, _ETH: hub_eth}
+    eng = LivePortfolioEngine(hubs, acct, now_ms=lambda: 111)
+    # Re-initialise the per-symbol buffers WITH a timeframe so bars_for/forming_for don't KeyError.
+    for sym in eng.symbols:
+        eng._bufs[sym] = BarSeriesBuffer([], timeframes=list(timeframes))
+    return eng, hub_btc, hub_eth, acct
+
+
+def test_bars_for_delegates_to_symbol_buffer():
+    """bars_for(sym, tf) returns results from the correct per-symbol BarSeriesBuffer."""
+    from vike_trader_app.core.model import Bar
+    eng, _, _, _ = _make_engine_with_tf()
+    # No bars fed yet → empty list
+    result = eng.bars_for(_BTC, "1h")
+    assert isinstance(result, list)
+    assert result == []
+
+
+def test_bars_for_btc_does_not_include_eth_bars():
+    """bars_for for BTC only returns BTC's buffer, not ETH's."""
+    from vike_trader_app.core.model import Bar
+    eng, _, _, _ = _make_engine_with_tf()
+    # Feed bars to ETH only; BTC should still be empty.
+    for i in range(3):
+        eng.add_live_bar(_ETH, Bar(ts=i * 3_600_000, open=2000.0, high=2100.0, low=1900.0, close=2050.0))
+    assert eng.bars_for(_BTC, "1h") == []
+    # ETH also empty at ts=0 (still forming); at a later ts it should have bars
+    # The point is just that BTC's buffer is untouched.
+
+
+def test_forming_for_delegates_to_correct_symbol_buffer():
+    """forming_for(sym, tf) delegates to the per-symbol BarSeriesBuffer (None when no bars)."""
+    eng, _, _, _ = _make_engine_with_tf()
+    result = eng.forming_for(_ETH, "1h")
+    assert result is None  # no bars fed yet → forming bar is None
+
+
+def test_forming_for_eth_different_from_btc():
+    """forming_for reads the correct per-symbol buffer (isolation)."""
+    from vike_trader_app.core.model import Bar
+    eng, _, _, _ = _make_engine_with_tf()
+    # Feed a bar to ETH only; BTC should still return None for forming_for.
+    eng.add_live_bar(_ETH, Bar(ts=0, open=2000.0, high=2100.0, low=1900.0, close=2050.0))
+    assert eng.forming_for(_ETH, "1h") is not None  # ETH has a bar in the window
+    assert eng.forming_for(_BTC, "1h") is None      # BTC has no bars
+
+
+def test_unknown_symbol_raises_value_error():
+    """_hub(sym) with an unknown symbol raises ValueError with a descriptive message."""
+    eng, _, _, _ = _make_engine()
+    with pytest.raises(ValueError, match="armed basket"):
+        eng.submit(_BTC[:-3] + "XYZ", +1, 1.0)  # "BTCXYZ" is not in the basket
+
+
+def test_unknown_symbol_cancel_all_raises_value_error():
+    eng, _, _, _ = _make_engine()
+    with pytest.raises(ValueError, match="armed basket"):
+        eng.cancel_all("SOLANA")
