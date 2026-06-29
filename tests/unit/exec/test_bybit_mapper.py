@@ -16,6 +16,7 @@ import pytest
 
 from vike_trader_app.exec.bybit.mapper import map_bybit_private, map_execution, map_order
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     OrderAccepted,
     OrderCanceled,
@@ -251,6 +252,66 @@ def test_map_frame_ack_and_pong_ignored():
 
 
 def test_map_frame_unknown_topic_ignored():
-    """Unrecognised topic frames must return []."""
-    frame = {"topic": "wallet", "data": [{"walletBalance": "1000"}]}
+    """Unrecognised topic frames must return []; wallet topic now handled separately."""
+    frame = {"topic": "position", "data": [{"something": "1000"}]}
     assert map_bybit_private(frame, venue="bybit", symbol="") == []
+
+
+# ---------------------------------------------------------------------------
+# wallet topic -> AccountState (Bybit unified account, same as perp)
+# ---------------------------------------------------------------------------
+
+def _wallet_frame(coins: list[dict], creation_time: int = 1700000000000) -> dict:
+    """Bybit V5 wallet topic frame with one account entry."""
+    return {
+        "topic": "wallet",
+        "creationTime": creation_time,
+        "data": [{"coin": coins}],
+    }
+
+
+def test_wallet_topic_emits_account_state():
+    """wallet topic with coin rows -> AccountState(venue, balances, ts) using walletBalance (TOTAL)."""
+    frame = _wallet_frame([
+        {"coin": "USDT", "walletBalance": "1234.56"},
+        {"coin": "BTC", "walletBalance": "0.5"},
+    ], creation_time=1700000000000)
+    out = map_bybit_private(frame, venue="bybit", symbol="")
+    acct_states = [e for e in out if isinstance(e, AccountState)]
+    assert len(acct_states) == 1
+    state = acct_states[0]
+    assert state.venue == "bybit"
+    assert state.ts == 1700000000000
+    balances_dict = dict(state.balances)
+    assert balances_dict["USDT"] == pytest.approx(1234.56)
+    assert balances_dict["BTC"] == pytest.approx(0.5)
+
+
+def test_wallet_topic_empty_coin_list_emits_nothing():
+    """wallet topic with empty coin list -> []."""
+    frame = _wallet_frame([])
+    out = map_bybit_private(frame, venue="bybit", symbol="")
+    assert not any(isinstance(e, AccountState) for e in out)
+
+
+def test_wallet_topic_malformed_balance_skipped_default_safe():
+    """A coin row with bad walletBalance is skipped; valid rows still emit AccountState."""
+    frame = _wallet_frame([
+        {"coin": "USDT", "walletBalance": "999.0"},
+        {"coin": "ETH", "walletBalance": "not_a_number"},
+    ])
+    out = map_bybit_private(frame, venue="bybit", symbol="")
+    acct_states = [e for e in out if isinstance(e, AccountState)]
+    assert len(acct_states) == 1
+    balances_dict = dict(acct_states[0].balances)
+    assert "USDT" in balances_dict
+    assert "ETH" not in balances_dict
+
+
+def test_wallet_topic_does_not_affect_execution_output():
+    """An execution frame still emits [FillEvent, OrderFilled]; no AccountState."""
+    row = _exec_row()
+    frame = _frame("execution", [row])
+    out = map_bybit_private(frame, venue="bybit", symbol="BTCUSDT")
+    assert any(isinstance(e, FillEvent) for e in out)
+    assert not any(isinstance(e, AccountState) for e in out)

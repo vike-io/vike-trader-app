@@ -9,6 +9,7 @@ into last_px. trade_id = Binance `t` (the reconnect dedup key); client_order_id 
 from __future__ import annotations
 
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     OrderAccepted,
     OrderCanceled,
@@ -72,6 +73,24 @@ def map_binance_private(frame, *, venue: str = "binance", symbol: str = "") -> l
         return []
     # Unwrap WS-API envelope {"subscriptionId":0, "event":{...}} — tolerate raw too
     inner = frame.get("event", frame)
-    if isinstance(inner, dict) and inner.get("e") == "executionReport":
+    if not isinstance(inner, dict):
+        return []
+    if inner.get("e") == "executionReport":
         return map_execution_report(inner, venue=venue, symbol=symbol)
+    if inner.get("e") == "outboundAccountPosition":
+        # Spot balance snapshot: B[].{a=asset, f=free, l=locked}; total = free+locked.
+        # balanceUpdate (delta) is intentionally NOT mapped — it's a single-asset delta, not a
+        # full snapshot. Only outboundAccountPosition gives the full per-asset balance picture.
+        ts = int(inner.get("E", 0) or 0)
+        balances: list[tuple[str, float]] = []
+        for row in (inner.get("B") or []):
+            try:
+                asset = str(row.get("a") or "")
+                total = float(row.get("f", 0) or 0) + float(row.get("l", 0) or 0)
+                if asset:
+                    balances.append((asset, total))
+            except (TypeError, ValueError):
+                pass
+        if balances:
+            return [AccountState(venue=venue, balances=tuple(balances), ts=ts)]
     return []
