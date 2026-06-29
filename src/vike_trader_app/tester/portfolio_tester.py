@@ -110,12 +110,10 @@ class MultiSymbolStrategyTester(_OptimizeMixin):
             final_curves = [t.report.equity_curve for t in opt.ranked]
 
             best = opt.best
-            # Route OOS through _run_one so CrossSectionalSignalStrategy uses the kernel fast path.
-            oos_tester = MultiSymbolStrategyTester(
-                test_slice, self.config,
-                max_open_positions=self.max_open_positions, ranges=self.ranges,
-            )
-            oos_window = oos_tester._run_one(lambda bp=best.params: make(**bp), test_slice)
+            # Route OOS through _run_one (on this tester — max_open_positions/ranges come from self;
+            # the explicit test_slice arg supplies the window) so CrossSectionalSignalStrategy uses
+            # the kernel fast path.
+            oos_window = self._run_one(lambda bp=best.params: make(**bp), test_slice)
             # WalkForwardWindow.oos_report is a TesterReport (wf_consistency reads .total_return).
             windows.append(WalkForwardWindow((tr_lo, tr_hi), (te_lo, te_hi), best.params, oos_window,
                                              is_score=best.score, oos_score=getattr(oos_window, criterion)))

@@ -237,3 +237,22 @@ def test_kernel_route_confirmed_by_isinstance():
     assert kn.equity_ts is not None and len(kn.equity_ts) > 0
     # Kernel must actually trade (not just sit in cash)
     assert kn.final_equity != pytest.approx(100_000.0, abs=1.0)
+
+
+def test_event_cross_sectional_strategy_uses_event_path():
+    """A CrossSectionalStrategy (EVENT — has score/weights, NOT target_weights) must route to the
+    event engine, NOT the kernel. It is the closest-named class to CrossSectionalSignalStrategy, so
+    it is the likeliest isinstance false-positive — and if it were mis-routed to the kernel, .run()
+    would raise (CrossSectionalStrategy has no target_weights / signal-style .run)."""
+    class _MomEvent(CrossSectionalStrategy):
+        k = 2
+        rebalance_every = 1
+        lookback = 3
+
+        def score(self, symbol, history):
+            if len(history) <= self.lookback:
+                return None
+            return history[-1] / history[-1 - self.lookback] - 1.0
+
+    report = MultiSymbolStrategyTester(_bars_by_symbol(), TesterConfig(cash=100_000.0)).run(lambda: _MomEvent())
+    assert isinstance(report, TesterReport) and report.final_equity > 0
