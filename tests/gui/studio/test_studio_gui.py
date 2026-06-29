@@ -42,7 +42,7 @@ def _bars(n=12):
 
 
 _GOOD = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):
@@ -298,7 +298,7 @@ def test_current_strategy_cls_compiles_template(app):
 def test_show_portfolio_report_displays(app):
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.tester.config import TesterConfig
     from vike_trader_app.ui.studio import StudioTab
 
@@ -316,7 +316,7 @@ def test_show_portfolio_report_displays(app):
 
 def test_by_symbol_tab_populates_for_portfolio_report(app):
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
     from vike_trader_app.ui.studio import StudioTab
@@ -355,7 +355,7 @@ def test_by_symbol_tab_has_6_columns_with_maxdd_and_sharpe(app):
     """F3: portfolio By Symbol tab must have 6 columns; Max DD and Sharpe are non-empty for
     a symbol that traded."""
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
     from vike_trader_app.ui.studio import StudioTab
@@ -417,7 +417,7 @@ def test_show_portfolio_report_enters_portfolio_mode(app):
     """show_portfolio_report with bars_by_symbol stashes portfolio state."""
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
     class BuyHold(Strategy):
         def on_bar(self, bar):
@@ -438,7 +438,7 @@ def test_show_portfolio_report_without_bars_does_not_enter_portfolio_mode(app):
     """show_portfolio_report without bars_by_symbol leaves _portfolio_bars as None."""
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
     class BuyHold(Strategy):
         def on_bar(self, bar):
@@ -456,7 +456,7 @@ def test_run_code_exits_portfolio_mode(app):
     """run_code (single-symbol) clears _portfolio_bars regardless of prior portfolio state."""
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
     class BuyHold(Strategy):
         def on_bar(self, bar):

@@ -7,14 +7,20 @@ engine. Equity = cash + sum(position size * last close).
 """
 
 import bisect
-from dataclasses import dataclass, field
+import logging
+import warnings
+from dataclasses import dataclass, field, replace
 from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
-from .model import Bar, Position, Trade
+from .instrument_id import format_instrument
+from .model import Bar, Fill, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
+from .strategy import Strategy
+
+logger = logging.getLogger(__name__)
 
 _BAR_TS = attrgetter("ts")   # bisect key for the per-symbol higher-TF reads (mirror BacktestEngine)
 
@@ -55,8 +61,12 @@ class PortfolioResult:
     benchmark_label: str = ""  # human-readable benchmark description
 
 
-class PortfolioStrategy:
+class PortfolioStrategy(Strategy):
     """Base multi-symbol strategy. Override ``on_bar(ts, bars)``.
+
+    .. deprecated::
+        Subclass the unified :class:`~vike_trader_app.core.strategy.Strategy` instead
+        and implement ``on_bar(bar)`` (one bar per symbol per call).
 
     ``bars`` is ``{symbol: Bar}`` for the current step. Place orders with
     ``buy/sell/close(symbol, ...)`` or target weights with
@@ -66,11 +76,17 @@ class PortfolioStrategy:
     closing it whole.
     """
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        warnings.warn(
+            "PortfolioStrategy is deprecated; subclass the unified Strategy "
+            "(one on_bar(bar) per symbol).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     def __init__(self) -> None:
-        self._engine = None  # set by the engine in run()
-        self.index = 0
-        from .schedule import Schedule
-        self.schedule = Schedule()
+        super().__init__()  # sets _engine, index, schedule via Strategy.__init__
 
     @property
     def equity(self) -> float:
@@ -111,8 +127,12 @@ class PortfolioStrategy:
     def on_bar(self, ts: int, bars: dict) -> None:  # noqa: ARG002 - overridden by users
         """Called once per timestamp, after pending orders for this step have filled."""
 
+    def _on_step(self, ts: int, bars: dict) -> None:
+        """Engine-facing per-step hook. Default = the legacy bundle handler."""
+        self.on_bar(ts, bars)
 
-class CrossSectionalStrategy(PortfolioStrategy):
+
+class CrossSectionalStrategy(Strategy):
     """Top-k rotation: rank the whole universe each rebalance, hold the best ``k``.
 
     Override ``score(symbol, history)`` (history = the symbol's close list so far,
@@ -142,9 +162,8 @@ class CrossSectionalStrategy(PortfolioStrategy):
         w = 1.0 / len(winners) if winners else 0.0
         return {s: w for s in winners}
 
-    def on_bar(self, ts: int, bars: dict) -> None:  # noqa: ARG002
-        for sym, bar in bars.items():
-            self._hist.setdefault(sym, []).append(bar.close)
+    def on_bar(self, bar) -> None:
+        self._hist.setdefault(self._sym_key(bar.symbol), []).append(bar.close)
 
     def _rebalance(self) -> None:
         scores = {}
@@ -176,9 +195,16 @@ class PortfolioEngine:
                  timeframes: list[str] | None = None, max_open_positions: int = 0,
                  max_open_long: int = 0, max_open_short: int = 0,
                  sizer=None, volume_limit: float | None = None,
-                 granular_by_symbol: dict[str, list[Bar]] | None = None):
+                 granular_by_symbol: dict[str, list[Bar]] | None = None,
+                 default_venue: str | None = None):
         self.symbols = list(bars_by_symbol)
-        self.bars = bars_by_symbol
+        # Pre-tag each bar with its instrument id (SYMBOL.VENUE) once at construction.
+        # With default_venue=None, format_instrument returns the bare symbol so bar.symbol
+        # is always populated (non-None) regardless of whether a venue is provided.
+        self.bars = {
+            s: [replace(b, symbol=format_instrument(default_venue, s)) for b in series]
+            for s, series in bars_by_symbol.items()
+        }
         lengths = {len(v) for v in bars_by_symbol.values()}
         if len(lengths) > 1:
             raise ValueError("all symbol series must have the same length (aligned)")
@@ -313,6 +339,18 @@ class PortfolioEngine:
     def equity_now(self) -> float:
         return self.cash + sum(self._sym[s].pos.size * self._sym[s].price * self.multiplier for s in self.symbols)
 
+    def drawdown_now(self) -> float:
+        """Current drawdown from the running equity peak (0..1).
+
+        Uses the same ``_equity_peak`` that the run loop updates each bar.
+        Returns 0.0 when the peak has not been established yet.
+        """
+        eq = self.equity_now()
+        peak = self._equity_peak
+        if peak <= 0.0:
+            return 0.0
+        return max(0.0, (peak - eq) / peak)
+
     # --- sizing (WL PosSizer) ---
     def _is_opening(self, symbol: str, side_sign: int) -> bool:
         """True when an order on ``symbol`` in direction ``side_sign`` opens-from-flat or adds in the
@@ -443,11 +481,14 @@ class PortfolioEngine:
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
-               raw: bool = False, stop=None) -> None:
+               raw: bool = False, stop=None):
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._sym[symbol].pending.append(Order("market", side_sign, size, weight=weight, stop=stop))
+            o = Order("market", side_sign, size, weight=weight, stop=stop)
+            self._sym[symbol].pending.append(o)
+            return o
+        return None
 
     def submit_close(self, symbol: str) -> None:
         pos = self._sym[symbol].pos
@@ -456,32 +497,54 @@ class PortfolioEngine:
             self._sym[symbol].pending.append(Order("market", side, abs(pos.size)))
 
     def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                     raw: bool = False, stop=None) -> None:
+                     raw: bool = False, stop=None):
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)
-        self._sym[symbol].pending.append(Order("limit", side_sign, size, price=price, weight=weight, stop=stop))
+        o = Order("limit", side_sign, size, price=price, weight=weight, stop=stop)
+        self._sym[symbol].pending.append(o)
+        return o
 
     def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                    raw: bool = False) -> None:
+                    raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._sym[symbol].pending.append(Order("stop", side_sign, size, price=price, weight=weight))
+        o = Order("stop", side_sign, size, price=price, weight=weight)
+        self._sym[symbol].pending.append(o)
+        return o
 
     def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0,
-                        raw: bool = False) -> None:
+                        raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._sym[symbol].pending.append(Order("trailing", side_sign, size, trail=trail,
-                                           extreme=self._sym[symbol].price, weight=weight))
+        o = Order("trailing", side_sign, size, trail=trail,
+                  extreme=self._sym[symbol].price, weight=weight)
+        self._sym[symbol].pending.append(o)
+        return o
 
     def submit_market_close(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
-                            raw: bool = False) -> None:
+                            raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._sym[symbol].pending.append(Order("market_close", side_sign, size, weight=weight))
+            o = Order("market_close", side_sign, size, weight=weight)
+            self._sym[symbol].pending.append(o)
+            return o
+        return None
 
     def submit_limit_close(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                           raw: bool = False) -> None:
+                           raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._sym[symbol].pending.append(Order("limit_close", side_sign, size, price=price, weight=weight))
+        o = Order("limit_close", side_sign, size, price=price, weight=weight)
+        self._sym[symbol].pending.append(o)
+        return o
+
+    def _pending_of(self, symbol: str) -> list:
+        """Return the live pending-order list for ``symbol`` (used by OrderHandle)."""
+        return self._sym[symbol].pending
+
+    def cancel_order(self, symbol: str, order) -> None:
+        """Remove a specific order from the pending list (no-op if already gone)."""
+        try:
+            self._sym[symbol].pending.remove(order)
+        except ValueError:
+            pass
 
     def cancel_all(self, symbol: str) -> None:
         self._sym[symbol].pending = []
@@ -519,6 +582,12 @@ class PortfolioEngine:
         equity_curve: list[float] = []
         equity_ts: list[int] = []
         per_symbol_curve: dict[str, list[float]] = {s: [] for s in self.symbols}
+        cb = getattr(self.strategy, "on_start", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("strategy on_start failed")
         for i in range(self.n):
             self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
@@ -556,7 +625,7 @@ class PortfolioEngine:
             self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
-            self.strategy.on_bar(ts, cur)
+            self.strategy._on_step(ts, cur)
             sched = getattr(self.strategy, "schedule", None)
             if sched is not None:
                 for _cb in sched.check_due(ts, i):
@@ -568,6 +637,12 @@ class PortfolioEngine:
             for s in self.symbols:
                 pos = self._sym[s].pos
                 per_symbol_curve[s].append(self._sym[s].realized + pos.size * (self._sym[s].price - pos.avg_price) * self.multiplier)
+        cb = getattr(self.strategy, "on_stop", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("strategy on_stop failed")
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
             s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
@@ -775,11 +850,13 @@ class PortfolioEngine:
             st.entry_ts = ts
             st.hi_since = price                           # reset excursion extremes to entry
             st.lo_since = price
+            self._fire_on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
             return
         if out.kind == "add":
             pos.size = out.new_size
             pos.avg_price = out.new_avg_px
             st.entry_fee += fee
+            self._fire_on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
             return
 
         # reduce / close / flip
@@ -825,3 +902,19 @@ class PortfolioEngine:
             st.entry_fee = 0.0
             st.entry_ts = 0
             st.stop = None
+        self._fire_on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
+
+    def _fire_on_fill(self, symbol: str, side_sign: int, size: float, price: float, fee: float,
+                      ts: int, is_maker: bool) -> None:
+        """Fire strategy.on_fill(fill) if present; guards via getattr so old PortfolioStrategy
+        subclasses (which don't have on_fill) are unaffected. Exceptions are logged but never
+        propagate — a strategy bug must not break the deterministic sim loop."""
+        cb = getattr(self.strategy, "on_fill", None)
+        if cb is None:
+            return
+        fill = Fill(side=side_sign, size=size, price=price, fee=fee, ts=ts,
+                    is_maker=is_maker, symbol=symbol)
+        try:
+            cb(fill)
+        except Exception:
+            logger.exception("strategy on_fill failed")

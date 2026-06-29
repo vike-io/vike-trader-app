@@ -10,7 +10,7 @@ from vike_trader_app.core.portfolio_adapter import (
     SymbolEngineShim,
     align_bars,
 )
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.tester.config import TesterConfig
 
 
@@ -298,7 +298,7 @@ def test_single_symbol_portfolio_matches_engine_with_costs():
     # A 1-symbol portfolio run must equal the single-symbol BacktestEngine on the same bars,
     # strategy, and cost config (slippage + maker/taker + multiplier), proving the unified cost model.
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.engine import BacktestEngine
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
@@ -337,7 +337,7 @@ def test_single_symbol_portfolio_matches_engine_with_costs():
 
 def test_inactive_symbol_does_not_open():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.data.datasets import DateRange
     from vike_trader_app.tester.config import TesterConfig
@@ -374,7 +374,7 @@ def test_inactive_symbol_does_not_open():
 
 def test_auto_close_on_removal_no_lookahead():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.data.datasets import DateRange
     from vike_trader_app.tester.config import TesterConfig
@@ -400,7 +400,7 @@ def test_auto_close_on_removal_no_lookahead():
 
 def test_multitimeframe_in_portfolio_mode():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 
@@ -426,7 +426,7 @@ def test_multitimeframe_in_portfolio_mode():
 
 def test_forming_htf_bar_in_portfolio_mode():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 
@@ -446,7 +446,7 @@ def test_forming_htf_bar_in_portfolio_mode():
 def test_max_open_positions_caps_resting_entries():
     # A resting limit entry on a NEW symbol must be blocked when already at the MaxOpenPositions cap.
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 
@@ -469,7 +469,7 @@ def test_max_open_positions_caps_resting_entries():
 
 def test_empty_ranges_identical_to_no_mask():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 
@@ -489,7 +489,7 @@ def test_empty_ranges_identical_to_no_mask():
 
 def test_pct_equity_sizer_sizes_entries_off_equity():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.core.sizing import PctEquitySizer
     from vike_trader_app.tester.config import TesterConfig
@@ -512,7 +512,7 @@ def test_pct_equity_sizer_sizes_entries_off_equity():
 
 def test_default_passthrough_sizer_is_byte_for_byte():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 
@@ -554,7 +554,7 @@ def test_buy_on_close_fills_at_next_bar_close_in_portfolio_mode():
 def test_order_target_percent_is_not_resized_by_sizer():
     """order_target_* compute an explicit qty and forward raw=True; the sizer must NOT re-size them."""
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.core.sizing import FixedSharesSizer
     from vike_trader_app.tester.config import TesterConfig

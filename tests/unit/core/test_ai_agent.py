@@ -25,7 +25,7 @@ def _bars(n=20):
 
 
 _GOOD = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):
@@ -38,7 +38,7 @@ class S(Strategy):
 _BAD_IMPORT = "import os\n" + _GOOD
 
 _NOTRADE = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):

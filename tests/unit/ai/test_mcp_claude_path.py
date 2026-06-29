@@ -13,7 +13,7 @@ from vike_trader_app.ai import mcp_server
 
 # A minimal, deterministic strategy: one round-trip (buy bar 0, flat by bar 5) -> exactly 1 trade.
 _GOOD = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):

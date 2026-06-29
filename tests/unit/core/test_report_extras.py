@@ -62,7 +62,7 @@ def test_report_to_csv_has_metrics_and_trades():
 
     bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + (i % 7))
             for i in range(40)]
-    code = ("from vike_trader_app.core.strategy import Strategy\n\n"
+    code = ("from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy\n\n"
             "class S(Strategy):\n"
             "    def on_bar(self, bar):\n"
             "        if self.index == 1:\n"

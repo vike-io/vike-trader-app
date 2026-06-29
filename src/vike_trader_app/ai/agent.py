@@ -20,18 +20,52 @@ complete, runnable subclass via the `submit_strategy` tool (code as a single str
 API CONTRACT (do not invent methods):
     from vike_trader_app.core.strategy import Strategy
     class Strategy:
-        WARMUP: int = 0            # bars to skip before on_bar fires (your longest indicator lookback)
-        def on_bar(self, bar) -> None        # bar: .open .high .low .close .volume .ts
-        def buy(self, size); def sell(self, size); def close(self)
-        def limit_buy(self, size, price); def stop_buy(self, size, price); def trailing_stop(self, size, trail)
-        self.position   # signed float (>0 long, <0 short, 0 flat)
-        self.equity     # float ; self.index  # current bar index ; self.bars(tf)  # higher-TF history
-    PARAM_GRID = {"name": [v1, v2]}          # optional, for optimization
+        WARMUP: int = 0          # bars to skip before on_bar fires (your longest indicator lookback)
+        PARAM_GRID = {"name": [v1, v2]}   # optional — enables optimization/walk-forward
+
+        def on_bar(self, bar) -> None
+            # bar: .symbol .open .high .low .close .volume .ts
+            # on_bar fires ONCE PER SYMBOL per bar; bar.symbol is the instrument id.
+            # Runs unchanged whether 1 or N symbols are in the backtest.
+
+        # Orders — ALL are SYMBOL-EXPLICIT (first arg is always bar.symbol or a symbol string):
+        self.buy(bar.symbol, size)              # market buy
+        self.sell(bar.symbol, size)             # market sell
+        self.close(bar.symbol)                  # flatten the position
+        # Optional kwargs: limit=, stop=, stop_loss=, take_profit=, tif=
+        self.order_target_percent(bar.symbol, pct)   # size to pct of equity (0.0–1.0)
+
+        # Reads — symbol-keyed:
+        self.position(bar.symbol)               # Position object: .size (signed float, 0=flat)
+        self.price(bar.symbol)                  # last close price
+        self.bars(bar.symbol, tf)               # higher-TF bar history
+
+        # Account-wide reads (no symbol arg):
+        self.equity     # float
+        self.drawdown   # float (current drawdown fraction)
+        self.index      # current bar index (int)
+
+EXAMPLE (single-symbol MA crossover — illustrates the contract):
+    class MaCross(Strategy):
+        WARMUP = 30
+        fast = 10; slow = 30
+        PARAM_GRID = {"fast": [5, 10], "slow": [20, 30]}
+        def __init__(self): self.closes = []
+        def on_bar(self, bar):
+            self.closes.append(bar.close)
+            if len(self.closes) <= self.slow: return
+            f = sum(self.closes[-self.fast:]) / self.fast
+            s = sum(self.closes[-self.slow:]) / self.slow
+            if f > s and self.position(bar.symbol).size == 0:
+                self.buy(bar.symbol, 1.0)
+            elif f < s and self.position(bar.symbol).size > 0:
+                self.close(bar.symbol)
 
 RULES (MUST/NEVER):
 - MUST `from vike_trader_app.core.strategy import Strategy`, subclass it, implement `on_bar`.
-- MUST only use the methods/attributes above. NEVER import os/sys/subprocess or touch files/network.
+- MUST pass bar.symbol as the first argument to every order and position call.
 - MUST guard indicator warm-up (return early until enough history); never act on NaN; never read future bars.
+- MUST only use the methods/attributes above. NEVER import os/sys/subprocess or touch files/network.
 Allowed imports: math, statistics, datetime, numpy, vike_trader_app.core.{strategy,model,indicators}.
 """
 

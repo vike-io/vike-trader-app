@@ -33,10 +33,10 @@ class SmaCross(Strategy):
             return
         fast = sum(self._closes[-self.fast :]) / self.fast
         slow = sum(self._closes[-self.slow :]) / self.slow
-        if fast > slow and self.position.size == 0:
-            self.buy(0.01)
-        elif fast < slow and self.position.size > 0:
-            self.close()
+        if fast > slow and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 0.01)
+        elif fast < slow and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
 
     def chart_overlays(self, closes):
         return {

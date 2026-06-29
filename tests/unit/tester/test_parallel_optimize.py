@@ -15,7 +15,7 @@ from vike_trader_app.tester.parallel import grid_combos, resolve_workers
 
 # A self-contained SMA-cross strategy as SOURCE TEXT — this is what gets shipped to the workers
 # (mirrors how the Studio hands its editor text to the optimizer).
-_SOURCE = '''from vike_trader_app.core.strategy import Strategy
+_SOURCE = '''from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
 class SmaX(Strategy):

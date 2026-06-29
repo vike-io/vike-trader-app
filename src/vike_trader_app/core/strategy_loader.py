@@ -8,10 +8,14 @@ portfolio routing).
 
 import importlib.util
 import inspect
+import logging
 import os
 import tempfile
 
+from .compat_strategy import SingleSymbolStrategy
 from .strategy import Strategy
+
+_log = logging.getLogger(__name__)
 
 
 def load_strategy_from_file(path: str) -> type[Strategy]:
@@ -22,14 +26,25 @@ def load_strategy_from_file(path: str) -> type[Strategy]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    _bases = (Strategy, SingleSymbolStrategy)
     candidates = [
         obj
         for _, obj in inspect.getmembers(module, inspect.isclass)
-        if issubclass(obj, Strategy) and obj is not Strategy and obj.__module__ == module.__name__
+        if issubclass(obj, _bases) and obj not in _bases and obj.__module__ == module.__name__
     ]
     if not candidates:
         raise ValueError(f"no Strategy subclass found in {path!r}")
-    return candidates[0]
+    cls = candidates[0]
+    # Emit a deprecation log if the loaded class descends from a deprecated base.
+    from .portfolio import PortfolioStrategy  # local to avoid import cycles
+    if issubclass(cls, SingleSymbolStrategy) or (
+        issubclass(cls, PortfolioStrategy) and not issubclass(cls, Strategy)
+    ):
+        _log.warning(
+            "loaded a deprecated strategy base (%s); migrate to the unified Strategy",
+            cls.__name__,
+        )
+    return cls
 
 
 def load_strategy_from_string(code: str, *, validate: bool = True) -> type[Strategy]:

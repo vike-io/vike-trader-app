@@ -12,7 +12,7 @@ from PySide6 import QtWidgets  # noqa: E402
 
 from vike_trader_app.core.paper import PaperTester  # noqa: E402
 from vike_trader_app.core.model import Bar  # noqa: E402
-from vike_trader_app.core.strategy import Strategy  # noqa: E402
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy  # noqa: E402
 from vike_trader_app.ui.app import MainWindow  # noqa: E402
 
 

@@ -20,7 +20,7 @@ from vike_trader_app.tester.optimize_job import (
 
 # A self-contained SMA-cross strategy as SOURCE TEXT — mirrors how the Studio ships its editor text
 # to the optimizer workers (same idiom as tests/unit/tester/test_parallel_optimize.py).
-_SOURCE = '''from vike_trader_app.core.strategy import Strategy
+_SOURCE = '''from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
 class SmaX(Strategy):

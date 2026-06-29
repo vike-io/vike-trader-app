@@ -61,7 +61,7 @@ def _bars(n=16):
 
 # Two distinct, preflight-clean strategies that both TRADE. The second closes on a different bar so
 # its source differs from the first (so the DiffDialog actually has a change to apply).
-_CODE_A = """from vike_trader_app.core.strategy import Strategy
+_CODE_A = """from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 
 class S(Strategy):
@@ -72,7 +72,7 @@ class S(Strategy):
             self.close()
 """
 
-_CODE_B = """from vike_trader_app.core.strategy import Strategy
+_CODE_B = """from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 
 class S(Strategy):

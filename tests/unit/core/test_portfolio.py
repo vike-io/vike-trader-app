@@ -556,3 +556,40 @@ def test_single_symbol_leverage_cap_still_clamps():
     eng = PortfolioEngine(bars, _OneBig(), cash=10_000.0, leverage=1.0)
     eng.run()
     assert abs(eng._sym["A"].pos.size) * 100.0 == pytest.approx(10_000.0)   # clamped to 1.0x
+
+
+# ---------------------------------------------------------------------------
+# Task 10: PortfolioStrategy deprecated alias + issubclass + legacy bundle
+# ---------------------------------------------------------------------------
+
+def test_portfolio_strategy_is_subclass_of_strategy():
+    """issubclass(PortfolioStrategy, Strategy) must be True after reparenting."""
+    from vike_trader_app.core.strategy import Strategy
+    assert issubclass(PortfolioStrategy, Strategy)
+
+
+def test_portfolio_strategy_subclass_warns():
+    """Subclassing PortfolioStrategy must emit a DeprecationWarning."""
+    import warnings
+    from vike_trader_app.core.portfolio import PortfolioStrategy
+
+    with pytest.warns(DeprecationWarning, match="PortfolioStrategy is deprecated"):
+        class _NewSub(PortfolioStrategy):
+            pass
+
+
+def test_legacy_portfolio_bundle_still_works():
+    """A legacy PortfolioStrategy subclass with on_bar(ts, bars) still fires correctly."""
+    import warnings
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio import PortfolioStrategy, PortfolioEngine
+
+    seen = []
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        class Old(PortfolioStrategy):
+            def on_bar(self, ts, bars): seen.append(set(bars))
+
+    bars = {"BTC": [Bar(ts=i, open=1, high=1, low=1, close=1) for i in range(2)]}
+    PortfolioEngine(bars, Old(), fee_rate=0.0, cash=1000).run()
+    assert seen and seen[0] == {"BTC"}

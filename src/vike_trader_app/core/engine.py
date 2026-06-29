@@ -90,10 +90,19 @@ class BacktestEngine:
         self.strategy.on_order_submitted(order)
         self.strategy.on_event(order)
 
-    def submit(self, side_sign: int, size: float, weight: float = 0.0, stop=None) -> None:
-        # stop= is honored only in portfolio mode; the single-symbol engine accepts and ignores it
-        # to keep this path (and the numba kernel parity) byte-for-byte unchanged.
-        del stop
+    def submit(self, side_sign_or_symbol, side_sign_if_sym=None, size=None,
+               weight: float = 0.0, stop=None, raw: bool = False) -> None:
+        # Compat: accept both the old single-symbol API  submit(side, size)
+        # and the new unified API  submit(symbol, side, size)  — the symbol is ignored.
+        if isinstance(side_sign_or_symbol, str):
+            # new-API call: submit(symbol, side, size, ...)
+            side_sign, size = side_sign_if_sym, size
+        else:
+            # old-API call: submit(side, size, weight=..., stop=...)
+            side_sign = side_sign_or_symbol
+            if size is None:
+                size = side_sign_if_sym
+        del stop, raw
         size = self._cap_to_leverage(side_sign, size)
         if size > 0.0:
             self._add_pending(Order("market", side_sign, size, weight=weight))
@@ -124,11 +133,28 @@ class BacktestEngine:
             return 0.0
         return size if size <= room else room
 
-    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        self._add_pending(Order("limit", side_sign, size, price=price, weight=weight))
+    def submit_limit(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
+                     price=None, weight: float = 0.0, stop=None) -> "Order":
+        # Compat: old API submit_limit(side, size, price) / new API submit_limit(sym, side, size, price)
+        if isinstance(side_sign_or_symbol, str):
+            side_sign, size, price = side_or_size, size_or_price, price
+        else:
+            side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
+        del stop
+        o = Order("limit", side_sign, size, price=price, weight=weight)
+        self._add_pending(o)
+        return o
 
-    def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
-        self._add_pending(Order("stop", side_sign, size, price=price, weight=weight))
+    def submit_stop(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
+                    price=None, weight: float = 0.0) -> "Order":
+        # Compat: old API submit_stop(side, size, price) / new API submit_stop(sym, side, size, price)
+        if isinstance(side_sign_or_symbol, str):
+            side_sign, size, price = side_or_size, size_or_price, price
+        else:
+            side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
+        o = Order("stop", side_sign, size, price=price, weight=weight)
+        self._add_pending(o)
+        return o
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._add_pending(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
@@ -139,10 +165,17 @@ class BacktestEngine:
     def submit_limit_close(self, side_sign: int, size: float, price: float) -> None:
         self._add_pending(Order("limit_close", side_sign, size, price=price))
 
-    def cancel_all(self) -> None:
+    def cancel_order(self, symbol, order) -> None:  # noqa: ARG002 - symbol ignored (single-symbol)
+        """Remove a specific resting order; no-op if already gone (filled or cancelled)."""
+        try:
+            self._pending.remove(order)
+        except ValueError:
+            pass
+
+    def cancel_all(self, symbol: str | None = None) -> None:  # symbol ignored in single-symbol engine
         self._pending = []
 
-    def submit_close(self) -> None:
+    def submit_close(self, symbol: str | None = None) -> None:  # symbol ignored in single-symbol engine
         if self.position.size != 0:
             side = -1 if self.position.size > 0 else 1
             self._add_pending(Order("market", side, abs(self.position.size)))
@@ -182,13 +215,36 @@ class BacktestEngine:
         eq = self.equity_now()
         return (self._peak - eq) / self._peak if self._peak > 0 else 0.0
 
-    def bars_for(self, tf: str):
-        """Completed higher-TF bars visible at the current base bar (deliver-on-complete)."""
+    def bars_for(self, symbol_or_tf, tf: str | None = None):
+        """Completed higher-TF bars. Accepts both old API bars_for(tf) and new bars_for(sym, tf)."""
+        if tf is None:
+            tf = symbol_or_tf  # old single-symbol call: bars_for(tf)
         return self._buf.bars_for(tf, self._now)
 
-    def forming_for(self, tf: str):
-        """The still-building coarse bar for ``tf`` from base bars seen so far, or None."""
+    def forming_for(self, symbol_or_tf, tf: str | None = None):
+        """Forming coarse bar. Accepts both old API forming_for(tf) and new forming_for(sym, tf)."""
+        if tf is None:
+            tf = symbol_or_tf  # old single-symbol call: forming_for(tf)
         return self._buf.forming_for(tf, self._now)
+
+    # --- unified Strategy API compat — symbol reads (single-symbol: ignore the key) ---
+
+    def position_of(self, symbol: str) -> "Position":  # noqa: ARG002
+        """Return the current position (symbol ignored — single-symbol engine)."""
+        return self.position
+
+    def price_of(self, symbol: str) -> float:  # noqa: ARG002
+        """Return the last known price (symbol ignored — single-symbol engine)."""
+        return self._price
+
+    def _pending_of(self, symbol: str) -> list:  # noqa: ARG002
+        """Return pending orders (symbol ignored — single-symbol engine)."""
+        return list(self._pending)
+
+    @property
+    def symbols(self) -> list[str]:
+        """Single dummy symbol key (single-symbol engine has no named symbol)."""
+        return ["_"]
 
     # --- run loop ---
     def run(self) -> Result:

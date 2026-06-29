@@ -1,7 +1,7 @@
 """OmsHub: the paper composition root — engine(risk)+SimClient+Account+bus wired into one path."""
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.events import FillEvent
 from vike_trader_app.exec.oms import OmsHub
 from vike_trader_app.exec.risk import RiskGate, RiskLimits

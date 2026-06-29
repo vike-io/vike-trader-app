@@ -41,10 +41,10 @@ class MaCrossover(Strategy):
         s = sum(self.closes[-self.slow:]) / self.slow
         fp = sum(self.closes[-self.fast - 1:-1]) / self.fast
         sp = sum(self.closes[-self.slow - 1:-1]) / self.slow
-        if fp <= sp and f > s and self.position.size == 0:
-            self.buy(1.0)
-        elif fp >= sp and f < s and self.position.size > 0:
-            self.close()
+        if fp <= sp and f > s and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif fp >= sp and f < s and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
 '''
 
 _RSI_REVERSION = '''from vike_trader_app.core.strategy import Strategy
@@ -80,10 +80,10 @@ class RsiMeanReversion(Strategy):
         r = self._rsi()
         if r is None:
             return
-        if r < self.low and self.position.size == 0:
-            self.buy(1.0)
-        elif r > self.high and self.position.size > 0:
-            self.close()
+        if r < self.low and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif r > self.high and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
 '''
 
 _BOLLINGER = '''import statistics
@@ -108,10 +108,10 @@ class BollingerReversion(Strategy):
         window = self.closes[-self.n:]
         mid = sum(window) / self.n
         lower = mid - self.k * statistics.pstdev(window)
-        if bar.close < lower and self.position.size == 0:
-            self.buy(1.0)
-        elif bar.close >= mid and self.position.size > 0:
-            self.close()
+        if bar.close < lower and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif bar.close >= mid and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
 '''
 
 _DONCHIAN = '''from vike_trader_app.core.strategy import Strategy
@@ -135,10 +135,10 @@ class DonchianBreakout(Strategy):
             return
         hh = max(self.highs[-self.n - 1:-1])
         ll = min(self.lows[-self.m - 1:-1])
-        if bar.high >= hh and self.position.size == 0:
-            self.buy(1.0)
-        elif bar.low <= ll and self.position.size > 0:
-            self.close()
+        if bar.high >= hh and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif bar.low <= ll and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
 '''
 
 _MOMENTUM = '''from vike_trader_app.core.strategy import Strategy
@@ -158,10 +158,10 @@ class MomentumRoc(Strategy):
         if len(self.closes) <= self.n:
             return
         roc = self.closes[-1] / self.closes[-self.n - 1] - 1.0 if self.closes[-self.n - 1] else 0.0
-        if roc > 0 and self.position.size == 0:
-            self.buy(1.0)
-        elif roc < 0 and self.position.size > 0:
-            self.close()
+        if roc > 0 and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif roc < 0 and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
 '''
 
 
