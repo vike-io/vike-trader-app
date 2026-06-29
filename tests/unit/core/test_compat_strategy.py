@@ -4,8 +4,14 @@ Confirms:
 - Strategy (core.strategy) is the NEW unified class (Task 6), NOT the compat alias
 - The full single-symbol API surface is intact on SingleSymbolStrategy
 - position is still a property
+- Subclassing SingleSymbolStrategy emits DeprecationWarning (Task 9)
+- A SingleSymbolStrategy subclass runs via MultiSymbolStrategyRunner at N=1 (Task 9)
 """
 import inspect
+import warnings
+
+import pytest
+
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy
 from vike_trader_app.core.strategy import Strategy
 
@@ -65,3 +71,39 @@ def test_class_attributes():
     assert hasattr(SingleSymbolStrategy, "WARMUP")
     assert SingleSymbolStrategy.WARMUP == 0
     assert isinstance(SingleSymbolStrategy.PARAM_GRID, dict)
+
+
+# --- Task 9 tests ---
+
+def test_subclassing_warns():
+    """Subclassing SingleSymbolStrategy emits DeprecationWarning."""
+    with pytest.warns(DeprecationWarning, match="SingleSymbolStrategy.*deprecated"):
+        class Old(SingleSymbolStrategy):
+            def on_bar(self, bar):
+                if self.index == 0:
+                    self.buy(1.0)
+
+
+def test_old_strategy_runs_via_shim_at_n1():
+    """A SingleSymbolStrategy subclass runs via MultiSymbolStrategyRunner at N=1."""
+    from vike_trader_app.core.model import Bar
+    from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
+    from vike_trader_app.tester.config import TesterConfig
+
+    # Define the subclass, suppressing the DeprecationWarning so it doesn't fail the run
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+
+        class OldStyleStrategy(SingleSymbolStrategy):
+            def on_bar(self, bar):
+                if self.index == 0:
+                    self.buy(1.0)
+
+    bars = [Bar(ts=i * 60_000, open=10.0, high=11.0, low=9.0, close=10.0) for i in range(5)]
+    config = TesterConfig(cash=1000.0, fee_rate=0.0)
+
+    runner = MultiSymbolStrategyRunner(OldStyleStrategy, {"BTC": bars}, config)
+    result = runner.run()
+
+    assert result.final_equity is not None
+    assert isinstance(result.final_equity, float)

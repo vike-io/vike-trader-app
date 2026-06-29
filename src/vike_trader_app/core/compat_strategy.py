@@ -47,6 +47,15 @@ class SingleSymbolStrategy:
 
     _engine: "StrategyEngine | None"
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        import warnings
+        warnings.warn(
+            f"{cls.__name__} subclasses SingleSymbolStrategy (deprecated). Migrate to the "
+            f"symbol-explicit Strategy: on_bar(bar) + buy(bar.symbol, size).",
+            DeprecationWarning, stacklevel=2,
+        )
+
     def __init__(self) -> None:
         self._engine = None  # set by the engine in run()
         self.index = 0  # current bar index
