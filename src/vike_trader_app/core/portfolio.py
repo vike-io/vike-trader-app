@@ -7,15 +7,18 @@ engine. Equity = cash + sum(position size * last close).
 """
 
 import bisect
+import logging
 from dataclasses import dataclass, field, replace
 from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .instrument_id import format_instrument
-from .model import Bar, Position, Trade
+from .model import Bar, Fill, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
+
+logger = logging.getLogger(__name__)
 
 _BAR_TS = attrgetter("ts")   # bisect key for the per-symbol higher-TF reads (mirror BacktestEngine)
 
@@ -568,6 +571,12 @@ class PortfolioEngine:
         equity_curve: list[float] = []
         equity_ts: list[int] = []
         per_symbol_curve: dict[str, list[float]] = {s: [] for s in self.symbols}
+        cb = getattr(self.strategy, "on_start", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("strategy on_start failed")
         for i in range(self.n):
             self._step = i  # current bar index — read by is_active() during the fill phase
             cur = {s: self.bars[s][i] for s in self.symbols}
@@ -617,6 +626,12 @@ class PortfolioEngine:
             for s in self.symbols:
                 pos = self._sym[s].pos
                 per_symbol_curve[s].append(self._sym[s].realized + pos.size * (self._sym[s].price - pos.avg_price) * self.multiplier)
+        cb = getattr(self.strategy, "on_stop", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("strategy on_stop failed")
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
             s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
@@ -824,11 +839,13 @@ class PortfolioEngine:
             st.entry_ts = ts
             st.hi_since = price                           # reset excursion extremes to entry
             st.lo_since = price
+            self._fire_on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
             return
         if out.kind == "add":
             pos.size = out.new_size
             pos.avg_price = out.new_avg_px
             st.entry_fee += fee
+            self._fire_on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
             return
 
         # reduce / close / flip
@@ -874,3 +891,19 @@ class PortfolioEngine:
             st.entry_fee = 0.0
             st.entry_ts = 0
             st.stop = None
+        self._fire_on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
+
+    def _fire_on_fill(self, symbol: str, side_sign: int, size: float, price: float, fee: float,
+                      ts: int, is_maker: bool) -> None:
+        """Fire strategy.on_fill(fill) if present; guards via getattr so old PortfolioStrategy
+        subclasses (which don't have on_fill) are unaffected. Exceptions are logged but never
+        propagate — a strategy bug must not break the deterministic sim loop."""
+        cb = getattr(self.strategy, "on_fill", None)
+        if cb is None:
+            return
+        fill = Fill(side=side_sign, size=size, price=price, fee=fee, ts=ts,
+                    is_maker=is_maker, symbol=symbol)
+        try:
+            cb(fill)
+        except Exception:
+            logger.exception("strategy on_fill failed")

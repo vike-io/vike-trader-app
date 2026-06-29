@@ -208,3 +208,22 @@ def test_symbols_attr():
     eng = PortfolioEngine({"A": _series(2), "B": _series(2)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert set(syms_seen) == {"A", "B"}
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle: on_start fires before the loop, on_stop after, on_fill per fill
+# ---------------------------------------------------------------------------
+
+def test_lifecycle_fires():
+    ev = []
+
+    class S(Strategy):
+        def on_start(self): ev.append("start")
+        def on_stop(self): ev.append("stop")
+        def on_fill(self, fill): ev.append("fill")
+        def on_bar(self, bar):
+            if self.index == 0:
+                self.buy(bar.symbol, 1.0)
+
+    PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
+    assert ev[0] == "start" and ev[-1] == "stop" and "fill" in ev
