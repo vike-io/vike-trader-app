@@ -3638,14 +3638,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.exec_arm.set_armed(False)       # flip the button back to Arm + unlock the selectors
         self._live_strat_bar.set_armed(False)
         # E: explicitly disable Studio Run-live after disarm so it doesn't remain clickable
-        # when _stop_live_strategy's armed-check fired while the session was still alive.
+        # when _stop_live's armed-check fired while the session was still alive.
         if self.studio is not None:
             self.studio.set_live_armed(False)
         self.order_ticket.set_armed(False)
         self.positions_panel.set_armed(False)   # clears rows + disables Cancel (no cancel when no session)
 
     # ------------------------------------------------------------------
-    # Live-strategy pump wiring (A2c Task 3 + A2d Task 4)
+    # Live-strategy pump wiring
     # ------------------------------------------------------------------
 
     def _on_live_strat_start_requested(self) -> None:

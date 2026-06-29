@@ -283,7 +283,7 @@ class LivePump:
         for ts in stale:
             missing = self._symbols - set(self._buckets[ts].keys())
             log.warning(
-                "LivePortfolioPump: dropping stale incomplete bucket ts=%d "
+                "LivePump: dropping stale incomplete bucket ts=%d "
                 "(missing symbols: %s); newer ts=%d is complete.",
                 ts,
                 sorted(missing),

@@ -292,3 +292,257 @@ def test_route_calls_hub_submit_ticket():
     )
     eng._route(req)
     assert hub.submitted == [req]
+
+
+# ---------------------------------------------------------------------------
+# _route no-fire contract (ported from StrategyLiveEngine era; P0 must-preserve)
+# ---------------------------------------------------------------------------
+
+def test_route_does_not_synchronously_fire_on_order_submitted():
+    """Submitting an order via the engine must NOT synchronously call on_order_submitted
+    on the strategy.  Only the StrategyEventAdapter, driven by a real OrderSubmitted
+    EventBus event, fires that callback.  This test guards the contract so no future
+    refactor accidentally adds a direct handler call inside _route.
+    """
+    from vike_trader_app.core.strategy import Strategy
+
+    received: list = []
+
+    class _RecordingStrategy(Strategy):
+        WARMUP = 0
+
+        def on_order_submitted(self, event) -> None:  # type: ignore[override]
+            received.append(event)
+
+        def on_bar(self, bar) -> None:
+            pass
+
+    strat = _RecordingStrategy()
+    eng, hub, acct = _make_engine()
+    strat._engine = eng
+
+    # Submit directly through the engine — on_order_submitted must NOT fire.
+    eng.submit(_SYM, +1, 1.0)
+
+    assert received == [], (
+        "_route fired on_order_submitted synchronously — only the StrategyEventAdapter "
+        "(driven by the EventBus) should fire strategy callbacks"
+    )
+    # The hub DID receive the ticket (order was routed)
+    assert len(hub.submitted) == 1
+
+
+# ---------------------------------------------------------------------------
+# cancel_all (ported from StrategyLiveEngine — per-sym API)
+# ---------------------------------------------------------------------------
+
+def test_cancel_all_cancels_open_registry_orders():
+    """cancel_all(sym) must cancel every key in hub.registry and clear the book."""
+    eng, hub, acct = _make_engine()
+    hub.registry = {"c1": object(), "c2": object()}
+    eng.cancel_all(_SYM)
+    assert set(hub.canceled) == {"c1", "c2"}
+
+
+# ---------------------------------------------------------------------------
+# client_order_id uniqueness (per-sym)
+# ---------------------------------------------------------------------------
+
+def test_client_order_id_is_unique_per_submit():
+    """Two consecutive submits for the same symbol must produce distinct client_order_ids."""
+    eng, hub, acct = _make_engine()
+    eng.submit(_SYM, +1, 1.0)
+    eng.submit(_SYM, +1, 1.0)
+    ids = [r.client_order_id for r in hub.submitted]
+    assert ids[0] != ids[1]
+
+
+# ---------------------------------------------------------------------------
+# now property
+# ---------------------------------------------------------------------------
+
+def test_now_returns_injected_clock():
+    """engine.now must return the value from the injected now_ms callable."""
+    eng, _, _ = _make_engine()
+    assert eng.now == 999
+
+
+# ---------------------------------------------------------------------------
+# submit_limit (per-sym)
+# ---------------------------------------------------------------------------
+
+def test_submit_limit_builds_limit_request():
+    """submit_limit(sym, +1, 1.0, price=95.0) → limit order in hub."""
+    eng, hub, acct = _make_engine()
+    eng.submit_limit(_SYM, +1, 1.0, price=95.0)
+    req = hub.submitted[0]
+    assert req.order_type == "limit" and req.price == 95.0 and req.side == +1
+
+
+def test_submit_limit_weight_accepted():
+    """weight= kwarg is accepted (signature-parity) and silently ignored."""
+    eng, hub, acct = _make_engine()
+    eng.submit_limit(_SYM, -1, 2.0, price=105.0, weight=0.5)
+    req = hub.submitted[0]
+    assert req.order_type == "limit" and req.price == 105.0 and req.side == -1
+
+
+# ---------------------------------------------------------------------------
+# submit_market_close / submit_limit_close (per-sym)
+# ---------------------------------------------------------------------------
+
+def test_submit_market_close_builds_market_request():
+    """submit_market_close(sym, -1, 1.5) → market order in hub."""
+    eng, hub, acct = _make_engine()
+    eng.submit_market_close(_SYM, -1, 1.5)
+    req = hub.submitted[0]
+    assert req.order_type == "market" and req.side == -1 and req.qty == 1.5
+
+
+def test_submit_limit_close_builds_limit_request():
+    """submit_limit_close(sym, -1, 2.0, price=98.0) → limit order in hub."""
+    eng, hub, acct = _make_engine()
+    eng.submit_limit_close(_SYM, -1, 2.0, price=98.0)
+    req = hub.submitted[0]
+    assert req.order_type == "limit" and req.price == 98.0 and req.side == -1
+
+
+# ---------------------------------------------------------------------------
+# submit_stop / submit_trailing — register, don't raise (per-sym)
+# ---------------------------------------------------------------------------
+
+def test_submit_stop_registers_not_raises():
+    """submit_stop must register a conditional in the book (not raise)."""
+    eng, hub, acct = _make_engine()
+    eng.submit_stop(_SYM, -1, 1.0, price=90.0)
+    assert len(eng._books.get(_SYM, [])) == 1
+
+
+def test_submit_trailing_registers_not_raises():
+    """submit_trailing with a mark must register a conditional (not raise)."""
+    eng, hub, acct = _make_engine()
+    acct.marks[(_VENUE, _SYM)] = 100.0
+    eng.submit_trailing(_SYM, +1, 1.0, trail=5.0)
+    assert len(eng._books.get(_SYM, [])) == 1
+
+
+# ---------------------------------------------------------------------------
+# Multi-TF buffer (per-sym bars_for / forming_for)
+# ---------------------------------------------------------------------------
+
+def test_mtf_bars_for_returns_list():
+    """bars_for(sym, '1h') returns a list after feeding 2h of 1-min bars."""
+    from vike_trader_app.core.model import Bar
+    acct = _Acct()
+    hub = _Hub(venue=_VENUE, symbol=_SYM)
+    eng = LiveEngine({_SYM: hub}, acct, timeframes=["1h"], now_ms=lambda: 0)
+    for t in range(120):
+        eng.add_live_bar(_SYM, Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
+    assert isinstance(eng.bars_for(_SYM, "1h"), list)
+
+
+def test_mtf_bars_for_returns_completed_bars_only():
+    """bars_for(sym, '1h') yields at least 1 completed bar after 61 1-min bars."""
+    from vike_trader_app.core.model import Bar
+    acct = _Acct()
+    hub = _Hub(venue=_VENUE, symbol=_SYM)
+    eng = LiveEngine({_SYM: hub}, acct, timeframes=["1h"], now_ms=lambda: 0)
+    for t in range(61):
+        eng.add_live_bar(_SYM, Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
+    assert len(eng.bars_for(_SYM, "1h")) >= 1
+
+
+def test_mtf_forming_for_returns_forming_bar():
+    """forming_for(sym, '1h') is not None halfway through the first hour."""
+    from vike_trader_app.core.model import Bar
+    acct = _Acct()
+    hub = _Hub(venue=_VENUE, symbol=_SYM)
+    eng = LiveEngine({_SYM: hub}, acct, timeframes=["1h"], now_ms=lambda: 0)
+    for t in range(30):
+        eng.add_live_bar(_SYM, Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
+    assert eng.forming_for(_SYM, "1h") is not None
+
+
+# ---------------------------------------------------------------------------
+# Conditional stop/trailing — per-sym check_conditionals (ported from StrategyLiveEngine)
+# ---------------------------------------------------------------------------
+
+def _hbar(ts: int, o: float, h: float, l: float, c: float) -> Bar:
+    return Bar(ts=ts, open=o, high=h, low=l, close=c, volume=1.0)
+
+
+def test_submit_stop_buy_check_conditionals_fires_market_buy():
+    """A buy-stop fires a market buy when bar.high >= price."""
+    eng, hub, acct = _make_engine()
+    eng.submit_stop(_SYM, +1, 2.0, price=110.0)
+    fired = eng.check_conditionals(_SYM, _hbar(1, 100, 105, 99, 102))
+    assert fired == [] and len(hub.submitted) == 0
+    fired = eng.check_conditionals(_SYM, _hbar(2, 106, 111, 105, 109))
+    assert len(fired) == 1
+    req = hub.submitted[0]
+    assert req.side == +1 and req.qty == 2.0 and req.order_type == "market"
+    assert len(eng._books.get(_SYM, [])) == 0  # fire-once: book empty
+
+
+def test_submit_stop_sell_check_conditionals_fires_market_sell():
+    """A sell-stop fires a market sell when bar.low <= price."""
+    eng, hub, acct = _make_engine()
+    eng.submit_stop(_SYM, -1, 1.0, price=90.0)
+    fired = eng.check_conditionals(_SYM, _hbar(1, 100, 101, 95, 98))
+    assert fired == [] and len(hub.submitted) == 0
+    fired = eng.check_conditionals(_SYM, _hbar(2, 96, 97, 89, 91))
+    assert len(fired) == 1
+    assert hub.submitted[0].side == -1 and hub.submitted[0].qty == 1.0
+
+
+def test_submit_trailing_inits_extreme_from_mark_then_fires():
+    """submit_trailing initialises extreme from account.marks; ratchets; fires on retrace."""
+    eng, hub, acct = _make_engine()
+    acct.marks[(_VENUE, _SYM)] = 100.0
+    eng.submit_trailing(_SYM, -1, 1.0, trail=5.0)
+    fired = eng.check_conditionals(_SYM, _hbar(1, 100, 108, 99, 107))
+    assert fired == [] and len(hub.submitted) == 0
+    fired = eng.check_conditionals(_SYM, _hbar(2, 106, 107, 102, 104))
+    assert len(fired) == 1
+    assert hub.submitted[0].side == -1 and hub.submitted[0].qty == 1.0
+
+
+def test_cancel_all_clears_conditional_book():
+    """cancel_all(sym) must clear client-side conditionals."""
+    eng, hub, acct = _make_engine()
+    eng.submit_stop(_SYM, +1, 2.0, price=110.0)
+    assert len(eng._books[_SYM]) == 1
+    eng.cancel_all(_SYM)
+    assert _SYM not in eng._books or len(eng._books[_SYM]) == 0
+    fired = eng.check_conditionals(_SYM, _hbar(1, 100, 200, 50, 150))
+    assert fired == [] and len(hub.submitted) == 0
+
+
+# ---------------------------------------------------------------------------
+# No-mark guard on submit_trailing (ported from StrategyLiveEngine review wave 1)
+# ---------------------------------------------------------------------------
+
+def test_buy_trailing_no_mark_does_not_register():
+    """A BUY trailing armed when mark=0.0 must NOT register in the book."""
+    eng, hub, acct = _make_engine()
+    eng.submit_trailing(_SYM, +1, 1.0, trail=5.0)
+    assert _SYM not in eng._books or len(eng._books[_SYM]) == 0
+
+
+def test_buy_trailing_no_mark_does_not_fire_on_next_bar():
+    """A BUY trailing armed with no mark must not route any order on the next bar."""
+    eng, hub, acct = _make_engine()
+    eng.submit_trailing(_SYM, +1, 1.0, trail=5.0)
+    fired = eng.check_conditionals(_SYM, _hbar(1, 1000.0, 1010.0, 990.0, 1000.0))
+    assert fired == [] and len(hub.submitted) == 0
+
+
+def test_buy_trailing_with_mark_registers_and_fires():
+    """Positive regression: a BUY trailing WITH a mark registers and fires on retrace."""
+    eng, hub, acct = _make_engine()
+    acct.marks[(_VENUE, _SYM)] = 100.0
+    eng.submit_trailing(_SYM, +1, 1.0, trail=5.0)
+    assert len(eng._books[_SYM]) == 1
+    fired = eng.check_conditionals(_SYM, _hbar(1, 100.0, 106.0, 99.0, 104.0))
+    assert len(fired) == 1
+    assert hub.submitted[0].side == +1 and hub.submitted[0].qty == 1.0
