@@ -245,8 +245,11 @@ class Strategy:
         return self._engine.forming_for(self._sym_key(symbol), tf)
 
     def history(self, symbol: str, interval: str, count: int):
-        """Delegate to engine.history (wired in a follow-up slice)."""
-        return self._engine.history(self._sym_key(symbol), interval, count)
+        """Higher-timeframe history — NOT yet wired on the unified engine (follow-up slice)."""
+        raise NotImplementedError(
+            "history() is not yet wired on the unified portfolio engine — follow-up slice. "
+            "Use self.bars(symbol, tf) for higher-timeframe reads within the run window."
+        )
 
     # ------------------------------------------------------------------
     # Account reads

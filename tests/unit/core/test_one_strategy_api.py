@@ -184,6 +184,16 @@ def test_equity_and_drawdown_readable():
 
 
 # ---------------------------------------------------------------------------
+# history() raises a clear deferral error (engine wiring is a follow-up slice)
+# ---------------------------------------------------------------------------
+
+def test_history_raises_notimplemented_pending_wiring():
+    import pytest
+    with pytest.raises(NotImplementedError):
+        Strategy().history("BTC", "1h", 10)
+
+
+# ---------------------------------------------------------------------------
 # symbols attribute mirrors engine symbols
 # ---------------------------------------------------------------------------
 
