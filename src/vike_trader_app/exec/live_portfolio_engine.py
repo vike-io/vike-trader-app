@@ -1,4 +1,4 @@
-"""LiveEngine — unified symbol-keyed live engine interface (P0 collapse of LivePortfolioEngine).
+"""LiveEngine — unified symbol-keyed live engine interface (P0 collapse of LiveEngine).
 
 This is the live analogue of ``core.portfolio.MultiSymbolEngine``: a ``PortfolioStrategy``
 sets ``strategy._engine = LiveEngine(...)`` and calls the EXACT same surface it calls in
@@ -420,7 +420,7 @@ class LiveEngine:
     def check_conditionals(self, sym: str, bar: Bar) -> list:
         """Fire any triggered conditionals for ``sym`` against this closed bar (A2e).
 
-        Called by ``LivePortfolioPump._try_fire`` BEFORE ``strategy.on_bar`` for each symbol
+        Called by ``LivePump._try_fire`` BEFORE ``strategy.on_bar`` for each symbol
         in a complete aligned bucket, so fills precede decisions (matching backtest semantics).
         Each fired conditional is submitted as a plain MARKET order through the existing
         ``submit`` path (RiskGate inside that symbol's hub).
@@ -451,7 +451,3 @@ class LiveEngine:
         self._account.set_mark(hub.venue, sym, bar.close)
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatibility alias — existing imports/tests reference LivePortfolioEngine.
-# ---------------------------------------------------------------------------
-LivePortfolioEngine = LiveEngine

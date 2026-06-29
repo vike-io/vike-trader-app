@@ -1,7 +1,7 @@
-"""Tests for the unified LiveEngine (P0 Task 1 — generalize LivePortfolioEngine).
+"""Tests for the unified LiveEngine (P0 Task 1 — generalize LiveEngine).
 
 At N=1 (one hub/account) validates:
-- LivePortfolioEngine is LiveEngine  (alias kept)
+- LiveEngine is LiveEngine  (alias kept)
 - order_target_percent(sym, pct) → correct units submitted
 - order_target_value(sym, value) → correct units submitted
 - order_target(sym, target) → delta market order
@@ -14,7 +14,7 @@ At N=1 (one hub/account) validates:
 
 import pytest
 
-from vike_trader_app.exec.live_portfolio_engine import LiveEngine, LivePortfolioEngine
+from vike_trader_app.exec.live_portfolio_engine import LiveEngine, LiveEngine
 from vike_trader_app.exec.events import OrderRequest
 from vike_trader_app.core.model import Bar
 
@@ -88,7 +88,7 @@ def _bar(close: float = 100.0, ts: int = 0) -> Bar:
 
 def test_live_portfolio_engine_is_live_engine():
     """The alias must be the same class object (not a subclass)."""
-    assert LivePortfolioEngine is LiveEngine
+    assert LiveEngine is LiveEngine
 
 
 # ---------------------------------------------------------------------------

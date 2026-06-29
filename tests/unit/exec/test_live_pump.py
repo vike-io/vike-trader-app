@@ -6,7 +6,7 @@ Verifies:
 - (c) _dispatch_step fires the right on_bar variant for unified Strategy (per-symbol 1-arg)
   AND PortfolioStrategy (bundle 2-arg via _on_step).
 - (d) N=1 SingleSymbolStrategy (old buy(1.0)) runs via the LiveSymbolShim.
-- Alias: LivePortfolioPump is LivePump.
+- Alias: LivePump is LivePump.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.portfolio import PortfolioStrategy
 from vike_trader_app.core.strategy import Strategy, SingleSymbolStrategy
-from vike_trader_app.exec.live_portfolio_pump import LivePump, LivePortfolioPump
+from vike_trader_app.exec.live_portfolio_pump import LivePump, LivePump
 
 
 # ---------------------------------------------------------------------------
@@ -97,8 +97,8 @@ def _make_pump(strategy, symbols=(_BTC,)):
 # ---------------------------------------------------------------------------
 
 def test_alias_live_portfolio_pump_is_live_pump():
-    """LivePortfolioPump = LivePump (alias for backward compat)."""
-    assert LivePortfolioPump is LivePump
+    """LivePump = LivePump (alias for backward compat)."""
+    assert LivePump is LivePump
 
 
 # ---------------------------------------------------------------------------

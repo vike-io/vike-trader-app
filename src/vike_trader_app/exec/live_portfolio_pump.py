@@ -1,7 +1,7 @@
 """Drive a live strategy (the live analogue of MultiSymbolEngine.run / SingleSymbolEngine.run).
 
 Unified ``LivePump`` replaces the old split between ``LiveStrategyPump`` (single-symbol) and
-the former ``LivePortfolioPump`` (multi-symbol): N=1 is the single-symbol case, N>1 is the
+the former ``LivePump`` (multi-symbol): N=1 is the single-symbol case, N>1 is the
 portfolio case.  The same wait-for-all aligner works for both (a 1-symbol bucket is trivially
 complete on every arrival — fire-on-each — so behavior is identical to the old single-symbol pump).
 
@@ -328,7 +328,3 @@ class LivePump:
                     )
 
 
-# ---------------------------------------------------------------------------
-# Backward-compatibility alias — existing imports/tests reference LivePortfolioPump.
-# ---------------------------------------------------------------------------
-LivePortfolioPump = LivePump

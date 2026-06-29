@@ -1,4 +1,4 @@
-"""Tests for LivePortfolioPump — wait-for-all align + portfolio lifecycle (A2d Task 2).
+"""Tests for LivePump — wait-for-all align + portfolio lifecycle (A2d Task 2).
 
 Verifies:
 - feed_bar(sym, bar@T) for ONE symbol does NOT fire on_bar (waiting for others).
@@ -19,7 +19,7 @@ import pytest
 
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.portfolio import PortfolioStrategy
-from vike_trader_app.exec.live_portfolio_pump import LivePortfolioPump
+from vike_trader_app.exec.live_portfolio_pump import LivePump
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ def _make_pump(warmup: int = 0, symbols=(_BTC, _ETH)):
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in symbols}
     strat = _RecordingStrategy()
     strat.WARMUP = warmup
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
     return pump, strat, acct
 
 
@@ -366,7 +366,7 @@ def test_strategy_on_bar_exception_does_not_crash_pump():
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
     strat = _CrashingStrategy()
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
     pump.start()
 
     # Should not raise; bar_calls captures the entry even though on_bar raises
@@ -389,7 +389,7 @@ def test_strategy_not_implemented_error_does_not_crash_pump():
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
     strat = _NIEStrategy()
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
     pump.start()
 
     pump.feed_bar(_BTC, _bar(ts=1000))
@@ -403,16 +403,16 @@ def test_strategy_not_implemented_error_does_not_crash_pump():
 # ---------------------------------------------------------------------------
 
 def test_engine_attribute_is_live_portfolio_engine():
-    from vike_trader_app.exec.live_portfolio_engine import LivePortfolioEngine
+    from vike_trader_app.exec.live_portfolio_engine import LiveEngine
     pump, _, _ = _make_pump()
-    assert isinstance(pump.engine, LivePortfolioEngine)
+    assert isinstance(pump.engine, LiveEngine)
 
 
 def test_engine_set_on_strategy():
-    """strategy._engine is set to the LivePortfolioEngine by the pump."""
-    from vike_trader_app.exec.live_portfolio_engine import LivePortfolioEngine
+    """strategy._engine is set to the LiveEngine by the pump."""
+    from vike_trader_app.exec.live_portfolio_engine import LiveEngine
     pump, strat, _ = _make_pump()
-    assert isinstance(strat._engine, LivePortfolioEngine)
+    assert isinstance(strat._engine, LiveEngine)
     assert strat._engine is pump.engine
 
 
@@ -430,7 +430,7 @@ def test_strategy_without_on_start_does_not_raise():
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
     strat = _NoHooksStrategy()
-    pump = LivePortfolioPump(strat, hubs, acct)
+    pump = LivePump(strat, hubs, acct)
     pump.start()   # must not raise AttributeError
     pump.stop()    # must not raise AttributeError
 
@@ -444,7 +444,7 @@ def test_single_symbol_fires_immediately():
     acct = _Acct()
     hubs = {_BTC: _Hub(venue="binance", symbol=_BTC)}
     strat = _RecordingStrategy()
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
     pump.start()
     pump.feed_bar(_BTC, _bar(ts=1000))
     assert len(strat.bar_calls) == 1
@@ -626,7 +626,7 @@ def test_pump_calls_check_conditionals_before_on_bar():
 
     strat = _ObservingStrategy()
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
 
     # Arm a buy-stop on BTC at 110 — triggers when high >= 110
     pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
@@ -655,7 +655,7 @@ def test_pump_check_conditionals_fires_for_each_symbol_independently():
     hub_eth = _Hub(venue="binance", symbol=_ETH)
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
     strat = _RecordingStrategy()
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
 
     pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
     pump.engine.submit_stop(_ETH, -1, 1.0, 180.0)
@@ -680,7 +680,7 @@ def test_pump_check_conditionals_fires_regardless_of_warmup():
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
     strat = _RecordingStrategy()
     strat.WARMUP = 5   # large warmup — on_bar suppressed for 5 bars
-    pump = LivePortfolioPump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
 
     pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
     pump.start()

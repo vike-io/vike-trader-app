@@ -125,7 +125,7 @@ def test_equity_now_uses_seeded_balance_not_pnl_from_zero():
     unrealized = acc.unrealized_pnl("binance", "BTCUSDT")
     assert unrealized == pytest.approx((55000.0 - 50000.0) * 0.1)  # 500.0
 
-    # Simulate LivePortfolioEngine.equity_now() manually (it reads account.balance + unrealized)
+    # Simulate LiveEngine.equity_now() manually (it reads account.balance + unrealized)
     equity = acc.balance + unrealized
     assert equity == pytest.approx(10500.0)  # not 500.0 (PnL-from-zero)
 
