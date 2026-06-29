@@ -9,6 +9,7 @@ from vike_trader_app.core.compat_strategy import SingleSymbolStrategy
 from vike_trader_app.core.portfolio import PortfolioEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.order_handle import OrderHandle
+from vike_trader_app.core.schedule import MonthStart
 
 
 def _series(n, base=10):
@@ -227,3 +228,24 @@ def test_lifecycle_fires():
 
     PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
     assert ev[0] == "start" and ev[-1] == "stop" and "fill" in ev
+
+
+# ---------------------------------------------------------------------------
+# Schedule.On: monthly callback fires at least twice over 70 daily bars
+# ---------------------------------------------------------------------------
+
+def test_schedule_fires_once_per_period():
+    """A Strategy registers a monthly callback in on_start; it fires once per month boundary."""
+    fired = []
+
+    class S(Strategy):
+        def on_start(self):
+            self.schedule.on(MonthStart(), lambda: fired.append(self.index))
+
+        def on_bar(self, bar):
+            pass
+
+    # 70 daily bars (ms spacing = 86_400_000) spanning >2 months
+    bars = [Bar(ts=i * 86_400_000, open=1, high=1, low=1, close=1) for i in range(70)]
+    PortfolioEngine({"BTC": bars}, S(), fee_rate=0.0, cash=1000).run()
+    assert len(fired) >= 2  # at least 2 month boundaries crossed

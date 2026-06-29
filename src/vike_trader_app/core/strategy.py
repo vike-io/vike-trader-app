@@ -10,6 +10,7 @@ import logging
 
 from .model import Bar, Position
 from .order_handle import OrderHandle, _alloc_id
+from .schedule import Schedule
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ class Strategy:
     def __init__(self) -> None:
         self._engine = None   # injected by PortfolioEngine.__init__
         self.index: int = 0
+        self.schedule: Schedule = Schedule()
 
     @classmethod
     def make(cls, **params):
