@@ -47,6 +47,7 @@ class _Acct:
 
     def __init__(self, bal: float = 10_000.0):
         self.balance = bal
+        self.balance_mode = "authoritative"   # live: venue balance authoritative
         self.positions: dict = {}
         self.marks: dict = {}
         self._set_mark_calls: list = []
@@ -58,6 +59,23 @@ class _Acct:
 
     def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
         return self._unrealized_by_sym.get(symbol, 0.0)
+
+    def equity_all(self, seed: float = 0.0) -> float:
+        return self.balance + sum(self._unrealized_by_sym.values())
+
+
+class _PF:
+    """Single-venue Portfolio stub wrapping one ``_Acct`` (every hub is venue 'binance')."""
+
+    def __init__(self, acct: "_Acct"):
+        self._acct = acct
+        self.seeds = {"binance": 0.0}
+
+    def account(self, venue: str, multipliers=None, seed: float = 0.0):
+        return self._acct
+
+    def equity(self) -> float:
+        return self._acct.equity_all(self.seeds.get("binance", 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -73,7 +91,7 @@ def _make_engine(bal: float = 10_000.0):
     hub_btc = _Hub(venue="binance", symbol=_BTC)
     hub_eth = _Hub(venue="binance", symbol=_ETH)
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
-    eng = LiveEngine(hubs, acct, now_ms=lambda: 111)
+    eng = LiveEngine(hubs, _PF(acct), now_ms=lambda: 111)
     return eng, hub_btc, hub_eth, acct
 
 
@@ -360,7 +378,7 @@ def _make_engine_with_tf(bal: float = 10_000.0, timeframes=("1h",)):
     hub_btc = _Hub(venue="binance", symbol=_BTC)
     hub_eth = _Hub(venue="binance", symbol=_ETH)
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
-    eng = LiveEngine(hubs, acct, now_ms=lambda: 111)
+    eng = LiveEngine(hubs, _PF(acct), now_ms=lambda: 111)
     # Re-initialise the per-symbol buffers WITH a timeframe so bars_for/forming_for don't KeyError.
     for sym in eng.symbols:
         eng._bufs[sym] = BarSeriesBuffer([], timeframes=list(timeframes))

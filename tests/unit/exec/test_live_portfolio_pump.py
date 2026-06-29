@@ -59,6 +59,7 @@ class _Acct:
 
     def __init__(self, bal: float = 10_000.0):
         self.balance = bal
+        self.balance_mode = "authoritative"   # live: venue balance authoritative
         self.positions: dict = {}
         self.marks: dict = {}
 
@@ -67,6 +68,23 @@ class _Acct:
 
     def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
         return 0.0
+
+    def equity_all(self, seed: float = 0.0) -> float:
+        return self.balance
+
+
+class _PF:
+    """Single-venue Portfolio stub wrapping one ``_Acct`` (all hubs are venue 'binance')."""
+
+    def __init__(self, acct: "_Acct"):
+        self._acct = acct
+        self.seeds = {"binance": 0.0}
+
+    def account(self, venue: str, multipliers=None, seed: float = 0.0):
+        return self._acct
+
+    def equity(self) -> float:
+        return self._acct.equity_all(self.seeds.get("binance", 0.0))
 
 
 class _RecordingStrategy(PortfolioStrategy):
@@ -108,7 +126,7 @@ def _make_pump(warmup: int = 0, symbols=(_BTC, _ETH)):
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in symbols}
     strat = _RecordingStrategy()
     strat.WARMUP = warmup
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     return pump, strat, acct
 
 
@@ -366,7 +384,7 @@ def test_strategy_on_bar_exception_does_not_crash_pump():
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
     strat = _CrashingStrategy()
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     pump.start()
 
     # Should not raise; bar_calls captures the entry even though on_bar raises
@@ -389,7 +407,7 @@ def test_strategy_not_implemented_error_does_not_crash_pump():
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
     strat = _NIEStrategy()
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     pump.start()
 
     pump.feed_bar(_BTC, _bar(ts=1000))
@@ -430,7 +448,7 @@ def test_strategy_without_on_start_does_not_raise():
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
     strat = _NoHooksStrategy()
-    pump = LivePump(strat, hubs, acct)
+    pump = LivePump(strat, hubs, _PF(acct))
     pump.start()   # must not raise AttributeError
     pump.stop()    # must not raise AttributeError
 
@@ -444,7 +462,7 @@ def test_single_symbol_fires_immediately():
     acct = _Acct()
     hubs = {_BTC: _Hub(venue="binance", symbol=_BTC)}
     strat = _RecordingStrategy()
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     pump.start()
     pump.feed_bar(_BTC, _bar(ts=1000))
     assert len(strat.bar_calls) == 1
@@ -626,7 +644,7 @@ def test_pump_calls_check_conditionals_before_on_bar():
 
     strat = _ObservingStrategy()
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
 
     # Arm a buy-stop on BTC at 110 — triggers when high >= 110
     pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
@@ -655,7 +673,7 @@ def test_pump_check_conditionals_fires_for_each_symbol_independently():
     hub_eth = _Hub(venue="binance", symbol=_ETH)
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
     strat = _RecordingStrategy()
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
 
     pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
     pump.engine.submit_stop(_ETH, -1, 1.0, 180.0)
@@ -680,7 +698,7 @@ def test_pump_check_conditionals_fires_regardless_of_warmup():
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
     strat = _RecordingStrategy()
     strat.WARMUP = 5   # large warmup — on_bar suppressed for 5 bars
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
 
     pump.engine.submit_stop(_BTC, +1, 2.0, 110.0)
     pump.start()

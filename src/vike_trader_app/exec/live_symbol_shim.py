@@ -9,7 +9,7 @@ The backtest shim wraps ``MultiSymbolEngine``; this wraps ``LiveEngine``.
 
 Usage::
 
-    engine = LiveEngine(hubs, account)
+    engine = LiveEngine(hubs, portfolio)
     strat  = MySingleSymbolStrategy()
     strat._engine = LiveSymbolShim(engine, "BTCUSDT")
 

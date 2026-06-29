@@ -41,6 +41,7 @@ class _Hub:
 class _Acct:
     def __init__(self, bal: float = 10_000.0):
         self.balance = bal
+        self.balance_mode = "authoritative"   # live: venue balance authoritative
         self.positions: dict = {}
         self.marks: dict = {}
         self._set_mark_calls: list = []
@@ -52,6 +53,23 @@ class _Acct:
 
     def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
         return self._unrealized_by_sym.get(symbol, 0.0)
+
+    def equity_all(self, seed: float = 0.0) -> float:
+        return self.balance + sum(self._unrealized_by_sym.values())
+
+
+class _PF:
+    """Single-venue Portfolio stub wrapping one ``_Acct`` (the hub is venue 'binance')."""
+
+    def __init__(self, acct: "_Acct"):
+        self._acct = acct
+        self.seeds = {"binance": 0.0}
+
+    def account(self, venue: str, multipliers=None, seed: float = 0.0):
+        return self._acct
+
+    def equity(self) -> float:
+        return self._acct.equity_all(self.seeds.get("binance", 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +88,7 @@ def _make_engine(
     acct = _Acct(bal=bal)
     hub = _Hub(venue=_VENUE, symbol=_SYM)
     eng = LiveEngine(
-        {_SYM: hub}, acct,
+        {_SYM: hub}, _PF(acct),
         multipliers=multipliers,
         timeframes=timeframes,
         now_ms=lambda: 999,
@@ -435,7 +453,7 @@ def test_mtf_bars_for_returns_list():
     from vike_trader_app.core.model import Bar
     acct = _Acct()
     hub = _Hub(venue=_VENUE, symbol=_SYM)
-    eng = LiveEngine({_SYM: hub}, acct, timeframes=["1h"], now_ms=lambda: 0)
+    eng = LiveEngine({_SYM: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 0)
     for t in range(120):
         eng.add_live_bar(_SYM, Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
     assert isinstance(eng.bars_for(_SYM, "1h"), list)
@@ -446,7 +464,7 @@ def test_mtf_bars_for_returns_completed_bars_only():
     from vike_trader_app.core.model import Bar
     acct = _Acct()
     hub = _Hub(venue=_VENUE, symbol=_SYM)
-    eng = LiveEngine({_SYM: hub}, acct, timeframes=["1h"], now_ms=lambda: 0)
+    eng = LiveEngine({_SYM: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 0)
     for t in range(61):
         eng.add_live_bar(_SYM, Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
     assert len(eng.bars_for(_SYM, "1h")) >= 1
@@ -457,7 +475,7 @@ def test_mtf_forming_for_returns_forming_bar():
     from vike_trader_app.core.model import Bar
     acct = _Acct()
     hub = _Hub(venue=_VENUE, symbol=_SYM)
-    eng = LiveEngine({_SYM: hub}, acct, timeframes=["1h"], now_ms=lambda: 0)
+    eng = LiveEngine({_SYM: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 0)
     for t in range(30):
         eng.add_live_bar(_SYM, Bar(ts=t * 60_000, open=1, high=1, low=1, close=1))
     assert eng.forming_for(_SYM, "1h") is not None

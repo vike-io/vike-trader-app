@@ -56,6 +56,7 @@ class _Hub:
 class _Acct:
     def __init__(self, bal: float = 10_000.0):
         self.balance = bal
+        self.balance_mode = "authoritative"   # live: venue balance authoritative
         self.positions: dict = {}
         self.marks: dict = {}
         self._set_mark_calls: list = []
@@ -68,6 +69,23 @@ class _Acct:
     def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
         return self._unrealized_by_sym.get(symbol, 0.0)
 
+    def equity_all(self, seed: float = 0.0) -> float:
+        return self.balance + sum(self._unrealized_by_sym.values())
+
+
+class _PF:
+    """Single-venue Portfolio stub wrapping one ``_Acct`` (all hubs are venue 'binance')."""
+
+    def __init__(self, acct: "_Acct"):
+        self._acct = acct
+        self.seeds = {"binance": 0.0}
+
+    def account(self, venue: str, multipliers=None, seed: float = 0.0):
+        return self._acct
+
+    def equity(self) -> float:
+        return self._acct.equity_all(self.seeds.get("binance", 0.0))
+
 
 _BTC = "BTCUSDT"
 
@@ -76,7 +94,7 @@ def _make(bal: float = 10_000.0):
     acct = _Acct(bal=bal)
     hub = _Hub(venue="binance", symbol=_BTC)
     hubs = {_BTC: hub}
-    eng = LiveEngine(hubs, acct, now_ms=lambda: 111)
+    eng = LiveEngine(hubs, _PF(acct), now_ms=lambda: 111)
     shim = LiveSymbolShim(eng, _BTC)
     return eng, hub, acct, shim
 
@@ -213,7 +231,7 @@ class TestLiveSymbolShimForwarding:
     def test_bars_for_forwarded(self):
         acct = _Acct()
         hub = _Hub(venue="binance", symbol=_BTC)
-        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        eng = LiveEngine({_BTC: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 111)
         shim = LiveSymbolShim(eng, _BTC)
         bar = _bar(100.0, ts=1)
         eng.add_live_bar(_BTC, bar)
@@ -224,7 +242,7 @@ class TestLiveSymbolShimForwarding:
     def test_forming_for_forwarded(self):
         acct = _Acct()
         hub = _Hub(venue="binance", symbol=_BTC)
-        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        eng = LiveEngine({_BTC: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 111)
         shim = LiveSymbolShim(eng, _BTC)
         bar = _bar(100.0, ts=1)
         eng.add_live_bar(_BTC, bar)
@@ -309,7 +327,7 @@ class TestSingleSymbolStrategyIntegration:
         hub_btc = _Hub(venue="binance", symbol="BTCUSDT")
         hub_eth = _Hub(venue="binance", symbol="ETHUSDT")
         hubs = {"BTCUSDT": hub_btc, "ETHUSDT": hub_eth}
-        eng = LiveEngine(hubs, acct, now_ms=lambda: 1)
+        eng = LiveEngine(hubs, _PF(acct), now_ms=lambda: 1)
         shim = LiveSymbolShim(eng, "BTCUSDT")
 
         shim.submit(+1, 1.0)
@@ -365,7 +383,7 @@ class TestLiveSymbolShimParityForwarders:
         """bars_for(tf) — old one-arg form — still works."""
         acct = _Acct()
         hub = _Hub(venue="binance", symbol=_BTC)
-        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        eng = LiveEngine({_BTC: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 111)
         shim = LiveSymbolShim(eng, _BTC)
         eng.add_live_bar(_BTC, _bar(100.0, ts=1))
         result = shim.bars_for("1h")
@@ -375,7 +393,7 @@ class TestLiveSymbolShimParityForwarders:
         """bars_for(symbol, tf) — new two-arg form — works and ignores the passed symbol."""
         acct = _Acct()
         hub = _Hub(venue="binance", symbol=_BTC)
-        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        eng = LiveEngine({_BTC: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 111)
         shim = LiveSymbolShim(eng, _BTC)
         eng.add_live_bar(_BTC, _bar(100.0, ts=1))
         # Pass "ETHUSDT" as the symbol arg — should still route to BTC's buffer
@@ -389,7 +407,7 @@ class TestLiveSymbolShimParityForwarders:
         """forming_for(tf) — old one-arg form — still works."""
         acct = _Acct()
         hub = _Hub(venue="binance", symbol=_BTC)
-        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        eng = LiveEngine({_BTC: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 111)
         shim = LiveSymbolShim(eng, _BTC)
         eng.add_live_bar(_BTC, _bar(100.0, ts=1))
         result = shim.forming_for("1h")
@@ -399,7 +417,7 @@ class TestLiveSymbolShimParityForwarders:
         """forming_for(symbol, tf) — new two-arg form — works and ignores the passed symbol."""
         acct = _Acct()
         hub = _Hub(venue="binance", symbol=_BTC)
-        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        eng = LiveEngine({_BTC: hub}, _PF(acct), timeframes=["1h"], now_ms=lambda: 111)
         shim = LiveSymbolShim(eng, _BTC)
         eng.add_live_bar(_BTC, _bar(100.0, ts=1))
         # Pass "ETHUSDT" as the symbol arg — should still route to BTC's buffer
