@@ -23,6 +23,7 @@ Side: +1 for 'buy', -1 for 'sell'. Symbol: item.get('instId', symbol) — hub gu
 from __future__ import annotations
 
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     OrderAccepted,
     OrderCanceled,
@@ -121,7 +122,32 @@ def map_okx_private(frame: dict, *, venue: str = "okx", symbol: str = "") -> lis
     arg = frame.get("arg")
     if not isinstance(arg, dict):
         return []
-    if arg.get("channel") != "orders":
+    channel = arg.get("channel")
+
+    if channel == "account":
+        # OKX account channel: data[].details[] with ccy/cashBal (TOTAL).
+        # Identical to okx/perp_mapper.py — the account channel is the same for spot and swap.
+        # One AccountState per frame. Default-safe: bad rows skipped silently.
+        balances: list[tuple[str, float]] = []
+        ts_frame = 0
+        for entry in frame.get("data", []):
+            try:
+                ts_frame = int(entry.get("uTime", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+            for d in (entry.get("details") or []):
+                try:
+                    asset = str(d.get("ccy") or "")
+                    wb = float(d.get("cashBal", 0) or 0)
+                    if asset:
+                        balances.append((asset, wb))
+                except (TypeError, ValueError):
+                    pass
+        if balances:
+            return [AccountState(venue=venue, balances=tuple(balances), ts=ts_frame)]
+        return []
+
+    if channel != "orders":
         return []
 
     events: list[object] = []

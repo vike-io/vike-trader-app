@@ -4,6 +4,7 @@ import pytest
 
 from vike_trader_app.exec.binance.mapper import map_binance_private, map_execution_report
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     OrderAccepted,
     OrderCanceled,
@@ -105,6 +106,72 @@ def test_dispatcher_ignores_error_ack_and_non_dict():
     assert map_binance_private({"id": "r1", "status": 400, "error": {"code": -2010, "msg": "x"}}) == []
     assert map_binance_private("pong") == []
     assert map_binance_private({"event": {"e": "outboundAccountPosition"}}) == []
+
+
+# ---------------------------------------------------------------------------
+# Spot balance frame -> AccountState (outboundAccountPosition)
+# ---------------------------------------------------------------------------
+
+def _balance_frame(balances: list[dict], event_type: str = "outboundAccountPosition") -> dict:
+    """Wrap rows in a minimal outboundAccountPosition frame (or balanceUpdate)."""
+    return {"event": {"e": event_type, "E": 1700000000000, "u": 1700000000000, "B": balances}}
+
+
+def test_outbound_account_position_emits_account_state():
+    """outboundAccountPosition with B rows -> AccountState(venue, balances, ts).
+    Spot total = free (f) + locked (l) for each asset."""
+    frame = _balance_frame([
+        {"a": "USDT", "f": "900.0", "l": "100.0"},
+        {"a": "BTC", "f": "0.5", "l": "0.0"},
+    ])
+    out = map_binance_private(frame, venue="binance", symbol="BTCUSDT")
+    acct_states = [e for e in out if isinstance(e, AccountState)]
+    assert len(acct_states) == 1, f"Expected 1 AccountState, got {len(acct_states)}: {out}"
+    state = acct_states[0]
+    assert state.venue == "binance"
+    assert state.ts == 1700000000000
+    balances_dict = dict(state.balances)
+    assert balances_dict["USDT"] == pytest.approx(1000.0)   # 900 + 100
+    assert balances_dict["BTC"] == pytest.approx(0.5)        # 0.5 + 0.0
+
+
+def test_outbound_account_position_no_rows_emits_nothing():
+    """outboundAccountPosition with empty B array -> []."""
+    frame = _balance_frame([])
+    out = map_binance_private(frame, venue="binance", symbol="BTCUSDT")
+    assert not any(isinstance(e, AccountState) for e in out)
+
+
+def test_balance_update_does_not_emit_account_state():
+    """balanceUpdate is a delta, NOT a full snapshot -> no AccountState."""
+    frame = _balance_frame([{"a": "USDT", "d": "50.0", "T": 1700000000000}],
+                           event_type="balanceUpdate")
+    out = map_binance_private(frame, venue="binance", symbol="BTCUSDT")
+    assert not any(isinstance(e, AccountState) for e in out)
+
+
+def test_outbound_account_position_malformed_row_skipped_default_safe():
+    """A row with malformed f/l values is skipped; valid rows still emit AccountState."""
+    frame = _balance_frame([
+        {"a": "USDT", "f": "900.0", "l": "100.0"},
+        {"a": "ETH", "f": "not_a_number", "l": "0.0"},
+    ])
+    out = map_binance_private(frame, venue="binance", symbol="BTCUSDT")
+    acct_states = [e for e in out if isinstance(e, AccountState)]
+    # At least USDT should be present; ETH row skipped but USDT row valid
+    assert len(acct_states) == 1
+    balances_dict = dict(acct_states[0].balances)
+    assert "USDT" in balances_dict
+    assert "ETH" not in balances_dict
+
+
+def test_fill_and_account_state_do_not_interfere():
+    """An executionReport fill still produces [FillEvent, OrderFilled]; no AccountState."""
+    inner = _frame(x="TRADE", X="FILLED", l="1.0", L="65000", n="0.01", m=False, t=999)
+    out = map_binance_private(_wrapped(inner), venue="binance", symbol="BTCUSDT")
+    assert any(isinstance(e, FillEvent) for e in out)
+    assert any(isinstance(e, OrderFilled) for e in out)
+    assert not any(isinstance(e, AccountState) for e in out)
 
 
 def test_dispatcher_drives_managed_order_fsm_to_filled():

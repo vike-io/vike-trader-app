@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     OrderAccepted,
     OrderCanceled,
@@ -306,7 +307,7 @@ def test_pong_string_returns_empty():
 
 
 def test_unknown_channel_returns_empty():
-    assert map_okx_private({"arg": {"channel": "account"}, "data": [{}]}) == []
+    assert map_okx_private({"arg": {"channel": "positions"}, "data": [{}]}) == []
 
 
 def test_orders_channel_dispatches_to_map_okx_order():
@@ -317,6 +318,72 @@ def test_orders_channel_dispatches_to_map_okx_order():
     assert len(result) == 2
     assert isinstance(result[0], FillEvent)
     assert isinstance(result[1], OrderFilled)
+
+
+# ---------------------------------------------------------------------------
+# account channel -> AccountState
+# ---------------------------------------------------------------------------
+
+def _account_frame(details: list[dict], u_time: int = 1700000000000) -> dict:
+    """Minimal OKX account channel frame."""
+    return {
+        "arg": {"channel": "account", "ccy": ""},
+        "data": [{"uTime": str(u_time), "details": details}],
+    }
+
+
+def test_account_channel_emits_account_state():
+    """account channel with details rows -> AccountState(venue, balances, ts) using cashBal (TOTAL)."""
+    frame = _account_frame([
+        {"ccy": "USDT", "cashBal": "5000.0"},
+        {"ccy": "BTC", "cashBal": "1.23"},
+    ], u_time=1700000000000)
+    result = map_okx_private(frame, venue="okx", symbol="BTC-USDT")
+    acct_states = [e for e in result if isinstance(e, AccountState)]
+    assert len(acct_states) == 1
+    state = acct_states[0]
+    assert state.venue == "okx"
+    assert state.ts == 1700000000000
+    balances_dict = dict(state.balances)
+    assert balances_dict["USDT"] == pytest.approx(5000.0)
+    assert balances_dict["BTC"] == pytest.approx(1.23)
+
+
+def test_account_channel_empty_details_emits_nothing():
+    """account channel with empty details list -> []."""
+    frame = _account_frame([])
+    result = map_okx_private(frame, venue="okx", symbol="BTC-USDT")
+    assert not any(isinstance(e, AccountState) for e in result)
+
+
+def test_account_channel_missing_details_key_emits_nothing():
+    """account channel with no details key in data entry -> []."""
+    frame = {"arg": {"channel": "account"}, "data": [{"uTime": "1700000000000"}]}
+    result = map_okx_private(frame, venue="okx", symbol="BTC-USDT")
+    assert not any(isinstance(e, AccountState) for e in result)
+
+
+def test_account_channel_malformed_cashbal_skipped_default_safe():
+    """A details row with bad cashBal is skipped; valid rows still emit AccountState."""
+    frame = _account_frame([
+        {"ccy": "USDT", "cashBal": "5000.0"},
+        {"ccy": "ETH", "cashBal": "not_a_number"},
+    ])
+    result = map_okx_private(frame, venue="okx", symbol="BTC-USDT")
+    acct_states = [e for e in result if isinstance(e, AccountState)]
+    assert len(acct_states) == 1
+    balances_dict = dict(acct_states[0].balances)
+    assert "USDT" in balances_dict
+    assert "ETH" not in balances_dict
+
+
+def test_account_channel_does_not_affect_orders_channel():
+    """An orders channel frame still emits [FillEvent, OrderFilled]; no AccountState."""
+    row = _order_row(state="filled", fillSz="0.001", tradeId="T6", accFillSz="0.001", sz="0.001")
+    frame = _frame([row])
+    result = map_okx_private(frame, venue="okx", symbol="BTC-USDT")
+    assert any(isinstance(e, FillEvent) for e in result)
+    assert not any(isinstance(e, AccountState) for e in result)
 
 
 def test_commission_signed_charge():

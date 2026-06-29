@@ -24,6 +24,7 @@ Task-5 live_oms integration tests for the contract assertion.
 from __future__ import annotations
 
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     OrderAccepted,
     OrderCanceled,
@@ -138,6 +139,24 @@ def map_bybit_private(frame: dict, *, venue: str = "bybit", symbol: str = "") ->
     elif topic == "order":
         for item in data:
             events.extend(map_order(item, venue=venue, symbol=symbol))
-    # else: unknown topic (wallet, position, etc.) -> []
+    elif topic == "wallet":
+        # Bybit V5 unified-account wallet push: data[].coin[] with coin/walletBalance (TOTAL).
+        # Identical to bybit/perp_mapper.py — the wallet topic is the same for spot and linear.
+        # One AccountState per frame covering all coin rows from all account entries.
+        # Default-safe: malformed coin/walletBalance entries are skipped silently.
+        ts = int(frame.get("creationTime", 0) or 0)
+        balances: list[tuple[str, float]] = []
+        for acct in data:
+            for c in (acct.get("coin") or []):
+                try:
+                    asset = str(c.get("coin") or "")
+                    wb = float(c.get("walletBalance", 0) or 0)
+                    if asset:
+                        balances.append((asset, wb))
+                except (TypeError, ValueError):
+                    pass
+        if balances:
+            events.append(AccountState(venue=venue, balances=tuple(balances), ts=ts))
+    # else: unknown topic (position, etc.) -> []
 
     return events
