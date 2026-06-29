@@ -7,11 +7,12 @@ engine. Equity = cash + sum(position size * last close).
 """
 
 import bisect
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
+from .instrument_id import format_instrument
 from .model import Bar, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
@@ -180,9 +181,16 @@ class PortfolioEngine:
                  timeframes: list[str] | None = None, max_open_positions: int = 0,
                  max_open_long: int = 0, max_open_short: int = 0,
                  sizer=None, volume_limit: float | None = None,
-                 granular_by_symbol: dict[str, list[Bar]] | None = None):
+                 granular_by_symbol: dict[str, list[Bar]] | None = None,
+                 default_venue: str | None = None):
         self.symbols = list(bars_by_symbol)
-        self.bars = bars_by_symbol
+        # Pre-tag each bar with its instrument id (SYMBOL.VENUE) once at construction.
+        # With default_venue=None, format_instrument returns the bare symbol so bar.symbol
+        # is always populated (non-None) regardless of whether a venue is provided.
+        self.bars = {
+            s: [replace(b, symbol=format_instrument(default_venue, s)) for b in series]
+            for s, series in bars_by_symbol.items()
+        }
         lengths = {len(v) for v in bars_by_symbol.values()}
         if len(lengths) > 1:
             raise ValueError("all symbol series must have the same length (aligned)")

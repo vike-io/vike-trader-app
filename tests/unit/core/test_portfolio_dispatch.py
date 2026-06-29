@@ -30,3 +30,10 @@ def test_default_on_step_calls_on_bar_bundle():
 
     PortfolioEngine({"BTC": _series(2)}, S(), fee_rate=0.0, cash=1000).run()
     assert len(calls) == 2  # default _on_step still routes to on_bar(ts, bars)
+
+
+def test_bars_pretagged_with_symbol():
+    """PortfolioEngine pre-tags each bar with its SYMBOL.VENUE id at construction."""
+    eng = PortfolioEngine({"BTC": _series(2)}, PortfolioStrategy(), fee_rate=0.0, cash=1000,
+                          default_venue="binance")
+    assert eng.bars["BTC"][0].symbol == "BTC.BINANCE"
