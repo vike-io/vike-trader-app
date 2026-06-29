@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from vike_trader_app.core.fill import compute_fill
 
 if TYPE_CHECKING:
-    from vike_trader_app.exec.events import FillEvent, FundingEvent, PositionLiquidated
+    from vike_trader_app.exec.events import AccountState, FillEvent, FundingEvent, PositionLiquidated
 
 
 class Account:
@@ -85,6 +85,32 @@ class Account:
         """Fold a periodic funding cashflow into the cash balance (signed: + received / - paid)."""
         self.balance += ev.amount
         self.funding_paid += ev.amount
+
+    def apply_account_state(self, ev: "AccountState", quote_asset: str = "USDT") -> None:
+        """Set balance AUTHORITATIVELY from a venue AccountState event.
+
+        Quote-asset selection strategy (in order):
+        1. The ``(asset, qty)`` pair whose asset == ``quote_asset`` (case-sensitive, e.g. 'USDT').
+        2. If no match but exactly one balance is present, use that unconditionally (single-asset
+           wallet, e.g. BTC-margined account).
+        3. If no match and >1 balances, sum all qty values (last resort; covers mixed wallets
+           that report multiple stable-coins when no individual asset can be identified).
+
+        This sets ``self.balance`` absolutely (not +=). It is the dead-AccountState consumer
+        wired here so downstream WS balance-frame parsing can call apply_account_state and the
+        balance stays current without re-seeding from a REST snapshot.
+        """
+        balances = ev.balances
+        if not balances:
+            return
+        for asset, qty in balances:
+            if asset == quote_asset:
+                self.balance = qty
+                return
+        if len(balances) == 1:
+            self.balance = balances[0][1]
+            return
+        self.balance = sum(qty for _asset, qty in balances)
 
     def apply_liquidation(self, ev: "PositionLiquidated") -> None:
         """Forced close: realize PnL at the liq price, close min(ev.qty, held), deduct the liq fee.
