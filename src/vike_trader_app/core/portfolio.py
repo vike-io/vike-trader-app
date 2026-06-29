@@ -455,11 +455,14 @@ class PortfolioEngine:
 
     # --- order intake ---
     def submit(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
-               raw: bool = False, stop=None) -> None:
+               raw: bool = False, stop=None):
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._sym[symbol].pending.append(Order("market", side_sign, size, weight=weight, stop=stop))
+            o = Order("market", side_sign, size, weight=weight, stop=stop)
+            self._sym[symbol].pending.append(o)
+            return o
+        return None
 
     def submit_close(self, symbol: str) -> None:
         pos = self._sym[symbol].pos
@@ -468,32 +471,54 @@ class PortfolioEngine:
             self._sym[symbol].pending.append(Order("market", side, abs(pos.size)))
 
     def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                     raw: bool = False, stop=None) -> None:
+                     raw: bool = False, stop=None):
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)
-        self._sym[symbol].pending.append(Order("limit", side_sign, size, price=price, weight=weight, stop=stop))
+        o = Order("limit", side_sign, size, price=price, weight=weight, stop=stop)
+        self._sym[symbol].pending.append(o)
+        return o
 
     def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                    raw: bool = False) -> None:
+                    raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._sym[symbol].pending.append(Order("stop", side_sign, size, price=price, weight=weight))
+        o = Order("stop", side_sign, size, price=price, weight=weight)
+        self._sym[symbol].pending.append(o)
+        return o
 
     def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0,
-                        raw: bool = False) -> None:
+                        raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._sym[symbol].pending.append(Order("trailing", side_sign, size, trail=trail,
-                                           extreme=self._sym[symbol].price, weight=weight))
+        o = Order("trailing", side_sign, size, trail=trail,
+                  extreme=self._sym[symbol].price, weight=weight)
+        self._sym[symbol].pending.append(o)
+        return o
 
     def submit_market_close(self, symbol: str, side_sign: int, size: float, weight: float = 0.0,
-                            raw: bool = False) -> None:
+                            raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            self._sym[symbol].pending.append(Order("market_close", side_sign, size, weight=weight))
+            o = Order("market_close", side_sign, size, weight=weight)
+            self._sym[symbol].pending.append(o)
+            return o
+        return None
 
     def submit_limit_close(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
-                           raw: bool = False) -> None:
+                           raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        self._sym[symbol].pending.append(Order("limit_close", side_sign, size, price=price, weight=weight))
+        o = Order("limit_close", side_sign, size, price=price, weight=weight)
+        self._sym[symbol].pending.append(o)
+        return o
+
+    def _pending_of(self, symbol: str) -> list:
+        """Return the live pending-order list for ``symbol`` (used by OrderHandle)."""
+        return self._sym[symbol].pending
+
+    def cancel_order(self, symbol: str, order) -> None:
+        """Remove a specific order from the pending list (no-op if already gone)."""
+        try:
+            self._sym[symbol].pending.remove(order)
+        except ValueError:
+            pass
 
     def cancel_all(self, symbol: str) -> None:
         self._sym[symbol].pending = []
