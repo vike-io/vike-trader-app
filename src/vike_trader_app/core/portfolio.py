@@ -111,6 +111,10 @@ class PortfolioStrategy:
     def on_bar(self, ts: int, bars: dict) -> None:  # noqa: ARG002 - overridden by users
         """Called once per timestamp, after pending orders for this step have filled."""
 
+    def _on_step(self, ts: int, bars: dict) -> None:
+        """Engine-facing per-step hook. Default = the legacy bundle handler."""
+        self.on_bar(ts, bars)
+
 
 class CrossSectionalStrategy(PortfolioStrategy):
     """Top-k rotation: rank the whole universe each rebalance, hold the best ``k``.
@@ -556,7 +560,7 @@ class PortfolioEngine:
             self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
-            self.strategy.on_bar(ts, cur)
+            self.strategy._on_step(ts, cur)
             sched = getattr(self.strategy, "schedule", None)
             if sched is not None:
                 for _cb in sched.check_due(ts, i):
