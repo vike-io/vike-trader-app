@@ -109,14 +109,34 @@ class OKXPerpExecutionClient(OKXSpotExecutionClient):
 
     # --- perp reconcile ---
 
+    def _fetch_usdt_balance(self) -> float:
+        """Fetch OKX account balance and return the USDT availBal (float).
+
+        Quote asset: USDT (SWAP perp settle currency).
+        Default-safe: any transport/parse failure returns 0.0 so reconcile is never broken.
+        Reuses PATH_ACCOUNT ('/api/v5/account/balance') + iter_balances() from the spot parent.
+        """
+        try:
+            raw = self._transport(self._base, self.PATH_ACCOUNT, "GET", {}, self._signer)
+            result = self.unwrap(raw)
+            for bal in self.iter_balances(result):
+                if bal.get("asset") == "USDT":
+                    return float(bal.get("free") or 0)
+        except Exception:  # noqa: BLE001 — best-effort; never break reconcile on a balance hiccup
+            pass
+        return 0.0
+
     def reconcile_positions(self) -> ReconcileSnapshot:
         """GET /api/v5/account/positions. OKX pos is signed CONTRACTS; convert to base via ct_val.
         Net: posSide=='net' -> one BOTH leg (byte-equivalent). Hedge: posSide 'long'/'short' rows ->
         a LONG leg AND a SHORT leg, each signed-base and carrying its position_side.
+        Also fetches /api/v5/account/balance (USDT availBal) -> ReconcileSnapshot.balance.
+        Balance fetch is default-safe: failure → 0.0, positions still returned.
         """
         data = self.unwrap(self._transport(
             self._base, self.PATH_POSITIONS, "GET",
             {"instType": "SWAP", "instId": self._symbol}, self._signer))
+        bal = self._fetch_usdt_balance()
         legs: list[tuple[str, float, float, float, str]] = []   # (sym, signed_base, avg, mark, side)
         for p in data:
             contracts = float(p.get("pos", 0) or 0)             # already signed
@@ -131,11 +151,13 @@ class OKXPerpExecutionClient(OKXSpotExecutionClient):
             return ReconcileSnapshot(
                 positions=((self._symbol, 0.0),), open_orders=(),
                 position_avg_px=((self._symbol, 0.0),),
-                position_mark_px=((self._symbol, 0.0),))
+                position_mark_px=((self._symbol, 0.0),),
+                balance=bal)
         hedge = any(sd != "BOTH" for *_r, sd in legs)
         return ReconcileSnapshot(
             positions=tuple((s, q) for s, q, _a, _m, _sd in legs),
             open_orders=(),
             position_avg_px=tuple((s, a) for s, _q, a, _m, _sd in legs),
             position_mark_px=tuple((s, m) for s, _q, _a, m, _sd in legs),
-            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else ())
+            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else (),
+            balance=bal)
