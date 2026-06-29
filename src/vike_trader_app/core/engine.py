@@ -11,6 +11,7 @@ from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .model import Bar, Fill, Position, Trade
 from .fill_model import BarFillModel
+from .order_intent import backtest_order_request, order_request_to_resting
 from .orders import Order
 from .sizing import units_from_percent, units_from_value
 from .ticks import QuoteTick
@@ -105,7 +106,8 @@ class BacktestEngine:
         del stop, raw
         size = self._cap_to_leverage(side_sign, size)
         if size > 0.0:
-            self._add_pending(Order("market", side_sign, size, weight=weight))
+            req = backtest_order_request(side=side_sign, qty=size, order_type="market", weight=weight)
+            self._add_pending(order_request_to_resting(req))
 
     def _cap_to_leverage(self, side_sign: int, size: float) -> float:
         """Shrink a market order so the resulting position notional <= leverage * equity.
@@ -141,7 +143,8 @@ class BacktestEngine:
         else:
             side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
         del stop
-        o = Order("limit", side_sign, size, price=price, weight=weight)
+        req = backtest_order_request(side=side_sign, qty=size, order_type="limit", price=price, weight=weight)
+        o = order_request_to_resting(req)
         self._add_pending(o)
         return o
 
@@ -152,18 +155,23 @@ class BacktestEngine:
             side_sign, size, price = side_or_size, size_or_price, price
         else:
             side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
-        o = Order("stop", side_sign, size, price=price, weight=weight)
+        req = backtest_order_request(side=side_sign, qty=size, order_type="stop", trigger_price=price, weight=weight)
+        o = order_request_to_resting(req)
         self._add_pending(o)
         return o
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
-        self._add_pending(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
+        extreme_snap = self._price
+        req = backtest_order_request(side=side_sign, qty=size, trail=trail, extreme=extreme_snap, weight=weight)
+        self._add_pending(order_request_to_resting(req))
 
     def submit_market_close(self, side_sign: int, size: float) -> None:
-        self._add_pending(Order("market_close", side_sign, size))
+        req = backtest_order_request(side=side_sign, qty=size, order_type="market", on_close=True)
+        self._add_pending(order_request_to_resting(req))
 
     def submit_limit_close(self, side_sign: int, size: float, price: float) -> None:
-        self._add_pending(Order("limit_close", side_sign, size, price=price))
+        req = backtest_order_request(side=side_sign, qty=size, order_type="limit", price=price, on_close=True)
+        self._add_pending(order_request_to_resting(req))
 
     def cancel_order(self, symbol, order) -> None:  # noqa: ARG002 - symbol ignored (single-symbol)
         """Remove a specific resting order; no-op if already gone (filled or cancelled)."""
@@ -178,7 +186,8 @@ class BacktestEngine:
     def submit_close(self, symbol: str | None = None) -> None:  # symbol ignored in single-symbol engine
         if self.position.size != 0:
             side = -1 if self.position.size > 0 else 1
-            self._add_pending(Order("market", side, abs(self.position.size)))
+            req = backtest_order_request(side=side, qty=abs(self.position.size), order_type="market")
+            self._add_pending(order_request_to_resting(req))
 
     def order_target(self, target_size: float) -> None:
         """Market order to move the position to ``target_size`` signed shares."""

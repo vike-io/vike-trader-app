@@ -11,31 +11,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-
-@dataclass(frozen=True)
-class OrderRequest:
-    """A submission intent — what a strategy / manual ticket / (later) bracket builds.
-
-    ``side`` is +1 buy / -1 sell. ``order_type`` in {market, limit, stop}; ``price`` is the limit
-    price, ``trigger_price`` the stop trigger. The contingency slots are RESERVED for OCO/brackets
-    (Phase 5) — present now so linkage is additive wiring, never a schema migration.
-    """
-
-    client_order_id: str
-    venue: str
-    symbol: str                       # canonical symbol (resolver maps to venue symbol at the edge)
-    side: int
-    qty: float
-    order_type: str
-    price: float | None = None
-    trigger_price: float | None = None
-    reduce_only: bool = False
-    ts: int = 0
-    # --- reserved contingency (OCO/brackets, Phase 5) ---
-    parent_order_id: str | None = None
-    linked_order_ids: tuple[str, ...] = ()
-    order_list_id: str | None = None
-    contingency_type: str | None = None   # 'OTO' | 'OCO' | 'OUO' later
+# Re-export: OrderRequest moved to core so backtest engines can produce it without importing exec.
+# Every existing ``from vike_trader_app.exec.events import OrderRequest`` keeps working transparently.
+from ..core.order_intent import OrderRequest  # noqa: F401
 
 
 @dataclass(frozen=True)

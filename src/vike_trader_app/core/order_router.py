@@ -14,7 +14,7 @@ from __future__ import annotations
 import itertools
 from typing import Callable
 
-from vike_trader_app.exec.events import OrderRequest
+from vike_trader_app.core.order_intent import OrderRequest
 from vike_trader_app.exec.risk import RiskContext, RiskGate
 
 
