@@ -78,11 +78,11 @@ class StrategyTester(_OptimizeMixin):
         self.config = config or TesterConfig()
 
     def run(self) -> TesterReport:
-        """Single historical backtest -> standardized report."""
-        return Backtester(self.strategy, self.data, self.config).run()
+        """Single historical backtest -> standardized report (decomposed-ledger mirror attached)."""
+        return Backtester(self.strategy, self.data, self.config, mirror=True).run()
 
     def _run_trial(self, make, params: dict) -> TesterReport:
-        return Backtester(make(**params), self.data, self.config).run()
+        return Backtester(make(**params), self.data, self.config).run()  # bare (mirror=False)
 
     def _parallel_grid_prefill(self, reports: dict, param_grid: dict, workers: int,
                                strategy_source: str, grid_pool=None) -> None:

@@ -20,6 +20,11 @@ Nominal lifecycle per order:
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vike_trader_app.exec.accounting import Account
+
 from vike_trader_app.core.order_intent import OrderRequest
 from vike_trader_app.exec.bus import EventBus
 from vike_trader_app.exec.events import (
@@ -50,7 +55,8 @@ class SimulatedExchange:
         Symbol label used in minted coids and ``FillEvent.symbol``.
     """
 
-    def __init__(self, engine, bus: EventBus, *, venue: str = "sim", symbol: str = "") -> None:
+    def __init__(self, engine, bus: EventBus, *, venue: str = "sim", symbol: str = "",
+                 sim_account: "Account | None" = None) -> None:
         self.engine = engine
         self.bus = bus
         self.venue = venue
@@ -77,6 +83,13 @@ class SimulatedExchange:
         engine._on_fill = self._on_fill
         engine._on_cancel = self._on_cancel
         engine._on_funding = self._on_funding
+
+        # Optional decomposed-ledger mirror for single REPORT runs.
+        # None on the optimizer/sweep path — zero per-bar cost.
+        self.sim_account = sim_account
+        if sim_account is not None:
+            bus.subscribe(lambda ev: sim_account.apply_fill(ev) if isinstance(ev, FillEvent) else None)
+            bus.subscribe(lambda ev: sim_account.apply_funding(ev) if isinstance(ev, FundingEvent) else None)
 
     # ---------------------------------------------------------------------------
     # Hook implementations
