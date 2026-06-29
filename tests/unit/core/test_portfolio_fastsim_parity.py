@@ -75,8 +75,10 @@ class _MomentumEvent(CrossSectionalStrategy):
     lookback = 3
 
     def __init__(self, *, k, rebalance_every):
-        type(self).k = k
-        type(self).rebalance_every = rebalance_every
+        # Instance attrs (set BEFORE super().__init__, which reads self.rebalance_every via the
+        # schedule ctor) — avoids mutating the class dict, which would race under xdist.
+        self.k = k
+        self.rebalance_every = rebalance_every
         super().__init__()
 
     def score(self, symbol, history):
