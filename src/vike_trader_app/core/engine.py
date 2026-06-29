@@ -67,6 +67,7 @@ class BacktestEngine:
         self._on_fill = on_fill   # optional: called per fill (side, size, price, fee, ts, is_maker, order)
         self._on_submit = None    # optional: called per submitted order (order,); default-off
         self._on_cancel = None    # optional: called per cancelled order (order,); default-off
+        self._on_funding = None   # optional: called per funding cashflow (amount_signed, ts); default-off
         self._fill_model = fill_model if fill_model is not None else BarFillModel()
         self.cash = cash
         self.position = Position()
@@ -334,7 +335,10 @@ class BacktestEngine:
         self._now = event.ts
         self._price = event.close
         if event.funding is not None and self.position.size != 0:
-            self.cash -= funding_charge(self.position.size, event.close, event.funding, self.multiplier)
+            _fc = funding_charge(self.position.size, event.close, event.funding, self.multiplier)
+            self.cash -= _fc
+            if self._on_funding is not None and _fc != 0.0:
+                self._on_funding(-_fc, event.ts)
         self.cash += cashflow
         self._check_liquidation(event)
         self._peak = max(self._peak, self.equity_now())

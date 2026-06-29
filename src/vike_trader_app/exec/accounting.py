@@ -63,6 +63,24 @@ class Account:
             return 0.0
         return (mark - pos["avg_px"]) * pos["size"] * self.multiplier
 
+    def equity(self, initial_cash: float, venue: str = "sim", symbol: str = "X",
+               position_side: str = "BOTH") -> float:
+        """Compute total equity: initial_cash + balance + realized_pnl + unrealized_pnl.
+
+        Composition mirrors the C2 equity-parity identity exactly:
+          initial_cash
+          + self.balance          (cumulative -commission + funding cashflows)
+          + self.realized_pnl     (gross price PnL of all closed portions)
+          + self.unrealized_pnl(venue, symbol, position_side)
+                                  (mark-to-market on the open position)
+        """
+        return (
+            initial_cash
+            + self.balance
+            + self.realized_pnl
+            + self.unrealized_pnl(venue, symbol, position_side)
+        )
+
     def apply_funding(self, ev: "FundingEvent") -> None:
         """Fold a periodic funding cashflow into the cash balance (signed: + received / - paid)."""
         self.balance += ev.amount
