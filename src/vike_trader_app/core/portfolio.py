@@ -16,6 +16,7 @@ from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .instrument_id import format_instrument
 from .model import Bar, Fill, Position, Trade
+from .order_intent import backtest_order_request, order_request_to_resting
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
 from .strategy import Strategy
@@ -485,7 +486,9 @@ class PortfolioEngine:
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)  # sizer first, then leverage cap
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            o = Order("market", side_sign, size, weight=weight, stop=stop)
+            req = backtest_order_request(side=side_sign, qty=size, order_type="market",
+                                         weight=weight, stop=stop)
+            o = order_request_to_resting(req)
             self._sym[symbol].pending.append(o)
             return o
         return None
@@ -494,27 +497,34 @@ class PortfolioEngine:
         pos = self._sym[symbol].pos
         if pos.size != 0:
             side = -1 if pos.size > 0 else 1
-            self._sym[symbol].pending.append(Order("market", side, abs(pos.size)))
+            req = backtest_order_request(side=side, qty=abs(pos.size), order_type="market")
+            self._sym[symbol].pending.append(order_request_to_resting(req))
 
     def submit_limit(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                      raw: bool = False, stop=None):
         size = self._size_entry(symbol, side_sign, size, raw, stop=stop)
-        o = Order("limit", side_sign, size, price=price, weight=weight, stop=stop)
+        req = backtest_order_request(side=side_sign, qty=size, order_type="limit", price=price,
+                                     weight=weight, stop=stop)
+        o = order_request_to_resting(req)
         self._sym[symbol].pending.append(o)
         return o
 
     def submit_stop(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                     raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        o = Order("stop", side_sign, size, price=price, weight=weight)
+        req = backtest_order_request(side=side_sign, qty=size, order_type="stop",
+                                     trigger_price=price, weight=weight)
+        o = order_request_to_resting(req)
         self._sym[symbol].pending.append(o)
         return o
 
     def submit_trailing(self, symbol: str, side_sign: int, size: float, trail: float, weight: float = 0.0,
                         raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        o = Order("trailing", side_sign, size, trail=trail,
-                  extreme=self._sym[symbol].price, weight=weight)
+        extreme_snap = self._sym[symbol].price
+        req = backtest_order_request(side=side_sign, qty=size, trail=trail,
+                                     extreme=extreme_snap, weight=weight)
+        o = order_request_to_resting(req)
         self._sym[symbol].pending.append(o)
         return o
 
@@ -523,7 +533,9 @@ class PortfolioEngine:
         size = self._size_entry(symbol, side_sign, size, raw)
         size = self._cap_to_leverage(symbol, side_sign, size)
         if size > 0.0:
-            o = Order("market_close", side_sign, size, weight=weight)
+            req = backtest_order_request(side=side_sign, qty=size, order_type="market",
+                                         on_close=True, weight=weight)
+            o = order_request_to_resting(req)
             self._sym[symbol].pending.append(o)
             return o
         return None
@@ -531,7 +543,9 @@ class PortfolioEngine:
     def submit_limit_close(self, symbol: str, side_sign: int, size: float, price: float, weight: float = 0.0,
                            raw: bool = False):
         size = self._size_entry(symbol, side_sign, size, raw)
-        o = Order("limit_close", side_sign, size, price=price, weight=weight)
+        req = backtest_order_request(side=side_sign, qty=size, order_type="limit", price=price,
+                                     on_close=True, weight=weight)
+        o = order_request_to_resting(req)
         self._sym[symbol].pending.append(o)
         return o
 
