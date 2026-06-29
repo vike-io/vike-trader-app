@@ -55,6 +55,14 @@ class LiveSymbolShim:
         """Current position for this symbol (``Position(size, avg_price)``)."""
         return self._engine.position_of(self._symbol)
 
+    def position_of(self, symbol: str):  # SymbolEngineShim compat — passed symbol ignored
+        """Return position for this shim's bound symbol (ignores the passed symbol arg)."""
+        return self._engine.position_of(self._symbol)
+
+    def price_of(self, symbol: str) -> float:  # SymbolEngineShim compat — passed symbol ignored
+        """Return latest mark price for this shim's bound symbol (ignores the passed symbol arg)."""
+        return self._engine.price_of(self._symbol)
+
     @property
     def now(self) -> int:
         """Current time (epoch ms) from the engine's injected clock."""
@@ -187,13 +195,24 @@ class LiveSymbolShim:
     # Multi-timeframe reads
     # ------------------------------------------------------------------
 
-    def bars_for(self, tf: str):
-        """Completed higher-TF bars for this symbol at the current step (no look-ahead)."""
-        return self._engine.bars_for(self._symbol, tf)
+    def bars_for(self, symbol_or_tf, tf: str | None = None):
+        """Completed higher-TF bars for this symbol at the current step (no look-ahead).
 
-    def forming_for(self, tf: str):
-        """The still-forming coarse bar for ``tf`` / this symbol, or None."""
-        return self._engine.forming_for(self._symbol, tf)
+        Compat: old ``bars_for(tf)`` / new ``bars_for(symbol, tf)`` — mirrors
+        ``SymbolEngineShim.bars_for``.  The passed symbol is always ignored; this shim
+        always routes to ``self._symbol``.
+        """
+        _tf = tf if tf is not None else symbol_or_tf
+        return self._engine.bars_for(self._symbol, _tf)
+
+    def forming_for(self, symbol_or_tf, tf: str | None = None):
+        """The still-forming coarse bar for ``tf`` / this symbol, or None.
+
+        Compat: old ``forming_for(tf)`` / new ``forming_for(symbol, tf)`` — mirrors
+        ``SymbolEngineShim.forming_for``.  The passed symbol is always ignored.
+        """
+        _tf = tf if tf is not None else symbol_or_tf
+        return self._engine.forming_for(self._symbol, _tf)
 
     # ------------------------------------------------------------------
     # Bar buffer + conditionals

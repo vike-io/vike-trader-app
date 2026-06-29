@@ -315,3 +315,94 @@ class TestSingleSymbolStrategyIntegration:
         shim.submit(+1, 1.0)
         assert len(hub_btc.submitted) == 1
         assert len(hub_eth.submitted) == 0  # isolation
+
+
+# ---------------------------------------------------------------------------
+# SymbolEngineShim parity tests (position_of, price_of, polymorphic bars_for)
+# ---------------------------------------------------------------------------
+
+class TestLiveSymbolShimParityForwarders:
+    """Verify the SymbolEngineShim-parity forwarders added in the review fix.
+
+    Key properties:
+    - position_of(ANY_SYMBOL) ignores the passed symbol and re-routes to self._symbol.
+    - price_of(ANY_SYMBOL) ignores the passed symbol and re-routes to self._symbol.
+    - bars_for("1h") and bars_for("OTHER.SYM", "1h") both work and route to self._symbol.
+    - forming_for("1h") and forming_for("OTHER.SYM", "1h") both work.
+    """
+
+    def test_position_of_ignores_passed_symbol(self):
+        """position_of("ANY") returns the position of self._symbol, not the passed one."""
+        eng, hub, acct, shim = _make()
+        acct.positions[("binance", _BTC, "BOTH")] = {"size": 3.7, "avg_px": 60_000.0}
+        # Pass a completely different symbol string — must still return BTC position
+        pos = shim.position_of("ETHUSDT")
+        assert isinstance(pos, Position)
+        assert pos.size == 3.7, "position_of must re-route to self._symbol, ignoring arg"
+        assert pos.avg_price == 60_000.0
+
+    def test_position_of_same_as_position_property(self):
+        """position_of() result matches the .position property."""
+        eng, hub, acct, shim = _make()
+        acct.positions[("binance", _BTC, "BOTH")] = {"size": 1.5, "avg_px": 50_000.0}
+        assert shim.position_of("WHATEVER").size == shim.position.size
+
+    def test_price_of_ignores_passed_symbol(self):
+        """price_of("ANY") returns the mark price of self._symbol, not the passed one."""
+        eng, hub, acct, shim = _make()
+        acct.marks[("binance", _BTC)] = 99_000.0
+        # Pass a completely different symbol string — must still return BTC mark
+        price = shim.price_of("ETHUSDT")
+        assert price == 99_000.0, "price_of must re-route to self._symbol, ignoring arg"
+
+    def test_price_of_same_as_price_property(self):
+        """price_of() result matches the .price property."""
+        eng, hub, acct, shim = _make()
+        acct.marks[("binance", _BTC)] = 45_000.0
+        assert shim.price_of("WHATEVER") == shim.price
+
+    def test_bars_for_one_arg_form(self):
+        """bars_for(tf) — old one-arg form — still works."""
+        acct = _Acct()
+        hub = _Hub(venue="binance", symbol=_BTC)
+        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        shim = LiveSymbolShim(eng, _BTC)
+        eng.add_live_bar(_BTC, _bar(100.0, ts=1))
+        result = shim.bars_for("1h")
+        assert isinstance(result, list)
+
+    def test_bars_for_two_arg_form(self):
+        """bars_for(symbol, tf) — new two-arg form — works and ignores the passed symbol."""
+        acct = _Acct()
+        hub = _Hub(venue="binance", symbol=_BTC)
+        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        shim = LiveSymbolShim(eng, _BTC)
+        eng.add_live_bar(_BTC, _bar(100.0, ts=1))
+        # Pass "ETHUSDT" as the symbol arg — should still route to BTC's buffer
+        result = shim.bars_for("ETHUSDT", "1h")
+        assert isinstance(result, list)
+        # Must return same result as the one-arg form (both route to BTC)
+        result_one_arg = shim.bars_for("1h")
+        assert result == result_one_arg
+
+    def test_forming_for_one_arg_form(self):
+        """forming_for(tf) — old one-arg form — still works."""
+        acct = _Acct()
+        hub = _Hub(venue="binance", symbol=_BTC)
+        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        shim = LiveSymbolShim(eng, _BTC)
+        eng.add_live_bar(_BTC, _bar(100.0, ts=1))
+        result = shim.forming_for("1h")
+        assert result is None or hasattr(result, "close")
+
+    def test_forming_for_two_arg_form(self):
+        """forming_for(symbol, tf) — new two-arg form — works and ignores the passed symbol."""
+        acct = _Acct()
+        hub = _Hub(venue="binance", symbol=_BTC)
+        eng = LiveEngine({_BTC: hub}, acct, timeframes=["1h"], now_ms=lambda: 111)
+        shim = LiveSymbolShim(eng, _BTC)
+        eng.add_live_bar(_BTC, _bar(100.0, ts=1))
+        # Pass "ETHUSDT" as the symbol arg — should still route to BTC's buffer
+        result_two_arg = shim.forming_for("ETHUSDT", "1h")
+        result_one_arg = shim.forming_for("1h")
+        assert result_two_arg == result_one_arg
