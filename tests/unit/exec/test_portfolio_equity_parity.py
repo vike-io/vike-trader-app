@@ -103,16 +103,17 @@ def test_authoritative_live_read_matches_same_fill_stream():
     """Anti-vacuity: an AUTHORITATIVE Account (LIVE mode) fed the SAME stream pins (balance + Σ
     unrealized) to the delta-mode equity — proving the LIVE aggregator path, not just the algebra.
 
-    The authoritative model is the LiveEngine read (``LiveEngine.equity_now`` / ``Account.equity_all``
-    authoritative branch): equity = venue wallet balance + Σ unrealized. A real venue reports the
-    wallet balance as ``seed + Σ realized_pnl - Σ commission`` — the open position's mark-to-market
-    lives ENTIRELY in ``unrealized``, NOT in the wallet (you don't pay the full notional out of the
-    wallet on a perp/margin fill, and on spot the asset you bought is carried at mark via unrealized).
-    We mirror that exactly: ``apply_fill`` nets ``-commission`` into ``balance`` and folds realized PnL
-    into ``realized_pnl``; we then push the SAME realized increment into the wallet ``balance`` so the
-    authoritative ``balance + unrealized`` read reproduces the delta-mode ``seed - fees + realized +
-    unrealized`` total off the IDENTICAL fill stream."""
+    Independence guarantee: realized_indep and fees_indep are computed by THIS TEST using
+    weighted-average-cost arithmetic written inline — they do NOT call Account.apply_fill,
+    compute_fill, or read Account.realized_pnl / Account.fees_paid.  A bug in compute_fill that
+    corrupts Account.realized_pnl would move MSE.equity_now() and the delta-Account oracle
+    together but leave realized_indep / fees_indep unchanged, making the assertion below fail.
+    """
+    _EPS = 1e-12
+
     bars = {"AAA": _series([100, 110, 120, 130, 125]), "BBB": _series([10, 12, 14, 16, 15])}
+
+    # --- primary delta-Portfolio oracle (unchanged) -----------------------------------
     pf_delta, acct_delta, on_fill_delta = _build_mirror()
     eng = MultiSymbolEngine(bars, _TradeBoth(), cash=10_000.0, fee_rate=0.001,
                             multipliers=MULTS, on_fill=on_fill_delta)
@@ -121,30 +122,104 @@ def test_authoritative_live_read_matches_same_fill_stream():
         acct_delta.set_mark(VENUE, s, eng._sym[s].price)
     delta_equity = pf_delta.equity()
 
+    # --- independent shadow ledger (test-owned WAC, no compute_fill / Account) -------
+    seed = 10_000.0
+    fees_indep: float = 0.0          # cumulative commissions paid (positive = cost)
+    realized_indep: float = 0.0      # gross WAC realized PnL on closed portions
+    # per-symbol open position: size (signed) + average entry price
+    pos_size: dict[str, float] = {}
+    pos_avg:  dict[str, float] = {}
+
+    def _wac_apply(symbol: str, side_sign: int, qty: float, price: float, fee: float) -> None:
+        """Weighted-average-cost position update + realized PnL — no Account/compute_fill call."""
+        nonlocal fees_indep, realized_indep
+        fees_indep += fee
+        mult = MULTS[symbol]
+        cur_size = pos_size.get(symbol, 0.0)
+        cur_avg  = pos_avg.get(symbol, 0.0)
+        delta = side_sign * qty
+        if cur_size == 0.0:                               # open from flat
+            pos_size[symbol] = delta
+            pos_avg[symbol]  = price
+        elif (cur_size > 0.0) == (delta > 0.0):          # add in same direction (WAC)
+            new_size = cur_size + delta
+            pos_avg[symbol]  = (cur_avg * abs(cur_size) + price * abs(delta)) / abs(new_size)
+            pos_size[symbol] = new_size
+        else:                                             # reduce / close / flip (opposite side)
+            sign = 1.0 if cur_size > 0.0 else -1.0
+            closing = min(abs(delta), abs(cur_size))
+            realized_indep += (price - cur_avg) * (sign * closing) * mult
+            remaining = abs(cur_size) - closing
+            leftover  = abs(delta) - closing
+            if remaining > _EPS:                          # partial reduce
+                pos_size[symbol] = sign * remaining
+                # avg_px stays the same (cost basis of the remaining lot is unchanged)
+            elif leftover > _EPS:                         # close-and-flip
+                pos_size[symbol] = (1.0 if delta > 0.0 else -1.0) * leftover
+                pos_avg[symbol]  = price
+            else:                                         # full close to flat
+                pos_size[symbol] = 0.0
+                pos_avg[symbol]  = 0.0
+
+    counter_indep = itertools.count(1)
+
+    def on_fill_indep(symbol, side_sign, size, price, fee, ts, is_maker):
+        _wac_apply(symbol, side_sign, size, price, fee)
+
+    eng2 = MultiSymbolEngine(bars, _TradeBoth(), cash=10_000.0, fee_rate=0.001,
+                             multipliers=MULTS, on_fill=on_fill_indep)
+    eng2.run()
+
+    # independently-computed wallet balance (venue model: seed – fees + realized; unrealized is open)
+    indep_balance = seed - fees_indep + realized_indep
+
+    # independently-computed unrealized PnL using the shadow ledger's positions and engine mark prices
+    unrealized_indep: float = sum(
+        (eng2._sym[s].price - pos_avg.get(s, 0.0)) * pos_size.get(s, 0.0) * MULTS[s]
+        for s in eng2.symbols
+    )
+    indep_equity = indep_balance + unrealized_indep
+
+    # --- authoritative Account set from independently-computed balance ----------------
     auth = Account(venue=VENUE, multipliers=MULTS, balance_mode="authoritative")
-    auth.balance = 10_000.0   # the venue-reported starting wallet balance (authoritative)
-    counter = itertools.count(1)
+    # Seed the authoritative Account with the INDEPENDENTLY derived wallet balance so its equity_all()
+    # uses (indep_balance + Σ unrealized from marks) — neither realized_pnl nor fees_paid from
+    # apply_fill routes into this number.
+    auth.balance = indep_balance
+    # Apply fills to the auth Account ONLY to populate positions/marks for unrealized computation.
+    # Note: auth.realized_pnl and auth.balance changes from apply_fill are NOT used in the assertions
+    # (auth.balance was set externally; we only need auth.positions to be populated for set_mark/unrealized_pnl).
+    counter_auth = itertools.count(1)
 
     def on_fill_auth(symbol, side_sign, size, price, fee, ts, is_maker):
-        n = next(counter)
-        prior_realized = auth.realized_pnl
-        auth.apply_fill(FillEvent(   # nets -commission into balance; folds realized into realized_pnl
+        n = next(counter_auth)
+        auth.apply_fill(FillEvent(
             trade_id=f"a{n}", client_order_id=f"ca{n}", venue=VENUE, symbol=symbol,
             side=side_sign, last_qty=size, last_px=price, commission=fee,
             liquidity_side="maker" if is_maker else "taker", ts=ts,
         ))
-        # The venue wallet accrues the realized PnL of any closed portion (commission already netted
-        # by apply_fill). The open position's notional is NOT debited from the wallet — it rides in
-        # `unrealized`. This is exactly how Binance/Bybit report walletBalance.
-        auth.balance += (auth.realized_pnl - prior_realized)
 
-    eng2 = MultiSymbolEngine(bars, _TradeBoth(), cash=10_000.0, fee_rate=0.001,
+    eng3 = MultiSymbolEngine(bars, _TradeBoth(), cash=10_000.0, fee_rate=0.001,
                              multipliers=MULTS, on_fill=on_fill_auth)
-    eng2.run()
-    for s in eng2.symbols:
-        auth.set_mark(VENUE, s, eng2._sym[s].price)
+    eng3.run()
+    for s in eng3.symbols:
+        auth.set_mark(VENUE, s, eng3._sym[s].price)
+
+    # Re-override balance AFTER fill replay so apply_fill's balance mutations don't contaminate;
+    # the authoritative balance must come from the independent shadow ledger.
+    auth.balance = indep_balance
     assert auth.balance_mode == "authoritative"
-    assert auth.equity_all() == pytest.approx(delta_equity, abs=TOL)
+
+    # Three-way pin: all three routes must agree to within TOL.
+    # (1) independent arithmetic pins to MSE
+    assert indep_equity == pytest.approx(eng2.equity_now(), abs=TOL), \
+        "indep_equity vs MSE"
+    # (2) authoritative Account (position data from fills, balance from independent ledger) pins to MSE
+    assert auth.equity_all() == pytest.approx(eng.equity_now(), abs=TOL), \
+        "auth.equity_all() vs MSE"
+    # (3) keep the primary delta-Portfolio assertion
+    assert delta_equity == pytest.approx(eng.equity_now(), abs=TOL), \
+        "Portfolio delta equity vs MSE"
 
 
 def test_two_venue_portfolio_equity_parity():
