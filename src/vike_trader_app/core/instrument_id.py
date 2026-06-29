@@ -9,7 +9,7 @@ def parse_instrument(s: str, default_venue: str | None = None) -> tuple[str | No
     if "." in s:
         symbol, venue = s.rsplit(".", 1)
         return venue.lower(), symbol
-    return default_venue, s
+    return (default_venue.lower() if default_venue else None), s
 
 
 def format_instrument(venue: str | None, symbol: str) -> str:

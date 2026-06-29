@@ -10,6 +10,9 @@ def test_qualified_symbol_overrides_default():
 def test_bare_symbol_no_default():
     assert parse_instrument("BTCUSDT") == (None, "BTCUSDT")
 
+def test_default_venue_is_lowercased():
+    assert parse_instrument("BTCUSDT", default_venue="BINANCE") == ("binance", "BTCUSDT")
+
 def test_format_roundtrip():
     assert format_instrument("binance", "BTCUSDT") == "BTCUSDT.BINANCE"
     assert format_instrument(None, "BTCUSDT") == "BTCUSDT"
