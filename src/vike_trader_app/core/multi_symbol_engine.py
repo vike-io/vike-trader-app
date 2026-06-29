@@ -422,7 +422,7 @@ class MultiSymbolEngine:
         drawdown = max(0.0, 1.0 - equity / peak) if peak > 0 else 0.0
         return self.sizer.size(SizeContext(
             symbol, side_sign, size, self._sym[symbol].price,
-            equity, self.cash, self.multiplier,
+            equity, self.cash, self.multiplier_of(symbol),
             atr=self._atr(symbol),
             drawdown=drawdown,
             risk_stop=stop,
@@ -474,8 +474,8 @@ class MultiSymbolEngine:
         for s in held:
             pos = self._sym[s].pos
             adverse = cur[s].low if pos.size > 0 else cur[s].high
-            eq_adv += pos.size * adverse * self.multiplier
-            notional_adv += abs(pos.size) * adverse * self.multiplier
+            eq_adv += pos.size * adverse * self.multiplier_of(s)
+            notional_adv += abs(pos.size) * adverse * self.multiplier_of(s)
         if eq_adv <= self.maint_margin * notional_adv:
             for s in held:
                 pos = self._sym[s].pos
@@ -868,16 +868,16 @@ class MultiSymbolEngine:
         if pos.size == 0:
             return
         adverse = event.low if pos.size > 0 else event.high
-        eq_adv = self.cash + pos.size * adverse * self.multiplier
-        notional_adv = abs(pos.size) * adverse * self.multiplier
+        eq_adv = self.cash + pos.size * adverse * self.multiplier_of(symbol)
+        notional_adv = abs(pos.size) * adverse * self.multiplier_of(symbol)
         # Also add unrealized from all OTHER symbols at their last known price.
         for s in self.symbols:
             if s == symbol:
                 continue
             p = self._sym[s].pos
             if p.size != 0:
-                eq_adv += p.size * self._sym[s].price * self.multiplier
-                notional_adv += abs(p.size) * self._sym[s].price * self.multiplier
+                eq_adv += p.size * self._sym[s].price * self.multiplier_of(s)
+                notional_adv += abs(p.size) * self._sym[s].price * self.multiplier_of(s)
         if notional_adv > 0 and eq_adv <= self.maint_margin * notional_adv:
             side = -1 if pos.size > 0 else 1
             self._apply_fill(symbol, side, abs(pos.size), adverse, event.ts)
