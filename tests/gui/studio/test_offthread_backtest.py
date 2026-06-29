@@ -54,7 +54,7 @@ def _sync_backtest_worker_local(monkeypatch):
 
 
 _VALID_SOURCE = """\
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 
 class S(Strategy):
@@ -70,7 +70,7 @@ this is not valid python !!!
 """
 
 _COMPILE_ERROR_SOURCE = """\
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 import os  # forbidden by the security sandbox
 class S(Strategy):

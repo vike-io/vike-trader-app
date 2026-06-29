@@ -75,6 +75,12 @@ class SymbolEngineShim:
     def position(self):
         return self._engine.position_of(self._symbol)
 
+    def position_of(self, symbol: str):  # new Strategy API compat — symbol ignored (shim is per-symbol)
+        return self._engine.position_of(self._symbol)
+
+    def price_of(self, symbol: str) -> float:  # new Strategy API compat
+        return self._engine.price_of(self._symbol)
+
     @property
     def now(self) -> int:
         return self._engine.now
@@ -85,17 +91,29 @@ class SymbolEngineShim:
     def drawdown_now(self) -> float:
         return self._driver.drawdown_now() if self._driver is not None else 0.0
 
-    # --- market orders ---
-    def submit(self, side_sign: int, size: float, weight: float = 0.0, raw: bool = False,
-               stop=None) -> None:
-        # buy/sell entries forward raw=False (the engine sizer decides the qty); order_target_*
-        # paths forward raw=True (explicit sizing the sizer must NOT re-size). ``stop`` is the
-        # protective stop price (risk sizing + auto protective-stop arm).
-        if size <= 0:
-            return
-        self._engine.submit(self._symbol, side_sign, size, weight=weight, raw=raw, stop=stop)
+    @property
+    def symbols(self) -> list:
+        return [self._symbol]
 
-    def submit_close(self) -> None:
+    def _pending_of(self, symbol: str) -> list:  # new Strategy API compat
+        return self._engine._pending_of(self._symbol)
+
+    # --- market orders ---
+    def submit(self, side_sign_or_symbol, side_or_size=None, size=None,
+               weight: float = 0.0, raw: bool = False, stop=None) -> None:
+        # Compat: old API submit(side, size) / new API submit(symbol, side, size).
+        if isinstance(side_sign_or_symbol, str):
+            # new-API call from unified Strategy: submit(symbol, side, size, ...)
+            side_sign, sz = side_or_size, size
+        else:
+            # old-API call from SingleSymbolStrategy: submit(side, size, ...)
+            side_sign = side_sign_or_symbol
+            sz = side_or_size if size is None else size
+        if sz is None or sz <= 0:
+            return
+        self._engine.submit(self._symbol, side_sign, sz, weight=weight, raw=raw, stop=stop)
+
+    def submit_close(self, symbol: str | None = None) -> None:  # symbol ignored
         self._engine.submit_close(self._symbol)
 
     def order_target(self, target: float) -> None:
@@ -116,11 +134,22 @@ class SymbolEngineShim:
     # the cap is checked at FILL time in PortfolioEngine._fill_pending / _fill_pending_granular
     # (a new-symbol open is dropped when _at_open_cap()), not just for market entries in submit().
     # Covered by test_max_open_positions_caps_resting_entries.
-    def submit_limit(self, side_sign: int, size: float, price: float, weight: float = 0.0,
-                     stop=None) -> None:
+    def submit_limit(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
+                     price=None, weight: float = 0.0, stop=None) -> None:
+        # Compat: old submit_limit(side, size, price) / new submit_limit(sym, side, size, price)
+        if isinstance(side_sign_or_symbol, str):
+            side_sign, size, price = side_or_size, size_or_price, price
+        else:
+            side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
         self._engine.submit_limit(self._symbol, side_sign, size, price, weight=weight, stop=stop)
 
-    def submit_stop(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
+    def submit_stop(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
+                    price=None, weight: float = 0.0) -> None:
+        # Compat: old submit_stop(side, size, price) / new submit_stop(sym, side, size, price)
+        if isinstance(side_sign_or_symbol, str):
+            side_sign, size, price = side_or_size, size_or_price, price
+        else:
+            side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
         self._engine.submit_stop(self._symbol, side_sign, size, price, weight=weight)
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
@@ -132,15 +161,19 @@ class SymbolEngineShim:
     def submit_limit_close(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
         self._engine.submit_limit_close(self._symbol, side_sign, size, price, weight=weight)
 
-    def cancel_all(self) -> None:
+    def cancel_all(self, symbol: str | None = None) -> None:  # symbol ignored
         self._engine.cancel_all(self._symbol)
 
     # --- multi-timeframe: forward to the shared engine (requires timeframes= on PortfolioEngine) ---
-    def bars_for(self, tf: str):
-        return self._engine.bars_for(self._symbol, tf)
+    def bars_for(self, symbol_or_tf, tf: str | None = None):
+        # Compat: old bars_for(tf) / new bars_for(symbol, tf)
+        _tf = tf if tf is not None else symbol_or_tf
+        return self._engine.bars_for(self._symbol, _tf)
 
-    def forming_for(self, tf: str):
-        return self._engine.forming_for(self._symbol, tf)
+    def forming_for(self, symbol_or_tf, tf: str | None = None):
+        # Compat: old forming_for(tf) / new forming_for(symbol, tf)
+        _tf = tf if tf is not None else symbol_or_tf
+        return self._engine.forming_for(self._symbol, _tf)
 
 
 class _MultiSymbolDriver(PortfolioStrategy):

@@ -25,7 +25,7 @@ def test_return_histogram_bins_and_counts():
 
 def test_sharpe_heatmap_shapes_to_grid():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.strategy import Strategy
+    from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
     bars = [Bar(ts=i * 60_000, open=100 + i, high=101 + i, low=99 + i, close=100 + i, volume=1.0) for i in range(12)]
 

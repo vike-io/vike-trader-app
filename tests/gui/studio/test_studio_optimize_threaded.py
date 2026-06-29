@@ -44,7 +44,7 @@ def _sync_opt_worker(monkeypatch):
     yield
 
 
-_SOURCE = '''from vike_trader_app.core.strategy import Strategy
+_SOURCE = '''from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 
 class SmaX(Strategy):
@@ -70,7 +70,7 @@ class SmaX(Strategy):
             self.close()
 '''
 
-_NO_GRID = '''from vike_trader_app.core.strategy import Strategy
+_NO_GRID = '''from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 
 class S(Strategy):

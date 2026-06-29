@@ -95,16 +95,23 @@ class Strategy:
     def on_order_canceled(self, e) -> None: ...
     def on_order_filled(self, e) -> None: ...
     def on_liquidation(self, e) -> None: ...
+    def on_event(self, e) -> None: ...  # catch-all; BacktestEngine fires this alongside on_order_submitted
+    def on_position_opened(self, pos) -> None: ...   # BacktestEngine lifecycle hooks
+    def on_position_changed(self, pos) -> None: ...
+    def on_position_closed(self, pos) -> None: ...
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _sym_key(self, symbol: str) -> str:
+    def _sym_key(self, symbol: str | None) -> str:
         """Map a (possibly venue-qualified) instrument id to the engine's bare key.
 
         Bar.symbol is "BTC.BINANCE"; the engine keys its state by "BTC".
+        When symbol is None (single-symbol BacktestEngine path), returns a dummy key.
         """
+        if not symbol:
+            return "_"
         return symbol.split(".")[0] if "." in symbol else symbol
 
     def _wrap(self, symbol: str, order) -> OrderHandle | None:
