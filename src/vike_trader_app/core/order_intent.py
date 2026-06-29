@@ -14,6 +14,10 @@ No imports from ``exec`` here — this is a pure dataclass module.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from vike_trader_app.core.orders import Order
 
 
 @dataclass(frozen=True)
@@ -56,3 +60,77 @@ class OrderRequest:
     trail: float | None = None
     extreme: float | None = None
     on_close: bool = False
+
+
+def backtest_order_request(
+    *,
+    side: int,
+    qty: float,
+    order_type: str = "market",
+    price: float | None = None,
+    trigger_price: float | None = None,
+    weight: float = 0.0,
+    stop: float | None = None,
+    trail: float | None = None,
+    extreme: float | None = None,
+    on_close: bool = False,
+    reduce_only: bool = False,
+    symbol: str = "",
+    coid: str = "",
+) -> "OrderRequest":
+    """Synthesize a minimal valid ``OrderRequest`` for the backtest path.
+
+    ``client_order_id``, ``venue``, and ``symbol`` are placeholders — they are NOT
+    read by ``order_request_to_resting`` (``core.Order`` has no coid/venue/symbol);
+    they only matter in rung 3 when the ``SimulatedExchange`` routes the intent.
+    """
+    return OrderRequest(
+        client_order_id=coid,
+        venue="",
+        symbol=symbol,
+        side=side,
+        qty=qty,
+        order_type=order_type,
+        price=price,
+        trigger_price=trigger_price,
+        reduce_only=reduce_only,
+        weight=weight,
+        stop=stop,
+        trail=trail,
+        extreme=extreme,
+        on_close=on_close,
+    )
+
+
+def order_request_to_resting(req: "OrderRequest") -> "Order":
+    """Map a frozen ``OrderRequest`` intent to a live mutable ``core.Order`` resting record.
+
+    Returns a LIVE mutable ``core.Order`` — engines ratchet ``extreme`` and cap ``size``
+    in place after submission.  The 6-kind dispatch matches the per-verb field sets the
+    backtest engines build today (byte-identical).
+
+    Dispatch priority:
+    1. ``trail is not None``                       → trailing
+    2. ``on_close=True, order_type="market"``      → market_close
+    3. ``on_close=True, order_type="limit"``       → limit_close
+    4. ``order_type="stop"``                       → stop
+    5. ``order_type="limit"``                      → limit   (carries stop)
+    6. else (``order_type="market"``)              → market  (carries stop)
+    """
+    from vike_trader_app.core.orders import Order
+
+    side = req.side
+    qty = req.qty
+
+    if req.trail is not None:
+        return Order("trailing", side, qty, trail=req.trail, extreme=req.extreme, weight=req.weight)
+    if req.on_close and req.order_type == "market":
+        return Order("market_close", side, qty, weight=req.weight)
+    if req.on_close and req.order_type == "limit":
+        return Order("limit_close", side, qty, price=req.price, weight=req.weight)
+    if req.order_type == "stop":
+        return Order("stop", side, qty, price=req.trigger_price, weight=req.weight)
+    if req.order_type == "limit":
+        return Order("limit", side, qty, price=req.price, weight=req.weight, stop=req.stop)
+    # market (default)
+    return Order("market", side, qty, weight=req.weight, stop=req.stop)

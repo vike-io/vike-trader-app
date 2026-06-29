@@ -130,3 +130,134 @@ class TestRequiredFields:
         req = _make_req(order_type="stop", trigger_price=50000.0, reduce_only=True)
         assert req.trigger_price == 50000.0
         assert req.reduce_only is True
+
+
+# ---------------------------------------------------------------------------
+# Task B2: adapter + builder round-trip (6 kinds)
+# ---------------------------------------------------------------------------
+
+class TestRoundTrip:
+    """backtest_order_request(...) → order_request_to_resting(...) must equal the
+    core.Order the verb builds today — byte-identical across all 6 kinds."""
+
+    def _rt(self, **kwargs):
+        from vike_trader_app.core.order_intent import backtest_order_request, order_request_to_resting
+        req = backtest_order_request(**kwargs)
+        return order_request_to_resting(req)
+
+    def _order(self, *args, **kwargs):
+        from vike_trader_app.core.orders import Order
+        return Order(*args, **kwargs)
+
+    # --- kind: market (no stop) ---
+    def test_market_no_stop(self):
+        o = self._rt(side=1, qty=10.0, order_type="market", weight=0.3)
+        expected = self._order("market", 1, 10.0, weight=0.3, stop=None)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: market (with stop) ---
+    def test_market_with_stop(self):
+        o = self._rt(side=1, qty=5.0, order_type="market", weight=0.5, stop=95.0)
+        expected = self._order("market", 1, 5.0, weight=0.5, stop=95.0)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: limit (no stop) ---
+    def test_limit_no_stop(self):
+        o = self._rt(side=1, qty=2.0, order_type="limit", price=100.0, weight=0.1)
+        expected = self._order("limit", 1, 2.0, price=100.0, weight=0.1, stop=None)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: limit (with stop) ---
+    def test_limit_with_stop(self):
+        o = self._rt(side=-1, qty=3.0, order_type="limit", price=200.0, weight=0.2, stop=210.0)
+        expected = self._order("limit", -1, 3.0, price=200.0, weight=0.2, stop=210.0)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: stop ---
+    def test_stop(self):
+        o = self._rt(side=1, qty=4.0, order_type="stop", trigger_price=105.0, weight=0.4)
+        expected = self._order("stop", 1, 4.0, price=105.0, weight=0.4)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: trailing (extreme seeded) ---
+    def test_trailing_with_extreme(self):
+        o = self._rt(side=-1, qty=1.0, order_type="market", trail=5.0, extreme=120.0, weight=0.6)
+        expected = self._order("trailing", -1, 1.0, trail=5.0, extreme=120.0, weight=0.6)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: market_close ---
+    def test_market_close(self):
+        o = self._rt(side=-1, qty=7.0, order_type="market", on_close=True, weight=0.7)
+        expected = self._order("market_close", -1, 7.0, weight=0.7)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- kind: limit_close ---
+    def test_limit_close(self):
+        o = self._rt(side=-1, qty=8.0, order_type="limit", price=150.0, on_close=True, weight=0.8)
+        expected = self._order("limit_close", -1, 8.0, price=150.0, weight=0.8)
+        assert o.kind == expected.kind
+        assert o.side == expected.side
+        assert o.size == expected.size
+        assert o.price == expected.price
+        assert o.trail == expected.trail
+        assert o.extreme == expected.extreme
+        assert o.weight == expected.weight
+        assert o.stop == expected.stop
+
+    # --- mutability: returned Order must be mutable ---
+    def test_returned_order_is_mutable(self):
+        o = self._rt(side=-1, qty=1.0, order_type="market", trail=3.0, extreme=50.0, weight=0.1)
+        # engines ratchet extreme and cap size in place
+        o.extreme = 55.0
+        assert o.extreme == 55.0
+        o.size = 0.5
+        assert o.size == 0.5

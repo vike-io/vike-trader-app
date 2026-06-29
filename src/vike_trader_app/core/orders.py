@@ -3,9 +3,15 @@
 One definition of WHEN a limit/stop/trailing order fills and at WHAT price, so both engines stay in
 parity. ``order_fill_price`` is pure w.r.t. the bar but ratchets a trailing order's ``extreme`` in
 place (testing the PRIOR extreme's trigger first, so a new-high bar can't stop out on its own low).
+
+``order_request_to_resting`` is the Task B2 adapter — it lives in ``core.order_intent`` (where
+``OrderRequest`` is defined) and is re-exported here for discoverability.
 """
 
 from dataclasses import dataclass
+
+# Re-export the adapter so callers can import from either module.
+from vike_trader_app.core.order_intent import order_request_to_resting as order_request_to_resting  # noqa: F401
 
 
 @dataclass
