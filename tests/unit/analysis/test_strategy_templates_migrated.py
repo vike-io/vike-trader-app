@@ -54,10 +54,21 @@ def test_template_completes_single_symbol_backtest(template: StrategyTemplate):
 
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda t: t.name)
-def test_template_preserves_warmup_and_param_grid(template: StrategyTemplate):
-    """WARMUP and PARAM_GRID class attrs are preserved by migration."""
+def test_template_preserves_warmup(template: StrategyTemplate):
+    """Every template declares a non-negative integer WARMUP (preserved by migration)."""
     cls = load_strategy_from_string(template.code, validate=True)
-    assert hasattr(cls, "WARMUP"), f"{template.name}: missing WARMUP"
-    assert hasattr(cls, "PARAM_GRID"), f"{template.name}: missing PARAM_GRID"
-    assert isinstance(cls.WARMUP, int) and cls.WARMUP >= 0
-    assert isinstance(cls.PARAM_GRID, dict)
+    assert isinstance(cls.WARMUP, int) and cls.WARMUP >= 0, (
+        f"{template.name}: WARMUP must be a non-negative int, got {cls.WARMUP!r}"
+    )
+
+
+def test_ma_crossover_defines_param_grid():
+    """Only MaCrossover declares its own PARAM_GRID; the migration must preserve it non-empty.
+
+    The other four templates don't define a PARAM_GRID — they inherit the empty
+    base ``Strategy.PARAM_GRID = {}`` — so asserting a non-empty grid for all five
+    would be misleading. We assert the non-empty grid only for the one that owns it.
+    """
+    ma = next(t for t in TEMPLATES if t.name == "MA crossover")
+    cls = load_strategy_from_string(ma.code, validate=True)
+    assert cls.PARAM_GRID == {"fast": [5, 10], "slow": [20, 30]}
