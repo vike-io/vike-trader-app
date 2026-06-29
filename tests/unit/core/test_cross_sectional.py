@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import CrossSectionalStrategy, MultiSymbolEngine, PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import CrossSectionalStrategy, MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.strategy import Strategy
 
 

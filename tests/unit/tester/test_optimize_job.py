@@ -158,7 +158,7 @@ def test_portfolio_job_uses_portfolio_tester(monkeypatch):
             return SimpleNamespace(ranked=[SimpleNamespace(params={"fast": 5, "slow": 20}, score=1.0)])
 
     import vike_trader_app.tester.portfolio_tester as pt_mod
-    monkeypatch.setattr(pt_mod, "PortfolioStrategyTester", FakePT)
+    monkeypatch.setattr(pt_mod, "MultiSymbolStrategyTester", FakePT)
 
     res = run_optimize_job(strategy_cls=cls, grid=cls.PARAM_GRID, config=TesterConfig(),
                            wf_kwargs=_wf_kwargs(), strategy_source=_SOURCE,

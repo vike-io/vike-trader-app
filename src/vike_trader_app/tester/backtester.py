@@ -1,6 +1,6 @@
 """Backtester — run one strategy over one bar set through the event engine -> TesterReport."""
 
-from ..core.engine import SingleSymbolEngine
+from ..core.single_symbol_engine import SingleSymbolEngine
 from .config import TesterConfig
 from .report import TesterReport
 

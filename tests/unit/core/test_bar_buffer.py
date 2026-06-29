@@ -199,7 +199,7 @@ def test_forming_for_returns_none_after_window_completes():
 
 def test_parity_with_engine_bars_for(subtests):
     """bars_for via BarSeriesBuffer must match SingleSymbolEngine._buf.bars_for element-for-element."""
-    from vike_trader_app.core.engine import SingleSymbolEngine
+    from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
     from vike_trader_app.core.strategy import Strategy
 
     class _S(Strategy):

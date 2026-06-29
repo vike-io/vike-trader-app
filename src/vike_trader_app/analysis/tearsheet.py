@@ -104,7 +104,7 @@ def write_tearsheet_html(path, result, title: str = "Backtest", timestamps=None,
     """Write a self-contained HTML tearsheet for ``result`` and return its Path.
 
     ``timestamps`` (epoch ms, aligned to the equity curve) adds a monthly-returns
-    table; ``attribution`` (``{symbol: pnl}``, e.g. ``PortfolioResult.per_symbol_pnl``)
+    table; ``attribution`` (``{symbol: pnl}``, e.g. ``MultiSymbolResult.per_symbol_pnl``)
     adds a per-asset attribution table.
     """
     eq = result.equity_curve

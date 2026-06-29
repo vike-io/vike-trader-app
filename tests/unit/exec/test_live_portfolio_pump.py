@@ -18,7 +18,7 @@ from __future__ import annotations
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import PortfolioStrategy
 from vike_trader_app.exec.live_portfolio_pump import LivePump
 
 

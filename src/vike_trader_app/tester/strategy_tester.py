@@ -178,7 +178,7 @@ def assemble_walk_forward(windows, final_curves, stitched, concat_trades, config
     from ..analysis import metrics as m
     from ..analysis.metrics import returns
     from ..analysis.overfit import deflated_sharpe_with_effective_n, overfit_verdict
-    from ..core.engine import Result
+    from ..core.single_symbol_engine import Result
     from .report import TesterReport
     from .walkforward import WalkForwardReport, _pbo_from_curves
 

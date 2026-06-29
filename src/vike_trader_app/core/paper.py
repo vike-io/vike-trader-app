@@ -13,7 +13,7 @@ Single-timeframe in this version; multi-timeframe forward (``self.bars(tf)`` liv
 follow-up — see docs/handoff.md.
 """
 
-from .engine import SingleSymbolEngine, Result
+from .single_symbol_engine import SingleSymbolEngine, Result
 
 
 def pump(feed, tester) -> list:

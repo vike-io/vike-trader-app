@@ -8,7 +8,7 @@ separate UI concern.
 
 from dataclasses import dataclass
 
-from ..core.engine import SingleSymbolEngine
+from ..core.single_symbol_engine import SingleSymbolEngine
 from .metrics import sharpe
 
 

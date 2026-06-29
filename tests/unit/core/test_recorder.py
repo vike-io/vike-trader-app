@@ -3,7 +3,7 @@
 import pytest
 
 from vike_trader_app.analysis.recorder import ExperimentRecorder
-from vike_trader_app.core.engine import Result
+from vike_trader_app.core.single_symbol_engine import Result
 from vike_trader_app.core.model import Trade
 from vike_trader_app.data.store import Store
 

@@ -1,11 +1,11 @@
-"""PortfolioStrategyTester: optimize + walk-forward scored on PORTFOLIO equity over a DataSet."""
+"""MultiSymbolStrategyTester: optimize + walk-forward scored on PORTFOLIO equity over a DataSet."""
 
 from vike_trader_app.analysis.overfit import Verdict
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.data.datasets import DateRange
 from vike_trader_app.tester import OptimizeReport, TesterConfig, TesterReport, WalkForwardReport
-from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester
+from vike_trader_app.tester.portfolio_tester import MultiSymbolStrategyTester
 
 
 class _Sma(Strategy):
@@ -60,7 +60,7 @@ _GRID = {"fast": [2, 3], "slow": [4, 6]}
 
 
 def test_optimize_returns_ranked_report_over_portfolio_equity():
-    pt = PortfolioStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
     rep = pt.optimize(_make, _GRID, criterion="total_return")
 
     assert isinstance(rep, OptimizeReport)
@@ -78,7 +78,7 @@ def test_optimize_returns_ranked_report_over_portfolio_equity():
 
 def test_optimize_scores_on_portfolio_equity_not_single_symbol():
     bars = _dataset(40)
-    pt = PortfolioStrategyTester(bars, TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(bars, TesterConfig(taker_fee=0.0))
     rep = pt.optimize(_make, _GRID, criterion="sharpe")
     best = rep.best.report
 
@@ -94,7 +94,7 @@ def test_optimize_scores_on_portfolio_equity_not_single_symbol():
 def test_optimize_rejects_unknown_criterion():
     import pytest
 
-    pt = PortfolioStrategyTester(_dataset(20), TesterConfig())
+    pt = MultiSymbolStrategyTester(_dataset(20), TesterConfig())
     with pytest.raises(ValueError):
         pt.optimize(_make, _GRID, criterion="bogus")
 
@@ -102,7 +102,7 @@ def test_optimize_rejects_unknown_criterion():
 def test_optimize_closure_capture_distinct_params_per_combo():
     # Each trial's report must reflect ITS OWN params (no late-binding closure bug). Asserting the
     # ranked trials don't all collapse to one identical score proves the params actually varied.
-    pt = PortfolioStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
     rep = pt.optimize(_make, _GRID, criterion="total_return")
     assert len({tuple(sorted(t.params.items())) for t in rep.ranked}) == 4
 
@@ -111,7 +111,7 @@ def test_optimize_closure_capture_distinct_params_per_combo():
 
 
 def test_walk_forward_structure_and_verdict():
-    pt = PortfolioStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
     rep = pt.walk_forward(_make, _GRID, n_splits=3, criterion="total_return")
 
     assert isinstance(rep, WalkForwardReport)
@@ -126,7 +126,7 @@ def test_walk_forward_structure_and_verdict():
 
 
 def test_walk_forward_windows_are_time_tuples_non_overlapping():
-    pt = PortfolioStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
     rep = pt.walk_forward(_make, _GRID, n_splits=3, criterion="total_return")
     tests = [w.test_range for w in rep.windows]
     # train/test ranges are (ts_lo, ts_hi) time tuples
@@ -138,7 +138,7 @@ def test_walk_forward_windows_are_time_tuples_non_overlapping():
 
 
 def test_walk_forward_is_deterministic():
-    pt = PortfolioStrategyTester(_dataset(48), TesterConfig())
+    pt = MultiSymbolStrategyTester(_dataset(48), TesterConfig())
     a = pt.walk_forward(_make, _GRID, n_splits=3)
     b = pt.walk_forward(_make, _GRID, n_splits=3)
     assert a.oos_report.equity_curve == b.oos_report.equity_curve
@@ -151,7 +151,7 @@ def test_optimize_respects_membership_ranges():
     bars = _dataset(40)
     # BBB is never a member -> it must never trade in any trial.
     ranges = {"BBB": [DateRange(10**15, 10**15 + 1)]}  # a window entirely outside the data
-    pt = PortfolioStrategyTester(bars, TesterConfig(taker_fee=0.0), ranges=ranges)
+    pt = MultiSymbolStrategyTester(bars, TesterConfig(taker_fee=0.0), ranges=ranges)
     rep = pt.optimize(_make, _GRID, criterion="total_return")
     for t in rep.ranked:
         assert t.report.per_symbol_pnl.get("BBB", 0.0) == 0.0
@@ -161,7 +161,7 @@ def test_optimize_respects_membership_ranges():
 def test_walk_forward_respects_membership_ranges():
     bars = _dataset(48)
     ranges = {"BBB": [DateRange(10**15, 10**15 + 1)]}  # BBB inactive everywhere
-    pt = PortfolioStrategyTester(bars, TesterConfig(taker_fee=0.0), ranges=ranges)
+    pt = MultiSymbolStrategyTester(bars, TesterConfig(taker_fee=0.0), ranges=ranges)
     rep = pt.walk_forward(_make, _GRID, n_splits=3, criterion="total_return")
     # runs end-to-end and BBB never trades out-of-sample
     assert rep.n_windows == 3
@@ -172,7 +172,7 @@ def test_walk_forward_respects_membership_ranges():
 
 
 def test_portfolio_optimize_genetic_method():
-    pt = PortfolioStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(_dataset(40), TesterConfig(taker_fee=0.0))
     rep = pt.optimize(_make, _GRID, criterion="total_return", method="genetic",
                       seed=1, pop_size=4, generations=3)
     assert isinstance(rep, OptimizeReport)
@@ -182,7 +182,7 @@ def test_portfolio_optimize_genetic_method():
 
 
 def test_portfolio_walk_forward_rolling_and_efficiency():
-    pt = PortfolioStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
+    pt = MultiSymbolStrategyTester(_dataset(48), TesterConfig(taker_fee=0.0))
     rep = pt.walk_forward(_make, _GRID, n_splits=3, criterion="total_return", mode="rolling")
     assert rep.n_windows == 3
     assert isinstance(rep.wf_efficiency, float)

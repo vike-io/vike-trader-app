@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from ..analysis.metrics import sharpe
 from ..analysis.validation import walk_forward_splits
-from ..core.portfolio import MultiSymbolEngine
+from ..core.multi_symbol_engine import MultiSymbolEngine
 from .dataset import make_features, make_labels
 from .strategy import MLStrategy
 

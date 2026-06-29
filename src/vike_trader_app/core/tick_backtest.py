@@ -7,7 +7,7 @@ to bar fills — a tick run is genuinely tick-filled or it fails loudly.
 """
 
 from .consolidator import consolidate_quotes, consolidate_trades
-from .engine import SingleSymbolEngine, Result
+from .single_symbol_engine import SingleSymbolEngine, Result
 from .fill_model import TickFillModel
 from .timeframe import parse_timeframe
 from ..data import tick_store

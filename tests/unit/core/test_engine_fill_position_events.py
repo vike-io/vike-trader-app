@@ -1,6 +1,6 @@
 """TDD: SingleSymbolEngine fires on_order_filled / on_position_* / on_event from _apply_fill."""
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 

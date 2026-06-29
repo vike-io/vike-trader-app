@@ -4,7 +4,7 @@ from datetime import timedelta
 import polars as pl
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.data.catalog import Catalog
 from vike_trader_app.data.parquet_source import append_series

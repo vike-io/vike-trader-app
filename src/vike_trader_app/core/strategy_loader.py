@@ -36,7 +36,7 @@ def load_strategy_from_file(path: str) -> type[Strategy]:
         raise ValueError(f"no Strategy subclass found in {path!r}")
     cls = candidates[0]
     # Emit a deprecation log if the loaded class descends from a deprecated base.
-    from .portfolio import PortfolioStrategy  # local to avoid import cycles
+    from .multi_symbol_engine import PortfolioStrategy  # local to avoid import cycles
     if issubclass(cls, SingleSymbolStrategy) or (
         issubclass(cls, PortfolioStrategy) and not issubclass(cls, Strategy)
     ):
@@ -82,7 +82,7 @@ def load_any_strategy_from_string(code: str, *, validate: bool = True) -> type:
     Returns the class — callers check ``issubclass(cls, PortfolioStrategy)`` to decide which
     live pump to start.
     """
-    from .portfolio import PortfolioStrategy
+    from .multi_symbol_engine import PortfolioStrategy
     if validate:
         from .sandbox.preflight import check_strategy_source
         problems = check_strategy_source(code)

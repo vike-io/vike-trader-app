@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtWidgets
 
 from ..analysis.metrics import sharpe, total_return
 from ..analysis.optimizer import grid_search
-from ..core.engine import SingleSymbolEngine
+from ..core.single_symbol_engine import SingleSymbolEngine
 from . import dashboard_data as dd
 from . import theme
 

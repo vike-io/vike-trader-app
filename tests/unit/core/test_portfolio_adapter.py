@@ -4,7 +4,7 @@
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioResult, PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, MultiSymbolResult, PortfolioStrategy
 from vike_trader_app.core.portfolio_adapter import (
     MultiSymbolStrategyRunner,
     SymbolEngineShim,
@@ -81,7 +81,7 @@ def test_runner_runs_strategy_per_symbol_shared_cash():
     b = [_bar(1, 5.0), _bar(2, 5.0), _bar(3, 6.0)]
     runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=1000.0))
     result = runner.run()
-    assert isinstance(result, PortfolioResult)
+    assert isinstance(result, MultiSymbolResult)
     assert set(result.per_symbol_pnl) == {"A", "B"}
     assert len(result.equity_curve) == 3
 
@@ -299,7 +299,7 @@ def test_single_symbol_portfolio_matches_engine_with_costs():
     # strategy, and cost config (slippage + maker/taker + multiplier), proving the unified cost model.
     from vike_trader_app.core.model import Bar
     from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
-    from vike_trader_app.core.engine import SingleSymbolEngine
+    from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 

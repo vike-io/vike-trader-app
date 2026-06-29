@@ -479,21 +479,21 @@ def test_run_code_exits_portfolio_mode(app):
 
 
 def test_optimize_routes_to_portfolio_path(app, monkeypatch):
-    """When _portfolio_bars is set, _optimize uses PortfolioStrategyTester (verified via monkeypatch)."""
+    """When _portfolio_bars is set, _optimize uses MultiSymbolStrategyTester (verified via monkeypatch)."""
     from vike_trader_app.analysis.strategy_templates import TEMPLATES
 
     called_with = {}
 
     import vike_trader_app.tester.portfolio_tester as pt_mod
 
-    original_cls = pt_mod.PortfolioStrategyTester
+    original_cls = pt_mod.MultiSymbolStrategyTester
 
     class _Spy(original_cls):
         def walk_forward(self, *args, **kwargs):
             called_with["called"] = True
             return super().walk_forward(*args, **kwargs)
 
-    monkeypatch.setattr(pt_mod, "PortfolioStrategyTester", _Spy)
+    monkeypatch.setattr(pt_mod, "MultiSymbolStrategyTester", _Spy)
 
     # Use a known-good template that has PARAM_GRID + make (and passes the loader validator)
     ma = next(t for t in TEMPLATES if "MaCrossover" in t.code)
@@ -507,7 +507,7 @@ def test_optimize_routes_to_portfolio_path(app, monkeypatch):
     tab._portfolio_name = "TestDS"
     tab._optimize()
 
-    assert called_with.get("called"), "PortfolioStrategyTester.walk_forward was not called"
+    assert called_with.get("called"), "MultiSymbolStrategyTester.walk_forward was not called"
     assert tab.results.last_report is not None
     v = tab.results.last_report.verdict
     assert v is not None and v.level in ("Low", "Medium", "High")

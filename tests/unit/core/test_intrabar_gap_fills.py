@@ -9,7 +9,7 @@ Two spec'd-but-previously-unimplemented behaviours (core/__init__ "Planned"):
 
 import pytest
 
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.orders import Order, order_fill_price
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy

@@ -3,9 +3,9 @@
 import pytest
 
 from vike_trader_app.analysis.tearsheet import monthly_returns, write_tearsheet_html
-from vike_trader_app.core.engine import Result
+from vike_trader_app.core.single_symbol_engine import Result
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.model import Trade
 
 MONTH = 30 * 24 * 60 * 60 * 1000  # ~1 month in ms

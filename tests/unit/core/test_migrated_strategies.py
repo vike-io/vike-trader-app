@@ -8,7 +8,7 @@ This file tests only Qt-free MLStrategy.
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine
 from vike_trader_app.ml.strategy import MLStrategy
 
 

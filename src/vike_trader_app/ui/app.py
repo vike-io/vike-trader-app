@@ -15,7 +15,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import metrics
-from ..core.engine import SingleSymbolEngine
+from ..core.single_symbol_engine import SingleSymbolEngine
 from ..core.paper import PaperTester, pump
 from ..exec.oms import OmsHub
 from ..core.strategy_loader import load_strategy_from_file

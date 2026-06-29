@@ -1,6 +1,6 @@
 # tests/unit/core/test_schedule_wiring.py
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.schedule import EveryNBars, MonthStart
 from vike_trader_app.core.strategy import Strategy
 

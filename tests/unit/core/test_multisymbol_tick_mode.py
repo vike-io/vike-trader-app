@@ -9,8 +9,8 @@ TDD suite covering:
 import pytest
 
 from vike_trader_app.core.ticks import QuoteTick, TradeTick
-from vike_trader_app.core.engine import SingleSymbolEngine
-from vike_trader_app.core.portfolio import MultiSymbolEngine, SymbolState
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, SymbolState
 from vike_trader_app.core.fill_model import TickFillModel
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy

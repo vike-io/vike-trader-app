@@ -8,7 +8,7 @@ import concurrent.futures as cf
 import itertools
 from dataclasses import dataclass, field
 
-from ..core.engine import SingleSymbolEngine
+from ..core.single_symbol_engine import SingleSymbolEngine
 from .metrics import sharpe
 
 

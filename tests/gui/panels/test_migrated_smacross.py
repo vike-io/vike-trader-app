@@ -9,7 +9,7 @@ Qt-free MLStrategy tests remain in tests/unit/core/test_migrated_strategies.py.
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine
 from vike_trader_app.ui.dialogs import SmaCross, default_strategy_factory
 
 

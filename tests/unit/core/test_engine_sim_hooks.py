@@ -4,7 +4,7 @@ These hooks thread order identity to a sim venue without touching the optimizer
 fast path (hooks default to None; the ``if self._on_X is not None`` guards are free).
 """
 
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.orders import Order
