@@ -11,6 +11,7 @@ from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
 from .model import Bar, Fill, Position, Trade
 from .fill_model import BarFillModel
+from .fill_resolution import resolve_intrabar_fills
 from .order_intent import backtest_order_request, order_request_to_resting
 from .orders import Order
 from .sizing import units_from_percent, units_from_value
@@ -356,28 +357,13 @@ class BacktestEngine:
             self._apply_fill(o.side, o.size, fill_price, bar.ts, is_maker=o.kind == "limit", order=o)
 
     def _resolve_intrabar(self, triggered: "list[tuple[Order, float]]") -> "list[tuple[Order, float]]":
-        """Several resting orders triggered in ONE bar — OHLC can't reveal the intrabar sequence.
+        """Several resting orders triggered in ONE bar — delegates to the shared resolution component.
 
-        Apply ADVERSE (stop/trailing) fills before FAVOURABLE (limit) fills (pessimistic ordering).
-        When more than one order REDUCES the current position in the same bar (a stop-loss +
-        take-profit bracket), cap the total reduction to the position size, adverse-first, so the
-        profit target can't also fill after the stop already flattened the position. The ambiguous
-        bar is counted in ``intrabar_both_hit`` (surfaced on the Result for honesty)."""
-        triggered = sorted(triggered, key=lambda t: 0 if t[0].kind in ("stop", "trailing") else 1)
-        pos = self.position.size
-        closing_side = -1 if pos > 0 else (1 if pos < 0 else 0)
-        if closing_side:
-            reducers = [t for t in triggered if t[0].side == closing_side]
-            has_stop = any(t[0].kind in ("stop", "trailing") for t in reducers)
-            has_limit = any(t[0].kind not in ("stop", "trailing") for t in reducers)
-            if len(reducers) > 1 and has_stop and has_limit:
-                self.intrabar_both_hit += 1
-                remaining = abs(pos)
-                for o, _fp in reducers:          # adverse-first (triggered is already sorted)
-                    take = min(o.size, remaining)
-                    o.size = take                # order is consumed this bar -> safe to mutate
-                    remaining -= take
-        return triggered
+        See :func:`~vike_trader_app.core.fill_resolution.resolve_intrabar_fills` for the full
+        docstring (adverse-first ordering + SL/TP bracket cap)."""
+        resolved, both_hit = resolve_intrabar_fills(triggered, self.position.size)
+        self.intrabar_both_hit += both_hit
+        return resolved
 
     def _emit_fill_events(self, fill: Fill, kind: str) -> Fill:
         """Fire on_order_filled + on_position_* + on_event for one applied fill (position already updated)."""
