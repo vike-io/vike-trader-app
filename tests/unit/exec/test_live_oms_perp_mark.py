@@ -19,7 +19,7 @@ from vike_trader_app.exec.risk import RiskGate, RiskLimits
 
 def _hub():
     bus = EventBus()
-    return bus, LiveOmsHub(bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+    return bus, LiveOmsHub(bus=bus, account=Account(venue="bybit"), gate=RiskGate(RiskLimits()),
                            client=object(), venue="bybit", symbol="BTCUSDT")
 
 
@@ -122,7 +122,7 @@ def test_apply_snapshot_positive_mark_overwrites_previous():
 def test_spot_fill_no_mark_price_does_not_touch_marks():
     """Spot fills always have mark_price=None -> marks dict stays empty."""
     bus = EventBus()
-    hub = LiveOmsHub(bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+    hub = LiveOmsHub(bus=bus, account=Account(venue="binance"), gate=RiskGate(RiskLimits()),
                      client=object(), venue="binance", symbol="BTCUSDT")
     bus.publish(FillEvent(trade_id="s1", client_order_id="x-0", venue="binance",
                           symbol="BTCUSDT", side=+1, last_qty=1.0, last_px=65000.0,

@@ -366,7 +366,7 @@ def test_filled_row_advances_managed_order_fsm():
     client = _SyncClient(bus, venue_order_id="okx-ord-1")
     hub = LiveOmsHub(
         bus=bus,
-        account=Account(),
+        account=Account(venue="okx"),
         gate=RiskGate(RiskLimits()),
         client=client,
         venue="okx",
