@@ -234,7 +234,7 @@ def test_binance_demo_perp_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa:
     snapshot = client.connect()
 
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="binance"), gate=RiskGate(RiskLimits()),
         client=client, venue="binance", symbol="BTCUSDT", now_ms=now_ms,
     )
     hub.apply_snapshot(snapshot)

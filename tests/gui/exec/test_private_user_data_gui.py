@@ -37,7 +37,7 @@ class _NoClient:
 
 
 def _hub():
-    return LiveOmsHub(bus=EventBus(), account=Account(), gate=RiskGate(RiskLimits()),
+    return LiveOmsHub(bus=EventBus(), account=Account(venue="binance"), gate=RiskGate(RiskLimits()),
                       client=_NoClient(), venue="binance", symbol="BTCUSDT")
 
 

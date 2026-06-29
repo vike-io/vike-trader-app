@@ -204,7 +204,7 @@ def test_okx_demo_perp_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR
     snapshot = client.connect()
 
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="okx"), gate=RiskGate(RiskLimits()),
         client=client, venue="okx", symbol="BTC-USDT-SWAP", now_ms=now_ms,
     )
     hub.apply_snapshot(snapshot)
