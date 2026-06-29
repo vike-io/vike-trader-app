@@ -170,6 +170,17 @@ class LiveEngine:
         regimes (backtest 'delta' / live 'authoritative').  For the single-venue basket (every
         hub same venue) this is ONE Account, so the value is bit-identical to the old shared-
         Account ``balance + Σ unrealized`` read.
+
+        Balance-mode behaviour (S4 fix):
+        - **PERP / authoritative**: once the venue ACCOUNT_UPDATE frame arrives,
+          ``apply_account_state`` flips ``balance_mode`` to 'authoritative' and
+          ``equity_all`` returns ``balance + Σ unrealized`` — byte-identical to the old
+          per-venue ``balance + Σ unrealized`` read.
+        - **SPOT / delta** (no balance frame is ever received, so the mode stays 'delta'
+          all session): ``equity_all`` returns ``seed + balance + realized_pnl + Σ unrealized``.
+          The OLD live-spot path returned only ``balance + Σ unrealized`` (no ``realized_pnl``
+          term) — a latent bug that silently dropped realized PnL from live-spot equity.
+          S4 fixes this: the new spot equity CORRECTLY includes ``realized_pnl``.
         """
         return self._portfolio.equity()
 

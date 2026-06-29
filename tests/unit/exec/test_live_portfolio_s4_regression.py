@@ -108,7 +108,15 @@ def test_two_venue_basket_gets_two_accounts_no_clobber():
 
 def test_fill_then_authoritative_frame_not_double_counted():
     """The design doc's named double-count catch: a fill with NON-ZERO realized then an authoritative
-    AccountState frame -> equity unchanged (seed/realized drop, venue balance already embeds them)."""
+    AccountState frame -> equity unchanged (seed/realized drop, venue balance already embeds them).
+
+    This test covers the PERP/authoritative path: once apply_account_state fires, balance_mode
+    flips to 'authoritative' and equity_all = balance + Σ unrealized (byte-identical to the old
+    per-venue ``balance + Σ unrealized`` read — NO regression for perp).
+
+    For the SPOT/delta path (which never receives a balance frame) see
+    ``test_spot_delta_equity_includes_realized_pnl_fix`` below, which documents and pins the S4
+    FIX: spot equity now correctly includes realized_pnl (old path silently omitted it)."""
     pf = Portfolio()
     acct = pf.account("binance", multipliers={_BTC: 1.0}, seed=1_000.0)
     hubs = {_BTC: _Hub("binance", _BTC)}
@@ -129,3 +137,80 @@ def test_fill_then_authoritative_frame_not_double_counted():
     post = eng.equity_now()
     assert post == pytest.approx(pre, abs=1e-12)        # balance 1030 + unrealized 30 = 1060
     assert post == pytest.approx(1_060.0, abs=1e-12)
+
+
+def test_spot_delta_equity_includes_realized_pnl_fix():
+    """S4 FIX: live-SPOT equity now correctly includes realized_pnl.
+
+    Scenario: single SPOT-venue session that STAYS in delta mode all session (no
+    apply_account_state / authoritative frame is ever received — exactly the real spot live
+    path, since spot venues never push a balance update frame).
+
+    A fill sequence: BUY 1 @ 100, then SELL (close) 1 @ 110 → realized_pnl = +10.
+    The position is then FLAT (Σ unrealized = 0).
+
+    New (S4) equity = seed + balance + realized_pnl + Σ unrealized
+                    = 1000  +  0     + 10           + 0
+                    = 1010   ← CORRECT
+
+    Old (pre-S4) equity = balance + Σ unrealized   (delta mode was not wired; path used the
+                         stale ``balance + Σ unrealized`` formula with NO realized term)
+                        = 0 + 0 = 0, PLUS seed counted separately, effectively giving:
+                        seed + balance + Σ unrealized = 1000 + 0 + 0 = 1000  ← LATENT BUG
+                        (realized_pnl +10 was silently dropped)
+
+    The two assertions below pin this explicitly:
+      1. equity_now() == seed + realized_pnl  (flat position: balance=0, unrealized=0)
+      2. equity_now() > seed by exactly realized_pnl  (i.e. the fix is active)
+    """
+    SEED = 1_000.0
+    REALIZED_PNL = 10.0   # buy @100 close @110, qty=1, mult=1 → gross +10
+
+    pf = Portfolio()
+    acct = pf.account("binance", multipliers={_BTC: 1.0}, seed=SEED)
+    hubs = {_BTC: _Hub("binance", _BTC)}
+    eng = LiveEngine(hubs, pf, now_ms=lambda: 0)
+
+    # Open: BUY 1 @ 100 (balance=0, no commission)
+    acct.apply_fill(FillEvent(
+        trade_id="t1", client_order_id="c1", venue="binance", symbol=_BTC,
+        side=+1, last_qty=1.0, last_px=100.0, commission=0.0,
+        liquidity_side="taker", ts=0,
+    ))
+    # Close: SELL 1 @ 110  → realized_pnl = (110 - 100) * 1 * 1 = +10; position flat
+    acct.apply_fill(FillEvent(
+        trade_id="t2", client_order_id="c2", venue="binance", symbol=_BTC,
+        side=-1, last_qty=1.0, last_px=110.0, commission=0.0,
+        liquidity_side="taker", ts=1,
+    ))
+
+    # Confirm the session never received an authoritative balance frame — stays SPOT/delta.
+    assert acct.balance_mode == "delta", (
+        "SPOT accounts must stay in delta mode (no apply_account_state called)"
+    )
+
+    # Confirm the realized_pnl was booked correctly.
+    assert acct.realized_pnl == pytest.approx(REALIZED_PNL, abs=1e-12)
+
+    # Position is flat; mark doesn't matter for the equity (unrealized = 0).
+    acct.set_mark("binance", _BTC, 110.0)   # keep mark current (flat pos → unreal=0)
+
+    equity = eng.equity_now()
+
+    # ── Assertion 1 (the fix): equity == seed + realized_pnl (balance=0, unrealized=0)
+    expected_new = SEED + REALIZED_PNL   # 1010.0
+    assert equity == pytest.approx(expected_new, abs=1e-9), (
+        f"S4 spot equity should be {expected_new} (seed + realized_pnl); got {equity}"
+    )
+
+    # ── Assertion 2 (explicit differs-from-old): new equity > old by exactly realized_pnl.
+    # OLD (pre-S4) formula for delta mode had no realized_pnl term:
+    #   old_equity = seed + balance + Σ unrealized = 1000 + 0 + 0 = 1000
+    old_equity_formula = SEED + acct.balance + sum(
+        acct.unrealized_pnl("binance", s) for s in (_BTC,)
+    )
+    assert equity - old_equity_formula == pytest.approx(REALIZED_PNL, abs=1e-9), (
+        f"New equity should exceed old (pre-S4 no-realized) formula by exactly "
+        f"realized_pnl={REALIZED_PNL}; "
+        f"diff={equity - old_equity_formula}, old={old_equity_formula}, new={equity}"
+    )
