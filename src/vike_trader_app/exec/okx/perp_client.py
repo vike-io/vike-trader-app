@@ -110,18 +110,22 @@ class OKXPerpExecutionClient(OKXSpotExecutionClient):
     # --- perp reconcile ---
 
     def _fetch_usdt_balance(self) -> float:
-        """Fetch OKX account balance and return the USDT availBal (float).
+        """Fetch OKX account balance and return the USDT TOTAL cash balance (``cashBal``) as float.
 
-        Quote asset: USDT (SWAP perp settle currency).
+        Quote asset: USDT (SWAP perp settle currency). Uses ``cashBal`` (TOTAL cash = free + frozen),
+        NOT ``availBal`` (free only) — the equity baseline must include funds locked in resting
+        orders, matching Bybit ``walletBalance`` / Binance ``balance``. (The spot ``iter_balances``
+        yields ``availBal`` because the spot connect() adds locked_sell_qty on top; here we want the
+        total directly, so we read ``cashBal`` inline rather than reusing iter_balances.)
         Default-safe: any transport/parse failure returns 0.0 so reconcile is never broken.
-        Reuses PATH_ACCOUNT ('/api/v5/account/balance') + iter_balances() from the spot parent.
         """
         try:
             raw = self._transport(self._base, self.PATH_ACCOUNT, "GET", {}, self._signer)
             result = self.unwrap(raw)
-            for bal in self.iter_balances(result):
-                if bal.get("asset") == "USDT":
-                    return float(bal.get("free") or 0)
+            for acct in result:
+                for d in acct.get("details", []):
+                    if d.get("ccy") == "USDT":
+                        return float(d.get("cashBal") or 0)
         except Exception:  # noqa: BLE001 — best-effort; never break reconcile on a balance hiccup
             pass
         return 0.0

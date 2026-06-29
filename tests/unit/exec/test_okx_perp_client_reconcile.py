@@ -7,10 +7,11 @@ from vike_trader_app.exec.crypto_client import ReconcileSnapshot
 
 _F = {"tick_size": 0.1, "step_size": 0.1, "min_qty": 0.1, "max_qty": 1e4, "min_notional": 0.0}
 
-# Canned balance response: USDT availBal = 3500.0
+# Canned balance response: USDT cashBal (TOTAL) = 3500.0, availBal (free) = 3200.0 — distinct so
+# the test verifies reconcile reads cashBal (total, incl. locked), NOT availBal (free).
 _BAL_RESP = {"code": "0", "data": [
     {"details": [
-        {"ccy": "USDT", "availBal": "3500.0", "cashBal": "3500.0"},
+        {"ccy": "USDT", "availBal": "3200.0", "cashBal": "3500.0"},
         {"ccy": "BTC", "availBal": "0.05", "cashBal": "0.05"},
     ]}]}
 
@@ -50,7 +51,7 @@ def test_reconcile_long_signed_base_and_mark():
 
 
 def test_reconcile_balance_set_from_usdt_avail():
-    """reconcile_positions populates balance from USDT availBal."""
+    """reconcile_positions populates balance from USDT cashBal (TOTAL, incl. locked)."""
     snap = _client(_dual_transport(_LONG_POS_RESP, _BAL_RESP)).connect()
     assert snap.balance == 3500.0
 
