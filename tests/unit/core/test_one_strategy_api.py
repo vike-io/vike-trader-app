@@ -238,6 +238,53 @@ def test_symbols_attr():
 
 
 # ---------------------------------------------------------------------------
+# D2: WARMUP gate in PortfolioEngine.run matches BacktestEngine.step semantics
+# ---------------------------------------------------------------------------
+
+def test_warmup_gate_portfolio_engine():
+    """D2: on_bar is silent for i < WARMUP; equity curve is still recorded every bar."""
+    n_bars = 5
+    warmup_bars = 3
+    on_bar_indices = []
+
+    class S(Strategy):
+        WARMUP = warmup_bars
+
+        def on_bar(self, bar):
+            on_bar_indices.append(self.index)
+
+    eng = PortfolioEngine({"BTC": _series(n_bars, base=10)}, S(), fee_rate=0.0, cash=1000)
+    result = eng.run()
+
+    # on_bar must NOT fire for i < WARMUP
+    assert all(idx >= warmup_bars for idx in on_bar_indices), (
+        f"on_bar fired during warmup: {[i for i in on_bar_indices if i < warmup_bars]}"
+    )
+    # on_bar must fire for i >= WARMUP
+    expected_post_warmup = list(range(warmup_bars, n_bars))
+    # Each bar fires on_bar once per symbol (1 symbol here), so indices == expected
+    assert on_bar_indices == expected_post_warmup, (
+        f"Expected on_bar at indices {expected_post_warmup}, got {on_bar_indices}"
+    )
+    # Equity curve must cover ALL bars (warmup bars still recorded)
+    assert len(result.equity_curve) == n_bars, (
+        f"Equity curve should have {n_bars} entries, got {len(result.equity_curve)}"
+    )
+
+
+def test_warmup_zero_is_unchanged():
+    """WARMUP=0 (default) means on_bar fires from i=0 — no change from old behaviour."""
+    indices = []
+
+    class S(Strategy):
+        def on_bar(self, bar):
+            indices.append(self.index)
+
+    PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
+    assert indices == [0, 1, 2]
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle: on_start fires before the loop, on_stop after, on_fill per fill
 # ---------------------------------------------------------------------------
 
