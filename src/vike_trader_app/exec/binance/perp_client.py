@@ -24,6 +24,9 @@ class BinancePerpExecutionClient(BinanceSpotExecutionClient):
     PATH_POSITIONS = "/fapi/v2/positionRisk"
     PATH_SET_LEVERAGE = "/fapi/v1/leverage"
     PATH_POSITION_MODE = "/fapi/v1/positionSide/dual"
+    # Binance fapi balance endpoint: returns a list of {asset, balance, availableBalance, ...}.
+    # The spot PATH_ACCOUNT (/api/v3/account) is NOT valid for fapi; use /fapi/v2/balance instead.
+    PATH_ACCOUNT_PERP = "/fapi/v2/balance"
 
     def __init__(self, bus, *, signer, rest_base_url: str, symbol: str, filters: dict,
                  base_asset: str = "", leverage: float = 1.0,
@@ -57,14 +60,37 @@ class BinancePerpExecutionClient(BinanceSpotExecutionClient):
             params["price"] = format_price(request.price, self._filters["tick_size"])
         return params
 
+    def _fetch_usdt_balance(self) -> float:
+        """Fetch fapi wallet balance and return the USDT availableBalance (float).
+
+        Quote asset: USDT (USDS-M futures settle currency).
+        Endpoint: /fapi/v2/balance → list of {asset, balance, availableBalance, ...}.
+        availableBalance is the free (withdrawable + margin-not-used) amount; `balance` is the
+        total wallet including unrealized PnL and margin — we want the raw wallet cash so use
+        `balance` (total wallet cash, not counting unrealized), consistent with Bybit walletBalance.
+        Default-safe: any transport/parse failure returns 0.0 so reconcile is never broken.
+        """
+        try:
+            rows = self.unwrap(self._transport(self._base, self.PATH_ACCOUNT_PERP, "GET",
+                                               {}, self._signer))
+            for entry in rows:
+                if entry.get("asset") == "USDT":
+                    return float(entry.get("balance") or 0)
+        except Exception:  # noqa: BLE001 — best-effort; never break reconcile on a balance hiccup
+            pass
+        return 0.0
+
     def reconcile_positions(self) -> ReconcileSnapshot:
         """GET /fapi/v2/positionRisk {symbol}. positionAmt is ALREADY SIGNED base qty (long>0,
         short<0). positionSide is 'BOTH' (one-way) or 'LONG'/'SHORT' (hedge). Emit one snapshot row
         per live leg: net -> a single BOTH row (byte-equivalent; no position_sides entry); hedge ->
         a LONG row AND a SHORT row, each carrying its position_side.
+        Also fetches /fapi/v2/balance (USDT balance) -> ReconcileSnapshot.balance.
+        Balance fetch is default-safe: failure → 0.0, positions still returned.
         """
         rows = self.unwrap(self._transport(self._base, self.PATH_POSITIONS, "GET",
                                             {"symbol": self._symbol}, self._signer))
+        bal = self._fetch_usdt_balance()
         legs: list[tuple[str, float, float, float, str]] = []   # (sym, signed, avg, mark, side)
         for p in rows:
             side = str(p.get("positionSide", "BOTH"))
@@ -79,11 +105,13 @@ class BinancePerpExecutionClient(BinanceSpotExecutionClient):
             return ReconcileSnapshot(
                 positions=((self._symbol, 0.0),), open_orders=(),
                 position_avg_px=((self._symbol, 0.0),),
-                position_mark_px=((self._symbol, 0.0),))
+                position_mark_px=((self._symbol, 0.0),),
+                balance=bal)
         hedge = any(side != "BOTH" for *_rest, side in legs)
         return ReconcileSnapshot(
             positions=tuple((s, q) for s, q, _a, _m, _sd in legs),
             open_orders=(),
             position_avg_px=tuple((s, a) for s, _q, a, _m, _sd in legs),
             position_mark_px=tuple((s, m) for s, _q, _a, m, _sd in legs),
-            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else ())
+            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else (),
+            balance=bal)

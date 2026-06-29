@@ -63,14 +63,35 @@ class BybitPerpExecutionClient(BybitSpotExecutionClient):
     def build_cancel_params(self, client_order_id) -> dict:
         return {"category": "linear", "symbol": self._symbol, "orderLinkId": client_order_id}
 
+    def _fetch_usdt_balance(self) -> float:
+        """Fetch UNIFIED wallet balance and return the USDT walletBalance (float).
+
+        Quote asset: USDT (linear perp settle currency).
+        Default-safe: any transport/parse failure returns 0.0 so reconcile is never broken.
+        Reuses PATH_ACCOUNT ('/v5/account/wallet-balance') + iter_balances() from the spot parent.
+        """
+        try:
+            raw = self._transport(self._base, self.PATH_ACCOUNT, "GET",
+                                  {"accountType": "UNIFIED"}, self._signer)
+            result = self.unwrap(raw)
+            for bal in self.iter_balances(result):
+                if bal.get("asset") == "USDT":
+                    return float(bal.get("free") or 0)
+        except Exception:  # noqa: BLE001 — best-effort; never break reconcile on a balance hiccup
+            pass
+        return 0.0
+
     def reconcile_positions(self) -> ReconcileSnapshot:
         """GET /v5/position/list. One-way: positionIdx==0 (side Buy/Sell signs size) -> one BOTH leg
         (byte-equivalent). Hedge: positionIdx 1 (Long) and 2 (Short) -> a LONG leg AND a SHORT leg,
         each signed (+abs for idx1/Buy, -abs for idx2/Sell) and carrying its position_side.
+        Also fetches /v5/account/wallet-balance (USDT walletBalance) -> ReconcileSnapshot.balance.
+        Balance fetch is default-safe: failure → 0.0, positions still returned.
         """
         raw = self.unwrap(self._transport(
             self._base, self.PATH_POSITION_LIST, "GET",
             {"category": "linear", "symbol": self._symbol}, self._signer))
+        bal = self._fetch_usdt_balance()
         legs: list[tuple[str, float, float, float, str]] = []   # (sym, signed, avg, mark, side)
         for p in raw.get("list", []):
             size = abs(float(p.get("size", 0) or 0))
@@ -90,11 +111,13 @@ class BybitPerpExecutionClient(BybitSpotExecutionClient):
             return ReconcileSnapshot(
                 positions=((self._symbol, 0.0),), open_orders=(),
                 position_avg_px=((self._symbol, 0.0),),
-                position_mark_px=((self._symbol, 0.0),))
+                position_mark_px=((self._symbol, 0.0),),
+                balance=bal)
         hedge = any(sd != "BOTH" for *_r, sd in legs)
         return ReconcileSnapshot(
             positions=tuple((s, q) for s, q, _a, _m, _sd in legs),
             open_orders=(),
             position_avg_px=tuple((s, a) for s, _q, a, _m, _sd in legs),
             position_mark_px=tuple((s, m) for s, _q, _a, m, _sd in legs),
-            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else ())
+            position_sides=tuple((s, sd) for s, _q, _a, _m, sd in legs) if hedge else (),
+            balance=bal)
