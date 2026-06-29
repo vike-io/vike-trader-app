@@ -11,6 +11,7 @@ client (follow-up #6); the worker stop()/wait() is the LiveExecutionSession's ha
 from __future__ import annotations
 
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent,
     FundingEvent,
     OrderAccepted,
@@ -111,6 +112,12 @@ class LiveOmsHub:
                 self.account.set_mark(self.venue, sym, mark)
         for mo in snapshot.open_orders:
             self.registry[mo.client_order_id] = mo
+        # Seed cash balance from the snapshot so equity_now() = real_wallet_balance + unrealized
+        # instead of PnL-from-zero (the live PnL-from-zero bug fix). snapshot.balance defaults to
+        # 0.0 for existing callers; per-venue wallet-balance REST fetch is the follow-up that
+        # populates it.
+        if snapshot.balance != 0.0:
+            self.account.balance = snapshot.balance
 
     def shutdown(self) -> None:
         """Symmetric detach (follow-up #6, Qt-free half): unsubscribe the bus + detach the client."""
@@ -205,6 +212,10 @@ class LiveOmsHub:
                 return
             self.account.apply_funding(event)
             self._journal("FundingEvent", event)
+            return
+        if isinstance(event, AccountState):
+            if event.venue == self.venue:
+                self.account.apply_account_state(event)
             return
         if isinstance(event, PositionLiquidated):
             if event.symbol != self.symbol:

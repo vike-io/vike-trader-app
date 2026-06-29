@@ -37,6 +37,11 @@ class ReconcileSnapshot:
     # every row is one-way/net -> 'BOTH' (byte-equivalent). A hedge reconcile fills this with
     # ('LONG'|'SHORT') per leg so apply_snapshot keys the Account per leg.
     position_sides: tuple[tuple[str, str], ...] = ()
+    # Wallet cash balance at reconcile time (quote asset, e.g. USDT). Seeds Account.balance so
+    # equity_now() = real_wallet_balance + unrealized, not PnL-from-zero. Defaults to 0.0 so
+    # all existing callers that don't set it are unaffected. Per-venue REST wallet-balance fetch
+    # is the follow-up: each venue's connect()/reconcile_positions() populates this field.
+    balance: float = 0.0
 
 
 class CryptoExecutionClient:
