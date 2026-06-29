@@ -77,8 +77,9 @@ class LivePump:
         ``on_start`` / ``on_stop`` are called if defined (safe with getattr).
     hubs:
         ``{symbol: LiveOmsHub}`` — forwarded verbatim to ``LiveEngine``.
-    account:
-        The shared ``Account`` across all N symbols.
+    portfolio:
+        The session-scoped ``Portfolio`` (per-venue Account aggregator), forwarded to
+        ``LiveEngine``; ``equity_now()`` reads ``portfolio.equity()``.
     now_ms:
         Clock injection for ``LiveEngine``; defaults to wall-clock ms.
     timeframes:
@@ -89,13 +90,13 @@ class LivePump:
         self,
         strategy,
         hubs: dict,
-        account,
+        portfolio,
         *,
         now_ms: Callable[[], int] | None = None,
         timeframes=None,
     ) -> None:
         self.strategy = strategy
-        self.engine = LiveEngine(hubs, account, now_ms=now_ms, timeframes=timeframes)
+        self.engine = LiveEngine(hubs, portfolio, now_ms=now_ms, timeframes=timeframes)
 
         # --- Strategy binding ---
         # SingleSymbolStrategy + N=1: wire a LiveSymbolShim (unkeyed API compat).

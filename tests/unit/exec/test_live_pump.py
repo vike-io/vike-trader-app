@@ -62,6 +62,7 @@ class _Bus:
 class _Acct:
     def __init__(self, bal: float = 10_000.0):
         self.balance = bal
+        self.balance_mode = "authoritative"   # live: venue balance authoritative
         self.positions: dict = {}
         self.marks: dict = {}
 
@@ -70,6 +71,23 @@ class _Acct:
 
     def unrealized_pnl(self, venue: str, symbol: str, position_side: str = "BOTH") -> float:
         return 0.0
+
+    def equity_all(self, seed: float = 0.0) -> float:
+        return self.balance
+
+
+class _PF:
+    """Single-venue Portfolio stub wrapping one ``_Acct`` (all hubs are venue 'binance')."""
+
+    def __init__(self, acct: "_Acct"):
+        self._acct = acct
+        self.seeds = {"binance": 0.0}
+
+    def account(self, venue: str, multipliers=None, seed: float = 0.0):
+        return self._acct
+
+    def equity(self) -> float:
+        return self._acct.equity_all(self.seeds.get("binance", 0.0))
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +106,7 @@ def _make_pump(strategy, symbols=(_BTC,)):
     """Build a pump with stub hubs that have buses (for adapter wiring)."""
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in symbols}
-    pump = LivePump(strategy, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strategy, hubs, _PF(acct), now_ms=lambda: 999)
     return pump, hubs, acct
 
 
@@ -162,7 +180,7 @@ def test_adapters_count_equals_n_hubs():
     acct = _Acct()
     symbols = [_BTC, _ETH]
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in symbols}
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
 
     assert len(pump._adapters) == 2
 
@@ -187,7 +205,7 @@ def test_stop_unsubscribes_all_adapters():
     acct = _Acct()
     symbols = [_BTC, _ETH]
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in symbols}
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
 
     # Both hubs' buses have 1 subscriber (the adapter)
     assert len(hubs[_BTC].bus._subs) == 1
@@ -234,7 +252,7 @@ def test_dispatch_unified_strategy_n2_calls_on_bar_per_symbol():
     strat = _UnifiedMultiStrategy()
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     pump.start()
 
     b_btc = _bar(ts=1000, symbol=_BTC, close=50_000.0)
@@ -264,7 +282,7 @@ def test_dispatch_portfolio_strategy_calls_bundle_on_bar():
     strat = _PS()
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     pump.start()
 
     pump.feed_bar(_BTC, _bar(ts=1000, symbol=_BTC))
@@ -356,7 +374,7 @@ def test_n2_single_symbol_strategy_does_not_use_shim():
 
     acct = _Acct()
     hubs = {sym: _Hub(venue="binance", symbol=sym) for sym in [_BTC, _ETH]}
-    pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
+    pump = LivePump(strat, hubs, _PF(acct), now_ms=lambda: 999)
     # N>1 → engine is the raw LiveEngine, not the shim
     assert isinstance(strat._engine, LiveEngine)
 

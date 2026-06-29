@@ -3178,18 +3178,21 @@ class MainWindow(QtWidgets.QMainWindow):
         if cfg is None:
             return False
 
-        from ..exec.accounting import Account
+        from ..exec.portfolio import Portfolio
         from ..ui.private_user_data import LiveExecutionSession
 
         product = spec.product
-        # One Account shared across ALL hubs so position/balance accounting is unified.
-        # For the single-symbol path (N==1) this is unchanged — one hub, one account.
-        account = Account()
+        # Session-scoped Portfolio aggregating PER-VENUE Accounts (the Nautilus structure).
+        # Each hub binds portfolio.account(venue) — idempotent lazy-create, so every symbol on the
+        # SAME venue shares one Account (single-venue basket == the old shared-Account behavior,
+        # byte-identical equity) and a 2nd venue auto-creates its own Account (no clobber).
+        portfolio = Portfolio()
         _all_hubs: dict = {}
 
         # ------------------------------------------------------------------
         # Unified arm loop — iterates spec.all_symbols (primary first, then basket extras).
-        # i==0 is the primary; i>0 are basket extras (same venue/product/cfg, shared account).
+        # i==0 is the primary; i>0 are basket extras (same venue/product/cfg; per-venue Account
+        # via portfolio.account(venue) — same venue shares one Account, idempotent).
         # Deribit options basket is not supported; break on the 2nd deribit symbol.
         # ------------------------------------------------------------------
         for i, sym in enumerate(spec.all_symbols):
@@ -3200,7 +3203,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 continue   # primary symbol re-listed as an extra: OLD excluded it (dedup) — preserve
             try:
                 _hub, _client_sym, _bus, _ct_val, _currency = self._build_hub_for_symbol(
-                    sym=sym, account=account, cfg=cfg, venue=venue,
+                    sym=sym, account=portfolio.account(venue), cfg=cfg, venue=venue,
                     environment=environment, product=product, spec=spec,
                 )
             except Exception as _exc:  # noqa: BLE001
@@ -3230,7 +3233,11 @@ class MainWindow(QtWidgets.QMainWindow):
         return True
 
     def _build_hub_for_symbol(self, *, sym, account, cfg, venue, environment, product, spec):
-        """Build a LiveOmsHub for a single symbol, shared account.
+        """Build a LiveOmsHub for a single symbol bound to its venue's Account.
+
+        ``account`` is the per-venue ``Account`` from the session ``Portfolio``
+        (``portfolio.account(venue)``); every symbol on the same venue receives the SAME
+        Account object (idempotent), so a single-venue basket is one shared Account.
 
         Used for BOTH the primary arm and each extra basket symbol. RAISEs on any failure
         (missing instrument / bad retCode/code / missing ctVal). Callers are responsible
@@ -3716,10 +3723,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.statusBar().showMessage(f"Strategy load error: {exc}", 5000)
             return
 
-        # Shared account is the same object across all hubs in the basket (N=1: trivially same).
-        account = next(iter(sess.hubs.values())).account
+        # Reconstruct the session Portfolio from the hubs' per-venue Accounts (the arm path bound
+        # portfolio.account(venue) onto each hub). Live convention: seed=0.0, venue balance
+        # authoritative. Single-venue basket -> one Account -> equity bit-identical to before.
+        from ..exec.portfolio import Portfolio
+        portfolio = Portfolio()
+        for _h in sess.hubs.values():
+            portfolio.accounts.setdefault(_h.venue, _h.account)
+            portfolio.seeds.setdefault(_h.venue, 0.0)
         pump = LivePump(
-            strategy, sess.hubs, account,
+            strategy, sess.hubs, portfolio,
             timeframes=getattr(strategy, "timeframes", None),
         )
 

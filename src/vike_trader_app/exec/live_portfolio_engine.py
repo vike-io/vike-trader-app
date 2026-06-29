@@ -22,10 +22,11 @@ Key design decisions (mirror the plan):
   The strategy already computed the desired delta via ``order_target_percent`` / ``buy`` /
   ``sell``; we route the EXPLICIT ``size`` as a plain market order.  NO backtest sizer or
   leverage cap is applied here.
-- ``equity_now()`` = ``account.balance + sum(account.unrealized_pnl(venue, sym) for sym)``.
-  The shared ``Account`` is keyed ``(venue, symbol, position_side)`` — naturally multi-symbol.
+- ``equity_now()`` delegates to ``Portfolio.equity()`` (Σ_v accounts[v].equity_all(seeds[v])).
+  Each per-venue ``Account`` is keyed ``(venue, symbol, position_side)``; the single-venue basket
+  is ONE Account, so equity is bit-identical to the old ``balance + Σ unrealized`` read.
 - One ``BarSeriesBuffer`` per symbol (not shared across symbols); ``add_live_bar(sym, bar)``
-  appends to that symbol's buffer and calls ``account.set_mark`` so the equity read is
+  appends to that symbol's buffer and calls the per-venue ``Account.set_mark`` so the equity read is
   mark-accurate (the A2c spot-mark fix, extended per symbol).
 - ``submit_stop`` / ``submit_trailing`` register client-side emulated conditionals (A2e):
   a ``ConditionalBook`` per symbol; ``check_conditionals(sym, bar)`` fires triggered
@@ -54,6 +55,7 @@ from vike_trader_app.exec.order_ticket import build_close_request
 if TYPE_CHECKING:
     from vike_trader_app.exec.accounting import Account
     from vike_trader_app.exec.live_oms import LiveOmsHub
+    from vike_trader_app.exec.portfolio import Portfolio
 
 
 def _default_clock() -> int:
@@ -69,9 +71,14 @@ class LiveEngine:
     hubs:
         ``{symbol: LiveOmsHub}`` — one hub per symbol; each provides ``submit_ticket``,
         ``venue``, and ``symbol``.
-    account:
-        The shared ``Account`` fill-model across ALL N symbols.  Positions are keyed
-        ``(venue, symbol, "BOTH")``; marks are keyed ``(venue, symbol)``.
+    portfolio:
+        The session-scoped ``Portfolio`` aggregating PER-VENUE ``Account``s (the Nautilus
+        structure).  Each hub derefs its venue's Account (``portfolio.account(hub.venue)``,
+        idempotent lazy-create); positions are keyed ``(venue, symbol, "BOTH")`` and marks
+        ``(venue, symbol)`` within that venue's Account.  ``equity_now()`` delegates to
+        ``portfolio.equity()`` (Σ_v equity_all(seed_v), correct in both balance modes).  For
+        the single-venue basket (every hub same venue) this is ONE Account, so equity is
+        bit-identical to the old shared-Account ``balance + Σ unrealized`` read.
     multipliers:
         Optional per-symbol contract multipliers (e.g. ``{"BTCUSDT": 1.0}``).
         Defaults to 1.0 for any symbol not listed.  Used by ``order_target_value`` /
@@ -86,14 +93,14 @@ class LiveEngine:
     def __init__(
         self,
         hubs: dict[str, "LiveOmsHub"],
-        account: "Account",
+        portfolio: "Portfolio",
         *,
         multipliers: dict[str, float] | None = None,
         timeframes: list[str] | None = None,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._hubs = hubs
-        self._account = account
+        self._portfolio = portfolio
         self._now_ms = now_ms if now_ms is not None else _default_clock
         # Per-symbol contract multipliers (defaults to 1.0 when absent).
         self._mult: dict[str, float] = multipliers or {}
@@ -133,6 +140,10 @@ class LiveEngine:
         """Return the contract multiplier for ``sym`` (1.0 if not in the multipliers dict)."""
         return self._mult.get(sym, 1.0)
 
+    def _acct(self, hub: "LiveOmsHub") -> "Account":
+        """The per-venue Account for ``hub`` inside the session Portfolio (idempotent lazy-create)."""
+        return self._portfolio.account(hub.venue)
+
     def _route(self, req: "OrderRequest") -> None:
         """Submit to hub. RiskGate is INSIDE submit_ticket — do NOT gate here.
 
@@ -152,28 +163,37 @@ class LiveEngine:
         return self._now_ms()
 
     def equity_now(self) -> float:
-        """Cash balance + unrealized PnL summed across ALL N symbols.
+        """Total live equity across ALL venues — delegates to the session ``Portfolio.equity()``.
 
-        Mirrors ``MultiSymbolEngine``'s equity read:
-            equity = cash + sum(position * mark per symbol)
-        Here it reads from the shared ``Account`` (fill-accurate, mark-updated).
+        ``Portfolio.equity()`` = Σ_v accounts[v].equity_all(seeds[v]); each Account's
+        ``equity_all`` branches on its own ``balance_mode`` so the read is correct in both
+        regimes (backtest 'delta' / live 'authoritative').  For the single-venue basket (every
+        hub same venue) this is ONE Account, so the value is bit-identical to the old shared-
+        Account ``balance + Σ unrealized`` read.
+
+        Balance-mode behaviour (S4 fix):
+        - **PERP / authoritative**: once the venue ACCOUNT_UPDATE frame arrives,
+          ``apply_account_state`` flips ``balance_mode`` to 'authoritative' and
+          ``equity_all`` returns ``balance + Σ unrealized`` — byte-identical to the old
+          per-venue ``balance + Σ unrealized`` read.
+        - **SPOT / delta** (no balance frame is ever received, so the mode stays 'delta'
+          all session): ``equity_all`` returns ``seed + balance + realized_pnl + Σ unrealized``.
+          The OLD live-spot path returned only ``balance + Σ unrealized`` (no ``realized_pnl``
+          term) — a latent bug that silently dropped realized PnL from live-spot equity.
+          S4 fixes this: the new spot equity CORRECTLY includes ``realized_pnl``.
         """
-        total = self._account.balance
-        for sym in self.symbols:
-            hub = self._hub(sym)
-            total += self._account.unrealized_pnl(hub.venue, sym)
-        return total
+        return self._portfolio.equity()
 
     def position_of(self, sym: str) -> Position:
-        """Current position for ``sym`` from the shared Account, as a ``Position``."""
+        """Current position for ``sym`` from its venue's Account, as a ``Position``."""
         hub = self._hub(sym)
-        raw = self._account.positions.get((hub.venue, sym, "BOTH"), {})
+        raw = self._acct(hub).positions.get((hub.venue, sym, "BOTH"), {})
         return Position(size=raw.get("size", 0.0), avg_price=raw.get("avg_px", 0.0))
 
     def price_of(self, sym: str) -> float:
-        """Latest mark price for ``sym`` from the shared Account (0.0 if no mark yet)."""
+        """Latest mark price for ``sym`` from its venue's Account (0.0 if no mark yet)."""
         hub = self._hub(sym)
-        return self._account.marks.get((hub.venue, sym), 0.0)
+        return self._acct(hub).marks.get((hub.venue, sym), 0.0)
 
     # ------------------------------------------------------------------
     # Order verbs (mirror MultiSymbolEngine's engine-interface surface)
@@ -217,7 +237,7 @@ class LiveEngine:
         On a perp hub (``reduce_only_on_close``) the flatten is reduce_only; spot stays plain market.
         """
         hub = self._hub(sym)
-        held = self._account.positions.get((hub.venue, sym, "BOTH"), {}).get("size", 0.0)
+        held = self._acct(hub).positions.get((hub.venue, sym, "BOTH"), {}).get("size", 0.0)
         if held == 0.0:
             return
         self._route(build_close_request(
@@ -448,6 +468,6 @@ class LiveEngine:
         self._now_by_sym[sym] = bar.ts
         self._bufs[sym].add_live_bar(bar)
         hub = self._hub(sym)
-        self._account.set_mark(hub.venue, sym, bar.close)
+        self._acct(hub).set_mark(hub.venue, sym, bar.close)
 
 

@@ -135,10 +135,10 @@ class _FakeWorker(QtWidgets.QWidget):
 class _FakePump:
     """Stub for LivePump — captures feed_bar calls."""
 
-    def __init__(self, strategy, hubs, account, **kw):
+    def __init__(self, strategy, hubs, portfolio, **kw):
         self.strategy = strategy
         self.hubs = hubs
-        self.account = account
+        self.portfolio = portfolio
         self.started = False
         self.stopped = False
         self._bars: list[tuple] = []  # (symbol, bar)
@@ -210,8 +210,8 @@ def test_start_live_portfolio_success(app, monkeypatch):
     captured_workers = []
 
     class _SpyPump(_FakePump):
-        def __init__(self, strategy, hubs, account, **kw):
-            super().__init__(strategy, hubs, account, **kw)
+        def __init__(self, strategy, hubs, portfolio, **kw):
+            super().__init__(strategy, hubs, portfolio, **kw)
             captured_pump.append(self)
 
     class _SpyWorker(_FakeWorker):
@@ -276,8 +276,8 @@ def test_per_symbol_feed_bar_binding(app, monkeypatch):
     worker_feeds = []  # track which feed (symbol) each worker gets
 
     class _SpyPump(_FakePump):
-        def __init__(self, strategy, hubs, account, **kw):
-            super().__init__(strategy, hubs, account, **kw)
+        def __init__(self, strategy, hubs, portfolio, **kw):
+            super().__init__(strategy, hubs, portfolio, **kw)
             captured_pump.append(self)
 
     class _SpyWorker(_FakeWorker):
