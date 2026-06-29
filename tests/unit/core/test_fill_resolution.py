@@ -9,8 +9,6 @@ Covers:
 - Flat position (closing_side=0): no cap, no both_hit
 """
 
-import pytest
-
 from vike_trader_app.core.fill_resolution import resolve_intrabar_fills
 from vike_trader_app.core.orders import Order
 
