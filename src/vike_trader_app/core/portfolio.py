@@ -197,7 +197,8 @@ class PortfolioEngine:
                  max_open_long: int = 0, max_open_short: int = 0,
                  sizer=None, volume_limit: float | None = None,
                  granular_by_symbol: dict[str, list[Bar]] | None = None,
-                 default_venue: str | None = None):
+                 default_venue: str | None = None,
+                 catalog=None):
         self.symbols = list(bars_by_symbol)
         # Pre-tag each bar with its instrument id (SYMBOL.VENUE) once at construction.
         # With default_venue=None, format_instrument returns the bare symbol so bar.symbol
@@ -275,7 +276,17 @@ class PortfolioEngine:
                 if i < 0:
                     continue  # sub-bar precedes the first coarse bar — not attributable to any step
                 self._sym[s].sub[i].append(sub)
+        # Catalog for Strategy.history() reads; lazily defaults to the global parquet cache.
+        self._catalog_arg = catalog
         strategy._engine = self
+
+    @property
+    def catalog(self):
+        """Catalog for Strategy.history() reads; lazily defaults to the global parquet cache."""
+        if self._catalog_arg is None:
+            from ..data.catalog import Catalog
+            self._catalog_arg = Catalog()
+        return self._catalog_arg
 
     # --- membership (dynamic DataSet) ---
     def is_active(self, symbol: str) -> bool:
@@ -639,11 +650,12 @@ class PortfolioEngine:
             self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
-            self.strategy._on_step(ts, cur)
-            sched = getattr(self.strategy, "schedule", None)
-            if sched is not None:
-                for _cb in sched.check_due(ts, i):
-                    _cb()
+            if i >= getattr(self.strategy, "WARMUP", 0):  # warmup gate: match BacktestEngine.step semantics
+                self.strategy._on_step(ts, cur)
+                sched = getattr(self.strategy, "schedule", None)
+                if sched is not None:
+                    for _cb in sched.check_due(ts, i):
+                        _cb()
             eq = self.equity_now()
             self._equity_peak = max(self._equity_peak, eq)  # track running peak for drawdown
             equity_curve.append(eq)

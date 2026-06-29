@@ -185,13 +185,39 @@ def test_equity_and_drawdown_readable():
 
 
 # ---------------------------------------------------------------------------
-# history() raises a clear deferral error (engine wiring is a follow-up slice)
+# history() wired on the unified engine — returns a look-ahead-clamped DataFrame
 # ---------------------------------------------------------------------------
 
-def test_history_raises_notimplemented_pending_wiring():
-    import pytest
-    with pytest.raises(NotImplementedError):
-        Strategy().history("BTC", "1h", 10)
+def test_history_returns_dataframe_clamped_to_now(tmp_path):
+    """D1: history() on PortfolioEngine returns a polars DataFrame clamped to self.now."""
+    import polars as pl
+    from vike_trader_app.data.catalog import Catalog
+    from vike_trader_app.data.parquet_source import append_series
+
+    # Write 10 bars of "X" into the temp catalog
+    bars_data = [
+        Bar(ts=t * 60_000, open=1.0, high=1.5, low=0.5, close=1.0, volume=100.0)
+        for t in range(10)
+    ]
+    append_series(bars_data, tmp_path, "X", "1m")
+    cat = Catalog(str(tmp_path))
+
+    captured = {}
+
+    class S(Strategy):
+        def on_bar(self, bar):
+            df = self.history("X", "1m", count=5)
+            captured["df"] = df
+            captured["now"] = self._engine.now
+
+    drive = [Bar(ts=9 * 60_000, open=1.0, high=1.5, low=0.5, close=1.0, volume=100.0)]
+    PortfolioEngine({"X": drive}, S(), catalog=cat).run()
+
+    df = captured["df"]
+    assert isinstance(df, pl.DataFrame)
+    assert df.height == 5
+    # look-ahead clamp: no ts > now
+    assert df["ts"].max() <= captured["now"]
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +235,53 @@ def test_symbols_attr():
     eng = PortfolioEngine({"A": _series(2), "B": _series(2)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert set(syms_seen) == {"A", "B"}
+
+
+# ---------------------------------------------------------------------------
+# D2: WARMUP gate in PortfolioEngine.run matches BacktestEngine.step semantics
+# ---------------------------------------------------------------------------
+
+def test_warmup_gate_portfolio_engine():
+    """D2: on_bar is silent for i < WARMUP; equity curve is still recorded every bar."""
+    n_bars = 5
+    warmup_bars = 3
+    on_bar_indices = []
+
+    class S(Strategy):
+        WARMUP = warmup_bars
+
+        def on_bar(self, bar):
+            on_bar_indices.append(self.index)
+
+    eng = PortfolioEngine({"BTC": _series(n_bars, base=10)}, S(), fee_rate=0.0, cash=1000)
+    result = eng.run()
+
+    # on_bar must NOT fire for i < WARMUP
+    assert all(idx >= warmup_bars for idx in on_bar_indices), (
+        f"on_bar fired during warmup: {[i for i in on_bar_indices if i < warmup_bars]}"
+    )
+    # on_bar must fire for i >= WARMUP
+    expected_post_warmup = list(range(warmup_bars, n_bars))
+    # Each bar fires on_bar once per symbol (1 symbol here), so indices == expected
+    assert on_bar_indices == expected_post_warmup, (
+        f"Expected on_bar at indices {expected_post_warmup}, got {on_bar_indices}"
+    )
+    # Equity curve must cover ALL bars (warmup bars still recorded)
+    assert len(result.equity_curve) == n_bars, (
+        f"Equity curve should have {n_bars} entries, got {len(result.equity_curve)}"
+    )
+
+
+def test_warmup_zero_is_unchanged():
+    """WARMUP=0 (default) means on_bar fires from i=0 — no change from old behaviour."""
+    indices = []
+
+    class S(Strategy):
+        def on_bar(self, bar):
+            indices.append(self.index)
+
+    PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
+    assert indices == [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
