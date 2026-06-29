@@ -359,3 +359,130 @@ def test_n2_single_symbol_strategy_does_not_use_shim():
     pump = LivePump(strat, hubs, acct, now_ms=lambda: 999)
     # N>1 → engine is the raw LiveEngine, not the shim
     assert isinstance(strat._engine, LiveEngine)
+
+
+# ---------------------------------------------------------------------------
+# (e) Ported pump-behavior tests — adapter delivery, set_mark, warmup, before-start
+# ---------------------------------------------------------------------------
+
+
+class _EventRecordingStrategy(Strategy):
+    """Records on_order_accepted and on_bar calls."""
+
+    WARMUP = 0
+
+    def __init__(self):
+        super().__init__()
+        self.accepted_events: list = []
+        self.bar_calls: list[Bar] = []
+
+    def on_order_accepted(self, e) -> None:
+        self.accepted_events.append(e)
+
+    def on_bar(self, bar: Bar) -> None:
+        self.bar_calls.append(bar)
+
+
+def test_adapter_delivers_events_to_strategy():
+    """Per-hub StrategyEventAdapter delivers venue events to the strategy's handler.
+
+    After start(), publishing an OrderAccepted on the hub's bus must call
+    strategy.on_order_accepted exactly once with the same event object.
+    This proves the adapter wired by LivePump actually routes events end-to-end.
+    """
+    from vike_trader_app.exec.events import OrderAccepted
+
+    strat = _EventRecordingStrategy()
+    pump, hubs, _ = _make_pump(strat, symbols=[_BTC])
+    pump.start()
+
+    evt = OrderAccepted(client_order_id="coid-1", venue_order_id="void-1", ts=1000)
+    hubs[_BTC].bus.publish(evt)
+
+    assert len(strat.accepted_events) == 1
+    assert strat.accepted_events[0] is evt
+
+
+def test_feed_bar_sets_mark_on_account():
+    """feed_bar → engine.add_live_bar → account.set_mark sets the mark for (venue, symbol).
+
+    After start() and one feed_bar call, account.marks[(venue, symbol)] must equal
+    the bar's close price.
+    """
+    strat = _EventRecordingStrategy()
+    pump, hubs, acct = _make_pump(strat, symbols=[_BTC])
+    pump.start()
+
+    close_px = 42_000.0
+    b = _bar(ts=1000, symbol=_BTC, close=close_px)
+    pump.feed_bar(_BTC, b)
+
+    venue = hubs[_BTC].venue  # "binance"
+    assert acct.marks[(venue, _BTC)] == close_px
+
+
+class _WarmupRecordingStrategy(Strategy):
+    """WARMUP=3; records index value and on_bar call count."""
+
+    WARMUP = 3
+
+    def __init__(self):
+        super().__init__()
+        self.bar_calls: list[Bar] = []
+        self.index_on_bar: list[int] = []
+
+    def on_bar(self, bar: Bar) -> None:
+        self.bar_calls.append(bar)
+        self.index_on_bar.append(self.index)
+
+
+def test_index_advances_through_warmup():
+    """strategy.index advances on every aligned step; on_bar fires only after WARMUP.
+
+    With WARMUP=3, feeding 5 bars means:
+    - strategy.index should equal 4 (0-based, incremented on every fire, including warmup steps).
+    - on_bar should only have been called for steps with index >= WARMUP (i.e., steps 3 and 4).
+    """
+    strat = _WarmupRecordingStrategy()
+    pump, _, _ = _make_pump(strat, symbols=[_BTC])
+    pump.start()
+
+    for i in range(5):
+        pump.feed_bar(_BTC, _bar(ts=1000 + i, symbol=_BTC))
+
+    # _i starts at -1 and advances by 1 per fired step → after 5 steps: _i == 4
+    assert strat.index == 4
+
+    # on_bar fires for steps where _i >= WARMUP (3): steps 3 and 4 → 2 calls
+    assert len(strat.bar_calls) == 2
+    # The index values seen inside on_bar should all be >= WARMUP
+    assert all(idx >= strat.WARMUP for idx in strat.index_on_bar)
+
+
+class _NullStrategy(Strategy):
+    """Minimal strategy that records on_bar calls."""
+
+    WARMUP = 0
+
+    def __init__(self):
+        super().__init__()
+        self.bar_calls: list[Bar] = []
+
+    def on_bar(self, bar: Bar) -> None:
+        self.bar_calls.append(bar)
+
+
+def test_feed_bar_noop_before_start():
+    """feed_bar before start() must not fire on_bar and must not route any order.
+
+    The not-started guard in feed_bar (``if not self._started: return``) must prevent
+    the pump from dispatching or routing orders when start() has not been called.
+    """
+    strat = _NullStrategy()
+    pump, hubs, _ = _make_pump(strat, symbols=[_BTC])
+    # Do NOT call pump.start()
+
+    pump.feed_bar(_BTC, _bar(ts=1000, symbol=_BTC))
+
+    assert len(strat.bar_calls) == 0
+    assert len(hubs[_BTC].submitted) == 0
