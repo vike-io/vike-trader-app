@@ -39,6 +39,8 @@ THE TARGET-WEIGHTS CONTRACT
 
 from __future__ import annotations
 
+import types
+
 import numpy as np
 
 from .fill_njit import (
@@ -300,3 +302,73 @@ class CrossSectionalSignalStrategy:
             multiplier=multiplier, leverage=leverage, maint_margin=maint_margin,
             symbols=symbols, build_trades=build_trades,
         )
+
+
+def data_from_bars(bars_by_symbol: dict) -> dict:
+    """Build column-aligned ``(T, S)`` float64 matrices from ``bars_by_symbol``.
+
+    Aligns via :func:`~vike_trader_app.core.portfolio_adapter.align_bars` (outer-join + forward-fill),
+    then stacks open/high/low/close/funding into ``(T, S)`` matrices and ``ts`` into ``(T,)`` int64.
+    Funding defaults to zeros when bars lack a ``funding`` attribute.
+
+    Returns a dict with keys ``open``, ``high``, ``low``, ``close``, ``funding`` (all ``(T,S)``
+    float64 ndarray), ``ts`` (``(T,)`` int64 ndarray), and ``symbols`` (list[str], column order).
+    """
+    from .portfolio_adapter import align_bars  # local import to avoid circular at module load
+
+    aligned = align_bars(bars_by_symbol)
+    symbols = list(aligned)
+    S = len(symbols)
+    T = len(next(iter(aligned.values()))) if symbols else 0
+
+    opens = np.empty((T, S), dtype=np.float64)
+    highs = np.empty((T, S), dtype=np.float64)
+    lows = np.empty((T, S), dtype=np.float64)
+    closes = np.empty((T, S), dtype=np.float64)
+    funding = np.zeros((T, S), dtype=np.float64)
+    ts = np.empty(T, dtype=np.int64)
+
+    for j, sym in enumerate(symbols):
+        bars = aligned[sym]
+        for i, bar in enumerate(bars):
+            opens[i, j] = bar.open
+            highs[i, j] = bar.high
+            lows[i, j] = bar.low
+            closes[i, j] = bar.close
+            f = getattr(bar, "funding", None)
+            if f is not None and f != 0.0:
+                funding[i, j] = f
+            if j == 0:
+                ts[i] = bar.ts
+
+    return {
+        "open": opens,
+        "high": highs,
+        "low": lows,
+        "close": closes,
+        "funding": funding,
+        "ts": ts,
+        "symbols": symbols,
+    }
+
+
+def kernel_result_to_obj(kernel_dict: dict, ts_array) -> object:
+    """Wrap the dict returned by :meth:`CrossSectionalSignalStrategy.run` into a plain-object
+    that exposes the same attributes :meth:`TesterReport.from_result` reads from a
+    ``MultiSymbolResult``: ``equity_curve``, ``final_equity``, ``trades``, ``equity_ts``.
+
+    ``ts_array`` is the ``(T,)`` int64 ndarray from :func:`data_from_bars` — used to populate
+    ``equity_ts`` (a list[int] aligned bar-for-bar with the equity curve).
+    """
+    obj = types.SimpleNamespace(
+        equity_curve=kernel_dict["equity_curve"],
+        final_equity=kernel_dict["final_equity"],
+        trades=kernel_dict["trades"],
+        equity_ts=ts_array.tolist() if ts_array is not None else None,
+        # Not produced by the kernel — leave absent so TesterReport.from_result's getattr guards work.
+        per_symbol_pnl=None,
+        per_symbol_curves=None,
+        benchmark_curve=None,
+        benchmark_label="",
+    )
+    return obj
