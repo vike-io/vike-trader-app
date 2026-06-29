@@ -197,7 +197,8 @@ class PortfolioEngine:
                  max_open_long: int = 0, max_open_short: int = 0,
                  sizer=None, volume_limit: float | None = None,
                  granular_by_symbol: dict[str, list[Bar]] | None = None,
-                 default_venue: str | None = None):
+                 default_venue: str | None = None,
+                 catalog=None):
         self.symbols = list(bars_by_symbol)
         # Pre-tag each bar with its instrument id (SYMBOL.VENUE) once at construction.
         # With default_venue=None, format_instrument returns the bare symbol so bar.symbol
@@ -275,7 +276,17 @@ class PortfolioEngine:
                 if i < 0:
                     continue  # sub-bar precedes the first coarse bar — not attributable to any step
                 self._sym[s].sub[i].append(sub)
+        # Catalog for Strategy.history() reads; lazily defaults to the global parquet cache.
+        self._catalog_arg = catalog
         strategy._engine = self
+
+    @property
+    def catalog(self):
+        """Catalog for Strategy.history() reads; lazily defaults to the global parquet cache."""
+        if self._catalog_arg is None:
+            from ..data.catalog import Catalog
+            self._catalog_arg = Catalog()
+        return self._catalog_arg
 
     # --- membership (dynamic DataSet) ---
     def is_active(self, symbol: str) -> bool:
