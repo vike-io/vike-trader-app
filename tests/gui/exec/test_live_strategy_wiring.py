@@ -1,13 +1,13 @@
 # tests/gui/exec/test_live_strategy_wiring.py
-"""MainWindow._start_live_strategy / _stop_live_strategy wiring tests.
+"""MainWindow._start_live / _stop_live wiring tests (single-symbol path, N=1).
 
 Verifies:
-- _start_live_strategy is inert when not armed (no crash, status message).
-- After a fake arm, _start_live_strategy creates a pump + worker, marks them on the window,
+- _start_live is inert when not armed (no crash, status message).
+- After a fake arm, _start_live creates a pump + worker, marks them on the window,
   updates LiveStrategyBar, and registers the worker via add_aux_worker.
-- _stop_live_strategy tears them down: stop() called, refs nilled, bar disabled.
-- _on_disarm_requested calls _stop_live_strategy before shutting down the session.
-- closeEvent calls _stop_live_strategy before shutting down the session.
+- _stop_live tears them down: stop() called, refs nilled, bar disabled.
+- _on_disarm_requested calls _stop_live before shutting down the session.
+- closeEvent calls _stop_live before shutting down the session.
 - LiveStrategyBar: set_armed / set_running state transitions.
 - add_aux_worker registers a plain worker (no signal wiring) joined by shutdown().
 """
@@ -86,7 +86,7 @@ class _FakeWorker(QtWidgets.QWidget):
     """Stub for LiveBarFeedWorker — QObject subclass so barClosed signal can exist."""
 
     barClosed = QtCore.Signal(object)
-    finished = QtCore.Signal()   # mirrors QThread.finished; needed by _start_live_strategy fix G
+    finished = QtCore.Signal()   # mirrors QThread.finished; needed by _start_live fix G
 
     def __init__(self, feed=None, parent=None):
         super().__init__(parent)
@@ -107,19 +107,24 @@ class _FakeWorker(QtWidgets.QWidget):
 
 
 class _FakePump:
-    """Stub for LiveStrategyPump."""
+    """Stub for LivePump (unified portfolio pump)."""
 
-    def __init__(self, strategy, hub, **kw):
+    def __init__(self, strategy, hubs, account, **kw):
         self.strategy = strategy
+        self.hubs = hubs
+        self.account = account
         self.started = False
         self.stopped = False
         self._bars = []
 
+    def prime(self, history_by_symbol):
+        pass
+
     def start(self):
         self.started = True
 
-    def feed_bar(self, bar):
-        self._bars.append(bar)
+    def feed_bar(self, symbol, bar):
+        self._bars.append((symbol, bar))
 
     def stop(self):
         self.stopped = True
@@ -205,16 +210,16 @@ def test_add_aux_worker_registered_and_joined(app):
 
 
 # ---------------------------------------------------------------------------
-# _start_live_strategy — inert when not armed
+# _start_live — inert when not armed (single-symbol path N=1)
 # ---------------------------------------------------------------------------
 
-def test_start_live_strategy_inert_when_not_armed(app, monkeypatch):
+def test_start_live_inert_when_not_armed(app, monkeypatch):
     win = MainWindow()
     try:
         assert win._exec_session is None
         messages = []
         monkeypatch.setattr(win.statusBar(), "showMessage", lambda m, t=0: messages.append(m))
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
         assert win._strat_pump is None
         assert any("Arm" in m for m in messages)
     finally:
@@ -222,10 +227,10 @@ def test_start_live_strategy_inert_when_not_armed(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _start_live_strategy — success path with monkeypatched pump + worker + feed
+# _start_live — success path with monkeypatched pump + worker + feed (N=1)
 # ---------------------------------------------------------------------------
 
-def test_start_live_strategy_success(app, monkeypatch):
+def test_start_live_success(app, monkeypatch):
     import vike_trader_app.ui.app as appmod
     import vike_trader_app.data.vike_live as vike_live_mod
 
@@ -233,8 +238,8 @@ def test_start_live_strategy_success(app, monkeypatch):
     captured_worker = []
 
     class _SpyPump(_FakePump):
-        def __init__(self, strategy, hub, **kw):
-            super().__init__(strategy, hub, **kw)
+        def __init__(self, strategy, hubs, account, **kw):
+            super().__init__(strategy, hubs, account, **kw)
             captured_pump.append(self)
 
     class _SpyWorker(_FakeWorker):
@@ -243,7 +248,7 @@ def test_start_live_strategy_success(app, monkeypatch):
             captured_worker.append(self)
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _SpyPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _SpyPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _SpyWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -251,7 +256,7 @@ def test_start_live_strategy_success(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_window(win, monkeypatch)
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
 
         assert len(captured_pump) == 1
         assert len(captured_worker) == 1
@@ -261,27 +266,29 @@ def test_start_live_strategy_success(app, monkeypatch):
         assert pump.started
         assert worker.started
         assert win._strat_pump is pump
-        assert win._strat_worker is worker
+        # unified path: _strat_workers is the single list (len 1 for single-symbol)
+        assert len(win._strat_workers) == 1
+        assert win._strat_workers[0] is worker
         # registered on the session for shutdown()
-        assert "live_strategy" in win._exec_session._workers
+        assert "live_strat_BTCUSDT" in win._exec_session._workers
         # bar label updated
         assert win._live_strat_bar._btn_stop.isEnabled()
         assert not win._live_strat_bar._btn_start.isEnabled()
         # calling again is a no-op (already running)
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
         assert len(captured_pump) == 1   # no second pump built
     finally:
         # Mark stopped so shutdown() doesn't try to join a never-started QThread
-        if win._strat_worker is not None:
-            win._strat_worker.stopped = True
+        for w in win._strat_workers:
+            w.stopped = True
         win.shutdown()
 
 
 # ---------------------------------------------------------------------------
-# _stop_live_strategy — tears down cleanly
+# _stop_live — tears down cleanly (single-symbol path N=1)
 # ---------------------------------------------------------------------------
 
-def test_stop_live_strategy_tears_down(app, monkeypatch):
+def test_stop_live_tears_down(app, monkeypatch):
     import vike_trader_app.data.vike_live as vike_live_mod
 
     class _SpyPump(_FakePump):
@@ -292,7 +299,7 @@ def test_stop_live_strategy_tears_down(app, monkeypatch):
             super().__init__(feed, parent)
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _SpyPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _SpyPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _SpyWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -300,17 +307,18 @@ def test_stop_live_strategy_tears_down(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_window(win, monkeypatch)
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
         assert win._strat_pump is not None
 
         pump = win._strat_pump
-        worker = win._strat_worker
-        win._stop_live_strategy()
+        workers = list(win._strat_workers)
+        win._stop_live()
 
         assert pump.stopped
-        assert worker.stopped
+        for w in workers:
+            assert w.stopped
         assert win._strat_pump is None
-        assert win._strat_worker is None
+        assert win._strat_workers == []
         # bar label reset
         assert not win._live_strat_bar._btn_stop.isEnabled()
     finally:
@@ -318,7 +326,7 @@ def test_stop_live_strategy_tears_down(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _on_disarm_requested calls _stop_live_strategy before session shutdown
+# _on_disarm_requested calls _stop_live before session shutdown
 # ---------------------------------------------------------------------------
 
 def test_disarm_stops_strategy_before_session_shutdown(app, monkeypatch):
@@ -340,7 +348,7 @@ def test_disarm_stops_strategy_before_session_shutdown(app, monkeypatch):
             super().stop(timeout_ms)
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _TrackPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _TrackPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _TrackWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -348,7 +356,7 @@ def test_disarm_stops_strategy_before_session_shutdown(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_window(win, monkeypatch)
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
         assert win._strat_pump is not None
 
         # Stub the exec_session.hub.bus.unsubscribe so disarm doesn't blow up.
@@ -357,7 +365,7 @@ def test_disarm_stops_strategy_before_session_shutdown(app, monkeypatch):
         win._on_disarm_requested()
 
         assert win._strat_pump is None
-        assert win._strat_worker is None
+        assert win._strat_workers == []
         assert "worker" in stop_order
         assert "pump" in stop_order
         # worker must stop before pump
@@ -375,7 +383,7 @@ def test_disarm_disables_studio_run_live(app, monkeypatch):
     import vike_trader_app.data.vike_live as vike_live_mod
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _FakePump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _FakePump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -411,8 +419,8 @@ def test_backfill_failure_starts_pump_cold(app, monkeypatch):
     messages = []
 
     class _SpyPump(_FakePump):
-        def __init__(self, strategy, hub, **kw):
-            super().__init__(strategy, hub, **kw)
+        def __init__(self, strategy, hubs, account, **kw):
+            super().__init__(strategy, hubs, account, **kw)
             captured_pump.append(self)
 
     class _FailSource:
@@ -420,7 +428,7 @@ def test_backfill_failure_starts_pump_cold(app, monkeypatch):
             raise RuntimeError("network down")
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_strategy_pump.LiveStrategyPump", _SpyPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _SpyPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -431,7 +439,7 @@ def test_backfill_failure_starts_pump_cold(app, monkeypatch):
         _arm_window(win, monkeypatch)
         monkeypatch.setattr(win.statusBar(), "showMessage",
                             lambda m, t=0: messages.append(m))
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
 
         # Pump must still be created and started despite backfill failure.
         assert len(captured_pump) == 1, "pump should be created even if backfill fails"
@@ -442,8 +450,8 @@ def test_backfill_failure_starts_pump_cold(app, monkeypatch):
         assert any("Backfill" in m or "backfill" in m or "cold" in m for m in messages), \
             f"expected backfill-failure status message, got: {messages}"
     finally:
-        if win._strat_worker is not None:
-            win._strat_worker.stopped = True
+        for w in win._strat_workers:
+            w.stopped = True
         win.shutdown()
 
 
@@ -456,7 +464,7 @@ def test_backfill_drops_forming_candle_no_dup(app, monkeypatch):
     the WS feed later emits that same candle as the first feed_bar, it lands in engine.bars
     exactly once — no ghost duplicate (M1).
 
-    Uses the REAL LiveStrategyPump + a REAL Account so engine.bars is genuinely populated.
+    Uses the REAL LivePump + a REAL Account so engine.bars is genuinely populated.
     """
     import vike_trader_app.data.vike_live as vike_live_mod
     import vike_trader_app.data.sources as sources_mod
@@ -514,23 +522,27 @@ def test_backfill_drops_forming_candle_no_dup(app, monkeypatch):
         win._interval = interval
         win._live_strat_bar.set_armed(True)
 
-        win._start_live_strategy(_TRIVIAL_STRATEGY)
+        win._start_live(_TRIVIAL_STRATEGY)
         pump = win._strat_pump
         assert pump is not None
 
         # After priming, only the 5 CLOSED bars should be in the engine buffer.
-        assert len(pump.engine.bars) == 5, \
-            f"forming candle should be dropped; got {[b.ts for b in pump.engine.bars]}"
+        # LivePump uses LiveEngine; bars live in pump.engine._bufs[sym].bars.
+        sym = "BTCUSDT"
+        engine_bars = pump.engine._bufs[sym].bars
+        assert len(engine_bars) == 5, \
+            f"forming candle should be dropped; got {[b.ts for b in engine_bars]}"
 
         # Now the WS feed emits the candle that was forming, now CLOSED.
-        pump.feed_bar(forming)
+        pump.feed_bar(sym, forming)
 
-        ts_list = [b.ts for b in pump.engine.bars]
+        engine_bars = pump.engine._bufs[sym].bars
+        ts_list = [b.ts for b in engine_bars]
         # The formerly-forming candle (ts=5*iv) must appear exactly ONCE — no ghost dup.
         assert ts_list.count(5 * iv_ms) == 1, f"duplicate forming-candle ts in {ts_list}"
         assert len(ts_list) == 6, f"expected 6 unique bars, got {ts_list}"
         assert ts_list == sorted(ts_list), "bars should be ts-ascending with no dup"
     finally:
-        if win._strat_worker is not None:
-            win._strat_worker.stopped = True
+        for w in win._strat_workers:
+            w.stopped = True
         win.shutdown()
