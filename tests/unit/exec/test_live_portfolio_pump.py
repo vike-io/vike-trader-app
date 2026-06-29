@@ -26,6 +26,16 @@ from vike_trader_app.exec.live_portfolio_pump import LivePortfolioPump
 # Stubs
 # ---------------------------------------------------------------------------
 
+class _NullBus:
+    """Minimal EventBus stub (subscribe/unsubscribe — no-ops; no publish needed here)."""
+
+    def subscribe(self, cb) -> None:
+        pass
+
+    def unsubscribe(self, cb) -> None:
+        pass
+
+
 class _Hub:
     """Minimal hub stub (needs venue + symbol + submit_ticket; tracks submitted for A2e tests)."""
 
@@ -35,6 +45,7 @@ class _Hub:
         self.account = _Acct()
         self.submitted: list = []
         self.registry: dict = {}
+        self.bus = _NullBus()
 
     def submit_ticket(self, req) -> None:
         self.submitted.append(req)

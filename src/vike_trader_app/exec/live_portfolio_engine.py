@@ -1,9 +1,17 @@
-"""LivePortfolioEngine — multi-symbol live engine interface for PortfolioStrategy (A2d).
+"""LiveEngine — unified symbol-keyed live engine interface (P0 collapse of LivePortfolioEngine).
 
 This is the live analogue of ``core.portfolio.PortfolioEngine``: a ``PortfolioStrategy``
-sets ``strategy._engine = LivePortfolioEngine(...)`` and calls the EXACT same surface it
-calls in backtest — ``equity_now``, ``position_of``, ``price_of``, ``submit``,
-``submit_close``, ``symbols``, and ``now``.
+sets ``strategy._engine = LiveEngine(...)`` and calls the EXACT same surface it calls in
+backtest — ``equity_now``, ``position_of``, ``price_of``, ``submit``, ``submit_close``,
+``symbols``, and ``now``.
+
+Also carries the single-symbol ``StrategyLiveEngine`` features:
+- ``order_target(sym, target_size)`` / ``order_target_value`` / ``order_target_percent``
+  (per-symbol, using ``core.sizing.units_from_value`` / ``units_from_percent``).
+- ``multipliers`` dict for per-symbol contract multipliers.
+- ``timeframes`` list forwarded to each per-symbol ``BarSeriesBuffer``.
+- ``drawdown_now()`` → 0.0 stub.
+- ``_route(req)`` factoring out ``hub.submit_ticket`` with the no-fire contract docstring.
 
 Per-symbol routing mirrors ``StrategyLiveEngine``: each verb resolves
 ``hub = self.hubs[sym]`` then builds an ``OrderRequest`` and hands it to
@@ -38,6 +46,7 @@ log = logging.getLogger(__name__)
 
 from vike_trader_app.core.bar_buffer import BarSeriesBuffer
 from vike_trader_app.core.model import Bar, Position
+from vike_trader_app.core.sizing import units_from_percent, units_from_value
 from vike_trader_app.exec.conditionals import ConditionalBook
 from vike_trader_app.exec.events import OrderRequest
 from vike_trader_app.exec.order_ticket import build_close_request
@@ -52,8 +61,8 @@ def _default_clock() -> int:
     return int(time.time() * 1000)
 
 
-class LivePortfolioEngine:
-    """Multi-symbol live engine interface — the live analogue of ``PortfolioEngine``.
+class LiveEngine:
+    """Unified symbol-keyed live engine — the live analogue of ``PortfolioEngine``.
 
     Parameters
     ----------
@@ -63,6 +72,13 @@ class LivePortfolioEngine:
     account:
         The shared ``Account`` fill-model across ALL N symbols.  Positions are keyed
         ``(venue, symbol, "BOTH")``; marks are keyed ``(venue, symbol)``.
+    multipliers:
+        Optional per-symbol contract multipliers (e.g. ``{"BTCUSDT": 1.0}``).
+        Defaults to 1.0 for any symbol not listed.  Used by ``order_target_value`` /
+        ``order_target_percent`` to match ``BacktestEngine`` sizing semantics exactly.
+    timeframes:
+        Optional list of higher timeframes to pre-register on each per-symbol
+        ``BarSeriesBuffer`` (e.g. ``["1h", "4h"]``).  Forwarded to the buffer ctor.
     now_ms:
         Clock injection (called on every ``submit``). Defaults to wall-clock ms.
     """
@@ -72,16 +88,20 @@ class LivePortfolioEngine:
         hubs: dict[str, "LiveOmsHub"],
         account: "Account",
         *,
+        multipliers: dict[str, float] | None = None,
+        timeframes: list[str] | None = None,
         now_ms: Callable[[], int] | None = None,
     ) -> None:
         self._hubs = hubs
         self._account = account
         self._now_ms = now_ms if now_ms is not None else _default_clock
+        # Per-symbol contract multipliers (defaults to 1.0 when absent).
+        self._mult: dict[str, float] = multipliers or {}
         # symbols: list[str] — the EXACT attribute PortfolioStrategy / CrossSectionalStrategy reads.
         self.symbols: list[str] = list(hubs)
         # Per-symbol BarSeriesBuffer (NOT shared across symbols).
         self._bufs: dict[str, BarSeriesBuffer] = {
-            sym: BarSeriesBuffer([], timeframes=None) for sym in self.symbols
+            sym: BarSeriesBuffer([], timeframes=timeframes) for sym in self.symbols
         }
         # Per-symbol last-seen ts (for bars_for / forming_for slicing; mirrors _now in StrategyLiveEngine).
         self._now_by_sym: dict[str, int] = {sym: 0 for sym in self.symbols}
@@ -108,6 +128,19 @@ class LivePortfolioEngine:
             raise ValueError(
                 f"symbol {sym!r} is not in the armed basket {self.symbols}"
             ) from None
+
+    def _mult_of(self, sym: str) -> float:
+        """Return the contract multiplier for ``sym`` (1.0 if not in the multipliers dict)."""
+        return self._mult.get(sym, 1.0)
+
+    def _route(self, req: "OrderRequest") -> None:
+        """Submit to hub. RiskGate is INSIDE submit_ticket — do NOT gate here.
+
+        Handler firing (on_order_submitted / on_order_rejected / …) is A2b's job, driven by
+        the real EventBus events so it fires only on actual venue confirmation and a RiskGate
+        veto fires on_order_rejected instead.  Do NOT add handler calls here.
+        """
+        self._hubs[req.symbol].submit_ticket(req)
 
     # ------------------------------------------------------------------
     # Read-model (the exact _engine.X surface PortfolioStrategy calls)
@@ -176,7 +209,7 @@ class LivePortfolioEngine:
                 price=None,
                 ts=self._now_ms(),
             )
-            hub.submit_ticket(req)
+            self._route(req)
 
     def submit_close(self, sym: str) -> None:
         """Flatten the current position in ``sym`` with a market order (no-op if flat).
@@ -187,7 +220,7 @@ class LivePortfolioEngine:
         held = self._account.positions.get((hub.venue, sym, "BOTH"), {}).get("size", 0.0)
         if held == 0.0:
             return
-        hub.submit_ticket(build_close_request(
+        self._route(build_close_request(
             hub_venue=hub.venue, hub_symbol=hub.symbol, held_size=held,
             reduce_only=getattr(hub, "reduce_only_on_close", False),
             client_order_id=self._next_coid(sym), now_ms=self._now_ms()))
@@ -221,7 +254,7 @@ class LivePortfolioEngine:
                 price=price,
                 ts=self._now_ms(),
             )
-            hub.submit_ticket(req)
+            self._route(req)
 
     def submit_market_close(self, sym: str, side_sign: int, size: float, weight: float = 0.0,
                             raw: bool = False) -> None:
@@ -243,7 +276,7 @@ class LivePortfolioEngine:
                 price=None,
                 ts=self._now_ms(),
             )
-            hub.submit_ticket(req)
+            self._route(req)
 
     def submit_limit_close(
         self,
@@ -272,7 +305,7 @@ class LivePortfolioEngine:
                 price=price,
                 ts=self._now_ms(),
             )
-            hub.submit_ticket(req)
+            self._route(req)
 
     def cancel_all(self, sym: str) -> None:
         """Cancel every resting order for ``sym`` and clear its client-side conditional book (A2e)."""
@@ -282,6 +315,55 @@ class LivePortfolioEngine:
         book = self._books.get(sym)
         if book is not None:
             book.clear()
+
+    # ------------------------------------------------------------------
+    # Order-target verbs (carried from StrategyLiveEngine — per-symbol)
+    # ------------------------------------------------------------------
+
+    def drawdown_now(self) -> float:
+        """Drawdown from the running equity peak (0.0 if at or above peak).
+
+        NOTE: The live engine doesn't track a running peak (that's the risk-gate's job);
+        returns 0.0 as a conservative no-op until wired to a peak tracker in a later slice.
+        """
+        return 0.0
+
+    def order_target(self, sym: str, target_size: float) -> None:
+        """Market order to move ``sym``'s position to ``target_size`` signed units.
+
+        Mirrors ``BacktestEngine.order_target`` / ``StrategyLiveEngine.order_target`` exactly:
+            delta = target_size - position_of(sym).size
+            if delta > 0: submit buy delta
+            if delta < 0: submit sell abs(delta)
+        """
+        delta = target_size - self.position_of(sym).size
+        if abs(delta) > 1e-12:
+            self.submit(sym, 1 if delta > 0 else -1, abs(delta), raw=True)
+
+    def order_target_value(self, sym: str, value: float) -> None:
+        """Target a notional value for ``sym``. Converts via the current mark price and multiplier.
+
+        Mirrors ``StrategyLiveEngine.order_target_value`` via ``units_from_value``:
+            target_size = value / (mark * multiplier)
+        No-op when the current mark price is zero (no price yet).
+        """
+        px = self.price_of(sym)
+        if px <= 0.0:
+            return
+        self.order_target(sym, units_from_value(value, px, self._mult_of(sym)))
+
+    def order_target_percent(self, sym: str, pct: float) -> None:
+        """Target a fraction of live equity for ``sym``. Mirrors ``StrategyLiveEngine.order_target_percent``
+        via ``units_from_percent``:
+
+            target_size = pct * equity_now() / (mark * multiplier)
+
+        No-op when the current mark price is zero (no price yet).
+        """
+        px = self.price_of(sym)
+        if px <= 0.0:
+            return
+        self.order_target(sym, units_from_percent(pct, self.equity_now(), px, self._mult_of(sym)))
 
     # ------------------------------------------------------------------
     # Higher-TF reads — delegate to the per-symbol BarSeriesBuffer
@@ -367,3 +449,9 @@ class LivePortfolioEngine:
         self._bufs[sym].add_live_bar(bar)
         hub = self._hub(sym)
         self._account.set_mark(hub.venue, sym, bar.close)
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility alias — existing imports/tests reference LivePortfolioEngine.
+# ---------------------------------------------------------------------------
+LivePortfolioEngine = LiveEngine

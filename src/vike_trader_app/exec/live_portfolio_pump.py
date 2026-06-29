@@ -1,14 +1,30 @@
-"""Drive a multi-symbol ``PortfolioStrategy`` live (the live analogue of PortfolioEngine.run).
+"""Drive a live strategy (the live analogue of PortfolioEngine.run / BacktestEngine.run).
+
+Unified ``LivePump`` replaces the old split between ``LiveStrategyPump`` (single-symbol) and
+the former ``LivePortfolioPump`` (multi-symbol): N=1 is the single-symbol case, N>1 is the
+portfolio case.  The same wait-for-all aligner works for both (a 1-symbol bucket is trivially
+complete on every arrival — fire-on-each — so behavior is identical to the old single-symbol pump).
 
 Qt-free + single-threaded: ``start()`` / ``feed_bar()`` / ``stop()`` are called only on the Qt
 main thread (same thread as EventBus.publish).  A per-symbol ``LiveBarFeedWorker`` (owned by the
 UI layer, A2d Task 4) marshals closed bars here via queued signals.  Orders route through
-``LivePortfolioEngine`` → per-symbol ``LiveOmsHub`` (RiskGate inside each hub).
+``LiveEngine`` → per-symbol ``LiveOmsHub`` (RiskGate inside each hub).
+
+Strategy types handled:
+    1. ``Strategy`` (unified, symbol-explicit ``on_bar(bar)``):
+       ``_engine = LiveEngine``; ``_dispatch_step`` fans per-symbol ``on_bar(bar)`` once per
+       symbol in the aligned bucket.
+    2. ``PortfolioStrategy`` (deprecated bundle ``on_bar(ts, bars)``):
+       ``_engine = LiveEngine``; ``_dispatch_step`` calls ``strategy._on_step(ts, bucket)``
+       which calls the bundle ``on_bar(ts, bars)`` internally.
+    3. ``SingleSymbolStrategy`` (old unkeyed API, N=1 only):
+       ``_engine = LiveSymbolShim(engine, symbol)``; ``_dispatch_step`` calls the 1-arg
+       ``strategy.on_bar(bar)`` directly (no fan-out; shim translates unkeyed verbs).
 
 Alignment strategy — WAIT-FOR-ALL (user-decided):
     Each incoming bar is placed into a per-timestamp bucket
     ``dict[ts → dict[symbol → Bar]]``.  Once the OLDEST open bucket contains a bar for
-    EVERY symbol, it is popped, ``_i`` is advanced, and ``strategy.on_bar(ts, bucket)`` is
+    EVERY symbol, it is popped, ``_i`` is advanced, and ``_dispatch_step(ts, bucket)`` is
     fired (warmup-gated), followed by ``schedule.check_due(ts, _i)``.
 
 Late / missing-symbol rule (stale-bucket flush, documented):
@@ -38,7 +54,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Callable
 
-from vike_trader_app.exec.live_portfolio_engine import LivePortfolioEngine
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy
+from vike_trader_app.exec.live_portfolio_engine import LiveEngine
+from vike_trader_app.exec.live_symbol_shim import LiveSymbolShim
+from vike_trader_app.exec.strategy_event_adapter import StrategyEventAdapter
 
 if TYPE_CHECKING:
     from vike_trader_app.core.model import Bar
@@ -46,20 +65,24 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-class LivePortfolioPump:
-    """Wait-for-all multi-symbol bar aligner + lifecycle driver for ``PortfolioStrategy``.
+class LivePump:
+    """Unified wait-for-all bar aligner + lifecycle driver for all Strategy types.
 
     Parameters
     ----------
     strategy:
-        A ``PortfolioStrategy`` (or subclass).  The pump sets ``strategy._engine`` on
-        construction; ``on_start`` / ``on_stop`` are called if defined (safe with getattr).
+        A ``Strategy``, ``PortfolioStrategy``, or ``SingleSymbolStrategy`` (deprecated).
+        The pump sets ``strategy._engine`` on construction (a ``LiveEngine`` for the unified /
+        portfolio case; a ``LiveSymbolShim`` for the SingleSymbolStrategy N=1 case).
+        ``on_start`` / ``on_stop`` are called if defined (safe with getattr).
     hubs:
-        ``{symbol: LiveOmsHub}`` — forwarded verbatim to ``LivePortfolioEngine``.
+        ``{symbol: LiveOmsHub}`` — forwarded verbatim to ``LiveEngine``.
     account:
         The shared ``Account`` across all N symbols.
     now_ms:
-        Clock injection for ``LivePortfolioEngine``; defaults to wall-clock ms.
+        Clock injection for ``LiveEngine``; defaults to wall-clock ms.
+    timeframes:
+        Optional list of higher timeframes forwarded to the per-symbol ``BarSeriesBuffer``.
     """
 
     def __init__(
@@ -69,10 +92,28 @@ class LivePortfolioPump:
         account,
         *,
         now_ms: Callable[[], int] | None = None,
+        timeframes=None,
     ) -> None:
         self.strategy = strategy
-        self.engine = LivePortfolioEngine(hubs, account, now_ms=now_ms)
-        strategy._engine = self.engine
+        self.engine = LiveEngine(hubs, account, now_ms=now_ms, timeframes=timeframes)
+
+        # --- Strategy binding ---
+        # SingleSymbolStrategy + N=1: wire a LiveSymbolShim (unkeyed API compat).
+        # All other strategies: wire the LiveEngine directly.
+        symbols_list = list(hubs)
+        if isinstance(strategy, SingleSymbolStrategy) and len(hubs) == 1:
+            self._single_symbol: str | None = symbols_list[0]
+            strategy._engine = LiveSymbolShim(self.engine, self._single_symbol)
+        else:
+            self._single_symbol = None
+            strategy._engine = self.engine
+
+        # --- Per-hub StrategyEventAdapter (subscribed AFTER hubs, mirroring LiveStrategyPump) ---
+        # Each hub's EventBus gets one adapter so the strategy's A1 handlers (on_order_filled,
+        # on_position_opened, …) fire for venue events on that symbol's bus.
+        self._adapters: list[StrategyEventAdapter] = [
+            StrategyEventAdapter(strategy, h.bus) for h in hubs.values()
+        ]
 
         # _i: aligned-bar counter.  Starts at -1; advances by 1 per fired on_bar.
         # strategy.index mirrors _i AFTER each advance (on_bar gate uses _i, not strategy.index).
@@ -149,7 +190,7 @@ class LivePortfolioPump:
         self._started = True
 
     def stop(self) -> None:
-        """Disarm the pump: call ``strategy.on_stop()`` (if defined) and close the gate."""
+        """Disarm the pump: call ``strategy.on_stop()`` (if defined), unsubscribe adapters."""
         if not self._started:
             return
         self._started = False
@@ -159,6 +200,8 @@ class LivePortfolioPump:
                 cb()
             except Exception:  # noqa: BLE001
                 log.exception("strategy.on_stop raised")
+        for adapter in self._adapters:
+            adapter.unsubscribe()
 
     # ------------------------------------------------------------------
     # Bar ingestion
@@ -191,6 +234,28 @@ class LivePortfolioPump:
         self._try_fire()
 
     # ------------------------------------------------------------------
+    # Internal: dispatch (polymorphic for all three strategy types)
+    # ------------------------------------------------------------------
+
+    def _dispatch_step(self, ts: int, bucket: "dict[str, Bar]") -> None:
+        """Call the correct ``on_bar`` variant for the strategy type.
+
+        - ``SingleSymbolStrategy`` (shim path, N=1): ``strategy.on_bar(bar)`` — 1-arg.
+        - ``Strategy`` (unified): ``strategy._on_step(ts, bucket)`` which fans
+          ``on_bar(bar)`` once per symbol.
+        - ``PortfolioStrategy`` (deprecated bundle): ``strategy._on_step(ts, bucket)``
+          which calls the bundle ``on_bar(ts, bars)``.
+        Both non-shim cases go through ``_on_step`` — polymorphic dispatch is already
+        implemented there (Strategy fans per-symbol; PortfolioStrategy bundles).
+        """
+        if self._single_symbol is not None:
+            # SingleSymbolStrategy via LiveSymbolShim: call the old 1-arg on_bar.
+            self.strategy.on_bar(bucket[self._single_symbol])
+        else:
+            # Strategy (unified) or PortfolioStrategy (bundle) — both use _on_step.
+            self.strategy._on_step(ts, bucket)
+
+    # ------------------------------------------------------------------
     # Internal: align and fire
     # ------------------------------------------------------------------
 
@@ -218,7 +283,7 @@ class LivePortfolioPump:
         for ts in stale:
             missing = self._symbols - set(self._buckets[ts].keys())
             log.warning(
-                "LivePortfolioPump: dropping stale incomplete bucket ts=%d "
+                "LivePump: dropping stale incomplete bucket ts=%d "
                 "(missing symbols: %s); newer ts=%d is complete.",
                 ts,
                 sorted(missing),
@@ -241,10 +306,10 @@ class LivePortfolioPump:
         warmup = getattr(self.strategy, "WARMUP", 0)
         if self._i >= warmup:
             try:
-                self.strategy.on_bar(complete_ts, fired_bucket)
+                self._dispatch_step(complete_ts, fired_bucket)
             except Exception:  # noqa: BLE001
                 log.exception(
-                    "LivePortfolioPump: strategy.on_bar raised at ts=%d; "
+                    "LivePump: strategy dispatch raised at ts=%d; "
                     "pump continues (disarm to stop)",
                     complete_ts,
                 )
@@ -257,7 +322,13 @@ class LivePortfolioPump:
                         cb()
                 except Exception:  # noqa: BLE001
                     log.exception(
-                        "LivePortfolioPump: schedule callback raised at ts=%d; "
+                        "LivePump: schedule callback raised at ts=%d; "
                         "pump continues",
                         complete_ts,
                     )
+
+
+# ---------------------------------------------------------------------------
+# Backward-compatibility alias — existing imports/tests reference LivePortfolioPump.
+# ---------------------------------------------------------------------------
+LivePortfolioPump = LivePump

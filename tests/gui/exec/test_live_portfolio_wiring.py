@@ -1,17 +1,16 @@
 # tests/gui/exec/test_live_portfolio_wiring.py
-"""MainWindow._start_live_portfolio / _stop_live_portfolio wiring tests (A2d Task 4).
+"""MainWindow._start_live / _stop_live wiring tests (portfolio path, N>1).
 
 Verifies:
-- _start_live_portfolio is inert when not armed with a basket (no crash, status message).
-- After a fake 2-symbol basket arm, _start_live_portfolio creates a pump + N workers, marks
+- _start_live is inert when not armed with a basket (no crash, status message).
+- After a fake 2-symbol basket arm, _start_live creates a pump + N workers, marks
   them on the window (_strat_pump / _strat_workers), updates LiveStrategyBar, registers each
   worker via add_aux_worker, and starts the pump.
 - Per-symbol barClosed → pump.feed_bar(sym, bar) binding: each worker routes to the correct sym.
-- _stop_live_portfolio stops ALL workers (waited) then the pump; refs are cleared, bar reset.
-- _on_disarm_requested calls _stop_live_portfolio before shutting down the session.
-- closeEvent calls _stop_live_portfolio before shutting down the session.
-- Portfolio-vs-single routing: _on_run_live_requested dispatches to _start_live_portfolio for a
-  PortfolioStrategy and to _start_live_strategy for a plain Strategy.
+- _stop_live stops ALL workers (waited) then the pump; refs are cleared, bar reset.
+- _on_disarm_requested calls _stop_live before shutting down the session.
+- closeEvent calls _stop_live before shutting down the session.
+- Unified routing: _on_run_live_requested now calls _start_live unconditionally (no dispatch branch).
 - N-worker teardown: all N workers are stopped, not just the first.
 """
 
@@ -134,7 +133,7 @@ class _FakeWorker(QtWidgets.QWidget):
 
 
 class _FakePump:
-    """Stub for LivePortfolioPump — captures feed_bar calls."""
+    """Stub for LivePump — captures feed_bar calls."""
 
     def __init__(self, strategy, hubs, account, **kw):
         self.strategy = strategy
@@ -182,16 +181,16 @@ def _arm_basket_window(win, monkeypatch, symbols=("BTCUSDT", "ETHUSDT")):
 
 
 # ---------------------------------------------------------------------------
-# Guard: inert when not armed
+# Guard: inert when not armed (unified path)
 # ---------------------------------------------------------------------------
 
-def test_start_live_portfolio_inert_when_not_armed(app, monkeypatch):
+def test_start_live_inert_when_not_armed(app, monkeypatch):
     win = MainWindow()
     try:
         assert win._exec_session is None
         messages = []
         monkeypatch.setattr(win.statusBar(), "showMessage", lambda m, t=0: messages.append(m))
-        win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+        win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
         assert win._strat_pump is None
         assert win._strat_workers == []
         assert any("Arm" in m or "basket" in m.lower() for m in messages)
@@ -200,11 +199,11 @@ def test_start_live_portfolio_inert_when_not_armed(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Success path: pump + N workers created, started, registered
+# Success path: pump + N workers created, started, registered (unified path)
 # ---------------------------------------------------------------------------
 
 def test_start_live_portfolio_success(app, monkeypatch):
-    """_start_live_portfolio with a 2-symbol basket creates 2 workers + 1 pump."""
+    """_start_live with a 2-symbol basket creates 2 workers + 1 pump."""
     import vike_trader_app.data.vike_live as vike_live_mod
 
     captured_pump = []
@@ -221,7 +220,7 @@ def test_start_live_portfolio_success(app, monkeypatch):
             captured_workers.append(self)
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_portfolio_pump.LivePortfolioPump", _SpyPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _SpyPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _SpyWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -229,7 +228,7 @@ def test_start_live_portfolio_success(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+        win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
 
         # One pump, two workers (one per symbol)
         assert len(captured_pump) == 1
@@ -254,7 +253,7 @@ def test_start_live_portfolio_success(app, monkeypatch):
         assert not win._live_strat_bar._btn_start.isEnabled()
 
         # Calling again is a no-op
-        win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+        win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
         assert len(captured_pump) == 1  # no second pump built
 
     finally:
@@ -298,7 +297,7 @@ def test_per_symbol_feed_bar_binding(app, monkeypatch):
         return _TaggedFeed()
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_portfolio_pump.LivePortfolioPump", _SpyPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _SpyPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _SpyWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _make_live_feed_tracking)
@@ -306,7 +305,7 @@ def test_per_symbol_feed_bar_binding(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+        win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
 
         pump = captured_pump[0]
         bar_btc = Bar(ts=1000, open=100.0, high=101.0, low=99.0, close=100.5, volume=1.0)
@@ -332,15 +331,15 @@ def test_per_symbol_feed_bar_binding(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Stop tears down all N workers + pump
+# Stop tears down all N workers + pump (unified _stop_live)
 # ---------------------------------------------------------------------------
 
-def test_stop_live_portfolio_tears_down_all(app, monkeypatch):
-    """_stop_live_portfolio stops ALL workers + the pump, clears refs."""
+def test_stop_live_tears_down_all(app, monkeypatch):
+    """_stop_live stops ALL workers + the pump, clears refs."""
     import vike_trader_app.data.vike_live as vike_live_mod
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_portfolio_pump.LivePortfolioPump", _FakePump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _FakePump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -348,14 +347,14 @@ def test_stop_live_portfolio_tears_down_all(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+        win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
         assert win._strat_pump is not None
         assert len(win._strat_workers) == 2
 
         pump = win._strat_pump
         workers = list(win._strat_workers)
 
-        win._stop_live_portfolio()
+        win._stop_live()
 
         # All workers stopped
         for w in workers:
@@ -372,7 +371,7 @@ def test_stop_live_portfolio_tears_down_all(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# _on_disarm_requested calls _stop_live_portfolio before session shutdown
+# _on_disarm_requested calls _stop_live before session shutdown
 # ---------------------------------------------------------------------------
 
 def test_disarm_stops_portfolio_before_session_shutdown(app, monkeypatch):
@@ -395,7 +394,7 @@ def test_disarm_stops_portfolio_before_session_shutdown(app, monkeypatch):
             super().stop(timeout_ms)
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_portfolio_pump.LivePortfolioPump", _TrackPump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _TrackPump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _TrackWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -403,7 +402,7 @@ def test_disarm_stops_portfolio_before_session_shutdown(app, monkeypatch):
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+        win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
         assert win._strat_pump is not None
 
         win._on_disarm_requested()
@@ -429,18 +428,17 @@ def test_disarm_stops_portfolio_before_session_shutdown(app, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Portfolio-vs-single routing via _on_run_live_requested
+# Unified routing: _on_run_live_requested calls _start_live unconditionally
 # ---------------------------------------------------------------------------
 
-def test_routing_portfolio_strategy_dispatches_to_portfolio_path(app, monkeypatch):
-    """_on_run_live_requested picks _start_live_portfolio for a PortfolioStrategy."""
+def test_routing_portfolio_strategy_dispatches_to_unified_path(app, monkeypatch):
+    """_on_run_live_requested calls _start_live for a PortfolioStrategy (no branch)."""
     import vike_trader_app.data.vike_live as vike_live_mod
 
-    portfolio_calls = []
-    single_calls = []
+    start_live_calls = []
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_portfolio_pump.LivePortfolioPump", _FakePump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _FakePump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
@@ -448,40 +446,33 @@ def test_routing_portfolio_strategy_dispatches_to_portfolio_path(app, monkeypatc
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        # Spy on the two dispatch targets (accept strategy_cls kwarg from _on_run_live_requested)
-        monkeypatch.setattr(win, "_start_live_portfolio",
-                            lambda code, **kw: portfolio_calls.append(code))
-        monkeypatch.setattr(win, "_start_live_strategy",
-                            lambda code, **kw: single_calls.append(code))
+        # Spy on the unified _start_live
+        monkeypatch.setattr(win, "_start_live",
+                            lambda code, **kw: start_live_calls.append(code))
 
         win._on_run_live_requested(_TRIVIAL_PORTFOLIO_STRATEGY)
-        assert len(portfolio_calls) == 1, "portfolio strategy must route to _start_live_portfolio"
-        assert len(single_calls) == 0
+        assert len(start_live_calls) == 1, "portfolio strategy must route to _start_live"
 
     finally:
         win.shutdown()
 
 
-def test_routing_single_strategy_dispatches_to_single_path(app, monkeypatch):
-    """_on_run_live_requested picks _start_live_strategy for a plain Strategy."""
+def test_routing_single_strategy_dispatches_to_unified_path(app, monkeypatch):
+    """_on_run_live_requested calls _start_live for a plain Strategy (no branch)."""
     import vike_trader_app.data.vike_live as vike_live_mod
 
-    portfolio_calls = []
-    single_calls = []
+    start_live_calls = []
 
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
 
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        monkeypatch.setattr(win, "_start_live_portfolio",
-                            lambda code, **kw: portfolio_calls.append(code))
-        monkeypatch.setattr(win, "_start_live_strategy",
-                            lambda code, **kw: single_calls.append(code))
+        monkeypatch.setattr(win, "_start_live",
+                            lambda code, **kw: start_live_calls.append(code))
 
         win._on_run_live_requested(_TRIVIAL_SINGLE_STRATEGY)
-        assert len(single_calls) == 1, "plain strategy must route to _start_live_strategy"
-        assert len(portfolio_calls) == 0
+        assert len(start_live_calls) == 1, "plain strategy must route to _start_live"
 
     finally:
         win.shutdown()
@@ -489,31 +480,27 @@ def test_routing_single_strategy_dispatches_to_single_path(app, monkeypatch):
 
 def test_routing_bad_code_shows_status_no_dispatch(app, monkeypatch):
     """_on_run_live_requested with unparseable code shows status, dispatches to neither."""
-    portfolio_calls = []
-    single_calls = []
+    start_live_calls = []
     messages = []
 
     win = MainWindow()
     try:
         _arm_basket_window(win, monkeypatch)
-        monkeypatch.setattr(win, "_start_live_portfolio",
-                            lambda code: portfolio_calls.append(code))
-        monkeypatch.setattr(win, "_start_live_strategy",
-                            lambda code: single_calls.append(code))
+        monkeypatch.setattr(win, "_start_live",
+                            lambda code, **kw: start_live_calls.append(code))
         monkeypatch.setattr(win.statusBar(), "showMessage",
                             lambda m, t=0: messages.append(m))
 
         win._on_run_live_requested("this is not valid python !!!")
 
-        assert len(portfolio_calls) == 0
-        assert len(single_calls) == 0
+        assert len(start_live_calls) == 0
         assert any("error" in m.lower() or "load" in m.lower() for m in messages)
     finally:
         win.shutdown()
 
 
 # ---------------------------------------------------------------------------
-# closeEvent also tears down the portfolio pump
+# closeEvent also tears down the portfolio pump (unified path)
 # ---------------------------------------------------------------------------
 
 def test_close_event_tears_down_portfolio(app, monkeypatch):
@@ -521,14 +508,14 @@ def test_close_event_tears_down_portfolio(app, monkeypatch):
     import vike_trader_app.data.vike_live as vike_live_mod
 
     monkeypatch.setattr(
-        "vike_trader_app.exec.live_portfolio_pump.LivePortfolioPump", _FakePump)
+        "vike_trader_app.exec.live_portfolio_pump.LivePump", _FakePump)
     monkeypatch.setattr(
         "vike_trader_app.ui.live_feed_worker.LiveBarFeedWorker", _FakeWorker)
     monkeypatch.setattr(vike_live_mod, "make_live_feed", _fake_make_live_feed)
 
     win = MainWindow()
     _arm_basket_window(win, monkeypatch)
-    win._start_live_portfolio(_TRIVIAL_PORTFOLIO_STRATEGY)
+    win._start_live(_TRIVIAL_PORTFOLIO_STRATEGY)
 
     pump = win._strat_pump
     workers = list(win._strat_workers)
