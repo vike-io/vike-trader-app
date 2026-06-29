@@ -19,6 +19,7 @@ class Bar:
     funding: float | None = None  # perp funding rate at this bar, if available
     bid: float | None = None  # opening best-bid for the bar's window (tick-derived; None for OHLCV bars)
     ask: float | None = None  # opening best-ask for the bar's window (tick-derived; None for OHLCV bars)
+    symbol: str | None = None  # fully-qualified "SYMBOL.VENUE" id, attached by the engine dispatch
 
 
 @dataclass
