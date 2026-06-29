@@ -27,7 +27,7 @@ class MLStrategy(Strategy):
         if features is None:
             return
         signal = self.predict(features)
-        if signal > 0 and self.position.size == 0:
-            self.buy(1.0)
-        elif signal <= 0 and self.position.size > 0:
-            self.close()
+        if signal > 0 and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif signal <= 0 and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
