@@ -17,6 +17,7 @@ x=='TRADE' with autoclose- clientOrderId: emit PositionLiquidated ONLY (suppress
 from __future__ import annotations
 
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent, FundingEvent, OrderAccepted, OrderCanceled, OrderExpired,
     OrderFilled, OrderPartiallyFilled, PositionLiquidated,
 )
@@ -29,17 +30,36 @@ def map_binance_perp(frame, *, venue: str = "binance", symbol: str = "") -> list
         return []
     if frame.get("e") == "ACCOUNT_UPDATE":
         a = frame.get("a") or {}
-        if a.get("m") != "FUNDING_FEE":
-            return []                                  # ORDER/ADJUSTMENT/... -> fill-driven, ignore
         ts = int(frame.get("T", 0) or 0)
+        wallet_rows = a.get("B") or []
         out: list[object] = []
-        for b in a.get("B", []):
-            bc = float(b.get("bc", 0) or 0)
-            if bc == 0.0:
-                continue
-            out.append(FundingEvent(
-                venue=venue, symbol=symbol, position_side="BOTH",
-                funding_rate=0.0, amount=bc, mark_price=None, ts=ts))
+        if a.get("m") == "FUNDING_FEE":
+            for b in wallet_rows:
+                bc = float(b.get("bc", 0) or 0)
+                if bc == 0.0:
+                    continue
+                out.append(FundingEvent(
+                    venue=venue, symbol=symbol, position_side="BOTH",
+                    funding_rate=0.0, amount=bc, mark_price=None, ts=ts))
+        # Emit AccountState from wallet balances (wb = total wallet balance) for ANY ACCOUNT_UPDATE
+        # that carries B rows with a 'wb' field.  wb must be EXPLICITLY present — rows that only
+        # carry 'bc' (balance change, like a bare FUNDING_FEE row without wallet snapshot) are
+        # skipped so we never emit AccountState(balance=0) and clobber a just-applied FundingEvent.
+        # This covers FUNDING_FEE dual-emit AND ORDER/ADJUSTMENT/... balance snapshots.
+        if wallet_rows:
+            balances: list[tuple[str, float]] = []
+            for b in wallet_rows:
+                if "wb" not in b:
+                    continue          # no total-balance snapshot in this row — skip it
+                try:
+                    asset = str(b.get("a") or "")
+                    wb = float(b["wb"] or 0)
+                    if asset:
+                        balances.append((asset, wb))
+                except (TypeError, ValueError):
+                    pass
+            if balances:
+                out.append(AccountState(venue=venue, balances=tuple(balances), ts=ts))
         return out
     if frame.get("e") != "ORDER_TRADE_UPDATE":
         return []

@@ -7,6 +7,7 @@ import dataclasses
 
 from vike_trader_app.exec.bybit.mapper import map_execution, map_order
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent, OrderFilled, OrderPartiallyFilled, PositionLiquidated,
 )
 
@@ -75,4 +76,21 @@ def map_bybit_perp(frame: dict, *, venue: str = "bybit", symbol: str = "") -> li
     elif topic == "order":
         for item in data:
             events.extend(map_order(item, venue=venue, symbol=symbol))
+    elif topic == "wallet":
+        # Bybit V5 wallet push: data[].coin[] with coin/walletBalance (TOTAL).
+        # One AccountState per frame covering all coin rows from all account entries.
+        # Default-safe: malformed coin/walletBalance entries are skipped silently.
+        ts = int(frame.get("creationTime", 0) or 0)
+        balances: list[tuple[str, float]] = []
+        for acct in data:
+            for c in (acct.get("coin") or []):
+                try:
+                    asset = str(c.get("coin") or "")
+                    wb = float(c.get("walletBalance", 0) or 0)
+                    if asset:
+                        balances.append((asset, wb))
+                except (TypeError, ValueError):
+                    pass
+        if balances:
+            events.append(AccountState(venue=venue, balances=tuple(balances), ts=ts))
     return events

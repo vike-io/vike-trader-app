@@ -196,3 +196,59 @@ def test_perp_liquidation_carries_hedge_leg():
     liq = [e for e in map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
            if isinstance(e, PositionLiquidated)][0]
     assert liq.position_side == "SHORT"
+
+
+# --- wallet topic -> AccountState tests ---
+
+from vike_trader_app.exec.events import AccountState
+
+
+def _wallet_frame(coins=None, ts=1700000000000):
+    """Build a Bybit wallet push frame (V5 format)."""
+    if coins is None:
+        coins = [{"coin": "USDT", "walletBalance": "2500.50"}, {"coin": "BTC", "walletBalance": "0.1"}]
+    return {
+        "topic": "wallet",
+        "creationTime": ts,
+        "data": [{"accountType": "UNIFIED", "coin": coins}],
+    }
+
+
+def test_wallet_topic_emits_account_state():
+    evs = map_bybit_perp(_wallet_frame(), venue="bybit", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    acct = evs[0]
+    assert isinstance(acct, AccountState)
+    assert acct.venue == "bybit"
+    assert ("USDT", 2500.50) in acct.balances
+    assert ("BTC", 0.1) in acct.balances
+    assert acct.ts == 1700000000000
+
+
+def test_wallet_topic_single_usdt_balance():
+    """Minimal: one USDT coin row."""
+    frame = _wallet_frame(coins=[{"coin": "USDT", "walletBalance": "1000.0"}])
+    evs = map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    assert ("USDT", 1000.0) in evs[0].balances
+
+
+def test_wallet_topic_empty_coins_emits_nothing():
+    """wallet frame with no coins -> []."""
+    frame = _wallet_frame(coins=[])
+    assert map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT") == []
+
+
+def test_wallet_topic_malformed_coin_row_skipped():
+    """A coin row missing walletBalance is skipped; valid rows still make AccountState."""
+    frame = _wallet_frame(coins=[
+        {"coin": "USDT", "walletBalance": "500.0"},
+        {"coin": "BTC"},  # missing walletBalance -> wb=0 still valid (treated as 0)
+        {"walletBalance": "1.0"},  # missing coin key -> empty asset -> skipped
+    ])
+    evs = map_bybit_perp(frame, venue="bybit", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    acct = evs[0]
+    assert ("USDT", 500.0) in acct.balances
+    assert ("BTC", 0.0) in acct.balances  # present, wb defaults to 0
+    assert all(a != "" for a, _ in acct.balances)  # empty-asset row excluded

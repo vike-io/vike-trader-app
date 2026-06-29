@@ -216,3 +216,67 @@ def test_liq_category_on_nonfill_lifecycle_frame_does_not_liquidate():
                       clOrdId="c-liq"),
         venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
     assert not any(isinstance(e, PositionLiquidated) for e in canceled)
+
+
+# --- account channel -> AccountState tests ---
+
+from vike_trader_app.exec.events import AccountState
+
+
+def _account_frame(details=None, u_time=1700000000000):
+    """Build an OKX account push frame (V5 format)."""
+    if details is None:
+        details = [{"ccy": "USDT", "cashBal": "3000.75"}, {"ccy": "ETH", "cashBal": "1.5"}]
+    return {
+        "arg": {"channel": "account", "uid": "123"},
+        "data": [{"uTime": str(u_time), "details": details}],
+    }
+
+
+def test_account_channel_emits_account_state():
+    evs = map_okx_perp(_account_frame(), venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    acct = evs[0]
+    assert isinstance(acct, AccountState)
+    assert acct.venue == "okx"
+    assert ("USDT", 3000.75) in acct.balances
+    assert ("ETH", 1.5) in acct.balances
+    assert acct.ts == 1700000000000
+
+
+def test_account_channel_single_usdt():
+    """Minimal: one USDT detail row."""
+    frame = _account_frame(details=[{"ccy": "USDT", "cashBal": "500.0"}])
+    evs = map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    assert ("USDT", 500.0) in evs[0].balances
+
+
+def test_account_channel_no_details_emits_nothing():
+    """account frame with empty data/details -> []."""
+    frame = {"arg": {"channel": "account"}, "data": []}
+    assert map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val) == []
+
+
+def test_account_channel_malformed_detail_row_skipped():
+    """Detail row missing ccy is skipped; valid rows still produce AccountState."""
+    frame = _account_frame(details=[
+        {"ccy": "USDT", "cashBal": "1000.0"},
+        {"cashBal": "5.0"},   # missing ccy -> skipped
+        {"ccy": "BTC", "cashBal": "bad"},  # non-numeric cashBal -> skipped
+    ])
+    evs = map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    acct = evs[0]
+    assert ("USDT", 1000.0) in acct.balances
+    assert all(a != "" for a, _ in acct.balances)  # empty-ccy row excluded
+
+
+def test_account_channel_uses_cashbal_not_other_fields():
+    """AccountState balances use cashBal (total cash), not availBal or frozenBal."""
+    frame = _account_frame(details=[
+        {"ccy": "USDT", "cashBal": "2000.0", "availBal": "1800.0", "frozenBal": "200.0"}
+    ])
+    evs = map_okx_perp(frame, venue="okx", symbol="BTC-USDT-SWAP", ct_val=_ct_val)
+    acct = next(e for e in evs if isinstance(e, AccountState))
+    assert ("USDT", 2000.0) in acct.balances  # cashBal, not availBal
