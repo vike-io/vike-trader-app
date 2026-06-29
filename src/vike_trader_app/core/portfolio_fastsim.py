@@ -59,7 +59,7 @@ _DEAD_BAND = 1e-12  # |delta shares| <= this -> skip (mirrors Strategy._engine_t
 
 
 @njit(cache=True)
-def _portfolio_kernel(opens, highs, lows, closes, funding, ts, target_weights,
+def _portfolio_kernel(opens, closes, funding, ts, target_weights,
                       taker_fee, slippage, init_cash, multiplier):  # pragma: no cover - compiled
     """One-pass time×symbol simulation mirroring ``MultiSymbolEngine.run`` (cash_gate=False).
 
@@ -69,7 +69,7 @@ def _portfolio_kernel(opens, highs, lows, closes, funding, ts, target_weights,
     Per bar ``t``:
       1. Fill the deltas QUEUED at bar ``t-1`` at ``opens[t, s]`` — per symbol in COLUMN order,
          on shared ``cash`` (cash may go negative; no gate). Records Trades on reduce/close/flip.
-      2. Mark ``price[s] = closes[t, s]``; apply perp funding on held positions.
+      2. Apply perp funding on held positions (marked at ``closes[t, s]``).
       3. Mark equity = ``cash + Σ pos[s]·closes[t, s]·mult``.
       4. Compute next deltas from ``target_weights[t]`` against the SAME equity snapshot:
          ``target_shares = w·equity / closes[t, s] − pos[s]``; dead-band ``1e-12``; queue for ``t+1``.
@@ -84,7 +84,6 @@ def _portfolio_kernel(opens, highs, lows, closes, funding, ts, target_weights,
     avg = np.zeros(S, dtype=np.float64)
     entry_fee = np.zeros(S, dtype=np.float64)
     entry_ts = np.zeros(S, dtype=np.int64)
-    price = np.zeros(S, dtype=np.float64)
 
     # Pending deltas queued at bar t-1, filled at bar t's open. queued_qty>0 means an order
     # of `queued_side * queued_qty` shares is pending for that symbol. At most one queued
@@ -161,9 +160,8 @@ def _portfolio_kernel(opens, highs, lows, closes, funding, ts, target_weights,
             queued_qty[s] = 0.0
             queued_side[s] = 0
 
-        # 2) Mark price + perp funding on held positions (matches run(): price=close, then funding).
+        # 2) Perp funding on held positions (matches run(): marked at close).
         for s in range(S):
-            price[s] = closes[t, s]
             f = funding[t, s]
             if f != 0.0 and pos[s] != 0.0:
                 cash -= funding_charge_nb(pos[s], closes[t, s], f, multiplier)
@@ -234,8 +232,11 @@ def fast_portfolio_backtest(opens, highs, lows, closes, funding, ts, target_weig
     if ts.shape != (T,):
         raise ValueError(f"ts must have shape {(T,)}, got {ts.shape}")
 
+    # highs/lows are accepted + validated for API symmetry with the single-asset kernel and
+    # reserved for future MAE/MFE tracking, but the cross-sectional sim itself fills at the
+    # open and marks at the close, so they are not passed into the inner kernel.
     (equity, nt, e_p, x_p, sz, pnl, fees, e_ts, x_ts, sym) = _portfolio_kernel(
-        opens, highs, lows, closes, funding, ts, target_weights,
+        opens, closes, funding, ts, target_weights,
         float(taker_fee), float(slippage), float(init_cash), float(multiplier),
     )
 
