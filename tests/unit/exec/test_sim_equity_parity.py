@@ -54,7 +54,7 @@ from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.accounting import Account
 from vike_trader_app.exec.bus import EventBus
-from vike_trader_app.exec.events import FillEvent
+from vike_trader_app.exec.events import FillEvent, FundingEvent
 from vike_trader_app.exec.sim_exchange import SimulatedExchange
 
 
@@ -79,13 +79,8 @@ def _ramp():
 
 
 def _account_equity(initial_cash: float, acc: Account) -> float:
-    """Compose Account equity (no equity() method on Account; compose here)."""
-    return (
-        initial_cash
-        + acc.balance
-        + acc.realized_pnl
-        + acc.unrealized_pnl("sim", "X", "BOTH")
-    )
+    """Delegate to Account.equity() — DRY shortcut used by the test harness."""
+    return acc.equity(initial_cash, venue="sim", symbol="X", position_side="BOTH")
 
 
 def _run_bar_by_bar(strat, bars, *, initial_cash: float, fee: float = 0.0,
@@ -99,6 +94,7 @@ def _run_bar_by_bar(strat, bars, *, initial_cash: float, fee: float = 0.0,
     bus = EventBus()
     acc = Account(multiplier=multiplier)
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
+    bus.subscribe(lambda ev: acc.apply_funding(ev) if isinstance(ev, FundingEvent) else None)
 
     eng = BacktestEngine(
         bars, strat,
@@ -302,29 +298,18 @@ def _funding_bars():
     ]
 
 
-@pytest.mark.xfail(
-    reason=(
-        "FUNDING CAVEAT (Slice D): SimulatedExchange does not yet emit FundingEvent for the "
-        "engine's funding cashflow (cash -= funding_charge(...)). Account.balance therefore "
-        "misses the funding deduction that engine.cash already absorbed, breaking equity parity. "
-        "Fix: Slice D must add FundingEvent emission from the SimulatedExchange _on_advance hook "
-        "or equivalent, and Account.apply_funding folds it. Change xfail->xpass when that lands."
-    ),
-    strict=True,  # must fail (xpass = unexpectedly passing = a bug was silently fixed without removing xfail)
-)
-def test_equity_parity_funding_xfail():
-    """Equity identity with funding: EXPECTED TO FAIL until Slice D adds FundingEvent emission.
+def test_equity_parity_funding():
+    """Equity identity holds with funding: FundingEvent emitted from engine → Account.apply_funding.
 
-    When this test unexpectedly passes (xpass + strict=True), it means Slice D has landed
-    funding support — remove the xfail decorator and verify the test passes cleanly.
+    Slice D (feat/p0d-funding-account-equity): SimulatedExchange now wires _on_funding and publishes
+    FundingEvent(amount=-funding_charge). Account.apply_funding folds it (balance += ev.amount),
+    so Account.balance mirrors the same signed cash delta as engine.cash. Parity is restored.
     """
     initial_cash = 10_000.0
     _, _, eng_equities, acc_equities = _run_bar_by_bar(
         _HoldStrategy(), _funding_bars(),
         initial_cash=initial_cash, fee=0.0,
     )
-    # This assertion WILL fail on the funding bars because acc_equities[1+] will be
-    # too high by the cumulative funding_charge amount (Account never subtracted it).
     for i, (eng_eq, acc_eq) in enumerate(zip(eng_equities, acc_equities)):
         assert acc_eq == pytest.approx(eng_eq, abs=TOL), (
             f"funding bar {i}: engine={eng_eq}, account={acc_eq}, diff={acc_eq - eng_eq}"

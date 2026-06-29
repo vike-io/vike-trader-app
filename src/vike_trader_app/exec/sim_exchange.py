@@ -24,6 +24,7 @@ from vike_trader_app.core.order_intent import OrderRequest
 from vike_trader_app.exec.bus import EventBus
 from vike_trader_app.exec.events import (
     FillEvent,
+    FundingEvent,
     OrderAccepted,
     OrderCanceled,
     OrderFilled,
@@ -68,10 +69,14 @@ class SimulatedExchange:
         # client_order_id -> ManagedOrder (the FSM registry)
         self.registry: dict[str, ManagedOrder] = {}
 
+        # Funding event counter.
+        self._funding_n: int = 0
+
         # Attach hooks (overwrite; engine hooks are default-None before attachment).
         engine._on_submit = self._on_submit
         engine._on_fill = self._on_fill
         engine._on_cancel = self._on_cancel
+        engine._on_funding = self._on_funding
 
     # ---------------------------------------------------------------------------
     # Hook implementations
@@ -185,6 +190,24 @@ class SimulatedExchange:
 
         mo.apply(ev_lifecycle)       # accumulates fill + transitions status
         self.bus.publish(ev_lifecycle)
+
+    def _on_funding(self, amount_signed: float, ts: int) -> None:
+        """Called by the engine when a funding cashflow is applied (amount_signed = signed cash delta).
+
+        ``amount_signed`` == ``-funding_charge`` so that ``Account.balance += ev.amount`` mirrors
+        ``engine.cash -= funding_charge`` exactly (both are the same signed delta applied to cash).
+        Publishes a ``FundingEvent`` onto the bus so ``Account.apply_funding`` folds it.
+        """
+        ev = FundingEvent(
+            venue=self.venue,
+            symbol=self.symbol,
+            position_side="BOTH",
+            funding_rate=0.0,          # rate not available at hook call-site; amount is authoritative
+            amount=amount_signed,
+            ts=ts,
+        )
+        self._funding_n += 1
+        self.bus.publish(ev)
 
     def _on_cancel(self, order) -> None:
         """Called by the engine whenever an order is removed from ``_pending`` via cancel."""
