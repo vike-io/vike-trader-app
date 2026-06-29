@@ -1,6 +1,7 @@
 from __future__ import annotations
 from vike_trader_app.exec.binance.perp_mapper import map_binance_perp
 from vike_trader_app.exec.events import (
+    AccountState,
     FillEvent, FundingEvent, OrderAccepted, OrderCanceled, OrderExpired,
     OrderPartiallyFilled, PositionLiquidated,
 )
@@ -12,7 +13,7 @@ def _evt(**o_over):
     o.update(o_over)
     return {"e": "ORDER_TRADE_UPDATE", "E": 1700000000000, "T": 1700000000100, "o": o}
 
-def _acct(m="FUNDING_FEE", balances=((("a", "USDT"), ("bc", "-0.37")),), with_p=False):
+def _acct(m="FUNDING_FEE", balances=((("a", "USDT"), ("bc", "-0.37"), ("wb", "1000.00")),), with_p=False):
     a = {"m": m, "B": [dict(rows) for rows in balances]}
     if with_p:
         a["P"] = [{"s": "BTCUSDT", "pa": "0.5", "ep": "65000"}]
@@ -80,9 +81,10 @@ def test_non_dict_and_missing_o_skipped():
 
 # --- FUNDING_FEE tests ---
 
-def test_funding_fee_account_update_emits_funding_event_only():
+def test_funding_fee_account_update_emits_funding_event_and_account_state():
+    # FUNDING_FEE ACCOUNT_UPDATE: dual-emit — FundingEvent(s) first, then one AccountState.
     evs = map_binance_perp(_acct(), venue="binance", symbol="BTCUSDT")
-    assert [type(e).__name__ for e in evs] == ["FundingEvent"]
+    assert [type(e).__name__ for e in evs] == ["FundingEvent", "AccountState"]
     ev = evs[0]
     assert isinstance(ev, FundingEvent)
     assert ev.amount == -0.37            # bc, received-positive (negative = paid)
@@ -92,26 +94,45 @@ def test_funding_fee_account_update_emits_funding_event_only():
     assert ev.funding_rate == 0.0
     assert ev.ts == 1700000000100        # frame['T']
     assert not any(isinstance(e, FillEvent) for e in evs)
+    # AccountState carries wallet balances (wb = total), not bc.
+    acct_ev = evs[1]
+    assert isinstance(acct_ev, AccountState)
+    assert acct_ev.venue == "binance"
+    assert acct_ev.ts == 1700000000100
+    assert ("USDT", 1000.0) in acct_ev.balances
 
 
 def test_funding_fee_positive_bc_is_received():
     # Lock BOTH directions: the live probe only proved sign via sibling income-types (TRANSFER/
     # COMMISSION/REALIZED_PNL), not an actual funding row, so assert the positive case explicitly.
-    evs = map_binance_perp(_acct(balances=((("a", "USDT"), ("bc", "0.91")),)),
+    evs = map_binance_perp(_acct(balances=((("a", "USDT"), ("bc", "0.91"), ("wb", "1001.00")),)),
                            venue="binance", symbol="BTCUSDT")
     assert evs[0].amount == 0.91         # bc>0 = received funding (no flip)
 
 
 def test_funding_fee_skips_zero_bc_rows():
+    # Zero bc rows yield no FundingEvent; AccountState still includes those assets (wb=0.0 valid).
     evs = map_binance_perp(
-        _acct(balances=((("a", "BNB"), ("bc", "0")), (("a", "USDT"), ("bc", "1.20")))),
+        _acct(balances=((("a", "BNB"), ("bc", "0"), ("wb", "0.05")),
+                        (("a", "USDT"), ("bc", "1.20"), ("wb", "1001.20")))),
         venue="binance", symbol="BTCUSDT")
-    assert len(evs) == 1
-    assert evs[0].amount == 1.20
+    funding_evs = [e for e in evs if isinstance(e, FundingEvent)]
+    acct_evs = [e for e in evs if isinstance(e, AccountState)]
+    assert len(funding_evs) == 1
+    assert funding_evs[0].amount == 1.20
+    assert len(acct_evs) == 1
+    assert ("USDT", 1001.20) in acct_evs[0].balances
+    assert ("BNB", 0.05) in acct_evs[0].balances
 
 
-def test_non_funding_account_update_still_empty():
-    assert map_binance_perp(_acct(m="ORDER"), venue="binance", symbol="BTCUSDT") == []
+def test_non_funding_account_update_emits_account_state_when_b_present():
+    # Non-FUNDING_FEE ACCOUNT_UPDATE with B rows -> AccountState only (no FundingEvent).
+    evs = map_binance_perp(_acct(m="ORDER"), venue="binance", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    assert isinstance(evs[0], AccountState)
+    assert evs[0].venue == "binance"
+    assert ("USDT", 1000.0) in evs[0].balances
+    # No B rows -> empty.
     assert map_binance_perp({"e": "ACCOUNT_UPDATE", "a": {}}, venue="binance", symbol="BTCUSDT") == []
     assert map_binance_perp({"e": "listenKeyExpired"}, venue="binance", symbol="BTCUSDT") == []
 
@@ -172,3 +193,58 @@ def test_binance_liquidation_carries_otu_trade_id():
     assert len(evs) == 1
     assert isinstance(evs[0], PositionLiquidated)
     assert evs[0].trade_id == "9"
+
+
+# --- AccountState (balance frame) tests ---
+
+def _balance_acct_update(m="FUNDING_FEE", wb_usdt=1500.0, wb_bnb=0.5, ts=1700000000100):
+    """Build an ACCOUNT_UPDATE with realistic B rows (both bc and wb fields)."""
+    return {
+        "e": "ACCOUNT_UPDATE", "E": ts, "T": ts,
+        "a": {
+            "m": m,
+            "B": [
+                {"a": "USDT", "bc": "-0.37", "wb": str(wb_usdt)},
+                {"a": "BNB", "bc": "0", "wb": str(wb_bnb)},
+            ],
+        },
+    }
+
+
+def test_funding_fee_dual_emit_funding_and_account_state():
+    """FUNDING_FEE frame emits FundingEvent(s) AND one AccountState (wb=total)."""
+    evs = map_binance_perp(_balance_acct_update(), venue="binance", symbol="BTCUSDT")
+    types = [type(e).__name__ for e in evs]
+    assert "FundingEvent" in types
+    assert "AccountState" in types
+    acct = next(e for e in evs if isinstance(e, AccountState))
+    assert acct.venue == "binance"
+    assert ("USDT", 1500.0) in acct.balances
+    assert ("BNB", 0.5) in acct.balances
+    assert acct.ts == 1700000000100
+
+
+def test_non_funding_account_update_emits_account_state_only():
+    """Non-FUNDING order ACCOUNT_UPDATE with B rows -> AccountState, no FundingEvent."""
+    evs = map_binance_perp(_balance_acct_update(m="ORDER"), venue="binance", symbol="BTCUSDT")
+    assert [type(e).__name__ for e in evs] == ["AccountState"]
+    acct = evs[0]
+    assert isinstance(acct, AccountState)
+    assert ("USDT", 1500.0) in acct.balances
+
+
+def test_account_update_no_b_rows_emits_nothing():
+    """ACCOUNT_UPDATE with empty B list -> []."""
+    frame = {"e": "ACCOUNT_UPDATE", "E": 1, "T": 1, "a": {"m": "FUNDING_FEE", "B": []}}
+    assert map_binance_perp(frame, venue="binance", symbol="BTCUSDT") == []
+
+
+def test_account_state_uses_wb_not_bc():
+    """AccountState balances use wb (total), not bc (change)."""
+    frame = {
+        "e": "ACCOUNT_UPDATE", "E": 1, "T": 100,
+        "a": {"m": "ORDER", "B": [{"a": "USDT", "bc": "50.0", "wb": "2000.0"}]},
+    }
+    evs = map_binance_perp(frame, venue="binance", symbol="BTCUSDT")
+    acct = next(e for e in evs if isinstance(e, AccountState))
+    assert ("USDT", 2000.0) in acct.balances  # wb=2000, NOT bc=50

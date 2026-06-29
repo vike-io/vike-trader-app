@@ -8,7 +8,7 @@ from __future__ import annotations
 import dataclasses
 
 from vike_trader_app.exec.okx.mapper import map_okx_order
-from vike_trader_app.exec.events import FillEvent, OrderFilled, OrderPartiallyFilled, PositionLiquidated
+from vike_trader_app.exec.events import AccountState, FillEvent, OrderFilled, OrderPartiallyFilled, PositionLiquidated
 
 _POSSIDE_MAP = {"net": "BOTH", "long": "LONG", "short": "SHORT"}
 
@@ -78,7 +78,31 @@ def map_okx_perp(frame: dict, *, venue: str = "okx", symbol: str = "", ct_val: f
     arg = frame.get("arg")
     if not isinstance(arg, dict):
         return []
-    if arg.get("channel") != "orders":
+    channel = arg.get("channel")
+
+    # account channel: data[].details[] with ccy/cashBal (TOTAL).
+    # One AccountState per frame.  Default-safe: bad rows skipped silently.
+    if channel == "account":
+        balances: list[tuple[str, float]] = []
+        ts_frame = 0
+        for entry in frame.get("data", []):
+            try:
+                ts_frame = int(entry.get("uTime", 0) or 0)
+            except (TypeError, ValueError):
+                pass
+            for d in (entry.get("details") or []):
+                try:
+                    asset = str(d.get("ccy") or "")
+                    wb = float(d.get("cashBal", 0) or 0)
+                    if asset:
+                        balances.append((asset, wb))
+                except (TypeError, ValueError):
+                    pass
+        if balances:
+            return [AccountState(venue=venue, balances=tuple(balances), ts=ts_frame)]
+        return []
+
+    if channel != "orders":
         return []
 
     events: list[object] = []
