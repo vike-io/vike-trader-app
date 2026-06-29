@@ -204,7 +204,9 @@ class MultiSymbolEngine:
                  granular_by_symbol: dict[str, list[Bar]] | None = None,
                  default_venue: str | None = None,
                  catalog=None,
-                 fill_model=None):
+                 fill_model=None,
+                 on_fill=None,
+                 multipliers: dict[str, float] | None = None):
         self.symbols = list(bars_by_symbol)
         # Pre-tag each bar with its instrument id (SYMBOL.VENUE) once at construction.
         # With default_venue=None, format_instrument returns the bare symbol so bar.symbol
@@ -224,6 +226,15 @@ class MultiSymbolEngine:
         self.maker_fee = maker_fee if maker_fee is not None else fee_rate
         self.taker_fee = taker_fee if taker_fee is not None else fee_rate
         self.multiplier = multiplier
+        # Per-symbol contract multipliers; multiplier_of() falls back to the scalar `multiplier`
+        # for any symbol not listed, so uniform-multiplier baskets stay byte-identical (fork 3).
+        self._mult: dict[str, float] = dict(multipliers) if multipliers else {}
+        # Default-None fill/funding mirror emitters (the optimizer/sweep path never sets these, so a
+        # single `is not None` test branches them away — the hot path is byte-identical and constructs
+        # no Account). Wired only by the parity harness / live mirror; NOT by portfolio_engine_kwargs().
+        self._on_fill = on_fill   # per fill: (symbol, side_sign, size, price, fee, ts, is_maker)
+        self._on_funding = None   # per funding cashflow: (symbol, amount_signed, ts)
+        self._on_submit = None    # reserved; default-off
         self.leverage = leverage
         self.maint_margin = maint_margin
         self.cash_gate = cash_gate
@@ -356,12 +367,18 @@ class MultiSymbolEngine:
     def price_of(self, symbol: str) -> float:
         return self._sym[symbol].price
 
+    def multiplier_of(self, symbol: str) -> float:
+        """Per-symbol contract multiplier; falls back to the scalar `multiplier` for any
+        symbol not in `multipliers` (back-compat: uniform-multiplier baskets unchanged)."""
+        return self._mult.get(symbol, self.multiplier)
+
     @property
     def now(self) -> int:
         return self._now
 
     def equity_now(self) -> float:
-        return self.cash + sum(self._sym[s].pos.size * self._sym[s].price * self.multiplier for s in self.symbols)
+        return self.cash + sum(self._sym[s].pos.size * self._sym[s].price * self.multiplier_of(s)
+                               for s in self.symbols)
 
     def drawdown_now(self) -> float:
         """Current drawdown from the running equity peak (0..1).
@@ -387,7 +404,7 @@ class MultiSymbolEngine:
         """Total $ risk currently open across the book: for every symbol with an armed protective
         stop and a non-flat position, ``|price - stop| * |size| * multiplier``. Used by PortfolioHeat."""
         return sum(
-            abs(self._sym[s].price - self._sym[s].stop) * abs(self._sym[s].pos.size) * self.multiplier
+            abs(self._sym[s].price - self._sym[s].stop) * abs(self._sym[s].pos.size) * self.multiplier_of(s)
             for s in self.symbols
             if self._sym[s].stop is not None and self._sym[s].pos.size != 0
         )
@@ -432,16 +449,16 @@ class MultiSymbolEngine:
         # ignore the other, so the book silently over-leveraged (each abs() per symbol — a long on A
         # and a short on B both consume leverage). The order being capped is appended AFTER this, so
         # it isn't double-counted here.
-        cur = sum(abs(self._sym[s].pos.size) * self._sym[s].price * self.multiplier for s in self.symbols)
+        cur = sum(abs(self._sym[s].pos.size) * self._sym[s].price * self.multiplier_of(s) for s in self.symbols)
         pending = sum(
             abs(sum(o.side * o.size for o in self._sym[s].pending if o.kind == "market"))
-            * self._sym[s].price * self.multiplier
+            * self._sym[s].price * self.multiplier_of(s)
             for s in self.symbols
         )
         room_notional = max_notional - cur - pending
         if room_notional <= 0.0:
             return 0.0
-        room = room_notional / (self._sym[symbol].price * self.multiplier)
+        room = room_notional / (self._sym[symbol].price * self.multiplier_of(symbol))
         return size if size <= room else room
 
     def _check_liquidation(self, cur: dict) -> None:
@@ -654,7 +671,10 @@ class MultiSymbolEngine:
                 bar = cur[s]
                 self._sym[s].price = bar.close
                 if bar.funding is not None and self._sym[s].pos.size != 0:
-                    self.cash -= funding_charge(self._sym[s].pos.size, bar.close, bar.funding, self.multiplier)
+                    _fc = funding_charge(self._sym[s].pos.size, bar.close, bar.funding, self.multiplier_of(s))
+                    self.cash -= _fc
+                    if self._on_funding is not None and _fc != 0.0:
+                        self._on_funding(s, -_fc, bar.ts)   # signed cash delta (mirrors SSE _on_funding(-_fc, ts))
                 # Update MAE/MFE extremes for any open position using this bar's high/low (no look-ahead).
                 if self._sym[s].pos.size != 0:
                     self._sym[s].hi_since = max(self._sym[s].hi_since, bar.high)
@@ -674,7 +694,7 @@ class MultiSymbolEngine:
             equity_ts.append(ts)
             for s in self.symbols:
                 pos = self._sym[s].pos
-                per_symbol_curve[s].append(self._sym[s].realized + pos.size * (self._sym[s].price - pos.avg_price) * self.multiplier)
+                per_symbol_curve[s].append(self._sym[s].realized + pos.size * (self._sym[s].price - pos.avg_price) * self.multiplier_of(s))
         cb = getattr(self.strategy, "on_stop", None)
         if cb is not None:
             try:
@@ -683,7 +703,7 @@ class MultiSymbolEngine:
                 logger.exception("strategy on_stop failed")
         # attribution: realized PnL + open-position mark-to-market, per symbol
         per_symbol = {
-            s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
+            s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier_of(s)
             for s in self.symbols
         }
         return MultiSymbolResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts, intrabar_both_hit=self.intrabar_both_hit)
@@ -765,7 +785,7 @@ class MultiSymbolEngine:
                 logger.exception("strategy on_stop failed")
 
         per_symbol = {
-            s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
+            s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier_of(s)
             for s in self.symbols
         }
         return MultiSymbolResult(
@@ -1042,8 +1062,8 @@ class MultiSymbolEngine:
                 continue
             slipped = adverse_fill_price(fp, o.side, self.slippage)
             rate = self.maker_fee if o.kind == "limit" else self.taker_fee
-            fee = _fee(fill_size, slipped, rate, self.multiplier)
-            cash_impact = -(o.side * fill_size) * slipped * self.multiplier - fee  # buys cost, sells free
+            fee = _fee(fill_size, slipped, rate, self.multiplier_of(s))
+            cash_impact = -(o.side * fill_size) * slipped * self.multiplier_of(s) - fee  # buys cost, sells free
             if self.cash + cash_impact < 0.0:
                 self.dropped.append((s, o.kind, fill_size, o.weight))
                 continue
@@ -1056,13 +1076,14 @@ class MultiSymbolEngine:
                     is_maker: bool = False) -> None:
         price = adverse_fill_price(price, side_sign, self.slippage)
         rate = self.maker_fee if is_maker else self.taker_fee
-        fee = _fee(size, price, rate, self.multiplier)
+        mult = self.multiplier_of(symbol)
+        fee = _fee(size, price, rate, mult)
         delta = side_sign * size
         st = self._sym[symbol]
         pos = st.pos
         self.cash -= fee                                  # transaction cost
-        self.cash -= delta * price * self.multiplier      # signed notional moves cash in every case
-        out = compute_fill(pos.size, pos.avg_price, side_sign, size, price, self.multiplier)
+        self.cash -= delta * price * mult                 # signed notional moves cash in every case
+        out = compute_fill(pos.size, pos.avg_price, side_sign, size, price, mult)
 
         if out.kind == "open":
             pos.size = out.new_size
@@ -1129,13 +1150,21 @@ class MultiSymbolEngine:
                       ts: int, is_maker: bool) -> None:
         """Fire strategy.on_fill(fill) if present; guards via getattr so old PortfolioStrategy
         subclasses (which don't have on_fill) are unaffected. Exceptions are logged but never
-        propagate — a strategy bug must not break the deterministic sim loop."""
+        propagate — a strategy bug must not break the deterministic sim loop.
+
+        ALSO fire the per-symbol mirror emitter ``self._on_fill`` (default-None; the sweep/optimizer
+        engine never sets it, so a single ``is not None`` test on the hot path branches it away and
+        no Account is constructed). The emitter signature is PER-SYMBOL with NO trailing ``order``
+        arg — the mirror adapter mints the trade_id/coid itself (differs from SingleSymbolEngine's
+        ``(side, size, price, fee, ts, is_maker, order)``). ``fee`` is the EXACT signed value
+        subtracted from ``self.cash``."""
         cb = getattr(self.strategy, "on_fill", None)
-        if cb is None:
-            return
-        fill = Fill(side=side_sign, size=size, price=price, fee=fee, ts=ts,
-                    is_maker=is_maker, symbol=symbol)
-        try:
-            cb(fill)
-        except Exception:
-            logger.exception("strategy on_fill failed")
+        if cb is not None:
+            fill = Fill(side=side_sign, size=size, price=price, fee=fee, ts=ts,
+                        is_maker=is_maker, symbol=symbol)
+            try:
+                cb(fill)
+            except Exception:
+                logger.exception("strategy on_fill failed")
+        if self._on_fill is not None:
+            self._on_fill(symbol, side_sign, size, price, fee, ts, is_maker)
