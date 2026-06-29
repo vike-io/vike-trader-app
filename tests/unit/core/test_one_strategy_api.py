@@ -6,7 +6,7 @@ handlers are no-ops.
 """
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy
-from vike_trader_app.core.portfolio import PortfolioEngine
+from vike_trader_app.core.portfolio import MultiSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.order_handle import OrderHandle
 from vike_trader_app.core.schedule import MonthStart
@@ -27,7 +27,7 @@ def test_on_bar_fires_per_symbol_with_symbol_on_bar():
         def on_bar(self, bar):
             seen.append(bar.symbol)
 
-    PortfolioEngine(
+    MultiSymbolEngine(
         {"BTC": _series(2), "ETH": _series(2)},
         S(),
         fee_rate=0.0,
@@ -48,7 +48,7 @@ def test_buy_is_symbol_explicit_and_takes_position():
             if self.index == 0:
                 self.buy(bar.symbol, 1.0)
 
-    eng = PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert eng._sym["BTC"].pos.size == 1.0
 
@@ -97,7 +97,7 @@ def test_position_read_by_symbol():
             if self.index == 0:
                 self.buy(bar.symbol, 2.0)
 
-    eng = PortfolioEngine({"ETH": _series(3)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"ETH": _series(3)}, S(), fee_rate=0.0, cash=1000)
     result_pos = []
 
     class S2(Strategy):
@@ -105,7 +105,7 @@ def test_position_read_by_symbol():
             if self.index == 1:
                 result_pos.append(self.position(bar.symbol).size)
 
-    eng2 = PortfolioEngine({"ETH": _series(3)}, S2(), fee_rate=0.0, cash=1000)
+    eng2 = MultiSymbolEngine({"ETH": _series(3)}, S2(), fee_rate=0.0, cash=1000)
 
     class S3(Strategy):
         def on_bar(self, bar):
@@ -114,7 +114,7 @@ def test_position_read_by_symbol():
             if self.index == 1:
                 result_pos.append(self.position(bar.symbol).size)
 
-    eng3 = PortfolioEngine({"ETH": _series(3)}, S3(), fee_rate=0.0, cash=1000)
+    eng3 = MultiSymbolEngine({"ETH": _series(3)}, S3(), fee_rate=0.0, cash=1000)
     eng3.run()
     assert result_pos == [2.0]
 
@@ -134,7 +134,7 @@ def test_order_target_percent():
             if self.index == 1:
                 reached.append(self.position(bar.symbol).size)
 
-    eng = PortfolioEngine({"BTC": _series(3, base=100)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(3, base=100)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     # equity=1000, price=100 → target = 0.5*1000/100 = 5.0 shares
     assert reached and reached[0] == 5.0
@@ -156,7 +156,7 @@ def test_buy_returns_order_handle_and_cancel_removes_it():
                 # cancel before it can fill
                 h.cancel()
 
-    eng = PortfolioEngine({"BTC": _series(5, base=10)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(5, base=10)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert len(handles) == 1
     assert isinstance(handles[0], OrderHandle)
@@ -177,7 +177,7 @@ def test_equity_and_drawdown_readable():
             equities.append(self.equity)
             dds.append(self.drawdown)
 
-    eng = PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=500)
+    eng = MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=500)
     eng.run()
     assert len(equities) == 3
     assert all(e > 0 for e in equities)
@@ -189,7 +189,7 @@ def test_equity_and_drawdown_readable():
 # ---------------------------------------------------------------------------
 
 def test_history_returns_dataframe_clamped_to_now(tmp_path):
-    """D1: history() on PortfolioEngine returns a polars DataFrame clamped to self.now."""
+    """D1: history() on MultiSymbolEngine returns a polars DataFrame clamped to self.now."""
     import polars as pl
     from vike_trader_app.data.catalog import Catalog
     from vike_trader_app.data.parquet_source import append_series
@@ -211,7 +211,7 @@ def test_history_returns_dataframe_clamped_to_now(tmp_path):
             captured["now"] = self._engine.now
 
     drive = [Bar(ts=9 * 60_000, open=1.0, high=1.5, low=0.5, close=1.0, volume=100.0)]
-    PortfolioEngine({"X": drive}, S(), catalog=cat).run()
+    MultiSymbolEngine({"X": drive}, S(), catalog=cat).run()
 
     df = captured["df"]
     assert isinstance(df, pl.DataFrame)
@@ -232,13 +232,13 @@ def test_symbols_attr():
             if self.index == 0:
                 syms_seen.extend(self.symbols)
 
-    eng = PortfolioEngine({"A": _series(2), "B": _series(2)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"A": _series(2), "B": _series(2)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert set(syms_seen) == {"A", "B"}
 
 
 # ---------------------------------------------------------------------------
-# D2: WARMUP gate in PortfolioEngine.run matches BacktestEngine.step semantics
+# D2: WARMUP gate in MultiSymbolEngine.run matches SingleSymbolEngine.step semantics
 # ---------------------------------------------------------------------------
 
 def test_warmup_gate_portfolio_engine():
@@ -253,7 +253,7 @@ def test_warmup_gate_portfolio_engine():
         def on_bar(self, bar):
             on_bar_indices.append(self.index)
 
-    eng = PortfolioEngine({"BTC": _series(n_bars, base=10)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(n_bars, base=10)}, S(), fee_rate=0.0, cash=1000)
     result = eng.run()
 
     # on_bar must NOT fire for i < WARMUP
@@ -280,7 +280,7 @@ def test_warmup_zero_is_unchanged():
         def on_bar(self, bar):
             indices.append(self.index)
 
-    PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
+    MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
     assert indices == [0, 1, 2]
 
 
@@ -299,7 +299,7 @@ def test_lifecycle_fires():
             if self.index == 0:
                 self.buy(bar.symbol, 1.0)
 
-    PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
+    MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
     assert ev[0] == "start" and ev[-1] == "stop" and "fill" in ev
 
 
@@ -320,7 +320,7 @@ def test_schedule_fires_once_per_period():
 
     # 70 daily bars (ms spacing = 86_400_000) spanning >2 months
     bars = [Bar(ts=i * 86_400_000, open=1, high=1, low=1, close=1) for i in range(70)]
-    PortfolioEngine({"BTC": bars}, S(), fee_rate=0.0, cash=1000).run()
+    MultiSymbolEngine({"BTC": bars}, S(), fee_rate=0.0, cash=1000).run()
     assert len(fired) >= 2  # at least 2 month boundaries crossed
 
 
@@ -358,8 +358,8 @@ def test_n_invariance_btc_subresult_matches_standalone():
     eth_prices = [20] * 8
     eth = [Bar(ts=i * 60_000, open=p, high=p + 1, low=p - 1, close=p) for i, p in enumerate(eth_prices)]
 
-    solo = PortfolioEngine({"BTC": list(btc)}, Cross(), fee_rate=0.0, cash=10_000).run()
-    multi = PortfolioEngine({"BTC": list(btc), "ETH": list(eth)}, Cross(), fee_rate=0.0, cash=10_000).run()
+    solo = MultiSymbolEngine({"BTC": list(btc)}, Cross(), fee_rate=0.0, cash=10_000).run()
+    multi = MultiSymbolEngine({"BTC": list(btc), "ETH": list(eth)}, Cross(), fee_rate=0.0, cash=10_000).run()
 
     # BTC trade must have non-zero PnL (entry open=12, exit open=15, size=1.0 → PnL=3.0)
     assert solo.per_symbol_pnl["BTC"] != 0.0, (

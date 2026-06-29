@@ -1,4 +1,4 @@
-"""SimulatedExecutionClient — bridges BacktestEngine fills onto the Phase-0 event spine.
+"""SimulatedExecutionClient — bridges SingleSymbolEngine fills onto the Phase-0 event spine.
 
 Registers the engine's optional ``on_fill`` hook and publishes one immutable ``FillEvent`` per fill
 on the ``EventBus``, SYNCHRONOUSLY on the calling thread during ``step()``. Only LIVE clients cross a

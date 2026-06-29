@@ -1,7 +1,7 @@
 """Shared intrabar fill-resolution logic (adverse-first ordering + SL/TP bracket cap).
 
-Extracted verbatim from ``BacktestEngine._resolve_intrabar`` so that both
-``BacktestEngine`` and (later) ``PortfolioEngine`` call the *same* component —
+Extracted verbatim from ``SingleSymbolEngine._resolve_intrabar`` so that both
+``SingleSymbolEngine`` and (later) ``MultiSymbolEngine`` call the *same* component —
 the foundation for the D5/D7 engine collapse.
 
 The public entry-point is :func:`resolve_intrabar_fills`.

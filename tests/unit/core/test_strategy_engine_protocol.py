@@ -1,9 +1,9 @@
-"""StrategyEngine Protocol: BacktestEngine and SymbolEngineShim must expose the same Strategy-facing
+"""StrategyEngine Protocol: SingleSymbolEngine and SymbolEngineShim must expose the same Strategy-facing
 surface, so a single-symbol Strategy runs identically standalone and in a portfolio. Catches drift."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.portfolio_adapter import SymbolEngineShim
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.strategy_engine import StrategyEngine
@@ -20,28 +20,28 @@ def _bar(ts=0):
 
 
 def test_backtest_engine_satisfies_protocol():
-    eng = BacktestEngine([_bar()], Strategy())
+    eng = SingleSymbolEngine([_bar()], Strategy())
     assert isinstance(eng, StrategyEngine)
 
 
 def test_symbol_engine_shim_satisfies_protocol():
-    pf = PortfolioEngine({"X": [_bar()]}, PortfolioStrategy())
+    pf = MultiSymbolEngine({"X": [_bar()]}, PortfolioStrategy())
     shim = SymbolEngineShim(pf, "X", None)
     assert isinstance(shim, StrategyEngine)
 
 
 def test_protocol_names_every_method_both_classes_expose():
-    eng = BacktestEngine([_bar()], Strategy())
-    pf = PortfolioEngine({"X": [_bar()]}, PortfolioStrategy())
+    eng = SingleSymbolEngine([_bar()], Strategy())
+    pf = MultiSymbolEngine({"X": [_bar()]}, PortfolioStrategy())
     shim = SymbolEngineShim(pf, "X", None)
     for name in _METHODS:
-        assert hasattr(eng, name), f"BacktestEngine missing {name}"
+        assert hasattr(eng, name), f"SingleSymbolEngine missing {name}"
         assert hasattr(shim, name), f"SymbolEngineShim missing {name}"
 
 
 def test_order_router_satisfies_protocol():
     from vike_trader_app.core.order_router import OrderRouter
-    eng = BacktestEngine([_bar()], Strategy())
+    eng = SingleSymbolEngine([_bar()], Strategy())
     assert isinstance(OrderRouter(eng), StrategyEngine)
     for name in _METHODS:
         assert hasattr(OrderRouter(eng), name), f"OrderRouter missing {name}"

@@ -1,7 +1,7 @@
-"""WealthLab-style portfolio backtest as an adapter over the shared-cash PortfolioEngine.
+"""WealthLab-style portfolio backtest as an adapter over the shared-cash MultiSymbolEngine.
 
 Runs one copy of a single-symbol ``Strategy`` per symbol; each copy's order calls are forwarded
-to one ``PortfolioEngine`` (one cash account, next-open fills, per-symbol PnL). The single-symbol
+to one ``MultiSymbolEngine`` (one cash account, next-open fills, per-symbol PnL). The single-symbol
 engine is not touched. Resting orders (limit/stop/trailing) and multi-timeframe reads
 (bars_for/forming_for) are forwarded to the shared engine. Multi-timeframe requires
 ``timeframes=["5m", ...]`` on ``TesterConfig`` (opt-in; omitting it leaves behaviour unchanged).
@@ -10,7 +10,7 @@ engine is not touched. Resting orders (limit/stop/trailing) and multi-timeframe 
 import bisect
 
 from .model import Bar
-from .portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
+from .portfolio import MultiSymbolEngine, PortfolioResult, PortfolioStrategy
 
 
 def _buyhold_asof(benchmark_bars: list, equity_ts: list, cash: float) -> list:
@@ -39,7 +39,7 @@ def _buyhold_asof(benchmark_bars: list, equity_ts: list, cash: float) -> list:
 
 def align_bars(bars_by_symbol: dict) -> dict:
     """Outer-join every symbol onto the union timeline; forward-fill gaps so all series are equal
-    length (PortfolioEngine requires aligned series). A leading gap carries the symbol's first bar
+    length (MultiSymbolEngine requires aligned series). A leading gap carries the symbol's first bar
     (flat); an interior/trailing gap carries the last seen close as a zero-volume bar.
     """
     timeline = sorted({bar.ts for series in bars_by_symbol.values() for bar in series})
@@ -60,12 +60,12 @@ def align_bars(bars_by_symbol: dict) -> dict:
 
 
 class SymbolEngineShim:
-    """The slice of ``BacktestEngine`` that a single-symbol ``Strategy`` calls, bound to one symbol
-    and forwarding to the shared ``PortfolioEngine``. ``Strategy`` reads ``self._engine.position`` /
+    """The slice of ``SingleSymbolEngine`` that a single-symbol ``Strategy`` calls, bound to one symbol
+    and forwarding to the shared ``MultiSymbolEngine``. ``Strategy`` reads ``self._engine.position`` /
     ``equity_now()`` and calls ``submit`` / ``submit_close`` / ``order_target_*``.
     """
 
-    def __init__(self, engine: PortfolioEngine, symbol: str, driver):
+    def __init__(self, engine: MultiSymbolEngine, symbol: str, driver):
         self._engine = engine
         self._symbol = symbol
         self._driver = driver  # holds max_open_positions; may be None in unit tests
@@ -131,7 +131,7 @@ class SymbolEngineShim:
 
     # --- resting orders forwarded to the shared engine ---
     # Resting orders (limit/stop/trailing) ARE subject to the MaxOpenPositions + per-direction caps:
-    # the cap is checked at FILL time in PortfolioEngine._fill_pending / _fill_pending_granular
+    # the cap is checked at FILL time in MultiSymbolEngine._fill_pending / _fill_pending_granular
     # (a new-symbol open is dropped when _at_open_cap()), not just for market entries in submit().
     # Covered by test_max_open_positions_caps_resting_entries.
     def submit_limit(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
@@ -162,13 +162,13 @@ class SymbolEngineShim:
         self._engine.submit_limit_close(self._symbol, side_sign, size, price, weight=weight)
 
     def cancel_order(self, symbol, order) -> None:  # noqa: ARG002
-        """Cancel a specific resting order via the shared PortfolioEngine for this shim's symbol."""
+        """Cancel a specific resting order via the shared MultiSymbolEngine for this shim's symbol."""
         self._engine.cancel_order(self._symbol, order)
 
     def cancel_all(self, symbol: str | None = None) -> None:  # symbol ignored
         self._engine.cancel_all(self._symbol)
 
-    # --- multi-timeframe: forward to the shared engine (requires timeframes= on PortfolioEngine) ---
+    # --- multi-timeframe: forward to the shared engine (requires timeframes= on MultiSymbolEngine) ---
     def bars_for(self, symbol_or_tf, tf: str | None = None):
         # Compat: old bars_for(tf) / new bars_for(symbol, tf)
         _tf = tf if tf is not None else symbol_or_tf
@@ -240,7 +240,7 @@ class MultiSymbolStrategyRunner:
         # Optional benchmark bars for a specific symbol; overrides the equal-weight default when set.
         self.benchmark_bars = benchmark_bars
         self.benchmark_label = benchmark_label
-        self._engine = None  # the PortfolioEngine built by the most recent run() (probe/diagnostics)
+        self._engine = None  # the MultiSymbolEngine built by the most recent run() (probe/diagnostics)
 
     def run(self) -> PortfolioResult:
         aligned = align_bars(self.bars_by_symbol)
@@ -254,7 +254,7 @@ class MultiSymbolStrategyRunner:
                     active_mask[s] = [True] * len(aligned[s])
                 else:
                     active_mask[s] = [any(w.contains(b.ts) for w in windows) for b in aligned[s]]
-        engine = PortfolioEngine(
+        engine = MultiSymbolEngine(
             aligned, driver,
             active_mask=active_mask,
             max_open_positions=self.max_open_positions,

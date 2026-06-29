@@ -31,7 +31,7 @@ class Result:
     intrabar_both_hit: int = 0
 
 
-class BacktestEngine:
+class SingleSymbolEngine:
     """Runs a `Strategy` over a list of `Bar`s with simulated fills and fees."""
 
     def __init__(

@@ -3,7 +3,7 @@
 Run grid / random / genetic / Bayesian optimization over **any** objective
 ``Callable[[dict], float]`` (higher is better). This extracts the proven
 algorithms from :mod:`vike_trader_app.analysis.search` (which are hardwired to
-``BacktestEngine``) into a reusable form that knows nothing about strategies,
+``SingleSymbolEngine``) into a reusable form that knows nothing about strategies,
 bars, or backtests — it only ever calls ``objective(params)``.
 
 All search functions return a list of :class:`Trial` ranked **descending** by

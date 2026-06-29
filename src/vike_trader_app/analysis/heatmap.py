@@ -8,7 +8,7 @@ separate UI concern.
 
 from dataclasses import dataclass
 
-from ..core.engine import BacktestEngine
+from ..core.engine import SingleSymbolEngine
 from .metrics import sharpe
 
 
@@ -31,7 +31,7 @@ def heatmap_grid(bars, make, *, param_x, values_x, param_y, values_y, score_fn=N
         row = []
         for x in values_x:
             strat = make(**{param_x: x, param_y: y})
-            res = BacktestEngine(bars, strat, fee_rate=fee_rate).run()
+            res = SingleSymbolEngine(bars, strat, fee_rate=fee_rate).run()
             row.append(score_fn(res))
         scores.append(row)
     return Heatmap(param_x=param_x, param_y=param_y, values_x=list(values_x), values_y=list(values_y), scores=scores)

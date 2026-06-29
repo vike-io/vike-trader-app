@@ -1,4 +1,4 @@
-"""SimulatedExchange — attaches to a BacktestEngine and publishes the full order lifecycle.
+"""SimulatedExchange — attaches to a SingleSymbolEngine and publishes the full order lifecycle.
 
 This is a PASSIVE MIRROR. The engine remains the canonical source of truth for cash, ``_pending``,
 ``trades``, and ``equity_curve``. ``SimulatedExchange`` OBSERVES the canonical fill path via the
@@ -35,12 +35,12 @@ from vike_trader_app.exec.order import ManagedOrder, OrderStatus
 
 
 class SimulatedExchange:
-    """Passive lifecycle mirror: observes ``BacktestEngine`` hooks and drives ``ManagedOrder`` FSMs.
+    """Passive lifecycle mirror: observes ``SingleSymbolEngine`` hooks and drives ``ManagedOrder`` FSMs.
 
     Parameters
     ----------
     engine:
-        A ``BacktestEngine`` instance. Its ``_on_submit``, ``_on_fill``, and ``_on_cancel``
+        A ``SingleSymbolEngine`` instance. Its ``_on_submit``, ``_on_fill``, and ``_on_cancel``
         hooks are overwritten by this constructor. Build before calling ``engine.run()``.
     bus:
         The synchronous ``EventBus`` onto which lifecycle events are published.

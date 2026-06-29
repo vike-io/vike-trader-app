@@ -1,7 +1,7 @@
 """Tests for the per-tick engine loop: tick_to_bar + step_tick + run_ticks (Task 3, Slice 2)."""
 from vike_trader_app.core.ticks import QuoteTick, TradeTick
 from vike_trader_app.core.consolidator import tick_to_bar
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.fill_model import TickFillModel
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -28,7 +28,7 @@ def test_market_fills_next_tick_crossing_spread():
              QuoteTick(ts=1, bid=19.95, ask=20.05),
              QuoteTick(ts=2, bid=29.90, ask=30.10),
              QuoteTick(ts=3, bid=39.90, ask=40.10)]
-    eng = BacktestEngine([], _BuyThenClose(), fill_model=TickFillModel())
+    eng = SingleSymbolEngine([], _BuyThenClose(), fill_model=TickFillModel())
     result = eng.run_ticks(ticks)
     # buy submitted at tick0 -> fills tick1 ask 20.05; close (sell) at tick2 -> fills tick3 bid 39.90
     assert result.trades[0].entry_price == 20.05
@@ -49,7 +49,7 @@ class _TickCounter(Strategy):
 
 def test_dispatch_by_type_and_no_on_bar():
     s = _TickCounter()
-    BacktestEngine([], s, fill_model=TickFillModel()).run_ticks(
+    SingleSymbolEngine([], s, fill_model=TickFillModel()).run_ticks(
         [QuoteTick(ts=0, bid=1, ask=1), TradeTick(ts=1, price=1, size=1)])
     assert s.quotes == 1 and s.trades_seen == 1
 
@@ -68,7 +68,7 @@ def test_magnifier_resolves_stop_vs_target_by_real_sequence():
     # entry fills tick1; then price hits the TARGET (12) at tick2 BEFORE the stop (9) at tick3.
     ticks = [QuoteTick(ts=0, bid=10, ask=10), QuoteTick(ts=1, bid=10, ask=10),
              QuoteTick(ts=2, bid=12, ask=12), QuoteTick(ts=3, bid=9, ask=9)]
-    eng = BacktestEngine([], _StopAndTarget(), fill_model=TickFillModel())
+    eng = SingleSymbolEngine([], _StopAndTarget(), fill_model=TickFillModel())
     result = eng.run_ticks(ticks)
     assert result.trades[-1].exit_price == 12.0      # target hit first (real sequence)
     assert result.intrabar_both_hit == 0             # no ambiguity: ticks gave the true order

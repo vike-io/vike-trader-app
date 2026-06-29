@@ -1,6 +1,6 @@
 """Forward (paper) testing: engine.step() reuse, PollingBarFeed, PaperTester."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.paper import PaperTester, pump
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
@@ -32,9 +32,9 @@ class _BuyThenClose(Strategy):
 
 def test_stepping_bars_one_by_one_matches_run():
     bars = _bars()
-    full = BacktestEngine(bars, _BuyThenClose(), cash=10_000.0).run()
+    full = SingleSymbolEngine(bars, _BuyThenClose(), cash=10_000.0).run()
 
-    eng = BacktestEngine(bars, _BuyThenClose(), cash=10_000.0)
+    eng = SingleSymbolEngine(bars, _BuyThenClose(), cash=10_000.0)
     eq = [eng.step(bar, i) for i, bar in enumerate(bars)]
 
     assert eq == full.equity_curve
@@ -53,7 +53,7 @@ def test_live_bars_fill_at_next_open_exactly_like_backtest():
     assert res.trades[0].entry_price == 110.0  # next-open after the buy — no look-ahead
     assert res.trades[0].exit_price == 130.0
     assert res.final_equity == 10_020.0
-    assert res.equity_curve == BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0).run().equity_curve
+    assert res.equity_curve == SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0).run().equity_curve
 
 
 class _CountCalls(Strategy):

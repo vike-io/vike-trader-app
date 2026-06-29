@@ -1,6 +1,6 @@
 """TesterConfig + StrategyTester facade."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.tester import Backtester, StrategyTester, TesterConfig, TesterReport
@@ -34,7 +34,7 @@ def _bars():
 def test_backtester_run_matches_engine_and_returns_report():
     cfg = TesterConfig(taker_fee=0.001, cash=10_000.0)
     rep = Backtester(_BuyHold(), _bars(), cfg).run()
-    expected = BacktestEngine(_bars(), _BuyHold(), **cfg.engine_kwargs()).run()
+    expected = SingleSymbolEngine(_bars(), _BuyHold(), **cfg.engine_kwargs()).run()
     assert isinstance(rep, TesterReport)
     assert rep.equity_curve == expected.equity_curve
     assert rep.final_equity == expected.final_equity

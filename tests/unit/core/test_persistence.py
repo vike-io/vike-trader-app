@@ -21,7 +21,7 @@ import json as _json  # noqa: E402
 
 from vike_trader_app.analysis.persistence import save_bundle  # noqa: E402
 from vike_trader_app.analysis.tearsheet import write_tearsheet_html  # noqa: E402
-from vike_trader_app.core.engine import BacktestEngine, Result  # noqa: E402
+from vike_trader_app.core.engine import SingleSymbolEngine, Result  # noqa: E402
 from vike_trader_app.core.model import Trade  # noqa: E402
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy  # noqa: E402
 
@@ -64,7 +64,7 @@ class _Buy(Strategy):
 
 def test_bundle_and_tearsheet_from_real_run(tmp_path):
     bars = _bars([100, 110, 120, 130])
-    result = BacktestEngine(bars, _Buy(), fee_rate=0.001).run()
+    result = SingleSymbolEngine(bars, _Buy(), fee_rate=0.001).run()
     out = save_bundle(tmp_path / "r", result=result, params={}, config={"symbol": "X"}, bars=bars, seed=1)
     report = write_tearsheet_html(out / "report.html", result, title="X 1m")
     assert (out / "metrics.json").exists()

@@ -1,6 +1,6 @@
 """Vectorized fast-path for parameter sweeps (the optimizer / CPCV path).
 
-The event-driven ``BacktestEngine`` stays the source of truth for single runs and
+The event-driven ``SingleSymbolEngine`` stays the source of truth for single runs and
 path-dependent realism (replay, trailing stops, funding). This module is the *sweep*
 engine: it trades per-combo speed for the event loop's flexibility, so a large grid
 runs in a fraction of the time (benchmark: ~365x faster than the event loop on a

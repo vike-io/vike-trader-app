@@ -1,5 +1,5 @@
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
@@ -15,7 +15,7 @@ def test_start_stop_and_submitted():
         def on_order_submitted(self, order): self.ev.append(("submitted", order.kind, order.side))
         def on_bar(self, bar):
             if self.index == 0: self.buy(1.0)
-    s = S(); BacktestEngine(_bars(), s).run()
+    s = S(); SingleSymbolEngine(_bars(), s).run()
     assert s.ev[0] == "start" and s.ev[-1] == "stop"
     assert ("submitted", "market", 1) in s.ev
 
@@ -34,5 +34,5 @@ def test_on_liquidation_fires():
     bars = [Bar(ts=0, open=100, high=100, low=100, close=100),
             Bar(ts=60, open=100, high=100, low=100, close=100),
             Bar(ts=120, open=1, high=1, low=1, close=1)]
-    s = S(); BacktestEngine(bars, s, leverage=10.0, maint_margin=0.5).run()
+    s = S(); SingleSymbolEngine(bars, s, leverage=10.0, maint_margin=0.5).run()
     assert s.liq == 1 and s.filled >= 1   # forced close fires on_liquidation AND on_order_filled

@@ -8,7 +8,7 @@ This file tests only Qt-free MLStrategy.
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine
+from vike_trader_app.core.portfolio import MultiSymbolEngine
 from vike_trader_app.ml.strategy import MLStrategy
 
 
@@ -33,7 +33,7 @@ class TestMLStrategy:
         strat.feats = [{"f": i} for i in range(n)]
         strat.predict = lambda feats: 1.0 if feats["f"] < 10 else -1.0
 
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"ETH": _series(closes)},
             strat,
             fee_rate=0.0,
@@ -51,7 +51,7 @@ class TestMLStrategy:
         strat.feats = [None] * n
         strat.predict = lambda _: 1.0  # would trade if features weren't None
 
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"ETH": _series(closes)},
             strat,
             fee_rate=0.0,
@@ -68,7 +68,7 @@ class TestMLStrategy:
         strat.feats = [{"f": i} for i in range(5)]
         strat.predict = lambda feats: 1.0
 
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"ETH": _series(closes)},
             strat,
             fee_rate=0.0,
@@ -86,7 +86,7 @@ class TestMLStrategy:
         strat.feats = [{"f": i} for i in range(n)]
         strat.predict = lambda feats: 1.0 if feats["f"] < 10 else -1.0
 
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"ETH": _series(closes)},
             strat,
             fee_rate=0.0,

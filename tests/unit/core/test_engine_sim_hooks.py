@@ -1,10 +1,10 @@
-"""Additive submit/fill/cancel hooks on BacktestEngine — C1a (default-off, byte-identical).
+"""Additive submit/fill/cancel hooks on SingleSymbolEngine — C1a (default-off, byte-identical).
 
 These hooks thread order identity to a sim venue without touching the optimizer
 fast path (hooks default to None; the ``if self._on_X is not None`` guards are free).
 """
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.orders import Order
@@ -62,7 +62,7 @@ def test_on_submit_fires_on_each_submitted_order():
             if self.index == 0:
                 self.buy(1.0)
 
-    eng = BacktestEngine(_bars(), _Strat(), cash=10_000.0)
+    eng = SingleSymbolEngine(_bars(), _Strat(), cash=10_000.0)
     eng._on_submit = lambda o: submitted.append(o)
     eng.run()
 
@@ -82,7 +82,7 @@ def test_on_submit_fires_for_limit_order():
             if self.index == 0:
                 self._engine.submit_limit(+1, 1.0, 50.0)
 
-    eng = BacktestEngine(_bars(), _Strat(), cash=10_000.0)
+    eng = SingleSymbolEngine(_bars(), _Strat(), cash=10_000.0)
     eng._on_submit = lambda o: submitted.append(o)
     eng.run()
 
@@ -93,7 +93,7 @@ def test_on_submit_fires_for_limit_order():
 
 def test_on_submit_default_none_no_crash():
     """Default off — no hook, no crash, results identical."""
-    base = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0).run()
+    base = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0).run()
     assert base.final_equity > 0  # sanity
 
 
@@ -104,7 +104,7 @@ def test_on_submit_default_none_no_crash():
 def test_on_fill_receives_originating_order_for_market():
     fill_calls = []
 
-    eng = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
+    eng = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
                          on_fill=lambda side, size, price, fee, ts, is_maker, order:
                              fill_calls.append((side, size, price, fee, ts, is_maker, order)))
     eng.run()
@@ -145,7 +145,7 @@ def test_on_fill_order_is_none_for_liquidation():
         Bar(ts=120_000, open=5, high=5, low=0, close=5, volume=1.0),    # low=0 → liq
     ]
 
-    eng = BacktestEngine(bars, _BuyStrat(), cash=10.0, taker_fee=0.0,
+    eng = SingleSymbolEngine(bars, _BuyStrat(), cash=10.0, taker_fee=0.0,
                          maint_margin=1.0,
                          on_fill=lambda side, size, price, fee, ts, is_maker, order:
                              fill_calls.append((side, size, price, fee, ts, is_maker, order)))
@@ -159,7 +159,7 @@ def test_on_fill_order_is_none_for_liquidation():
 def test_on_fill_6arg_lambda_still_works_before_upgrade():
     """Existing 6-arg on_fill lambdas (pre-C1a) continue to work via *args."""
     fills = []
-    eng = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
+    eng = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
                          on_fill=lambda side, size, price, fee, ts, is_maker, order=None:
                              fills.append((side, size, price, fee, ts, is_maker)))
     eng.run()
@@ -173,7 +173,7 @@ def test_on_fill_6arg_lambda_still_works_before_upgrade():
 def test_on_cancel_fires_on_cancel_order():
     cancelled = []
 
-    eng = BacktestEngine(_bars(), _BuyThenCancel(), cash=10_000.0)
+    eng = SingleSymbolEngine(_bars(), _BuyThenCancel(), cash=10_000.0)
     eng._on_cancel = lambda o: cancelled.append(o)
     eng.run()
 
@@ -187,7 +187,7 @@ def test_on_cancel_fires_on_cancel_order():
 def test_on_cancel_fires_on_cancel_all():
     cancelled = []
 
-    eng = BacktestEngine(_bars(), _BuyCancelAll(), cash=10_000.0)
+    eng = SingleSymbolEngine(_bars(), _BuyCancelAll(), cash=10_000.0)
     eng._on_cancel = lambda o: cancelled.append(o)
     eng.run()
 
@@ -199,7 +199,7 @@ def test_on_cancel_fires_on_cancel_all():
 
 def test_on_cancel_default_none_no_crash():
     """Default off — no hook, no crash."""
-    base = BacktestEngine(_bars(), _BuyThenCancel(), cash=10_000.0).run()
+    base = SingleSymbolEngine(_bars(), _BuyThenCancel(), cash=10_000.0).run()
     assert base.final_equity > 0
 
 
@@ -209,8 +209,8 @@ def test_on_cancel_default_none_no_crash():
 
 def test_all_hooks_default_off_byte_identical():
     """With no hooks set, engine output is byte-identical to a plain engine."""
-    base = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
-    hooked = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
+    base = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
+    hooked = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
     assert hooked.equity_curve == base.equity_curve
     assert [t.pnl for t in hooked.trades] == [t.pnl for t in base.trades]
     assert hooked.final_equity == base.final_equity

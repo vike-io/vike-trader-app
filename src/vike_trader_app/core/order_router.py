@@ -21,8 +21,8 @@ from vike_trader_app.exec.risk import RiskContext, RiskGate
 class OrderRouter:
     """Wrap ``engine``; route opening orders through ``gate`` (or pass through when ``gate`` is None).
 
-    For a non-BacktestEngine engine that lacks `_price`/`_now`, pass `mark_price_fn`/`now_fn` accessors;
-    the default falls back to BacktestEngine's internals.
+    For a non-SingleSymbolEngine engine that lacks `_price`/`_now`, pass `mark_price_fn`/`now_fn` accessors;
+    the default falls back to SingleSymbolEngine's internals.
     """
 
     def __init__(

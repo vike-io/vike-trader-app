@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.fastsim import fast_backtest
@@ -41,7 +41,7 @@ def test_kernel_warm_up_matches_engine_WARMUP():
     side = [1] * n
 
     bars = [Bar(ts=ts[i], open=opens[i], high=highs[i], low=lows[i], close=closes[i]) for i in range(n)]
-    eng = BacktestEngine(bars, _WarmupArrayStrategy(entries, exits, size, side), fee_rate=0.001)
+    eng = SingleSymbolEngine(bars, _WarmupArrayStrategy(entries, exits, size, side), fee_rate=0.001)
     expected = eng.run()  # engine skips on_bar for i < 5
 
     got = fast_backtest(
@@ -83,7 +83,7 @@ def test_engine_equals_fastsim_canonical_guarantee():
             if entries[i] and (pos == 0.0 or did_exit):
                 (self.buy if side[i] > 0 else self.sell)(size[i])
 
-    expected = BacktestEngine(bars, _Oracle(), taker_fee=0.001, slippage=0.0005).run()
+    expected = SingleSymbolEngine(bars, _Oracle(), taker_fee=0.001, slippage=0.0005).run()
     got = fast_backtest(
         np.asarray(opens, float), np.asarray(highs, float), np.asarray(lows, float),
         np.asarray(closes, float), np.asarray(funding, float), np.asarray(ts, np.int64),

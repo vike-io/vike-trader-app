@@ -1,4 +1,4 @@
-"""Pure trigger function shared by both engines (extracted from BacktestEngine)."""
+"""Pure trigger function shared by both engines (extracted from SingleSymbolEngine)."""
 
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.orders import Order, order_fill_price, order_fill_price_granular
@@ -108,7 +108,7 @@ def test_order_weight_defaults_zero_and_is_settable():
 
 
 def test_strategy_limit_buy_lands_weight_in_pending():
-    from vike_trader_app.core.engine import BacktestEngine
+    from vike_trader_app.core.engine import SingleSymbolEngine
     from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
     class _Rest(Strategy):
@@ -116,7 +116,7 @@ def test_strategy_limit_buy_lands_weight_in_pending():
             if self.index == 0:
                 self.limit_buy(1.0, 95.0, weight=3.0)
 
-    eng = BacktestEngine([_bar(100, 101, 99, 100), _bar(100, 101, 99, 100)], _Rest())
+    eng = SingleSymbolEngine([_bar(100, 101, 99, 100), _bar(100, 101, 99, 100)], _Rest())
     eng.run()
     # the resting limit never triggered (low 99 > 95), so it's still pending with its weight
     assert eng._pending[0].weight == 3.0

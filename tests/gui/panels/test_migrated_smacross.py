@@ -9,7 +9,7 @@ Qt-free MLStrategy tests remain in tests/unit/core/test_migrated_strategies.py.
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine
+from vike_trader_app.core.portfolio import MultiSymbolEngine
 from vike_trader_app.ui.dialogs import SmaCross, default_strategy_factory
 
 
@@ -32,7 +32,7 @@ class TestSmaCross:
 
     def test_smacross_completes_and_equity_is_finite(self):
         closes = self._make_closes()
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"BTC": _series(closes)},
             SmaCross(),
             fee_rate=0.0,
@@ -46,7 +46,7 @@ class TestSmaCross:
         """With a rising-then-falling series, SmaCross should complete at least one round-trip."""
         # Rising for 50 bars (buy signal), then falling for 50 bars (close signal) → closed trade
         closes = [10.0 + i * 0.5 for i in range(50)] + [35.0 - i * 0.5 for i in range(50)]
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"BTC": _series(closes)},
             SmaCross(),
             fee_rate=0.0,
@@ -60,7 +60,7 @@ class TestSmaCross:
         """With only `slow` bars or fewer, SmaCross never signals — no trades."""
         strat = SmaCross()
         closes = [10.0] * strat.slow  # exactly slow bars, never enough to signal
-        eng = PortfolioEngine(
+        eng = MultiSymbolEngine(
             {"BTC": _series(closes)},
             strat,
             fee_rate=0.0,

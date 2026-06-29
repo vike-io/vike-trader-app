@@ -1,4 +1,4 @@
-"""Drive a live strategy (the live analogue of PortfolioEngine.run / BacktestEngine.run).
+"""Drive a live strategy (the live analogue of MultiSymbolEngine.run / SingleSymbolEngine.run).
 
 Unified ``LivePump`` replaces the old split between ``LiveStrategyPump`` (single-symbol) and
 the former ``LivePortfolioPump`` (multi-symbol): N=1 is the single-symbol case, N>1 is the

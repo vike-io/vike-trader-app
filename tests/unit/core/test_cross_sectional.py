@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import CrossSectionalStrategy, PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import CrossSectionalStrategy, MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.strategy import Strategy
 
 
@@ -31,7 +31,7 @@ def test_top_k_holds_strongest_drops_weakest():
         "B": _series([100, 101, 103, 105, 108, 111, 114, 118]),
         "C": _series([100, 99, 98, 97, 96, 95, 94, 93]),
     }
-    eng = PortfolioEngine(bars, Momentum(), cash=100_000.0)
+    eng = MultiSymbolEngine(bars, Momentum(), cash=100_000.0)
     eng.run()
     assert eng.position_of("A").size > 0
     assert eng.position_of("B").size > 0
@@ -60,7 +60,7 @@ class _RebalanceEvery3(CrossSectionalStrategy):
 def test_rebalance_cadence_only_fires_on_schedule():
     bars = {"A": _series([100] * 9), "B": _series([101] * 9)}
     strat = _RebalanceEvery3()
-    PortfolioEngine(bars, strat, cash=10_000.0).run()
+    MultiSymbolEngine(bars, strat, cash=10_000.0).run()
     # score() only runs on indices divisible by rebalance_every (0,3,6) and after warmup
     assert set(strat.rebalanced_on) <= {0, 3, 6}
 
@@ -128,7 +128,7 @@ def test_monthly_rebalance_fires_exactly_once_per_month():
         "B": _daily_bars("B", _DATES, lambda i: 50 + i),    # rising but lower
     }
     strat = _MonthlyRotation()
-    PortfolioEngine(bars, strat, cash=10_000.0).run()
+    MultiSymbolEngine(bars, strat, cash=10_000.0).run()
 
     # Exactly 3 month boundaries crossed (Jan, Feb, Mar first bar each month)
     assert len(strat.rebalance_calls) == 3
@@ -141,7 +141,7 @@ def test_monthly_rebalance_triggers_at_month_start_bars():
         "B": _daily_bars("B", _DATES, lambda i: 50 + i),
     }
     strat = _MonthlyRotation()
-    PortfolioEngine(bars, strat, cash=10_000.0).run()
+    MultiSymbolEngine(bars, strat, cash=10_000.0).run()
 
     # Identify bar indices that are first occurrences of a new month
     from vike_trader_app.analysis.periods import period_key
@@ -164,7 +164,7 @@ def test_monthly_rebalance_history_accumulated_on_all_bars():
         "B": _daily_bars("B", _DATES, lambda i: 50 + i),
     }
     strat = _MonthlyRotation()
-    eng = PortfolioEngine(bars, strat, cash=10_000.0)
+    eng = MultiSymbolEngine(bars, strat, cash=10_000.0)
     eng.run()
 
     # History length for each symbol should equal total number of bars
@@ -201,10 +201,10 @@ def test_rebalance_on_none_reproduces_bar_count_behavior():
     }
 
     strat_none = _BarCount()
-    result_none = PortfolioEngine(bars_a, strat_none, cash=10_000.0).run()
+    result_none = MultiSymbolEngine(bars_a, strat_none, cash=10_000.0).run()
 
     strat_default = _BarCountAlt()
-    result_default = PortfolioEngine(bars_b, strat_default, cash=10_000.0).run()
+    result_default = MultiSymbolEngine(bars_b, strat_default, cash=10_000.0).run()
 
     # Both strategies should produce the same final equity
     assert result_none.final_equity == pytest.approx(result_default.final_equity)
@@ -242,7 +242,7 @@ def test_rebalance_every_still_gates():
         "B": _series([101] * 9),
     }
     strat = _Every3()
-    PortfolioEngine(bars, strat, cash=10_000.0).run()
+    MultiSymbolEngine(bars, strat, cash=10_000.0).run()
 
     # rebalance() fires only on bars 3 and 6 (bar 0 is skipped by warmup — score returns None for
     # len(history)==1 <= lookback==1); bar-count gate of 3 is preserved through Schedule.

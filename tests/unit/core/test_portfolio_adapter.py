@@ -4,7 +4,7 @@
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioResult, PortfolioStrategy
+from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioResult, PortfolioStrategy
 from vike_trader_app.core.portfolio_adapter import (
     MultiSymbolStrategyRunner,
     SymbolEngineShim,
@@ -43,14 +43,14 @@ def test_shim_forwards_orders_and_reads_to_engine():
                 captured["pos_size"] = captured["shim"].position.size
                 captured["equity"] = captured["shim"].equity_now()
 
-    eng = PortfolioEngine({"A": a}, _Driver(), cash=1000.0)
+    eng = MultiSymbolEngine({"A": a}, _Driver(), cash=1000.0)
     eng.run()
     assert captured["pos_size"] == 5.0
     assert captured["equity"] == eng.equity_now()
 
 
 def test_shim_forwards_resting_orders_to_engine():
-    eng = PortfolioEngine({"A": [_bar(1, 100.0), _bar(2, 100.0)]}, PortfolioStrategy(), cash=10_000.0)
+    eng = MultiSymbolEngine({"A": [_bar(1, 100.0), _bar(2, 100.0)]}, PortfolioStrategy(), cash=10_000.0)
     shim = SymbolEngineShim(eng, "A", None)
     shim.submit_limit(+1, 1.0, 95.0)
     shim.submit_stop(+1, 1.0, 105.0)
@@ -63,7 +63,7 @@ def test_shim_forwards_resting_orders_to_engine():
 
 def test_shim_bars_for_raises_when_tf_not_configured():
     import pytest
-    eng = PortfolioEngine({"A": [_bar(1, 1.0)]}, PortfolioStrategy(), cash=10.0)
+    eng = MultiSymbolEngine({"A": [_bar(1, 1.0)]}, PortfolioStrategy(), cash=10.0)
     shim = SymbolEngineShim(eng, "A", None)
     # No timeframes configured -> KeyError (the tf is not in self._sym[symbol].tf)
     with pytest.raises(KeyError):
@@ -295,11 +295,11 @@ def test_resting_order_inert_on_synthetic_flat_fill_bars():
 
 
 def test_single_symbol_portfolio_matches_engine_with_costs():
-    # A 1-symbol portfolio run must equal the single-symbol BacktestEngine on the same bars,
+    # A 1-symbol portfolio run must equal the single-symbol SingleSymbolEngine on the same bars,
     # strategy, and cost config (slippage + maker/taker + multiplier), proving the unified cost model.
     from vike_trader_app.core.model import Bar
     from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
-    from vike_trader_app.core.engine import BacktestEngine
+    from vike_trader_app.core.engine import SingleSymbolEngine
     from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
     from vike_trader_app.tester.config import TesterConfig
 
@@ -320,7 +320,7 @@ def test_single_symbol_portfolio_matches_engine_with_costs():
     config = TesterConfig(**cfg)
 
     # single-symbol reference
-    eng = BacktestEngine(list(bars), BuyThenClose(), **cfg)
+    eng = SingleSymbolEngine(list(bars), BuyThenClose(), **cfg)
     ref = eng.run()
 
     # 1-symbol portfolio
@@ -359,7 +359,7 @@ def test_inactive_symbol_does_not_open():
     runner = MultiSymbolStrategyRunner(BuyHold, {"A": a, "B": b}, TesterConfig(cash=10_000.0),
                                        ranges=ranges)
     res = runner.run()
-    eng = runner._engine  # probe: the PortfolioEngine the runner built this run
+    eng = runner._engine  # probe: the MultiSymbolEngine the runner built this run
 
     # A is always active: it buys on the ts=10 bar and fills at the ts=20 open -> entry_ts == 20.
     # B is inactive on ts=10/ts=20 (skipped, no order), first buys on the ts=30 bar (active),
@@ -768,7 +768,7 @@ def test_inner_schedule_fires_in_portfolio_mode():
     scheduled callbacks when run via MultiSymbolStrategyRunner (portfolio adapter path).
 
     Before the fix, _MultiSymbolDriver.on_bar never called inner.schedule.check_due,
-    so callbacks silently no-oped in portfolio mode even though they fire in BacktestEngine.
+    so callbacks silently no-oped in portfolio mode even though they fire in SingleSymbolEngine.
     """
     from vike_trader_app.core.schedule import EveryNBars
 

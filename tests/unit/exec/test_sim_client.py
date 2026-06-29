@@ -1,6 +1,6 @@
 """SimulatedExecutionClient publishes a FillEvent per engine fill, synchronously, no behavior change."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.bus import EventBus
@@ -33,7 +33,7 @@ def _fills(bus):
 def test_publishes_one_fillevent_per_fill():
     bus = EventBus()
     seen = _fills(bus)
-    eng = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001)
+    eng = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001)
     SimulatedExecutionClient(eng, bus, venue="sim", symbol="BTCUSDT")
     eng.run()
     assert len(seen) == 2
@@ -45,8 +45,8 @@ def test_publishes_one_fillevent_per_fill():
 
 
 def test_client_does_not_change_engine_results():
-    base = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
-    eng = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001)
+    base = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
+    eng = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001)
     SimulatedExecutionClient(eng, EventBus(), symbol="X")
     hooked = eng.run()
     assert hooked.equity_curve == base.equity_curve

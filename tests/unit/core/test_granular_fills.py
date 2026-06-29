@@ -9,7 +9,7 @@ granular data the engine's behavior is unchanged (coarse path, protective stop c
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
 
 def _bar(ts, o, h, l, c, v=1.0):
@@ -45,7 +45,7 @@ def test_no_granular_default_unchanged_coarse_stop_wins():
     'which wins' answer: protective stop. (Note: coarsely the un-OCO'd resting TP limit_sell@110 then
     re-fires on the same bar2 high=111 and opens a fresh SHORT — a pre-existing coarse quirk the
     granular path fixes via OCO. We assert only the coarse SL-wins fact here.)"""
-    eng = PortfolioEngine(_COARSE, _LongWithStopAndTP(), cash=10_000.0)
+    eng = MultiSymbolEngine(_COARSE, _LongWithStopAndTP(), cash=10_000.0)
     result = eng.run()
     assert result.trades[0].exit_price == 95.0  # protective stop checked first => coarsely wins
 
@@ -59,7 +59,7 @@ def test_granular_dip_first_stop_wins():
             _bar(150_000, 96, 111, 96, 100),   # rallies to 111 -> would hit TP, but stop already out
         ]
     }
-    eng = PortfolioEngine(_COARSE, _LongWithStopAndTP(), cash=10_000.0,
+    eng = MultiSymbolEngine(_COARSE, _LongWithStopAndTP(), cash=10_000.0,
                           granular_by_symbol=granular)
     result = eng.run()
     assert len(result.trades) == 1
@@ -76,7 +76,7 @@ def test_granular_rally_first_tp_wins():
             _bar(150_000, 105, 105, 94, 96),    # dips to 94 -> would hit stop, but TP already out
         ]
     }
-    eng = PortfolioEngine(_COARSE, _LongWithStopAndTP(), cash=10_000.0,
+    eng = MultiSymbolEngine(_COARSE, _LongWithStopAndTP(), cash=10_000.0,
                           granular_by_symbol=granular)
     result = eng.run()
     assert len(result.trades) == 1
@@ -107,7 +107,7 @@ def test_granular_limit_entry_fills_at_dipping_sub_bar():
             _bar(90_000, 104, 104, 99, 101),   # sub1: dips to 99 -> crosses 100, fills here
         ]
     }
-    eng = PortfolioEngine(coarse, _GranularLimitEntry(), cash=10_000.0,
+    eng = MultiSymbolEngine(coarse, _GranularLimitEntry(), cash=10_000.0,
                           granular_by_symbol=granular)
     eng.run()
     assert eng._sym["S"].pos.size == 1.0
@@ -134,7 +134,7 @@ def test_granular_order_that_never_triggers_stays_pending():
             _bar(90_000, 104, 104, 99, 101),
         ]
     }
-    eng = PortfolioEngine(coarse, _GranularStopNeverHit(), cash=10_000.0,
+    eng = MultiSymbolEngine(coarse, _GranularStopNeverHit(), cash=10_000.0,
                           granular_by_symbol=granular)
     eng.run()
     assert eng._sym["S"].pos.size == 0

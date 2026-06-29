@@ -1,11 +1,11 @@
-"""TesterConfig — the run configuration; maps 1:1 onto BacktestEngine's keyword args."""
+"""TesterConfig — the run configuration; maps 1:1 onto SingleSymbolEngine's keyword args."""
 
 from dataclasses import dataclass
 
 
 @dataclass
 class TesterConfig:
-    """Costs + capital + contract settings for a tester run. ``engine_kwargs`` feeds BacktestEngine."""
+    """Costs + capital + contract settings for a tester run. ``engine_kwargs`` feeds SingleSymbolEngine."""
 
     __test__ = False
 
@@ -27,7 +27,7 @@ class TesterConfig:
     periods_per_year: float = 365 * 24 * 60  # 1-minute bars; for annualized Sharpe/Sortino/Calmar
 
     def engine_kwargs(self) -> dict:
-        """The exact keyword arguments for ``BacktestEngine(bars, strategy, **engine_kwargs())``."""
+        """The exact keyword arguments for ``SingleSymbolEngine(bars, strategy, **engine_kwargs())``."""
         return {
             "fee_rate": self.fee_rate,
             "cash": self.cash,
@@ -42,7 +42,7 @@ class TesterConfig:
         }
 
     def portfolio_engine_kwargs(self) -> dict:
-        """Config-derived keyword args for ``PortfolioEngine`` (the runner adds active_mask,
+        """Config-derived keyword args for ``MultiSymbolEngine`` (the runner adds active_mask,
         max_open_positions, granular_by_symbol — those are not config-derived)."""
         return {
             "fee_rate": self.fee_rate,

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 
 from ..analysis.metrics import sharpe
 from ..analysis.validation import walk_forward_splits
-from ..core.portfolio import PortfolioEngine
+from ..core.portfolio import MultiSymbolEngine
 from .dataset import make_features, make_labels
 from .strategy import MLStrategy
 
@@ -73,7 +73,7 @@ def walk_forward_ml(
         strat = MLStrategy()
         strat.feats = feats[te_s:te_e]
         strat.predict = predict
-        oos = PortfolioEngine({_WF_SYMBOL: bars[te_s:te_e]}, strat, fee_rate=fee_rate, cash=cash).run()
+        oos = MultiSymbolEngine({_WF_SYMBOL: bars[te_s:te_e]}, strat, fee_rate=fee_rate, cash=cash).run()
 
         start = equity
         for v in oos.equity_curve:

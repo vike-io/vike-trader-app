@@ -1,9 +1,9 @@
-"""Compiled fast-path kernel: parity with the Python BacktestEngine + numba/numpy equivalence."""
+"""Compiled fast-path kernel: parity with the Python SingleSymbolEngine + numba/numpy equivalence."""
 
 import numpy as np
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.fastsim import fast_backtest
@@ -42,7 +42,7 @@ def _engine_result(opens, highs, lows, closes, ts, entries, exits, size, side,
                    *, taker_fee=0.0, slippage=0.0, init_cash=10_000.0):
     bars = _bars(opens, highs, lows, closes, ts)
     strat = _ArrayStrategy(entries, exits, size, side)
-    eng = BacktestEngine(bars, strat, fee_rate=taker_fee, slippage=slippage, cash=init_cash)
+    eng = SingleSymbolEngine(bars, strat, fee_rate=taker_fee, slippage=slippage, cash=init_cash)
     return eng.run()
 
 
@@ -149,7 +149,7 @@ def test_funding_matches_engine():
 
     # funding-aware engine oracle (Bars carry the funding rate)
     bars = _bars(opens, highs, lows, closes, ts, funding=funding)
-    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), fee_rate=0.0)
+    eng = SingleSymbolEngine(bars, _ArrayStrategy(entries, exits, size, side), fee_rate=0.0)
     expected = eng.run()
 
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side,
@@ -243,7 +243,7 @@ def test_multiplier_matches_engine():
     mult = 5.0
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side),
+    eng = SingleSymbolEngine(bars, _ArrayStrategy(entries, exits, size, side),
                          fee_rate=0.001, slippage=0.0005, multiplier=mult)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
@@ -271,7 +271,7 @@ def test_cashflow_matches_engine():
     cashflow = [500.0 if i == 5 else (-200.0 if i == 12 else 0.0) for i in range(n)]
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), cashflows=cashflow)
+    eng = SingleSymbolEngine(bars, _ArrayStrategy(entries, exits, size, side), cashflows=cashflow)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
                         cashflow=cashflow)
@@ -312,7 +312,7 @@ def test_size_type_percent_matches_engine():
     side = [1] * n
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _PercentEntryStrategy(entries, exits, pct, side, 1.0), taker_fee=0.001)
+    eng = SingleSymbolEngine(bars, _PercentEntryStrategy(entries, exits, pct, side, 1.0), taker_fee=0.001)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, pct, side),
                         taker_fee=0.001, size_type="percent")
@@ -353,7 +353,7 @@ def test_size_type_value_matches_engine():
     side = [1] * n
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _ValueEntryStrategy(entries, exits, value, side, 1.0), taker_fee=0.001)
+    eng = SingleSymbolEngine(bars, _ValueEntryStrategy(entries, exits, value, side, 1.0), taker_fee=0.001)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, value, side),
                         taker_fee=0.001, size_type="value")
@@ -375,7 +375,7 @@ def test_leverage_cap_matches_engine():
     side = [1] * n
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
+    eng = SingleSymbolEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
                         leverage=2.0)
@@ -405,7 +405,7 @@ def test_leverage_flip_matches_engine():
     side = [1, 1, 1, 1, -1, -1, -1, -1, -1]       # short from bar 4
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
+    eng = SingleSymbolEngine(bars, _ArrayStrategy(entries, exits, size, side), leverage=2.0)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),
                         leverage=2.0)
@@ -431,7 +431,7 @@ def test_liquidation_matches_engine():
     side = [1] * n
 
     bars = _bars(opens, highs, lows, closes, ts)
-    eng = BacktestEngine(bars, _ArrayStrategy(entries, exits, size, side),
+    eng = SingleSymbolEngine(bars, _ArrayStrategy(entries, exits, size, side),
                          cash=1_000.0, leverage=10.0, maint_margin=0.05)
     expected = eng.run()
     got = fast_backtest(**_arrays(opens, highs, lows, closes, ts, entries, exits, size, side),

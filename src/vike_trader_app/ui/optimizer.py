@@ -13,7 +13,7 @@ from PySide6 import QtCore, QtWidgets
 
 from ..analysis.metrics import sharpe, total_return
 from ..analysis.optimizer import grid_search
-from ..core.engine import BacktestEngine
+from ..core.engine import SingleSymbolEngine
 from . import dashboard_data as dd
 from . import theme
 
@@ -138,7 +138,7 @@ class OptimizerDialog(QtWidgets.QDialog):
                 self._show_best(match)
 
     def _show_best(self, res) -> None:
-        run = BacktestEngine(self.bars, self.strategy_cls.make(**res.params), fee_rate=self.fee_rate).run()
+        run = SingleSymbolEngine(self.bars, self.strategy_cls.make(**res.params), fee_rate=self.fee_rate).run()
         eq = run.equity_curve
         self.p_equity.clear(); self.p_equity.plot(eq, pen=_EQUITY)
         self.p_dd.clear(); self.p_dd.plot(dd.drawdown_curve(eq), pen=theme.DOWN)

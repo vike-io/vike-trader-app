@@ -7,7 +7,7 @@ editing it. The default PassThrough returns the strategy's literal size (today's
 Pure sizing helpers
 -------------------
 ``units_from_percent`` and ``units_from_value`` are pure functions used by both
-``BacktestEngine`` and ``StrategyLiveEngine`` to convert a target fraction of
+``SingleSymbolEngine`` and ``StrategyLiveEngine`` to convert a target fraction of
 equity (or a target notional value) into signed contract units.  Extracting them
 removes the formula duplication that existed when the two engines maintained their
 own copies of the ``order_target_percent`` / ``order_target_value`` formulas.
@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 
 # ---------------------------------------------------------------------------
-# Pure sizing helpers (shared by BacktestEngine + StrategyLiveEngine)
+# Pure sizing helpers (shared by SingleSymbolEngine + StrategyLiveEngine)
 # ---------------------------------------------------------------------------
 
 def units_from_percent(pct: float, equity: float, price: float, multiplier: float) -> float:

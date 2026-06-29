@@ -1,6 +1,6 @@
 """A strategy must be able to read its current position and equity from the engine."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -23,7 +23,7 @@ class _RecordsPosition(Strategy):
 def test_strategy_can_read_position_size():
     bars = [_bar(0, 100, 100), _bar(60_000, 110, 110), _bar(120_000, 120, 120)]
     strat = _RecordsPosition()
-    BacktestEngine(bars, strat).run()
+    SingleSymbolEngine(bars, strat).run()
     # flat on bar 0, then long 1.0 after the next-open fill on bars 1 and 2
     assert strat.seen_sizes == [0.0, 1.0, 1.0]
 
@@ -40,5 +40,5 @@ def test_strategy_can_read_equity():
             self.eq = self.equity
 
     strat = _ReadsEquity()
-    BacktestEngine(bars, strat, cash=5_000.0).run()
+    SingleSymbolEngine(bars, strat, cash=5_000.0).run()
     assert strat.eq == 5_000.0

@@ -2,7 +2,7 @@
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -32,17 +32,17 @@ class _LimitEntryMarketExit(Strategy):
 
 
 def test_market_round_trip_pays_taker_both_legs():
-    r = BacktestEngine(_flat_bars(), _MarketRoundTrip(), maker_fee=0.001, taker_fee=0.002).run()
+    r = SingleSymbolEngine(_flat_bars(), _MarketRoundTrip(), maker_fee=0.001, taker_fee=0.002).run()
     # both legs taker @100: 100*0.002 + 100*0.002
     assert r.trades[0].fees == pytest.approx(0.2 + 0.2)
 
 
 def test_limit_entry_pays_maker_then_taker_exit():
-    r = BacktestEngine(_flat_bars(), _LimitEntryMarketExit(), maker_fee=0.001, taker_fee=0.002).run()
+    r = SingleSymbolEngine(_flat_bars(), _LimitEntryMarketExit(), maker_fee=0.001, taker_fee=0.002).run()
     # entry maker @100 (0.1) + exit taker @100 (0.2)
     assert r.trades[0].fees == pytest.approx(0.1 + 0.2)
 
 
 def test_fee_rate_still_applies_to_both_when_tiers_unset():
-    r = BacktestEngine(_flat_bars(), _MarketRoundTrip(), fee_rate=0.001).run()
+    r = SingleSymbolEngine(_flat_bars(), _MarketRoundTrip(), fee_rate=0.001).run()
     assert r.trades[0].fees == pytest.approx(0.1 + 0.1)  # fee_rate used for both legs

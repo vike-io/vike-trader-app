@@ -1,7 +1,7 @@
 """LiveOmsHub — the Qt-free LIVE composition root (a SIBLING of OmsHub, not a subclass).
 
 Owns bus/account/gate/registry/client. Manual-ticket order path: submit_ticket() calls the gate and
-publishes OrderDenied on veto (follow-up #1) or client.submit on ok; there is NO BacktestEngine and
+publishes OrderDenied on veto (follow-up #1) or client.submit on ok; there is NO SingleSymbolEngine and
 NO OrderRouter-over-engine in the live path. _on_event extends OmsHub's FillEvent-only dispatch:
 bare FillEvent -> Account.apply_fill (byte-identical to paper) + exec_db dedup; Order* lifecycle ->
 the ManagedOrder registry (the new seam). shutdown() is symmetric: unsubscribe the bus + detach the

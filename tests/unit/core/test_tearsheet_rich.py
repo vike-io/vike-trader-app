@@ -5,7 +5,7 @@ import pytest
 from vike_trader_app.analysis.tearsheet import monthly_returns, write_tearsheet_html
 from vike_trader_app.core.engine import Result
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.model import Trade
 
 MONTH = 30 * 24 * 60 * 60 * 1000  # ~1 month in ms
@@ -53,6 +53,6 @@ def test_portfolio_per_symbol_attribution():
         return [Bar(ts=i * 60_000, open=o, high=o + 1, low=o - 1, close=o, volume=1.0) for i, o in enumerate(opens)]
 
     bars = {"WIN": s([100, 100, 120, 120]), "LOSE": s([100, 100, 80, 80])}
-    res = PortfolioEngine(bars, _SplitTrade(), cash=100_000.0).run()
+    res = MultiSymbolEngine(bars, _SplitTrade(), cash=100_000.0).run()
     assert res.per_symbol_pnl["WIN"] == pytest.approx(20.0)    # bought 100, closed 120
     assert res.per_symbol_pnl["LOSE"] == pytest.approx(-20.0)  # bought 100, closed 80

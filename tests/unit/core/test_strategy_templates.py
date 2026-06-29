@@ -4,7 +4,7 @@ import math
 
 from vike_trader_app.analysis.strategy_templates import TEMPLATES, StrategyTemplate
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine
+from vike_trader_app.core.portfolio import MultiSymbolEngine
 from vike_trader_app.core.sandbox.preflight import check_strategy_source
 from vike_trader_app.core.strategy_loader import load_strategy_from_string
 
@@ -35,7 +35,7 @@ def test_every_template_loads_and_runs():
     bars = _bars()
     for t in TEMPLATES:
         cls = load_strategy_from_string(t.code, validate=True)  # preflight + import
-        result = PortfolioEngine(
+        result = MultiSymbolEngine(
             {"SYM": bars}, cls(), fee_rate=0.0, cash=10_000.0,
         ).run()
         assert isinstance(result.final_equity, float)            # produces a valid result

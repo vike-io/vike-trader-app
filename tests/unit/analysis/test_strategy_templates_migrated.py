@@ -10,7 +10,7 @@ import pytest
 
 from vike_trader_app.analysis.strategy_templates import TEMPLATES, StrategyTemplate
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine
+from vike_trader_app.core.portfolio import MultiSymbolEngine
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.strategy_loader import load_strategy_from_string
 
@@ -42,10 +42,10 @@ def test_template_loads_as_unified_strategy(template: StrategyTemplate):
 
 @pytest.mark.parametrize("template", TEMPLATES, ids=lambda t: t.name)
 def test_template_completes_single_symbol_backtest(template: StrategyTemplate):
-    """Template runs on a single-symbol PortfolioEngine and returns a float final_equity."""
+    """Template runs on a single-symbol MultiSymbolEngine and returns a float final_equity."""
     cls = load_strategy_from_string(template.code, validate=True)
     bars = _bars()
-    result = PortfolioEngine(
+    result = MultiSymbolEngine(
         {"SYM": bars}, cls(), fee_rate=0.0, cash=10_000.0,
     ).run()
     assert isinstance(result.final_equity, float)

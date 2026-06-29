@@ -1,6 +1,6 @@
 # tests/unit/core/test_portfolio_dispatch.py
-"""TDD: Task 3 — PortfolioEngine dispatches via strategy._on_step seam."""
-from vike_trader_app.core.portfolio import PortfolioStrategy, PortfolioEngine
+"""TDD: Task 3 — MultiSymbolEngine dispatches via strategy._on_step seam."""
+from vike_trader_app.core.portfolio import PortfolioStrategy, MultiSymbolEngine
 from vike_trader_app.core.model import Bar
 
 
@@ -16,7 +16,7 @@ def test_engine_calls_on_step_hook():
         def _on_step(self, ts, bars):
             seen.append((ts, set(bars)))
 
-    PortfolioEngine({"BTC": _series(3), "ETH": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
+    MultiSymbolEngine({"BTC": _series(3), "ETH": _series(3)}, S(), fee_rate=0.0, cash=1000).run()
     assert len(seen) == 3 and seen[0][1] == {"BTC", "ETH"}
 
 
@@ -28,12 +28,12 @@ def test_default_on_step_calls_on_bar_bundle():
         def on_bar(self, ts, bars):
             calls.append(ts)
 
-    PortfolioEngine({"BTC": _series(2)}, S(), fee_rate=0.0, cash=1000).run()
+    MultiSymbolEngine({"BTC": _series(2)}, S(), fee_rate=0.0, cash=1000).run()
     assert len(calls) == 2  # default _on_step still routes to on_bar(ts, bars)
 
 
 def test_bars_pretagged_with_symbol():
-    """PortfolioEngine pre-tags each bar with its SYMBOL.VENUE id at construction."""
-    eng = PortfolioEngine({"BTC": _series(2)}, PortfolioStrategy(), fee_rate=0.0, cash=1000,
+    """MultiSymbolEngine pre-tags each bar with its SYMBOL.VENUE id at construction."""
+    eng = MultiSymbolEngine({"BTC": _series(2)}, PortfolioStrategy(), fee_rate=0.0, cash=1000,
                           default_venue="binance")
     assert eng.bars["BTC"][0].symbol == "BTC.BINANCE"

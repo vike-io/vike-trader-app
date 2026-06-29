@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.accounting import Account
@@ -86,7 +86,7 @@ def _account_equity(initial_cash: float, acc: Account) -> float:
 def _run_bar_by_bar(strat, bars, *, initial_cash: float, fee: float = 0.0,
                     slippage: float = 0.0, multiplier: float = 1.0,
                     leverage=None, maint_margin: float = 0.0,
-                    cashflows=None) -> tuple[Account, BacktestEngine, list[float], list[float]]:
+                    cashflows=None) -> tuple[Account, SingleSymbolEngine, list[float], list[float]]:
     """Step bar-by-bar; after each bar call set_mark and record equity pair.
 
     Returns (acc, eng, eng_equities, acc_equities).
@@ -96,7 +96,7 @@ def _run_bar_by_bar(strat, bars, *, initial_cash: float, fee: float = 0.0,
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
     bus.subscribe(lambda ev: acc.apply_funding(ev) if isinstance(ev, FundingEvent) else None)
 
-    eng = BacktestEngine(
+    eng = SingleSymbolEngine(
         bars, strat,
         cash=initial_cash,
         taker_fee=fee,

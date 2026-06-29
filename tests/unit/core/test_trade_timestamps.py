@@ -1,6 +1,6 @@
 """Trades must carry entry/exit timestamps so the chart can place markers."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -27,7 +27,7 @@ class _BuyThenClose(Strategy):
 
 
 def test_trade_records_fill_timestamps_at_next_open():
-    result = BacktestEngine(_bars(), _BuyThenClose(), fee_rate=0.0).run()
+    result = SingleSymbolEngine(_bars(), _BuyThenClose(), fee_rate=0.0).run()
     t = result.trades[0]
     assert t.entry_ts == 60_000  # buy submitted at idx0 -> fills at bar idx1 (ts 60_000)
     assert t.exit_ts == 180_000  # close submitted at idx2 -> fills at bar idx3 (ts 180_000)

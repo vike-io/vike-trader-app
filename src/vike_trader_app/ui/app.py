@@ -15,7 +15,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from ..analysis import metrics
-from ..core.engine import BacktestEngine
+from ..core.engine import SingleSymbolEngine
 from ..core.paper import PaperTester, pump
 from ..exec.oms import OmsHub
 from ..core.strategy_loader import load_strategy_from_file
@@ -2574,7 +2574,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._bars = bars
         if self.studio is not None:
             self.studio.set_bars(bars)  # the Studio tab backtests the same data (when open)
-        self._result = BacktestEngine(bars, self._strategy_factory()).run()
+        self._result = SingleSymbolEngine(bars, self._strategy_factory()).run()
         self._replay = Replay(len(bars))
         # A freshly loaded chart shows the LIVE EDGE (latest bars), like TradingView — not bar 0.
         # Replay starts its cursor at index 0; without this seek, _render_frame() below would

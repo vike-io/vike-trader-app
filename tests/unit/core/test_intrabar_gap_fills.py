@@ -9,7 +9,7 @@ Two spec'd-but-previously-unimplemented behaviours (core/__init__ "Planned"):
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.orders import Order, order_fill_price
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
@@ -74,7 +74,7 @@ def test_intrabar_both_hit_resolves_pessimistically_stop_first():
         _bar(120_000, 100, 112, 94, 100),   # BOTH hit: high 112>=110 (TP) and low 94<=95 (SL)
         _bar(180_000, 100, 101, 99, 100),
     ]
-    eng = BacktestEngine(bars, _BracketLong())
+    eng = SingleSymbolEngine(bars, _BracketLong())
     result = eng.run()
     # exactly ONE closing trade (no over-close / flip), taken at the STOP, and the bar is flagged
     assert eng.position.size == pytest.approx(0.0)
@@ -95,7 +95,7 @@ def test_only_tp_hit_is_not_flagged_and_takes_profit():
         _bar(120_000, 100, 112, 99, 108),    # only TP hit (low 99 > 95 stop)
         _bar(180_000, 100, 101, 99, 100),
     ]
-    eng = BacktestEngine(bars, _BracketTPOnly())
+    eng = SingleSymbolEngine(bars, _BracketTPOnly())
     result = eng.run()
     assert len(result.trades) == 1
     assert result.trades[0].exit_price == pytest.approx(110.0)  # profit target

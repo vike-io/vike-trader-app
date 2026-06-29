@@ -1,6 +1,6 @@
 """Paper (forward) testing — drive the backtest engine live, one closed bar at a time.
 
-A ``PaperTester`` wraps a ``BacktestEngine`` and feeds it each newly-closed live bar via
+A ``PaperTester`` wraps a ``SingleSymbolEngine`` and feeds it each newly-closed live bar via
 ``engine.step`` — the *same* fill path (next-open, slippage, maker/taker, funding) the
 backtest uses. So a ``Strategy`` runs **unchanged** backtest↔paper; the only difference is
 where the bars come from (a live feed instead of a historical list).
@@ -13,7 +13,7 @@ Single-timeframe in this version; multi-timeframe forward (``self.bars(tf)`` liv
 follow-up — see docs/handoff.md.
 """
 
-from .engine import BacktestEngine, Result
+from .engine import SingleSymbolEngine, Result
 
 
 def pump(feed, tester) -> list:
@@ -60,7 +60,7 @@ class PaperTester:
         self.run_id: int | None = None
 
         seed = list(seed_bars or [])
-        self.engine = BacktestEngine(
+        self.engine = SingleSymbolEngine(
             seed, strategy, fee_rate=fee_rate, cash=cash, timeframes=timeframes,
             slippage=slippage, maker_fee=maker_fee, taker_fee=taker_fee, risk=risk,
         )

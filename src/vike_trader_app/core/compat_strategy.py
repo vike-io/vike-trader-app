@@ -33,7 +33,7 @@ def _history_executor() -> concurrent.futures.ThreadPoolExecutor:
 class SingleSymbolStrategy:
     """Base strategy. The engine injects itself and updates ``index`` each bar.
 
-    Multi-timeframe: pass ``timeframes=["1h", "4h"]`` to ``BacktestEngine``; then read
+    Multi-timeframe: pass ``timeframes=["1h", "4h"]`` to ``SingleSymbolEngine``; then read
     completed higher-TF candles with ``self.bars("1h")`` (look-ahead-safe) and the
     still-forming candle with ``self.forming("1h")`` (for replay-style logic).
     """

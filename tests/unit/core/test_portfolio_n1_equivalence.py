@@ -1,6 +1,6 @@
-"""P0-D equivalence gate: PortfolioEngine@N=1 == BacktestEngine for a SL+TP bracket scenario.
+"""P0-D equivalence gate: MultiSymbolEngine@N=1 == SingleSymbolEngine for a SL+TP bracket scenario.
 
-This is the load-bearing correctness gate for retiring BacktestEngine.
+This is the load-bearing correctness gate for retiring SingleSymbolEngine.
 
 Scenario (mirrors _BracketLong from test_intrabar_gap_fills.py):
   bar 0: buy submitted
@@ -16,14 +16,14 @@ Expected AFTER the fix:
   - intrabar_both_hit == 1 on both engines
   - Final equity curves equal bar-by-bar
 
-BEFORE the fix (PortfolioEngine had no resolution), PortfolioEngine would have filled
+BEFORE the fix (MultiSymbolEngine had no resolution), MultiSymbolEngine would have filled
 BOTH the stop_sell and the limit_sell uncapped (pending-order sequence), producing 2
 trades and a spurious flip/over-close — so this test would FAIL on the portfolio side.
 """
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
@@ -60,17 +60,17 @@ CASH = 10_000.0
 
 
 # ---------------------------------------------------------------------------
-# BacktestEngine reference run
+# SingleSymbolEngine reference run
 # ---------------------------------------------------------------------------
 
 def _run_engine():
-    eng = BacktestEngine(list(BARS), _BracketLong(), cash=CASH)
+    eng = SingleSymbolEngine(list(BARS), _BracketLong(), cash=CASH)
     result = eng.run()
     return eng, result
 
 
 # ---------------------------------------------------------------------------
-# PortfolioEngine N=1 run (via MultiSymbolStrategyRunner)
+# MultiSymbolEngine N=1 run (via MultiSymbolStrategyRunner)
 # ---------------------------------------------------------------------------
 
 def _run_portfolio():
@@ -88,7 +88,7 @@ def _run_portfolio():
 # ---------------------------------------------------------------------------
 
 def test_n1_bracket_engine_and_portfolio_equal_equity():
-    """Final equity must be identical between BacktestEngine and PortfolioEngine@N=1."""
+    """Final equity must be identical between SingleSymbolEngine and MultiSymbolEngine@N=1."""
     _, eng_res = _run_engine()
     _, port_res = _run_portfolio()
     assert port_res.final_equity == pytest.approx(eng_res.final_equity, rel=1e-9), (
