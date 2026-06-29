@@ -8,6 +8,7 @@ engine. Equity = cash + sum(position size * last close).
 
 import bisect
 import logging
+import warnings
 from dataclasses import dataclass, field, replace
 from operator import attrgetter
 
@@ -17,6 +18,7 @@ from .instrument_id import format_instrument
 from .model import Bar, Fill, Position, Trade
 from .orders import Order, order_fill_price
 from .sizing import PassThroughSizer, SizeContext
+from .strategy import Strategy
 
 logger = logging.getLogger(__name__)
 
@@ -59,8 +61,12 @@ class PortfolioResult:
     benchmark_label: str = ""  # human-readable benchmark description
 
 
-class PortfolioStrategy:
+class PortfolioStrategy(Strategy):
     """Base multi-symbol strategy. Override ``on_bar(ts, bars)``.
+
+    .. deprecated::
+        Subclass the unified :class:`~vike_trader_app.core.strategy.Strategy` instead
+        and implement ``on_bar(bar)`` (one bar per symbol per call).
 
     ``bars`` is ``{symbol: Bar}`` for the current step. Place orders with
     ``buy/sell/close(symbol, ...)`` or target weights with
@@ -70,11 +76,17 @@ class PortfolioStrategy:
     closing it whole.
     """
 
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        warnings.warn(
+            "PortfolioStrategy is deprecated; subclass the unified Strategy "
+            "(one on_bar(bar) per symbol).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     def __init__(self) -> None:
-        self._engine = None  # set by the engine in run()
-        self.index = 0
-        from .schedule import Schedule
-        self.schedule = Schedule()
+        super().__init__()  # sets _engine, index, schedule via Strategy.__init__
 
     @property
     def equity(self) -> float:
