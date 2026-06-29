@@ -168,7 +168,7 @@ def test_bybit_demo_perp_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: P
     snapshot = client.connect()
 
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="bybit"), gate=RiskGate(RiskLimits()),
         client=client, venue="bybit", symbol="BTCUSDT", now_ms=now_ms,
     )
     hub.apply_snapshot(snapshot)

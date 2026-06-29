@@ -174,7 +174,7 @@ def test_okx_demo_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR0915 
     assert snapshot.positions, "connect() returned empty positions"
 
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="okx"), gate=RiskGate(RiskLimits()),
         client=client, venue="okx", symbol="BTC-USDT", now_ms=now_ms,
     )
     hub.apply_snapshot(snapshot)

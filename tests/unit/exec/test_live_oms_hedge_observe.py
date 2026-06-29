@@ -21,7 +21,7 @@ class _SpyClient:
 
 
 def _hub():
-    return LiveOmsHub(bus=EventBus(), account=Account(), gate=RiskGate(RiskLimits()),
+    return LiveOmsHub(bus=EventBus(), account=Account(venue="bybit"), gate=RiskGate(RiskLimits()),
                       client=_SpyClient(), venue="bybit", symbol="BTCUSDT")
 
 

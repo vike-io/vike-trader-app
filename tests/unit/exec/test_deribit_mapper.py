@@ -232,7 +232,7 @@ def test_filled_row_advances_managed_order_fsm():
 
     bus = EventBus()
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="deribit"), gate=RiskGate(RiskLimits()),
         client=_SyncClient(bus), venue="deribit", symbol="BTC-25SEP20-9000-C",
     )
     req = OrderRequest(
@@ -272,7 +272,7 @@ def test_cross_symbol_fill_dropped_by_hub():
 
     bus = EventBus()
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="deribit"), gate=RiskGate(RiskLimits()),
         client=_NoopClient(), venue="deribit", symbol="BTC-25SEP20-9000-C",
     )
 

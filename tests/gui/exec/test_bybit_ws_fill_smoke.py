@@ -154,7 +154,7 @@ def test_bybit_demo_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR091
     assert snapshot.positions, "connect() returned empty positions"
 
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="bybit"), gate=RiskGate(RiskLimits()),
         client=client, venue="bybit", symbol="BTCUSDT", now_ms=now_ms,
     )
     hub.apply_snapshot(snapshot)

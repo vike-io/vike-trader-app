@@ -487,7 +487,7 @@ def test_backfill_drops_forming_candle_no_dup(app, monkeypatch):
     class _RealHub:
         """Minimal real-ish hub: real Account + EventBus so the pump's engine is real."""
         def __init__(self):
-            self.account = Account()
+            self.account = Account(venue="binance")
             self.bus = EventBus()
             self.venue = "binance"
             self.symbol = "BTCUSDT"

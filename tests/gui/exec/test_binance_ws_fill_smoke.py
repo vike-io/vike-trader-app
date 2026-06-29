@@ -176,7 +176,7 @@ def test_binance_demo_ws_fill_roundtrip(app, monkeypatch) -> None:  # noqa: PLR0
     assert snapshot.positions, "connect() returned empty positions"
 
     hub = LiveOmsHub(
-        bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+        bus=bus, account=Account(venue="binance"), gate=RiskGate(RiskLimits()),
         client=client, venue="binance", symbol="BTCUSDT", now_ms=now_ms,
     )
     hub.apply_snapshot(snapshot)

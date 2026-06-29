@@ -128,7 +128,7 @@ def test_dispatcher_drives_managed_order_fsm_to_filled():
             pass
 
     bus = EventBus()
-    hub = LiveOmsHub(bus=bus, account=Account(), gate=RiskGate(RiskLimits()),
+    hub = LiveOmsHub(bus=bus, account=Account(venue="binance"), gate=RiskGate(RiskLimits()),
                      client=_SyncClient(bus), venue="binance", symbol="BTCUSDT")
     hub.submit_ticket(OrderRequest(client_order_id="coid-1", venue="binance", symbol="BTCUSDT",
                                    side=+1, qty=1.0, order_type="limit", price=65000.0))
