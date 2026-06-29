@@ -161,6 +161,10 @@ class SymbolEngineShim:
     def submit_limit_close(self, side_sign: int, size: float, price: float, weight: float = 0.0) -> None:
         self._engine.submit_limit_close(self._symbol, side_sign, size, price, weight=weight)
 
+    def cancel_order(self, symbol, order) -> None:  # noqa: ARG002
+        """Cancel a specific resting order via the shared PortfolioEngine for this shim's symbol."""
+        self._engine.cancel_order(self._symbol, order)
+
     def cancel_all(self, symbol: str | None = None) -> None:  # symbol ignored
         self._engine.cancel_all(self._symbol)
 

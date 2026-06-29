@@ -134,23 +134,27 @@ class BacktestEngine:
         return size if size <= room else room
 
     def submit_limit(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
-                     price=None, weight: float = 0.0, stop=None) -> None:
+                     price=None, weight: float = 0.0, stop=None) -> "Order":
         # Compat: old API submit_limit(side, size, price) / new API submit_limit(sym, side, size, price)
         if isinstance(side_sign_or_symbol, str):
             side_sign, size, price = side_or_size, size_or_price, price
         else:
             side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
         del stop
-        self._add_pending(Order("limit", side_sign, size, price=price, weight=weight))
+        o = Order("limit", side_sign, size, price=price, weight=weight)
+        self._add_pending(o)
+        return o
 
     def submit_stop(self, side_sign_or_symbol, side_or_size=None, size_or_price=None,
-                    price=None, weight: float = 0.0) -> None:
+                    price=None, weight: float = 0.0) -> "Order":
         # Compat: old API submit_stop(side, size, price) / new API submit_stop(sym, side, size, price)
         if isinstance(side_sign_or_symbol, str):
             side_sign, size, price = side_or_size, size_or_price, price
         else:
             side_sign, size, price = side_sign_or_symbol, side_or_size, size_or_price
-        self._add_pending(Order("stop", side_sign, size, price=price, weight=weight))
+        o = Order("stop", side_sign, size, price=price, weight=weight)
+        self._add_pending(o)
+        return o
 
     def submit_trailing(self, side_sign: int, size: float, trail: float, weight: float = 0.0) -> None:
         self._add_pending(Order("trailing", side_sign, size, trail=trail, extreme=self._price, weight=weight))
@@ -160,6 +164,13 @@ class BacktestEngine:
 
     def submit_limit_close(self, side_sign: int, size: float, price: float) -> None:
         self._add_pending(Order("limit_close", side_sign, size, price=price))
+
+    def cancel_order(self, symbol, order) -> None:  # noqa: ARG002 - symbol ignored (single-symbol)
+        """Remove a specific resting order; no-op if already gone (filled or cancelled)."""
+        try:
+            self._pending.remove(order)
+        except ValueError:
+            pass
 
     def cancel_all(self, symbol: str | None = None) -> None:  # symbol ignored in single-symbol engine
         self._pending = []
