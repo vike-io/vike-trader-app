@@ -14,6 +14,7 @@ from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
+from .fill_resolution import resolve_intrabar_fills
 from .instrument_id import format_instrument
 from .model import Bar, Fill, Position, Trade
 from .order_intent import backtest_order_request, order_request_to_resting
@@ -60,6 +61,9 @@ class PortfolioResult:
     equity_ts: list = field(default_factory=list)  # epoch-ms timestamp for each equity_curve point
     benchmark_curve: list = field(default_factory=list)  # equal-weight buy-&-hold benchmark equity curve
     benchmark_label: str = ""  # human-readable benchmark description
+    # Count of bars (across all symbols) where a SL+TP bracket both triggered on the same coarse bar
+    # and were resolved pessimistically (stop first). Mirrors BacktestEngine.Result.intrabar_both_hit.
+    intrabar_both_hit: int = 0
 
 
 class PortfolioStrategy(Strategy):
@@ -239,6 +243,7 @@ class PortfolioEngine:
         self._step = 0  # index of the bar currently being processed in run()
         self.dropped: list = []  # (symbol, kind, size, weight) for gate-dropped fills (diagnostics)
         self.trades: list[Trade] = []
+        self.intrabar_both_hit = 0  # bars where a SL+TP bracket both triggered (accumulated across symbols)
         # All per-symbol mutable state lives in ONE SymbolState per symbol (was 11 parallel dicts).
         # price seeds to the first open; sub is sized to the step count and filled from granular data
         # below; pos/realized/stop/entry_fee/entry_ts/hi_since/lo_since/tf use the dataclass defaults.
@@ -674,42 +679,51 @@ class PortfolioEngine:
             s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
             for s in self.symbols
         }
-        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts)
+        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts, intrabar_both_hit=self.intrabar_both_hit)
 
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
-        still = []
+        triggered: list[tuple[Order, float]] = []
+        still: list[Order] = []
         for o in self._sym[symbol].pending:
             fp = order_fill_price(o, bar)
             if fp is None:
                 still.append(o)               # rest until triggered
             else:
-                pos = self._sym[symbol].pos
-                opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)  # open-from-flat or same-dir add
-                if opening and not self.is_active(symbol):
-                    continue                  # inactive member: drop opening/adding fills (reduces still apply)
-                if pos.size == 0 and self._at_open_cap():
-                    continue                  # MaxOpenPositions cap reached: drop new-symbol opens
-                # Per-direction caps: only block new-symbol opens (pos.size == 0), not adds to existing
-                if pos.size == 0 and o.side > 0 and self._at_long_cap():
-                    continue                  # max_open_long cap reached
-                if pos.size == 0 and o.side < 0 and self._at_short_cap():
-                    continue                  # max_open_short cap reached
-                # %-of-volume liquidity cap: clamp fill size to volume_limit * bar.volume.
-                fill_size = o.size
-                if self.volume_limit:
-                    allowed = self.volume_limit * bar.volume
-                    if fill_size > allowed:
-                        dropped_size = fill_size - allowed
-                        self.dropped.append((symbol, "volume_cap", dropped_size, 0.0))
-                        fill_size = allowed
-                if fill_size > 0:
-                    self._apply_fill(symbol, o.side, fill_size, fp, bar.ts, is_maker=o.kind == "limit")
-                    # Arm this entry's protective stop once the position is actually open. Armed
-                    # in the fill phase (top of the step) — the stop-breach check runs in the NEXT
-                    # step's fill phase, so an entry can't be stopped on its own entry bar.
-                    if o.stop is not None and self._sym[symbol].pos.size != 0:
-                        self._sym[symbol].stop = o.stop
+                triggered.append((o, fp))
         self._sym[symbol].pending = still
+        # Adverse-first ordering + SL/TP bracket cap: mirrors BacktestEngine._fill_pending exactly.
+        if len(triggered) > 1:
+            triggered, both_hit = resolve_intrabar_fills(triggered, self._sym[symbol].pos.size)
+            self.intrabar_both_hit += both_hit
+        for o, fp in triggered:
+            if o.size <= 1e-12:              # capped to ~0 by the bracket guard -> nothing to fill
+                continue
+            pos = self._sym[symbol].pos
+            opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)  # open-from-flat or same-dir add
+            if opening and not self.is_active(symbol):
+                continue                  # inactive member: drop opening/adding fills (reduces still apply)
+            if pos.size == 0 and self._at_open_cap():
+                continue                  # MaxOpenPositions cap reached: drop new-symbol opens
+            # Per-direction caps: only block new-symbol opens (pos.size == 0), not adds to existing
+            if pos.size == 0 and o.side > 0 and self._at_long_cap():
+                continue                  # max_open_long cap reached
+            if pos.size == 0 and o.side < 0 and self._at_short_cap():
+                continue                  # max_open_short cap reached
+            # %-of-volume liquidity cap: clamp fill size to volume_limit * bar.volume.
+            fill_size = o.size
+            if self.volume_limit:
+                allowed = self.volume_limit * bar.volume
+                if fill_size > allowed:
+                    dropped_size = fill_size - allowed
+                    self.dropped.append((symbol, "volume_cap", dropped_size, 0.0))
+                    fill_size = allowed
+            if fill_size > 0:
+                self._apply_fill(symbol, o.side, fill_size, fp, bar.ts, is_maker=o.kind == "limit")
+                # Arm this entry's protective stop once the position is actually open. Armed
+                # in the fill phase (top of the step) — the stop-breach check runs in the NEXT
+                # step's fill phase, so an entry can't be stopped on its own entry bar.
+                if o.stop is not None and self._sym[symbol].pos.size != 0:
+                    self._sym[symbol].stop = o.stop
 
     def _cancel_protective_exits(self, symbol: str, was_long: bool) -> None:
         """OCO: when a protective stop closes a position inside the granular path, cancel any pending
