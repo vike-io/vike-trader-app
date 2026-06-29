@@ -77,6 +77,12 @@ class TestReExport:
         from vike_trader_app.core.order_intent import OrderRequest as CoreOR
         assert ExecOR is CoreOR
 
+    def test_adapter_reexport_identity(self):
+        """core.orders.order_request_to_resting IS core.order_intent.order_request_to_resting."""
+        import vike_trader_app.core.orders as orders_mod
+        import vike_trader_app.core.order_intent as intent_mod
+        assert orders_mod.order_request_to_resting is intent_mod.order_request_to_resting
+
     def test_import_from_exec_events_still_works(self):
         """All existing exec importers must keep working."""
         from vike_trader_app.exec.events import OrderRequest

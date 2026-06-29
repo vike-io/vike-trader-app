@@ -117,6 +117,8 @@ def order_request_to_resting(req: "OrderRequest") -> "Order":
     5. ``order_type="limit"``                      → limit   (carries stop)
     6. else (``order_type="market"``)              → market  (carries stop)
     """
+    # Deliberate lazy import: avoids a module-level cycle (order_intent ← orders ← order_intent).
+    # orders.py imports core primitives; order_intent.py must not import orders at module level.
     from vike_trader_app.core.orders import Order
 
     side = req.side
