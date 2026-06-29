@@ -249,3 +249,53 @@ def test_schedule_fires_once_per_period():
     bars = [Bar(ts=i * 86_400_000, open=1, high=1, low=1, close=1) for i in range(70)]
     PortfolioEngine({"BTC": bars}, S(), fee_rate=0.0, cash=1000).run()
     assert len(fired) >= 2  # at least 2 month boundaries crossed
+
+
+# ---------------------------------------------------------------------------
+# N-invariance golden test (goals 1+2): one Strategy, same per-symbol result
+# at N=1 and as one symbol of N>1
+# ---------------------------------------------------------------------------
+
+def test_n_invariance_btc_subresult_matches_standalone():
+    """A strategy authored once produces the same BTC result at N=1 and as 1 of N (goals 1+2).
+
+    Fixed-size market orders + fee_rate=0 + default engine settings (no cash_gate,
+    no leverage cap, no max_open_positions) mean BTC PnL is fully isolated and must
+    be EXACTLY equal whether the engine runs solo (N=1) or alongside ETH (N=2).
+    We use a price-varying BTC series so the BTC trade has non-zero PnL, making the
+    equality assertion meaningful.
+    """
+
+    class Cross(Strategy):
+        def on_bar(self, bar):
+            if self.index == 2:
+                self.buy(bar.symbol, 1.0)
+            elif self.index == 5:
+                self.close(bar.symbol)
+
+    # BTC: prices rise from 10 to 15 between entry-fill bar (index 3 open=12) and
+    # exit-fill bar (index 6 open=15), so the trade yields a non-zero realized PnL.
+    # Layout: buy submitted at index 2 → fills at index 3's open (12).
+    #         close submitted at index 5 → fills at index 6's open (15).
+    # PnL = (15 - 12) * 1.0 = 3.0  (with fee_rate=0.0)
+    btc_prices = [10, 10, 10, 12, 13, 14, 15, 15]  # 8 bars, open=close=price
+    btc = [Bar(ts=i * 60_000, open=p, high=p + 1, low=p - 1, close=p) for i, p in enumerate(btc_prices)]
+
+    # ETH: flat series — ensures BTC PnL cannot depend on ETH's price path
+    eth_prices = [20] * 8
+    eth = [Bar(ts=i * 60_000, open=p, high=p + 1, low=p - 1, close=p) for i, p in enumerate(eth_prices)]
+
+    solo = PortfolioEngine({"BTC": list(btc)}, Cross(), fee_rate=0.0, cash=10_000).run()
+    multi = PortfolioEngine({"BTC": list(btc), "ETH": list(eth)}, Cross(), fee_rate=0.0, cash=10_000).run()
+
+    # BTC trade must have non-zero PnL (entry open=12, exit open=15, size=1.0 → PnL=3.0)
+    assert solo.per_symbol_pnl["BTC"] != 0.0, (
+        f"BTC PnL is zero ({solo.per_symbol_pnl['BTC']}); series must have price variation "
+        "between entry-fill and exit-fill bars so the equality test is meaningful"
+    )
+    # The core N-invariance assertion: per-symbol BTC PnL must be EXACTLY equal
+    assert solo.per_symbol_pnl["BTC"] == multi.per_symbol_pnl["BTC"], (
+        f"N-invariance FAILED: solo BTC PnL={solo.per_symbol_pnl['BTC']}, "
+        f"multi BTC PnL={multi.per_symbol_pnl['BTC']} — fixed-size isolated trades "
+        "must not depend on N"
+    )
