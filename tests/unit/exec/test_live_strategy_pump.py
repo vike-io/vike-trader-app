@@ -9,7 +9,7 @@ from vike_trader_app.exec.bus import EventBus
 from vike_trader_app.exec import events as ev
 from vike_trader_app.exec.accounting import Account
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.live_strategy_pump import LiveStrategyPump
 
 

@@ -23,7 +23,7 @@ from vike_trader_app.analysis.persistence import save_bundle  # noqa: E402
 from vike_trader_app.analysis.tearsheet import write_tearsheet_html  # noqa: E402
 from vike_trader_app.core.engine import BacktestEngine, Result  # noqa: E402
 from vike_trader_app.core.model import Trade  # noqa: E402
-from vike_trader_app.core.strategy import Strategy  # noqa: E402
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy  # noqa: E402
 
 
 def _result():

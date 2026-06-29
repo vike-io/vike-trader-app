@@ -27,7 +27,7 @@ from vike_trader_app.data.catalog import Catalog
 # A complete, preflight-clean strategy that trades on the cached data, with a PARAM_GRID so the
 # optimize/walk-forward smoke tests have a grid to sweep. Uses the no-super().__init__ pattern the
 # sandbox AST gate requires.
-_GOOD = """from vike_trader_app.core.strategy import Strategy
+_GOOD = """from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 
 class S(Strategy):

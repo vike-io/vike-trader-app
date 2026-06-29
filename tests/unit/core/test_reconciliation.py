@@ -3,7 +3,7 @@ import pytest
 
 from vike_trader_app.core.engine import BacktestEngine
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.fastsim import fast_backtest
 
 

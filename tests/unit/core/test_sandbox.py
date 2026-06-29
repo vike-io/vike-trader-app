@@ -15,7 +15,7 @@ def _bars(n=6):
 
 
 _BUYHOLD = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):
@@ -24,7 +24,7 @@ class S(Strategy):
 """
 
 _HANG = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):
@@ -33,7 +33,7 @@ class S(Strategy):
 """
 
 _RAISES = """
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.strategy import SingleSymbolStrategy as Strategy
 
 class S(Strategy):
     def on_bar(self, bar):

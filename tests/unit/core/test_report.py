@@ -4,7 +4,7 @@ import math
 
 from vike_trader_app.analysis.report import build_overfit_report
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
 def _wave_bars(n=240):

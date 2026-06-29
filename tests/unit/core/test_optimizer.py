@@ -2,7 +2,7 @@
 
 from vike_trader_app.analysis.optimizer import grid_search
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
 def _rising_bars(n=6):

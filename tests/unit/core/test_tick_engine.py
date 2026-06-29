@@ -3,7 +3,7 @@ from vike_trader_app.core.ticks import QuoteTick, TradeTick
 from vike_trader_app.core.consolidator import tick_to_bar
 from vike_trader_app.core.engine import BacktestEngine
 from vike_trader_app.core.fill_model import TickFillModel
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
 def test_tick_to_bar_quote_and_trade():

@@ -63,3 +63,9 @@ markers = [
     "slow: long-running test",
     "teardown_repro: spawns a child interpreter that exercises an ADS/QThread teardown crash pattern and asserts on its EXIT CODE; serial-ish (each spins its own QApplication) and a couple of seconds each — opt OUT of the default parallel timing with `-m \"not teardown_repro\"` if a run is flaking on these.",
 ]
+# Suppress DeprecationWarnings from the compat shim (SingleSymbolStrategy/PortfolioStrategy)
+# — these are expected during the migration window and do not indicate test failures.
+filterwarnings = [
+    "ignore:.*SingleSymbolStrategy.*:DeprecationWarning",
+    "ignore:.*PortfolioStrategy is deprecated.*:DeprecationWarning",
+]

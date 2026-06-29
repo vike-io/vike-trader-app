@@ -12,6 +12,11 @@ from .model import Bar, Position
 from .order_handle import OrderHandle, _alloc_id
 from .schedule import Schedule
 
+# Re-export the compat shim so strategy source strings can do:
+#   from vike_trader_app.core.strategy import SingleSymbolStrategy
+# without needing a separate compat_strategy allowlist entry in the preflight gate.
+from .compat_strategy import SingleSymbolStrategy  # noqa: F401, E402
+
 logger = logging.getLogger(__name__)
 
 

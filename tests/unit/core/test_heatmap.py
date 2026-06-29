@@ -4,7 +4,7 @@ import pytest
 
 from vike_trader_app.analysis.heatmap import heatmap_grid
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
 def _rising(n=8):

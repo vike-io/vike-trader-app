@@ -2,7 +2,7 @@
 
 from vike_trader_app.core.model import Fill, Position
 from vike_trader_app.core.orders import Order
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 _HOOKS = [
     "on_start",

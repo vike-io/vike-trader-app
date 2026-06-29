@@ -2,7 +2,7 @@
 
 from vike_trader_app.analysis.overfit import Verdict
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.data.datasets import DateRange
 from vike_trader_app.tester import OptimizeReport, TesterConfig, TesterReport, WalkForwardReport
 from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester

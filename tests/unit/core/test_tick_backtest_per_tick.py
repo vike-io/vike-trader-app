@@ -4,7 +4,7 @@ Tests the per_tick=True branch that feeds raw ticks to engine.run_ticks().
 """
 import pytest
 from vike_trader_app.core.ticks import QuoteTick
-from vike_trader_app.core.strategy import Strategy
+from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.tick_backtest import run_tick_backtest, NoTickData
 from vike_trader_app.data import tick_store
 
