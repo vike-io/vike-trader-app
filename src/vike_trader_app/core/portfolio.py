@@ -14,6 +14,7 @@ from operator import attrgetter
 
 from .broker_sim import adverse_fill_price, fee as _fee, funding_charge
 from .fill import compute_fill
+from .fill_model import BarFillModel
 from .fill_resolution import resolve_intrabar_fills
 from .instrument_id import format_instrument
 from .model import Bar, Fill, Position, Trade
@@ -202,7 +203,8 @@ class MultiSymbolEngine:
                  sizer=None, volume_limit: float | None = None,
                  granular_by_symbol: dict[str, list[Bar]] | None = None,
                  default_venue: str | None = None,
-                 catalog=None):
+                 catalog=None,
+                 fill_model=None):
         self.symbols = list(bars_by_symbol)
         # Pre-tag each bar with its instrument id (SYMBOL.VENUE) once at construction.
         # With default_venue=None, format_instrument returns the bare symbol so bar.symbol
@@ -283,6 +285,9 @@ class MultiSymbolEngine:
                 self._sym[s].sub[i].append(sub)
         # Catalog for Strategy.history() reads; lazily defaults to the global parquet cache.
         self._catalog_arg = catalog
+        # Pluggable fill-price model: BarFillModel (default) preserves byte-identical bar-mode behavior;
+        # TickFillModel enables L1 spread-crossing for the tick-mode path.
+        self._fill_model = fill_model if fill_model is not None else BarFillModel()
         strategy._engine = self
 
     @property
@@ -327,9 +332,11 @@ class MultiSymbolEngine:
 
         True range = max(high-low, |high-prevClose|, |low-prevClose|). Returns 0.0 when there are
         fewer than 2 bars available (need at least one prev-close), using however many bars we have
-        if between 2 and n.
+        if between 2 and n. Returns 0.0 in tick-only mode (no coarse bars available).
         """
-        bars = self.bars[symbol]
+        bars = self.bars.get(symbol)
+        if not bars:
+            return 0.0
         end = self._step + 1           # exclusive: bars[:end] are the bars seen so far
         start = max(1, end - n)        # need prev-close -> start at index >= 1
         if end < 2:                    # no prev-close available at all
@@ -681,11 +688,185 @@ class MultiSymbolEngine:
         }
         return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts, intrabar_both_hit=self.intrabar_both_hit)
 
+    # --- tick-mode run loop ---
+
+    def run_ticks(self, ticks_by_symbol: dict) -> PortfolioResult:
+        """Per-tick multi-symbol run: merge tick streams by ts, route each tick to its symbol.
+
+        ``ticks_by_symbol`` maps symbol -> list[QuoteTick | TradeTick] where each tick carries
+        ``tick.symbol`` (stamped at source). Ticks are merged in ts order so cross-symbol event
+        ordering is preserved. ``on_bar`` does NOT fire in tick mode; per-tick handlers fire instead.
+
+        Requirements:
+        - Each tick's ``symbol`` field must be set (non-empty) and present in ``self.symbols``.
+        - ``self._fill_model`` should be a ``TickFillModel`` for L1 spread-crossing fills.
+        - ``bars_by_symbol`` may be empty ``{}`` (tick-only run); SymbolState is seeded to 0.
+        """
+        import heapq
+        from .consolidator import tick_to_bar
+        from .ticks import QuoteTick
+
+        equity_curve: list[float] = []
+        equity_ts: list[int] = []
+
+        cb = getattr(self.strategy, "on_start", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("strategy on_start failed")
+
+        # Build a merged iterator over all symbols' ticks, in ts order.
+        # heapq.merge requires each input to be sorted; each per-symbol list is ts-ascending.
+        streams = [
+            iter(ticks)
+            for ticks in ticks_by_symbol.values()
+            if ticks
+        ]
+        merged = heapq.merge(*streams, key=lambda t: t.ts)
+
+        for i, tick in enumerate(merged):
+            sym = tick.symbol
+            if sym not in self._sym:
+                logger.warning("run_ticks: unknown symbol %r on tick %d — skipped", sym, i)
+                continue
+            event = tick_to_bar(tick)
+            self._now = event.ts
+
+            # 1. Fill pending for THIS symbol using this tick's degenerate bar (no look-ahead guard:
+            #    fills resolve BEFORE the handler fires, matching SingleSymbolEngine.step_tick._advance).
+            self._fill_pending_tick(sym, event)
+
+            # 2. Mark price, funding (no per-tick funding in backtest), liquidation, peak.
+            self._sym[sym].price = event.close
+            # Tick-level liquidation: use the degenerate bar (high==low==price) per-symbol.
+            # Only liquidates THIS symbol's position against its own tick bar.
+            self._check_liquidation_tick(sym, event)
+            # Update equity peak (across all symbols).
+            eq = self.equity_now()
+            self._equity_peak = max(self._equity_peak, eq)
+
+            # 3. Warmup gate + per-tick strategy handler.
+            if i >= getattr(self.strategy, "WARMUP", 0):
+                self.strategy.index = i
+                if isinstance(tick, QuoteTick):
+                    self.strategy.on_quote_tick(tick)
+                else:
+                    self.strategy.on_trade_tick(tick)
+
+            equity_curve.append(self.equity_now())
+            equity_ts.append(event.ts)
+
+        cb = getattr(self.strategy, "on_stop", None)
+        if cb is not None:
+            try:
+                cb()
+            except Exception:
+                logger.exception("strategy on_stop failed")
+
+        per_symbol = {
+            s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
+            for s in self.symbols
+        }
+        return PortfolioResult(
+            self.trades, equity_curve, self.equity_now(),
+            per_symbol_pnl=per_symbol,
+            equity_ts=equity_ts,
+            intrabar_both_hit=self.intrabar_both_hit,
+        )
+
+    def _fill_pending_tick(self, symbol: str, event: Bar) -> None:
+        """Per-tick fill for one symbol: checks protective stop then resting/market orders.
+
+        Mirrors SingleSymbolEngine._advance + _fill_pending in tick mode. The protective-stop
+        check uses the degenerate tick bar (high==low) so breach is exact (the tick IS the price).
+        Uses ``self._fill_model`` for order fill-price logic (TickFillModel for spread-crossing).
+        """
+        # Protective-stop breach on this tick (only sees stops armed on a prior tick/bar).
+        stop = self._sym[symbol].stop
+        pos = self._sym[symbol].pos
+        if stop is not None and pos.size != 0:
+            if pos.size > 0 and event.low <= stop:
+                self._apply_fill(symbol, -1, abs(pos.size), stop, event.ts)
+                self._sym[symbol].stop = None
+            elif pos.size < 0 and event.high >= stop:
+                self._apply_fill(symbol, +1, abs(pos.size), stop, event.ts)
+                self._sym[symbol].stop = None
+
+        # Resting / market orders.
+        triggered: list[tuple[Order, float]] = []
+        still: list[Order] = []
+        for o in self._sym[symbol].pending:
+            fp = self._fill_model.fill_price(o, event)
+            if fp is None:
+                still.append(o)
+            else:
+                triggered.append((o, fp))
+        self._sym[symbol].pending = still
+
+        # In tick mode there's no intrabar ambiguity (each tick is a single price); still apply
+        # resolve_intrabar_fills for correctness parity when multiple orders trigger on the same tick.
+        if len(triggered) > 1:
+            triggered, both_hit = resolve_intrabar_fills(triggered, self._sym[symbol].pos.size)
+            self.intrabar_both_hit += both_hit
+
+        for o, fp in triggered:
+            if o.size <= 1e-12:
+                continue
+            pos = self._sym[symbol].pos
+            opening = pos.size == 0 or (pos.size > 0) == (o.side > 0)
+            if opening and not self.is_active(symbol):
+                continue
+            if pos.size == 0 and self._at_open_cap():
+                continue
+            if pos.size == 0 and o.side > 0 and self._at_long_cap():
+                continue
+            if pos.size == 0 and o.side < 0 and self._at_short_cap():
+                continue
+            fill_size = o.size
+            if self.volume_limit:
+                allowed = self.volume_limit * event.volume
+                if fill_size > allowed:
+                    self.dropped.append((symbol, "volume_cap", fill_size - allowed, 0.0))
+                    fill_size = allowed
+            if fill_size > 0:
+                self._apply_fill(symbol, o.side, fill_size, fp, event.ts, is_maker=o.kind == "limit")
+                if o.stop is not None and self._sym[symbol].pos.size != 0:
+                    self._sym[symbol].stop = o.stop
+
+    def _check_liquidation_tick(self, symbol: str, event: Bar) -> None:
+        """Per-symbol liquidation check for a single degenerate tick bar.
+
+        For tick mode we check one symbol at a time (each tick belongs to one symbol), using
+        the tick's degenerate bar as both adverse extreme and price. This is a simplified single-
+        symbol liquidation check; the full multi-symbol account-level liquidation (``_check_liquidation``)
+        is for bar mode where all symbols have bars simultaneously.
+        """
+        if self.maint_margin <= 0.0:
+            return
+        pos = self._sym[symbol].pos
+        if pos.size == 0:
+            return
+        adverse = event.low if pos.size > 0 else event.high
+        eq_adv = self.cash + pos.size * adverse * self.multiplier
+        notional_adv = abs(pos.size) * adverse * self.multiplier
+        # Also add unrealized from all OTHER symbols at their last known price.
+        for s in self.symbols:
+            if s == symbol:
+                continue
+            p = self._sym[s].pos
+            if p.size != 0:
+                eq_adv += p.size * self._sym[s].price * self.multiplier
+                notional_adv += abs(p.size) * self._sym[s].price * self.multiplier
+        if notional_adv > 0 and eq_adv <= self.maint_margin * notional_adv:
+            side = -1 if pos.size > 0 else 1
+            self._apply_fill(symbol, side, abs(pos.size), adverse, event.ts)
+
     def _fill_pending(self, symbol: str, bar: Bar) -> None:
         triggered: list[tuple[Order, float]] = []
         still: list[Order] = []
         for o in self._sym[symbol].pending:
-            fp = order_fill_price(o, bar)
+            fp = self._fill_model.fill_price(o, bar)
             if fp is None:
                 still.append(o)               # rest until triggered
             else:
@@ -774,7 +955,7 @@ class MultiSymbolEngine:
             # 2) Resting / market orders that trigger on THIS sub-bar, in pending order.
             still = []
             for o in self._sym[symbol].pending:
-                fp = order_fill_price(o, sub)  # ratchets a trailing extreme in place per sub-bar
+                fp = self._fill_model.fill_price(o, sub)  # ratchets a trailing extreme in place per sub-bar
                 if fp is None:
                     still.append(o)  # rest until a later sub-bar (or step) triggers it
                     continue
@@ -814,7 +995,7 @@ class MultiSymbolEngine:
         for s in self.symbols:
             still = []
             for o in self._sym[s].pending:
-                fp = order_fill_price(o, cur[s])
+                fp = self._fill_model.fill_price(o, cur[s])
                 if fp is None:
                     still.append(o)
                     continue

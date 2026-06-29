@@ -12,6 +12,7 @@ class QuoteTick:
     ask: float
     bid_size: float = 0.0
     ask_size: float = 0.0
+    symbol: str = ""  # instrument id — empty for single-symbol paths (additive/backward-compat)
 
     @property
     def mid(self) -> float:
@@ -26,3 +27,4 @@ class TradeTick:
     price: float
     size: float
     is_buyer_maker: bool = False
+    symbol: str = ""  # instrument id — empty for single-symbol paths (additive/backward-compat)
