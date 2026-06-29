@@ -114,7 +114,7 @@ def test_optimizer_trial_builds_bare_backtester(monkeypatch):
     monkeypatch.setattr(Backtester, "__init__", _spy)
     cfg = TesterConfig(cash=10_000.0)
     st = StrategyTester(_NoTradeStrategy(), _ramp(), cfg)
-    st.optimize(lambda: _NoTradeStrategy(), {"_": [0]}, criterion="sharpe", method="grid")
+    st.optimize(lambda **_kw: _NoTradeStrategy(), {"_": [0]}, criterion="sharpe", method="grid")
     assert seen
     assert all(m is False for m in seen), f"optimizer built a mirror Backtester: {seen}"
 
