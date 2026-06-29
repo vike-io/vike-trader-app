@@ -74,19 +74,19 @@ except ImportError:  # pragma: no cover
 # Scalar cost helpers — 1:1 ports of broker_sim.py                            #
 # --------------------------------------------------------------------------- #
 
-@njit(cache=True)
+@njit(inline='always', cache=True)
 def adverse_fill_price_nb(raw: float, side: int, slippage: float) -> float:
     """Fill price after adverse slippage (buys up, sells down). Port of ``broker_sim.adverse_fill_price``."""
     return raw * (1.0 + side * slippage)
 
 
-@njit(cache=True)
+@njit(inline='always', cache=True)
 def fee_nb(size: float, price: float, rate: float, multiplier: float) -> float:
     """Transaction fee on the multiplier-scaled notional. Port of ``broker_sim.fee``."""
     return size * price * rate * multiplier
 
 
-@njit(cache=True)
+@njit(inline='always', cache=True)
 def funding_charge_nb(pos: float, mark: float, rate: float, multiplier: float) -> float:
     """Perp funding cash flow. Port of ``broker_sim.funding_charge``."""
     return pos * mark * rate * multiplier
@@ -96,7 +96,7 @@ def funding_charge_nb(pos: float, mark: float, rate: float, multiplier: float) -
 # compute_fill_nb — 1:1 port of fill.compute_fill                             #
 # --------------------------------------------------------------------------- #
 
-@njit(cache=True)
+@njit(inline='always', cache=True)
 def compute_fill_nb(
     prior_size: float,
     prior_avg: float,

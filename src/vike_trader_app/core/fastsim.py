@@ -5,11 +5,34 @@ The Python ``SingleSymbolEngine`` stays the source of truth; this runs equivalen
 optional ``[fast]`` extra is absent), matching the engine's numbers within float
 tolerance: next-open fills, long/short, maker/taker fees, slippage, perp funding,
 cost-basis averaging.
+
+All cost/position arithmetic is sourced from the shared ``fill_njit`` primitives
+(``adverse_fill_price_nb``, ``fee_nb``, ``funding_charge_nb``, ``compute_fill_nb``).
+These are decorated with ``inline='always'`` so that, when compiled by numba, they
+inline into this kernel's hot loop with zero call overhead — identical compiled perf
+to the previous hand-inlined version. The pure-Python (non-numba) path is byte-identical
+by construction. NOTE: compiled sweep perf must be confirmed in a numba-compatible
+environment; numpy 2.5 exceeds numba's supported version cap so ``@njit`` no-ops to
+plain Python in this env (``inline='always'`` is accepted and ignored by the shim).
 """
 
 import numpy as np
 
+from .fill_njit import (
+    KIND_ADD,
+    KIND_CLOSE,
+    KIND_FLIP,
+    KIND_OPEN,
+    KIND_REDUCE,
+    _HAS_NUMBA,   # re-exported so callers can inspect numba availability
+    adverse_fill_price_nb,
+    compute_fill_nb,
+    fee_nb,
+    funding_charge_nb,
+    njit,
+)
 from .model import Trade
+
 
 def _noop_njit(*args, **kwargs):
     """Fallback for ``numba.njit`` when the optional ``[fast]`` extra is absent.
@@ -26,15 +49,6 @@ def _noop_njit(*args, **kwargs):
     return _decorator
 
 
-try:  # optional accelerator (vike_trader_app[fast]); falls back to a no-op when absent
-    from numba import njit
-
-    _HAS_NUMBA = True
-except ImportError:  # pragma: no cover - exercised only without the extra
-    _HAS_NUMBA = False
-    njit = _noop_njit
-
-
 @njit(cache=True)
 def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
                 entries, exits, size, side,
@@ -46,6 +60,10 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
     equity mark -> decide next-bar orders. ``multiplier`` scales every notional term.
     ``leverage<=0`` means unlimited; ``maint_margin<=0`` disables liquidation;
     ``size_type`` 0=shares/1=value/2=percent reinterprets ``size`` at decision time.
+
+    Cost/position arithmetic is delegated to shared ``fill_njit`` primitives
+    (``inline='always'``): ``adverse_fill_price_nb``, ``fee_nb``, ``funding_charge_nb``,
+    ``compute_fill_nb``. Cash moves and trade-record bookkeeping remain here.
     """
     n = closes.shape[0]
     equity = np.empty(n, dtype=np.float64)
@@ -76,42 +94,42 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
         for k in range(p_cnt):
             o_side = p_side0 if k == 0 else p_side1
             o_size = p_size0 if k == 0 else p_size1
-            price = opens[i] * (1.0 + o_side * slippage)
-            fee = o_size * price * taker_fee * multiplier
+            price = adverse_fill_price_nb(opens[i], o_side, slippage)
+            fee = fee_nb(o_size, price, taker_fee, multiplier)
             cash -= fee
+            # position/avg/realized transition via shared core (pure position math — no cash)
+            kind, new_size, new_avg, closing_qty, entry_avg, realized_pnl, _portion, _leftover = \
+                compute_fill_nb(pos, avg, o_side, o_size, price, multiplier)
             delta = o_side * o_size
-            if pos == 0.0:
-                pos = delta
-                avg = price
-                cash -= delta * price * multiplier
+            cash -= delta * price * multiplier   # cash move for the fill (same for all kinds)
+            if kind == KIND_OPEN:
+                pos = new_size
+                avg = new_avg
                 entry_fee = fee
                 entry_ts = ts[i]
-            elif (pos > 0.0) == (delta > 0.0):
-                new = pos + delta
-                avg = (avg * abs(pos) + price * abs(delta)) / abs(new)
-                pos = new
-                cash -= delta * price * multiplier
+            elif kind == KIND_ADD:
+                pos = new_size
+                avg = new_avg
                 entry_fee += fee
             else:
-                closed = pos
-                cash -= delta * price * multiplier
-                tr_entry_p[nt] = avg
+                # KIND_REDUCE / KIND_CLOSE / KIND_FLIP: record a trade on the closing leg
+                tr_entry_p[nt] = entry_avg
                 tr_exit_p[nt] = price
-                tr_size[nt] = abs(closed)
-                tr_pnl[nt] = (price - avg) * closed * multiplier
+                tr_size[nt] = closing_qty
+                tr_pnl[nt] = realized_pnl
                 tr_fees[nt] = entry_fee + fee
                 tr_entry_ts[nt] = entry_ts
                 tr_exit_ts[nt] = ts[i]
                 nt += 1
-                pos = 0.0
-                avg = 0.0
+                pos = new_size
+                avg = new_avg
                 entry_fee = 0.0
                 entry_ts = 0
         p_cnt = 0
 
         # 2) perp funding on the held position
         if pos != 0.0 and funding[i] != 0.0:
-            cash -= pos * closes[i] * funding[i] * multiplier
+            cash -= funding_charge_nb(pos, closes[i], funding[i], multiplier)
 
         # 3) cashflow (deposits/withdrawals); zeros by default
         cash += cashflow[i]
@@ -123,15 +141,17 @@ def _sim_kernel(opens, highs, lows, closes, funding, cashflow, ts,
             notional_ex = abs(pos) * adverse * multiplier
             if eq_ex <= maint_margin * notional_ex:
                 liq_side = -1 if pos > 0.0 else 1
-                price = adverse * (1.0 + liq_side * slippage)
-                fee = abs(pos) * price * taker_fee * multiplier
+                price = adverse_fill_price_nb(adverse, liq_side, slippage)
+                fee = fee_nb(abs(pos), price, taker_fee, multiplier)
                 cash -= fee
-                closed = pos
+                # liquidation is always a full close — route through compute_fill_nb for consistency
+                kind, new_size, new_avg, closing_qty, entry_avg, realized_pnl, _portion, _leftover = \
+                    compute_fill_nb(pos, avg, liq_side, abs(pos), price, multiplier)
                 cash -= (liq_side * abs(pos)) * price * multiplier
-                tr_entry_p[nt] = avg
+                tr_entry_p[nt] = entry_avg
                 tr_exit_p[nt] = price
-                tr_size[nt] = abs(closed)
-                tr_pnl[nt] = (price - avg) * closed * multiplier
+                tr_size[nt] = closing_qty
+                tr_pnl[nt] = realized_pnl
                 tr_fees[nt] = entry_fee + fee
                 tr_entry_ts[nt] = entry_ts
                 tr_exit_ts[nt] = ts[i]
