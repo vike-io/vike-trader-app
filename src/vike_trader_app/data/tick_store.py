@@ -79,7 +79,7 @@ def write_quotes(ticks: list[QuoteTick], root: str, symbol: str) -> None:
 
 
 def read_quotes(root: str, symbol: str, start_ms: int, end_ms: int) -> list[QuoteTick]:
-    return [QuoteTick(**r) for r in _read(root, symbol, "quotes", start_ms, end_ms)]
+    return [QuoteTick(**r, symbol=symbol) for r in _read(root, symbol, "quotes", start_ms, end_ms)]
 
 
 def write_trades(ticks: list[TradeTick], root: str, symbol: str) -> None:
@@ -89,4 +89,4 @@ def write_trades(ticks: list[TradeTick], root: str, symbol: str) -> None:
 
 
 def read_trades(root: str, symbol: str, start_ms: int, end_ms: int) -> list[TradeTick]:
-    return [TradeTick(**r) for r in _read(root, symbol, "trades", start_ms, end_ms)]
+    return [TradeTick(**r, symbol=symbol) for r in _read(root, symbol, "trades", start_ms, end_ms)]
