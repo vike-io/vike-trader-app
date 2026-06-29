@@ -132,7 +132,7 @@ class PortfolioStrategy(Strategy):
         self.on_bar(ts, bars)
 
 
-class CrossSectionalStrategy(PortfolioStrategy):
+class CrossSectionalStrategy(Strategy):
     """Top-k rotation: rank the whole universe each rebalance, hold the best ``k``.
 
     Override ``score(symbol, history)`` (history = the symbol's close list so far,
@@ -162,9 +162,8 @@ class CrossSectionalStrategy(PortfolioStrategy):
         w = 1.0 / len(winners) if winners else 0.0
         return {s: w for s in winners}
 
-    def on_bar(self, ts: int, bars: dict) -> None:  # noqa: ARG002
-        for sym, bar in bars.items():
-            self._hist.setdefault(sym, []).append(bar.close)
+    def on_bar(self, bar) -> None:
+        self._hist.setdefault(self._sym_key(bar.symbol), []).append(bar.close)
 
     def _rebalance(self) -> None:
         scores = {}

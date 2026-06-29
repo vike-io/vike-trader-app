@@ -5,7 +5,8 @@ from datetime import datetime, timezone
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import CrossSectionalStrategy, PortfolioEngine
+from vike_trader_app.core.portfolio import CrossSectionalStrategy, PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.strategy import Strategy
 
 
 def _series(opens):
@@ -251,3 +252,9 @@ def test_rebalance_every_still_gates():
     # At least bars 3 and 6 must fire (proving the gate works, not just that it never fires)
     assert 3 in strat.rebalance_calls
     assert 6 in strat.rebalance_calls
+
+
+def test_cross_sectional_reparented_to_strategy():
+    """CrossSectionalStrategy must subclass unified Strategy, not the deprecated PortfolioStrategy."""
+    assert issubclass(CrossSectionalStrategy, Strategy)
+    assert not issubclass(CrossSectionalStrategy, PortfolioStrategy)
