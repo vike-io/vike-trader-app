@@ -1,4 +1,4 @@
-"""Tests for LivePortfolioEngine — multi-symbol live engine interface (A2d Task 1 + A2e Task 3).
+"""Tests for LiveEngine — multi-symbol live engine interface (A2d Task 1 + A2e Task 3).
 
 Mirrors test_strategy_live_engine.py, extended for per-symbol routing isolation and
 shared-Account equity aggregation across N symbols.
@@ -18,7 +18,7 @@ Verifies:
 """
 import pytest
 
-from vike_trader_app.exec.live_portfolio_engine import LivePortfolioEngine
+from vike_trader_app.exec.live_portfolio_engine import LiveEngine
 from vike_trader_app.exec.events import OrderRequest
 from vike_trader_app.core.model import Bar, Position
 
@@ -73,7 +73,7 @@ def _make_engine(bal: float = 10_000.0):
     hub_btc = _Hub(venue="binance", symbol=_BTC)
     hub_eth = _Hub(venue="binance", symbol=_ETH)
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
-    eng = LivePortfolioEngine(hubs, acct, now_ms=lambda: 111)
+    eng = LiveEngine(hubs, acct, now_ms=lambda: 111)
     return eng, hub_btc, hub_eth, acct
 
 
@@ -360,7 +360,7 @@ def _make_engine_with_tf(bal: float = 10_000.0, timeframes=("1h",)):
     hub_btc = _Hub(venue="binance", symbol=_BTC)
     hub_eth = _Hub(venue="binance", symbol=_ETH)
     hubs = {_BTC: hub_btc, _ETH: hub_eth}
-    eng = LivePortfolioEngine(hubs, acct, now_ms=lambda: 111)
+    eng = LiveEngine(hubs, acct, now_ms=lambda: 111)
     # Re-initialise the per-symbol buffers WITH a timeframe so bars_for/forming_for don't KeyError.
     for sym in eng.symbols:
         eng._bufs[sym] = BarSeriesBuffer([], timeframes=list(timeframes))
