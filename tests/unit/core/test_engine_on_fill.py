@@ -26,7 +26,7 @@ def test_on_fill_fires_once_per_fill_with_adverse_price_and_fee():
     fills = []
     eng = BacktestEngine(
         _bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
-        on_fill=lambda side, size, price, fee, ts, is_maker:
+        on_fill=lambda side, size, price, fee, ts, is_maker, order:
             fills.append((side, size, price, fee, ts, is_maker)),
     )
     eng.run()

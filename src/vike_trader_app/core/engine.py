@@ -63,7 +63,9 @@ class BacktestEngine:
         self.leverage = leverage
         self.maint_margin = maint_margin
         self._cashflows = cashflows
-        self._on_fill = on_fill   # optional: called per fill (side, size, price, fee, ts, is_maker)
+        self._on_fill = on_fill   # optional: called per fill (side, size, price, fee, ts, is_maker, order)
+        self._on_submit = None    # optional: called per submitted order (order,); default-off
+        self._on_cancel = None    # optional: called per cancelled order (order,); default-off
         self._fill_model = fill_model if fill_model is not None else BarFillModel()
         self.cash = cash
         self.position = Position()
@@ -90,6 +92,8 @@ class BacktestEngine:
         self._pending.append(order)
         self.strategy.on_order_submitted(order)
         self.strategy.on_event(order)
+        if self._on_submit is not None:
+            self._on_submit(order)
 
     def submit(self, side_sign_or_symbol, side_sign_if_sym=None, size=None,
                weight: float = 0.0, stop=None, raw: bool = False) -> None:
@@ -178,10 +182,16 @@ class BacktestEngine:
         try:
             self._pending.remove(order)
         except ValueError:
-            pass
+            return
+        if self._on_cancel is not None:
+            self._on_cancel(order)
 
     def cancel_all(self, symbol: str | None = None) -> None:  # symbol ignored in single-symbol engine
+        removed = self._pending
         self._pending = []
+        if self._on_cancel is not None:
+            for order in removed:
+                self._on_cancel(order)
 
     def submit_close(self, symbol: str | None = None) -> None:  # symbol ignored in single-symbol engine
         if self.position.size != 0:
@@ -343,7 +353,7 @@ class BacktestEngine:
         for o, fill_price in triggered:
             if o.size <= 1e-12:                 # capped to ~0 by the bracket guard -> nothing to fill
                 continue
-            self._apply_fill(o.side, o.size, fill_price, bar.ts, is_maker=o.kind == "limit")
+            self._apply_fill(o.side, o.size, fill_price, bar.ts, is_maker=o.kind == "limit", order=o)
 
     def _resolve_intrabar(self, triggered: "list[tuple[Order, float]]") -> "list[tuple[Order, float]]":
         """Several resting orders triggered in ONE bar — OHLC can't reveal the intrabar sequence.
@@ -390,13 +400,14 @@ class BacktestEngine:
             s.on_position_opened(opened); s.on_event(opened)
         return fill
 
-    def _apply_fill(self, side_sign: int, size: float, price: float, ts: int, is_maker: bool = False) -> Fill:
+    def _apply_fill(self, side_sign: int, size: float, price: float, ts: int,
+                    is_maker: bool = False, order=None) -> Fill:
         price = adverse_fill_price(price, side_sign, self.slippage)  # adverse: buys up, sells down
         rate = self.maker_fee if is_maker else self.taker_fee
         fee = _fee(size, price, rate, self.multiplier)
         self.cash -= fee
         if self._on_fill is not None:
-            self._on_fill(side_sign, size, price, fee, ts, is_maker)
+            self._on_fill(side_sign, size, price, fee, ts, is_maker, order)
         fill = Fill(side_sign, size, price, fee, ts, is_maker)
         delta = side_sign * size
         self.cash -= delta * price * self.multiplier   # signed notional moves cash in every case

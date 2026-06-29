@@ -28,7 +28,7 @@ class SimulatedExecutionClient:
         engine._on_fill = self._on_engine_fill
 
     def _on_engine_fill(self, side_sign: int, size: float, price: float, fee: float,
-                        ts: int, is_maker: bool) -> None:
+                        ts: int, is_maker: bool, order=None) -> None:  # noqa: ARG002 - order reserved for C1b
         ev = FillEvent(
             trade_id=f"{self.venue}-{self._n}",
             client_order_id=self._client_order_id,
