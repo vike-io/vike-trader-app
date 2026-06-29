@@ -1,17 +1,26 @@
 """Tests for the SingleSymbolStrategy compat shim (Task 2).
 
 Confirms:
-- Strategy (core.strategy) is the same object as SingleSymbolStrategy (core.compat_strategy)
+- Strategy (core.strategy) is the NEW unified class (Task 6), NOT the compat alias
 - The full single-symbol API surface is intact on SingleSymbolStrategy
 - position is still a property
 """
-import warnings
+import inspect
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy
-from vike_trader_app.core.strategy import Strategy   # temporary alias this phase
+from vike_trader_app.core.strategy import Strategy
 
 
-def test_alias_points_at_compat_this_phase():
-    assert Strategy is SingleSymbolStrategy
+def test_strategy_is_no_longer_single_symbol_alias():
+    """Task 6: Strategy is now the unified per-symbol class, not the compat shim."""
+    assert Strategy is not SingleSymbolStrategy
+    # The new Strategy has a per-symbol on_bar(self, bar) — one positional arg
+    sig = inspect.signature(Strategy.on_bar)
+    params = list(sig.parameters)
+    assert params == ["self", "bar"], f"unexpected on_bar signature: {params}"
+    # Reserved P2/P3 tick handlers exist on the new class
+    assert hasattr(Strategy, "on_quote_tick")
+    assert hasattr(Strategy, "on_trade_tick")
+    assert hasattr(Strategy, "on_order_book")
 
 
 def test_single_symbol_api_intact():

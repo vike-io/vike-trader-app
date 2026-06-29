@@ -325,6 +325,18 @@ class PortfolioEngine:
     def equity_now(self) -> float:
         return self.cash + sum(self._sym[s].pos.size * self._sym[s].price * self.multiplier for s in self.symbols)
 
+    def drawdown_now(self) -> float:
+        """Current drawdown from the running equity peak (0..1).
+
+        Uses the same ``_equity_peak`` that the run loop updates each bar.
+        Returns 0.0 when the peak has not been established yet.
+        """
+        eq = self.equity_now()
+        peak = self._equity_peak
+        if peak <= 0.0:
+            return 0.0
+        return max(0.0, (peak - eq) / peak)
+
     # --- sizing (WL PosSizer) ---
     def _is_opening(self, symbol: str, side_sign: int) -> bool:
         """True when an order on ``symbol`` in direction ``side_sign`` opens-from-flat or adds in the
