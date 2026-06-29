@@ -14,9 +14,9 @@ _CLEAN = """from vike_trader_app.core.strategy import Strategy
 class S(Strategy):
     def on_bar(self, bar):
         if self.index % 4 == 0:
-            self.buy(1.0)
+            self.buy(bar.symbol, 1.0)
         elif self.index % 4 == 2:
-            self.close()
+            self.close(bar.symbol)
 """
 
 
@@ -107,3 +107,17 @@ def test_recorder_is_opt_in(fake_sandbox):
     """No recorder -> no recording, identical behaviour to before (back-compat)."""
     results = develop_strategies("x", _bars(), client=_FakeClient(), n=2)
     assert all(r.accepted for r in results)   # runs fine with recorder=None (default)
+
+
+def test_system_prompt_teaches_symbol_explicit_api():
+    """Guard: the system prompt must teach the new symbol-explicit API and not the old no-symbol form."""
+    prompt = agent_mod.STRATEGY_SYSTEM_PROMPT
+    # Must teach the symbol-explicit call pattern
+    assert "bar.symbol" in prompt, "prompt must reference bar.symbol"
+    assert "self.buy(bar.symbol" in prompt, "prompt must show self.buy(bar.symbol, ...)"
+    assert "self.close(bar.symbol)" in prompt, "prompt must show self.close(bar.symbol)"
+    assert "self.position(bar.symbol)" in prompt, "prompt must show self.position(bar.symbol)"
+    # Must NOT teach the old no-symbol examples
+    assert "self.buy(size)" not in prompt, "old no-symbol self.buy(size) must not appear in prompt"
+    assert "self.close()" not in prompt, "old no-symbol self.close() must not appear in prompt"
+    assert "self.position   " not in prompt, "old self.position property form must not appear in prompt"
