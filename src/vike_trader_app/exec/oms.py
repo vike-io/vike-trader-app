@@ -30,6 +30,7 @@ from vike_trader_app.core.paper import PaperTester
 from vike_trader_app.exec.accounting import Account
 from vike_trader_app.exec.bus import EventBus
 from vike_trader_app.exec.events import FillEvent
+from vike_trader_app.exec.order_router import OrderRouter
 from vike_trader_app.exec.sim_client import SimulatedExecutionClient
 
 
@@ -45,8 +46,11 @@ class OmsHub:
             symbol=symbol, interval=interval, strategy=strategy, cash=cash, fee_rate=fee_rate,
             slippage=slippage, maker_fee=maker_fee, taker_fee=taker_fee, seed_bars=seed_bars,
             timeframes=timeframes, store=store, on_step=on_step, created_ts=created_ts,
-            risk=risk, _persist=_persist,
+            _persist=_persist,
         )
+        # Wire the RiskGate at the exec layer (after seed warm-up which has no orders).
+        if risk is not None:
+            self.tester.engine.strategy._engine = OrderRouter(self.tester.engine, risk)
         self.account = Account(multiplier=self.tester.engine.multiplier)
         self.bus.subscribe(self._on_event)
         # The Account attaches AFTER warm-up, so trades the engine recorded during the seed are NOT in it;
