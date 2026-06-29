@@ -1,7 +1,7 @@
-"""Optional on_fill hook on BacktestEngine — fires per fill; default-off is byte-identical."""
+"""Optional on_fill hook on SingleSymbolEngine — fires per fill; default-off is byte-identical."""
 
 from vike_trader_app.core.broker_sim import fee as _fee
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -24,7 +24,7 @@ class _BuyThenClose(Strategy):
 
 def test_on_fill_fires_once_per_fill_with_adverse_price_and_fee():
     fills = []
-    eng = BacktestEngine(
+    eng = SingleSymbolEngine(
         _bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
         on_fill=lambda side, size, price, fee, ts, is_maker, order:
             fills.append((side, size, price, fee, ts, is_maker)),
@@ -41,8 +41,8 @@ def test_on_fill_fires_once_per_fill_with_adverse_price_and_fee():
 
 
 def test_default_off_hook_is_byte_identical():
-    base = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
-    hooked = BacktestEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
+    base = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
+    hooked = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001,
                             on_fill=lambda *a: None).run()
     assert hooked.equity_curve == base.equity_curve
     assert [t.pnl for t in hooked.trades] == [t.pnl for t in base.trades]

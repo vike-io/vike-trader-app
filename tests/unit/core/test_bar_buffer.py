@@ -194,19 +194,19 @@ def test_forming_for_returns_none_after_window_completes():
 
 
 # ---------------------------------------------------------------------------
-# Parity with BacktestEngine (regression guard)
+# Parity with SingleSymbolEngine (regression guard)
 # ---------------------------------------------------------------------------
 
 def test_parity_with_engine_bars_for(subtests):
-    """bars_for via BarSeriesBuffer must match BacktestEngine._buf.bars_for element-for-element."""
-    from vike_trader_app.core.engine import BacktestEngine
+    """bars_for via BarSeriesBuffer must match SingleSymbolEngine._buf.bars_for element-for-element."""
+    from vike_trader_app.core.engine import SingleSymbolEngine
     from vike_trader_app.core.strategy import Strategy
 
     class _S(Strategy):
         def on_bar(self, bar): pass
 
     all_bars = [_bar(t) for t in range(65)]  # 65 1-min bars
-    engine = BacktestEngine(all_bars, _S(), timeframes=["1h"])
+    engine = SingleSymbolEngine(all_bars, _S(), timeframes=["1h"])
 
     # Build a standalone buffer seeded with identical bars via add_live_bar.
     bars2: list[Bar] = []

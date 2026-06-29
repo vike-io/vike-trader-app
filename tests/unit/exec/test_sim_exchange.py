@@ -8,7 +8,7 @@ Mirrors test_sim_parity.py scenarios but adds:
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.accounting import Account
@@ -89,7 +89,7 @@ def _run_scenario(strat, bars=None, *, cash=10_000.0, fee=0.001, slippage=0.0, m
     events = []
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
     bus.subscribe(events.append)
-    eng = BacktestEngine(bars, strat, cash=cash, taker_fee=fee, slippage=slippage,
+    eng = SingleSymbolEngine(bars, strat, cash=cash, taker_fee=fee, slippage=slippage,
                          multiplier=multiplier, **engine_kwargs)
     exc = SimulatedExchange(eng, bus, venue="sim", symbol="X")
     res = eng.run()

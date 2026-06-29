@@ -7,7 +7,7 @@ to bar fills — a tick run is genuinely tick-filled or it fails loudly.
 """
 
 from .consolidator import consolidate_quotes, consolidate_trades
-from .engine import BacktestEngine, Result
+from .engine import SingleSymbolEngine, Result
 from .fill_model import TickFillModel
 from .timeframe import parse_timeframe
 from ..data import tick_store
@@ -32,10 +32,10 @@ def run_tick_backtest(strategy, *, symbol: str, interval: str, start_ms: int, en
         raise ValueError(f"unknown tick kind {kind!r} (expected 'quotes' or 'trades')")
     if per_tick:
         # per-tick engine: strategy uses on_quote_tick/on_trade_tick; fills resolve per tick.
-        engine = BacktestEngine([], strategy, fill_model=TickFillModel(), **engine_kwargs)
+        engine = SingleSymbolEngine([], strategy, fill_model=TickFillModel(), **engine_kwargs)
         return engine.run_ticks(ticks)
     # Slice-1 path: consolidate to bars, run the bar loop with spread-crossing fills.
     step_ms = parse_timeframe(interval)
     bars = consolidate_quotes(ticks, step_ms) if kind == "quotes" else consolidate_trades(ticks, step_ms)
-    engine = BacktestEngine(bars, strategy, fill_model=TickFillModel(), **engine_kwargs)
+    engine = SingleSymbolEngine(bars, strategy, fill_model=TickFillModel(), **engine_kwargs)
     return engine.run()

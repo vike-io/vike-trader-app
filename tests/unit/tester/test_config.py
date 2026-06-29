@@ -1,4 +1,4 @@
-"""TesterConfig.portfolio_engine_kwargs(): the config-derived PortfolioEngine args, one place."""
+"""TesterConfig.portfolio_engine_kwargs(): the config-derived MultiSymbolEngine args, one place."""
 
 from vike_trader_app.core import sizing
 from vike_trader_app.tester.config import TesterConfig

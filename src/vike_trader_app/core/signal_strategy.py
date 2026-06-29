@@ -3,7 +3,7 @@
 Subclass and implement ``signals(data)`` returning aligned ``(entries, exits, size, side)``
 arrays. ``run(data, **cfg)`` executes them via ``fast_backtest`` (compiled fast path).
 For path-dependent logic (resting orders, trailing stops) use the event-driven
-``Strategy``/``BacktestEngine`` instead.
+``Strategy``/``SingleSymbolEngine`` instead.
 """
 
 from .fastsim import fast_backtest

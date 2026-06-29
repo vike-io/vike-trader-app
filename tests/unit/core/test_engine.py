@@ -2,7 +2,7 @@
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -30,7 +30,7 @@ class _BuyThenClose(Strategy):
 
 
 def test_buy_then_close_realizes_pnl_at_next_open_no_fees():
-    result = BacktestEngine(_bars(), _BuyThenClose(), fee_rate=0.0, cash=10_000.0).run()
+    result = SingleSymbolEngine(_bars(), _BuyThenClose(), fee_rate=0.0, cash=10_000.0).run()
     assert len(result.trades) == 1
     t = result.trades[0]
     assert t.entry_price == 110.0  # next-open after the index-0 buy (no look-ahead)
@@ -40,7 +40,7 @@ def test_buy_then_close_realizes_pnl_at_next_open_no_fees():
 
 
 def test_fees_reduce_equity():
-    result = BacktestEngine(_bars(), _BuyThenClose(), fee_rate=0.001, cash=10_000.0).run()
+    result = SingleSymbolEngine(_bars(), _BuyThenClose(), fee_rate=0.001, cash=10_000.0).run()
     t = result.trades[0]
     assert t.pnl == 20.0  # gross price PnL
     assert t.fees == pytest.approx(0.11 + 0.13)  # entry 110*.001 + exit 130*.001
@@ -67,7 +67,7 @@ def test_engine_exposes_completed_higher_tf_bars_without_lookahead():
         _bar(180_000, 130, 130),
     ]
     strat = _RecordHigherTF()
-    BacktestEngine(bars, strat, timeframes=["2m"]).run()
+    SingleSymbolEngine(bars, strat, timeframes=["2m"]).run()
 
     # 2m windows: [0,120k) -> closes from bars at 0 & 60k -> coarse close 110
     #             [120k,240k) -> bars at 120k & 180k -> coarse close 130 (forms after run)
@@ -97,7 +97,7 @@ def test_engine_exposes_forming_higher_tf_bar():
         _bar(180_000, 130, 130),
     ]
     strat = _RecordForming()
-    BacktestEngine(bars, strat, timeframes=["2m"]).run()
+    SingleSymbolEngine(bars, strat, timeframes=["2m"]).run()
 
     # window0 = [0,120k): after bar0 forming=(high101, close100); after bar1 forming=(high111, close110)
     # window1 = [120k,240k): after bar2 forming=(high121, close120); after bar3 forming=(high131, close130)
@@ -122,7 +122,7 @@ def test_mtf_filter_strategy_runs_and_only_uses_completed_htf():
     # 8 one-minute bars, rising closes; 4m windows: [0,240k) and [240k,480k)
     bars = [_bar(i * 60_000, 100 + i, 100 + i) for i in range(8)]
     strat = _HTFFilterStrategy()
-    result = BacktestEngine(bars, strat, timeframes=["4m"]).run()
+    result = SingleSymbolEngine(bars, strat, timeframes=["4m"]).run()
     # Only 2 completed 4m windows ever exist, and the 2nd completes after the run,
     # so the strategy never sees two completed rising 4m bars -> no trade.
     # Asserts no look-ahead false-positive.
@@ -133,14 +133,14 @@ def test_mtf_filter_strategy_trades_with_three_htf_windows():
     # 12 one-minute bars -> 4m windows [0,240k),[240k,480k),[480k,720k)
     bars = [_bar(i * 60_000, 100 + i, 100 + i) for i in range(12)]
     strat = _HTFFilterStrategy()
-    BacktestEngine(bars, strat, timeframes=["4m"]).run()
+    SingleSymbolEngine(bars, strat, timeframes=["4m"]).run()
     # By the third window two completed rising 4m bars are visible -> opens a position.
     assert strat.position.size > 0
 
 
 def test_slippage_worsens_fill_prices():
     # buy fills at next open *(1+slip); sell(close) at next open *(1-slip)
-    result = BacktestEngine(_bars(), _BuyThenClose(), slippage=0.01).run()
+    result = SingleSymbolEngine(_bars(), _BuyThenClose(), slippage=0.01).run()
     t = result.trades[0]
     assert t.entry_price == pytest.approx(110.0 * 1.01)  # 111.1
     assert t.exit_price == pytest.approx(130.0 * 0.99)  # 128.7
@@ -160,7 +160,7 @@ def test_funding_charges_held_position():
         Bar(ts=60_000, open=100, high=101, low=99, close=100, volume=1.0, funding=0.01),
         Bar(ts=120_000, open=100, high=101, low=99, close=100, volume=1.0),
     ]
-    result = BacktestEngine(bars, _BuyHold(), cash=10_000.0).run()
+    result = SingleSymbolEngine(bars, _BuyHold(), cash=10_000.0).run()
     # buy 1 @100 -> cash 9900; funding 1*100*0.01 = 1 -> cash 9899; equity 9899 + 100 = 9999
     assert result.final_equity == pytest.approx(9_999.0)
 
@@ -176,7 +176,7 @@ class _ReduceToFour(Strategy):
 
 
 def test_partial_reduce_keeps_remainder_and_books_only_closed_units():
-    eng = BacktestEngine(_bars(), _ReduceToFour(), fee_rate=0.0, cash=10_000.0)
+    eng = SingleSymbolEngine(_bars(), _ReduceToFour(), fee_rate=0.0, cash=10_000.0)
     eng.run()
     assert eng.position.size == 4.0                              # remainder kept (was wrongly zeroed)
     assert len(eng.trades) == 1
@@ -193,7 +193,7 @@ class _FlipLongToShort(Strategy):
 
 
 def test_cross_zero_flip_closes_then_opens_opposite_side():
-    eng = BacktestEngine(_bars(), _FlipLongToShort(), fee_rate=0.0, cash=10_000.0)
+    eng = SingleSymbolEngine(_bars(), _FlipLongToShort(), fee_rate=0.0, cash=10_000.0)
     eng.run()
     assert eng.position.size == -3.0                             # opposite side opened (was left flat)
     assert eng.position.avg_price == pytest.approx(120.0)        # at the flip fill price

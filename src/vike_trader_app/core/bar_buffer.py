@@ -1,6 +1,6 @@
 """BarSeriesBuffer — shared MTF (multi-timeframe) bar buffer.
 
-Extracted from ``BacktestEngine`` so that ``StrategyLiveEngine`` can reuse the
+Extracted from ``SingleSymbolEngine`` so that ``StrategyLiveEngine`` can reuse the
 exact same logic without copying it.  Both engines hold the buffer as
 ``self._buf``; the base-bar list (``self.bars``) is shared by reference between
 the engine and the buffer so every consumer reads the same list object.
@@ -11,11 +11,11 @@ Public API
     Append a live base bar and re-resample every registered higher timeframe.
 ``bars_for(tf, now)``
     Completed higher-TF bars visible at ``now`` (deliver-on-complete, no
-    look-ahead). Mirrors ``BacktestEngine.bars_for`` exactly.
+    look-ahead). Mirrors ``SingleSymbolEngine.bars_for`` exactly.
 ``forming_for(tf, now)``
     The still-forming coarse bar for ``tf`` built from base bars seen up to
     ``now``, or ``None`` if none have started yet.  Mirrors
-    ``BacktestEngine.forming_for`` exactly.
+    ``SingleSymbolEngine.forming_for`` exactly.
 """
 
 import bisect
@@ -28,7 +28,7 @@ _BAR_TS = attrgetter("ts")  # bisect key: ts-ascending list -> O(log n) slicing
 
 
 class BarSeriesBuffer:
-    """Shared multi-timeframe bar buffer for BacktestEngine and StrategyLiveEngine.
+    """Shared multi-timeframe bar buffer for SingleSymbolEngine and StrategyLiveEngine.
 
     Parameters
     ----------
@@ -64,7 +64,7 @@ class BarSeriesBuffer:
         Slices the coarse list up to (but not including) the window that
         contains ``now`` — so the bar currently forming is NOT returned.
 
-        Mirrors ``BacktestEngine.bars_for`` exactly: the coarse list is
+        Mirrors ``SingleSymbolEngine.bars_for`` exactly: the coarse list is
         ts-ascending; ``bisect_left`` finds the boundary in O(log n) instead of
         rescanning the whole list per call (the dominant MTF O(n²) hot path).
         """
@@ -79,7 +79,7 @@ class BarSeriesBuffer:
         synthetic ``Bar``.  Returns ``None`` if no base bars have started the
         current window yet.
 
-        Mirrors ``BacktestEngine.forming_for`` exactly: ``self.bars`` is
+        Mirrors ``SingleSymbolEngine.forming_for`` exactly: ``self.bars`` is
         ts-ascending; ``bisect`` slices the ``[window_start, now]`` window in
         O(log n) instead of scanning the whole base series.
         """

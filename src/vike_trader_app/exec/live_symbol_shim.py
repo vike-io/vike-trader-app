@@ -5,7 +5,7 @@ Presents the unkeyed ``StrategyEngine`` Protocol surface over a symbol-keyed
 ``LiveEngine`` verb with ``self._symbol`` prepended — there is NO logic here.
 
 This is the live analogue of ``core.portfolio_adapter.SymbolEngineShim``.
-The backtest shim wraps ``PortfolioEngine``; this wraps ``LiveEngine``.
+The backtest shim wraps ``MultiSymbolEngine``; this wraps ``LiveEngine``.
 
 Usage::
 

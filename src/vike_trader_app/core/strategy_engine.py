@@ -1,6 +1,6 @@
 """The order-API contract a single-symbol Strategy depends on (`self._engine`).
 
-A `Strategy` is run either against a real `BacktestEngine` (standalone single-symbol backtest) or a
+A `Strategy` is run either against a real `SingleSymbolEngine` (standalone single-symbol backtest) or a
 `SymbolEngineShim` (one symbol of a shared-cash portfolio backtest). Both MUST expose the same
 Strategy-facing surface, or a strategy that uses a method only one of them has breaks silently in the
 other mode. This Protocol names that surface so the conformance test (and any type checker) catches

@@ -1,6 +1,6 @@
 """LiveEngine — unified symbol-keyed live engine interface (P0 collapse of LivePortfolioEngine).
 
-This is the live analogue of ``core.portfolio.PortfolioEngine``: a ``PortfolioStrategy``
+This is the live analogue of ``core.portfolio.MultiSymbolEngine``: a ``PortfolioStrategy``
 sets ``strategy._engine = LiveEngine(...)`` and calls the EXACT same surface it calls in
 backtest — ``equity_now``, ``position_of``, ``price_of``, ``submit``, ``submit_close``,
 ``symbols``, and ``now``.
@@ -62,7 +62,7 @@ def _default_clock() -> int:
 
 
 class LiveEngine:
-    """Unified symbol-keyed live engine — the live analogue of ``PortfolioEngine``.
+    """Unified symbol-keyed live engine — the live analogue of ``MultiSymbolEngine``.
 
     Parameters
     ----------
@@ -75,7 +75,7 @@ class LiveEngine:
     multipliers:
         Optional per-symbol contract multipliers (e.g. ``{"BTCUSDT": 1.0}``).
         Defaults to 1.0 for any symbol not listed.  Used by ``order_target_value`` /
-        ``order_target_percent`` to match ``BacktestEngine`` sizing semantics exactly.
+        ``order_target_percent`` to match ``SingleSymbolEngine`` sizing semantics exactly.
     timeframes:
         Optional list of higher timeframes to pre-register on each per-symbol
         ``BarSeriesBuffer`` (e.g. ``["1h", "4h"]``).  Forwarded to the buffer ctor.
@@ -154,7 +154,7 @@ class LiveEngine:
     def equity_now(self) -> float:
         """Cash balance + unrealized PnL summed across ALL N symbols.
 
-        Mirrors ``PortfolioEngine``'s equity read:
+        Mirrors ``MultiSymbolEngine``'s equity read:
             equity = cash + sum(position * mark per symbol)
         Here it reads from the shared ``Account`` (fill-accurate, mark-updated).
         """
@@ -176,7 +176,7 @@ class LiveEngine:
         return self._account.marks.get((hub.venue, sym), 0.0)
 
     # ------------------------------------------------------------------
-    # Order verbs (mirror PortfolioEngine's engine-interface surface)
+    # Order verbs (mirror MultiSymbolEngine's engine-interface surface)
     # ------------------------------------------------------------------
 
     def submit(
@@ -191,7 +191,7 @@ class LiveEngine:
         """Submit a market order for ``sym``.
 
         ``weight``, ``raw``, and ``stop`` are accepted for signature-parity with the
-        backtest ``PortfolioEngine``; they are IGNORED here.  The strategy already
+        backtest ``MultiSymbolEngine``; they are IGNORED here.  The strategy already
         computed the delta via ``order_target_percent`` / ``buy`` / ``sell``; we route
         the EXPLICIT ``size`` as a plain market order (no sizer, no leverage cap).
         The RiskGate is INSIDE ``hub.submit_ticket`` — do NOT gate here.
@@ -238,7 +238,7 @@ class LiveEngine:
         """Submit a resting limit order for ``sym``.
 
         ``weight``, ``raw``, and ``stop`` are accepted for signature-parity with the backtest
-        ``PortfolioEngine.submit_limit`` and are IGNORED here (the strategy already computed
+        ``MultiSymbolEngine.submit_limit`` and are IGNORED here (the strategy already computed
         the desired size; we route it as a plain limit order).
         """
         del weight, raw, stop
@@ -260,7 +260,7 @@ class LiveEngine:
                             raw: bool = False) -> None:
         """Submit a market order to reduce/close the position (explicit direction + size).
 
-        ``weight``/``raw`` are accepted for signature-parity with the backtest ``PortfolioEngine``
+        ``weight``/``raw`` are accepted for signature-parity with the backtest ``MultiSymbolEngine``
         (no sizer/leverage-cap on the live path) and are IGNORED here.
         """
         del weight, raw
@@ -289,7 +289,7 @@ class LiveEngine:
     ) -> None:
         """Submit a limit order to reduce/close the position at the given price.
 
-        ``weight``/``raw`` are accepted for signature-parity with the backtest ``PortfolioEngine``
+        ``weight``/``raw`` are accepted for signature-parity with the backtest ``MultiSymbolEngine``
         (no sizer/leverage-cap on the live path) and are IGNORED here.
         """
         del weight, raw
@@ -331,7 +331,7 @@ class LiveEngine:
     def order_target(self, sym: str, target_size: float) -> None:
         """Market order to move ``sym``'s position to ``target_size`` signed units.
 
-        Mirrors ``BacktestEngine.order_target`` / ``StrategyLiveEngine.order_target`` exactly:
+        Mirrors ``SingleSymbolEngine.order_target`` / ``StrategyLiveEngine.order_target`` exactly:
             delta = target_size - position_of(sym).size
             if delta > 0: submit buy delta
             if delta < 0: submit sell abs(delta)
@@ -372,7 +372,7 @@ class LiveEngine:
     def bars_for(self, sym: str, tf: str):
         """Completed higher-TF bars for ``sym`` visible at the current step (no look-ahead).
 
-        Mirrors ``PortfolioEngine.bars_for(symbol, tf)`` and ``StrategyLiveEngine.bars_for(tf)``;
+        Mirrors ``MultiSymbolEngine.bars_for(symbol, tf)`` and ``StrategyLiveEngine.bars_for(tf)``;
         delegates to the per-symbol ``BarSeriesBuffer``.
         """
         return self._bufs[sym].bars_for(tf, self._now_by_sym.get(sym, 0))
@@ -380,7 +380,7 @@ class LiveEngine:
     def forming_for(self, sym: str, tf: str):
         """The still-forming coarse bar for ``tf`` / ``sym`` from base bars seen so far, or None.
 
-        Mirrors ``PortfolioEngine.forming_for(symbol, tf)``; delegates to the per-symbol
+        Mirrors ``MultiSymbolEngine.forming_for(symbol, tf)``; delegates to the per-symbol
         ``BarSeriesBuffer``.
         """
         return self._bufs[sym].forming_for(tf, self._now_by_sym.get(sym, 0))
@@ -401,7 +401,7 @@ class LiveEngine:
         """Register a client-side emulated trailing-stop order for ``sym`` (A2e).
 
         The trailing extreme is initialised from the symbol's current mark price at registration
-        time (mirrors ``BacktestEngine.submit_trailing`` which uses ``extreme=self._price``).
+        time (mirrors ``SingleSymbolEngine.submit_trailing`` which uses ``extreme=self._price``).
         Each closed bar ratchets the extreme via ``order_fill_price`` and fires a MARKET order
         when the retrace crosses the trigger (``extreme - trail`` for sells, ``extreme + trail``
         for buys).

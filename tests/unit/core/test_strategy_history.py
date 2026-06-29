@@ -4,7 +4,7 @@ from datetime import timedelta
 import polars as pl
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.data.catalog import Catalog
 from vike_trader_app.data.parquet_source import append_series
@@ -18,7 +18,7 @@ def _series(root, sym, n=10):
 
 
 def _engine(bars, strat, root):
-    return BacktestEngine(bars, strat, catalog=Catalog(str(root)))
+    return SingleSymbolEngine(bars, strat, catalog=Catalog(str(root)))
 
 
 def test_count_period_range_forms(tmp_path):

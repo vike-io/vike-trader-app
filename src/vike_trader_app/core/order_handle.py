@@ -37,14 +37,14 @@ class OrderHandle:
     _order:
         The engine's internal ``Order`` object (opaque to the strategy).
     _engine:
-        Reference to the ``PortfolioEngine`` that owns this order.
+        Reference to the ``MultiSymbolEngine`` that owns this order.
     symbol:
         The symbol the order was placed for.
     """
 
     id: int
     _order: Any      # engine's internal Order — opaque to the strategy
-    _engine: Any     # PortfolioEngine — kept private
+    _engine: Any     # MultiSymbolEngine — kept private
     symbol: str
 
     @property

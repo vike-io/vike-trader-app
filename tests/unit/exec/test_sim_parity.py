@@ -2,7 +2,7 @@
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.exec.accounting import Account
@@ -60,7 +60,7 @@ def test_fillevent_derived_pnl_matches_engine_trades(strat_cls):
     bus = EventBus()
     acc = Account()
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
-    eng = BacktestEngine(_ramp(), strat_cls(), cash=10_000.0, taker_fee=0.001)
+    eng = SingleSymbolEngine(_ramp(), strat_cls(), cash=10_000.0, taker_fee=0.001)
     SimulatedExecutionClient(eng, bus, venue="sim", symbol="X")
     res = eng.run()
 
@@ -73,7 +73,7 @@ def test_parity_holds_with_slippage_and_multiplier():
     bus = EventBus()
     acc = Account(multiplier=5.0)
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
-    eng = BacktestEngine(_ramp(), _BuyThenClose(), cash=100_000.0, taker_fee=0.001,
+    eng = SingleSymbolEngine(_ramp(), _BuyThenClose(), cash=100_000.0, taker_fee=0.001,
                          slippage=0.0005, multiplier=5.0)
     SimulatedExecutionClient(eng, bus, symbol="X")
     res = eng.run()
@@ -122,7 +122,7 @@ def test_intrabar_bracket_cap_parity():
     bus = EventBus()
     acc = Account()
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
-    eng = BacktestEngine(_bracket_bars(), _BracketStrategy(), cash=10_000.0)
+    eng = SingleSymbolEngine(_bracket_bars(), _BracketStrategy(), cash=10_000.0)
     SimulatedExecutionClient(eng, bus, venue="sim", symbol="X")
     res = eng.run()
 
@@ -166,7 +166,7 @@ def test_liquidation_parity():
     acc = Account()
     bus.subscribe(lambda ev: acc.apply_fill(ev) if isinstance(ev, FillEvent) else None)
     # leverage=10, maint_margin=0.05: cash=1000, leverage cap allows 100 shares at 100
-    eng = BacktestEngine(
+    eng = SingleSymbolEngine(
         _liquidation_bars(),
         _LeveragedLong(),
         cash=1_000.0,

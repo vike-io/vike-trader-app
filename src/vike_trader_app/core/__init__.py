@@ -2,7 +2,7 @@
 
 Modules:
     model.py           Bar, Position, Trade (domain model)
-    engine.py          BacktestEngine — the bar event loop
+    engine.py          SingleSymbolEngine — the bar event loop
     broker_sim.py      canonical cost model — fills/fees/funding (engine + kernel share it)
     strategy.py        Strategy base class (the stable API)
     strategy_loader.py load user Strategy subclasses

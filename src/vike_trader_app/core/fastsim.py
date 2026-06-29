@@ -1,6 +1,6 @@
 """Compiled signal-array backtest kernel — the fast path mirroring engine.py semantics.
 
-The Python ``BacktestEngine`` stays the source of truth; this runs equivalent
+The Python ``SingleSymbolEngine`` stays the source of truth; this runs equivalent
 *signal-array* strategies in an ``@njit`` inner loop (pure-numpy fallback when the
 optional ``[fast]`` extra is absent), matching the engine's numbers within float
 tolerance: next-open fills, long/short, maker/taker fees, slippage, perp funding,

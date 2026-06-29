@@ -8,7 +8,7 @@ import concurrent.futures as cf
 import itertools
 from dataclasses import dataclass, field
 
-from ..core.engine import BacktestEngine
+from ..core.engine import SingleSymbolEngine
 from .metrics import sharpe
 
 
@@ -28,7 +28,7 @@ def _default_score(res):  # module-level so it pickles for multiprocessing
 def _eval_combo(args):
     """Worker: run one combo and return (params, score). Top-level for picklability."""
     bars, make, params, score_fn, fee_rate = args
-    res = BacktestEngine(bars, make(**params), fee_rate=fee_rate).run()
+    res = SingleSymbolEngine(bars, make(**params), fee_rate=fee_rate).run()
     return params, score_fn(res)
 
 
@@ -52,7 +52,7 @@ def grid_search(bars, make, param_grid: dict, score_fn=None, fee_rate: float = 0
     else:
         results = []
         for params in combos:
-            res = BacktestEngine(bars, make(**params), fee_rate=fee_rate).run()
+            res = SingleSymbolEngine(bars, make(**params), fee_rate=fee_rate).run()
             results.append(OptimizeResult(params=params, score=score_fn(res), result=res))
 
     results.sort(key=lambda r: r.score, reverse=True)

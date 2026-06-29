@@ -1,6 +1,6 @@
 """Multi-asset / portfolio backtesting on one shared cash account.
 
-Additive sibling to the single-symbol engine. ``PortfolioEngine`` takes aligned
+Additive sibling to the single-symbol engine. ``MultiSymbolEngine`` takes aligned
 per-symbol bar series and steps timestamp-by-timestamp; orders submitted during a
 step fill at each symbol's NEXT bar open (no look-ahead), mirroring the single-symbol
 engine. Equity = cash + sum(position size * last close).
@@ -24,7 +24,7 @@ from .strategy import Strategy
 
 logger = logging.getLogger(__name__)
 
-_BAR_TS = attrgetter("ts")   # bisect key for the per-symbol higher-TF reads (mirror BacktestEngine)
+_BAR_TS = attrgetter("ts")   # bisect key for the per-symbol higher-TF reads (mirror SingleSymbolEngine)
 
 
 def _default_sizer():
@@ -62,7 +62,7 @@ class PortfolioResult:
     benchmark_curve: list = field(default_factory=list)  # equal-weight buy-&-hold benchmark equity curve
     benchmark_label: str = ""  # human-readable benchmark description
     # Count of bars (across all symbols) where a SL+TP bracket both triggered on the same coarse bar
-    # and were resolved pessimistically (stop first). Mirrors BacktestEngine.Result.intrabar_both_hit.
+    # and were resolved pessimistically (stop first). Mirrors SingleSymbolEngine.Result.intrabar_both_hit.
     intrabar_both_hit: int = 0
 
 
@@ -189,7 +189,7 @@ class CrossSectionalStrategy(Strategy):
         self.rebalance(target)
 
 
-class PortfolioEngine:
+class MultiSymbolEngine:
     """Runs a `PortfolioStrategy` over aligned per-symbol bar series."""
 
     def __init__(self, bars_by_symbol, strategy, fee_rate: float = 0.0, cash: float = 10_000.0,
@@ -579,7 +579,7 @@ class PortfolioEngine:
     def cancel_all(self, symbol: str) -> None:
         self._sym[symbol].pending = []
 
-    # --- higher-TF reads (mirror BacktestEngine, per symbol) ---
+    # --- higher-TF reads (mirror SingleSymbolEngine, per symbol) ---
     def bars_for(self, symbol: str, tf: str):
         """Completed higher-TF bars for ``symbol`` visible at the current step (no look-ahead)."""
         ms, coarse = self._sym[symbol].tf[tf]
@@ -655,7 +655,7 @@ class PortfolioEngine:
             self._close_inactive(cur)  # WL removal-day exit: drop any position now out of membership
             self._check_liquidation(cur)
             ts = self.bars[self.symbols[0]][i].ts if self.symbols else 0
-            if i >= getattr(self.strategy, "WARMUP", 0):  # warmup gate: match BacktestEngine.step semantics
+            if i >= getattr(self.strategy, "WARMUP", 0):  # warmup gate: match SingleSymbolEngine.step semantics
                 self.strategy._on_step(ts, cur)
                 sched = getattr(self.strategy, "schedule", None)
                 if sched is not None:
@@ -691,7 +691,7 @@ class PortfolioEngine:
             else:
                 triggered.append((o, fp))
         self._sym[symbol].pending = still
-        # Adverse-first ordering + SL/TP bracket cap: mirrors BacktestEngine._fill_pending exactly.
+        # Adverse-first ordering + SL/TP bracket cap: mirrors SingleSymbolEngine._fill_pending exactly.
         if len(triggered) > 1:
             triggered, both_hit = resolve_intrabar_fills(triggered, self._sym[symbol].pos.size)
             self.intrabar_both_hit += both_hit

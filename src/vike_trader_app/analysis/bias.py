@@ -9,7 +9,7 @@ the strategy used information it could not have had at decision time.
 allowed to see). Honest strategies ignore ``view`` and read only ``on_bar``'s bar.
 """
 
-from ..core.engine import BacktestEngine
+from ..core.engine import SingleSymbolEngine
 
 _ORDER_METHODS = ("buy", "sell", "close", "limit_buy", "limit_sell", "stop_buy", "stop_sell")
 
@@ -31,7 +31,7 @@ def _orders_at(make, bars, probe: int):
     for name in _ORDER_METHODS:
         setattr(strat, name, _wrap(name))
 
-    BacktestEngine(bars, strat).run()
+    SingleSymbolEngine(bars, strat).run()
     return [entry[1:] for entry in log if entry[0] == probe]
 
 

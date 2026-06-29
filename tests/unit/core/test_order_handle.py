@@ -1,9 +1,9 @@
 """Tests for OrderHandle: submit_limit returns an Order; per-order cancel works."""
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.order_handle import OrderHandle
 from vike_trader_app.core.strategy import Strategy
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.portfolio_adapter import MultiSymbolStrategyRunner
 from vike_trader_app.tester.config import TesterConfig
 
@@ -21,7 +21,7 @@ def test_submit_limit_returns_order_object():
             if self.index == 0:
                 result["o"] = self._engine.submit_limit("BTC", +1, 1.0, price=1.0)
 
-    eng = PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert result["o"] is not None
 
@@ -37,7 +37,7 @@ def test_submit_limit_returns_handle_and_cancels():
             elif self.index == 1:
                 self._engine.cancel_order("BTC", placed["h"])
 
-    eng = PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert not eng._sym["BTC"].pending  # order was cancelled, none left resting
 
@@ -57,7 +57,7 @@ def test_order_handle_wraps_order():
                 assert placed["handle"].status == "working"
                 placed["handle"].cancel()
 
-    eng = PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     handle = placed["handle"]
     assert handle.status == "done"
@@ -75,7 +75,7 @@ def test_submit_returns_none_when_size_zero():
                 # size=0 → guard triggers, should return None
                 result["o"] = self._engine.submit("BTC", +1, 0.0, raw=True)
 
-    eng = PortfolioEngine({"BTC": _series(2)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(2)}, S(), fee_rate=0.0, cash=1000)
     eng.run()
     assert result["o"] is None
 
@@ -87,7 +87,7 @@ def test_pending_of_helper():
             if self.index == 0:
                 self._engine.submit_limit("BTC", +1, 1.0, price=1.0)
 
-    eng = PortfolioEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(3)}, S(), fee_rate=0.0, cash=1000)
     # After one step, the pending list should have the limit order
     # (run a single step by using a partial run isn't easy; verify via full run)
     eng.run()
@@ -98,14 +98,14 @@ def test_pending_of_helper():
 def test_cancel_order_noop_on_already_filled():
     """cancel_order on an order not in pending is a no-op (no ValueError)."""
     from vike_trader_app.core.orders import Order
-    eng = PortfolioEngine({"BTC": _series(2)}, PortfolioStrategy(), fee_rate=0.0, cash=1000)
+    eng = MultiSymbolEngine({"BTC": _series(2)}, PortfolioStrategy(), fee_rate=0.0, cash=1000)
     eng.run()
     ghost = Order("limit", +1, 1.0, price=1.0)
     eng.cancel_order("BTC", ghost)  # should not raise
 
 
 def test_order_handle_cancel_on_backtest_engine():
-    """OrderHandle.cancel() works via BacktestEngine (single-symbol path).
+    """OrderHandle.cancel() works via SingleSymbolEngine (single-symbol path).
 
     A far limit order is placed (price=1.0, bars trade at 10.0 — never fills),
     then cancelled via the OrderHandle.  No position should be taken and the
@@ -122,7 +122,7 @@ def test_order_handle_cancel_on_backtest_engine():
                     placed["h"].cancel()
 
     bars = _series(5)
-    eng = BacktestEngine(bars, S(), cash=1000.0, fee_rate=0.0)
+    eng = SingleSymbolEngine(bars, S(), cash=1000.0, fee_rate=0.0)
     result = eng.run()
     assert not eng._pending          # cancel removed the resting order
     assert eng.position.size == 0.0  # limit never filled (and was cancelled)
@@ -132,8 +132,8 @@ def test_order_handle_cancel_on_backtest_engine():
 def test_order_handle_cancel_on_symbol_engine_shim():
     """OrderHandle.cancel() works via SymbolEngineShim (MultiSymbolStrategyRunner path).
 
-    Same scenario as the BacktestEngine test but run through MultiSymbolStrategyRunner
-    so the order flows through SymbolEngineShim.cancel_order → PortfolioEngine.cancel_order.
+    Same scenario as the SingleSymbolEngine test but run through MultiSymbolStrategyRunner
+    so the order flows through SymbolEngineShim.cancel_order → MultiSymbolEngine.cancel_order.
     """
     placed = {}
 

@@ -243,14 +243,14 @@ def test_units_from_value_zero_multiplier_returns_zero():
 
 
 def test_units_from_value_matches_engine_formula():
-    """units_from_value must match BacktestEngine's raw order_target_value formula."""
+    """units_from_value must match SingleSymbolEngine's raw order_target_value formula."""
     price, multiplier, value = 73.5, 2.0, 1_000.0
     expected = value / (price * multiplier)
     assert units_from_value(value, price, multiplier) == pytest.approx(expected)
 
 
 def test_units_from_percent_matches_engine_formula():
-    """units_from_percent must match BacktestEngine's raw order_target_percent formula."""
+    """units_from_percent must match SingleSymbolEngine's raw order_target_percent formula."""
     pct, equity, price, multiplier = 0.25, 8_500.0, 42.0, 1.5
     expected = pct * equity / (price * multiplier)
     assert units_from_percent(pct, equity, price, multiplier) == pytest.approx(expected)

@@ -1,6 +1,6 @@
 # tests/unit/core/test_schedule_wiring.py
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.schedule import EveryNBars, MonthStart
 from vike_trader_app.core.strategy import Strategy
 
@@ -17,7 +17,7 @@ def test_backtest_fires_schedule_after_on_bar():
             self.ticks = []
         def on_start(self):
             self.schedule.on(EveryNBars(5), lambda: self.ticks.append(self.index))
-    s = S(); BacktestEngine(_bars(12), s).run()
+    s = S(); SingleSymbolEngine(_bars(12), s).run()
     assert s.ticks == [0, 5, 10]            # fired on the right bars, in-loop
 
 

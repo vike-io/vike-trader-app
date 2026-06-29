@@ -1,5 +1,5 @@
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
 
@@ -16,7 +16,7 @@ def _bars():
 
 
 def test_step_behavior_pinned_with_cashflows_and_fees():
-    eng = BacktestEngine(_bars(), _BuyHoldClose(), taker_fee=0.001, cash=1000.0,
+    eng = SingleSymbolEngine(_bars(), _BuyHoldClose(), taker_fee=0.001, cash=1000.0,
                          cashflows=[5.0, 0.0, 0.0, 0.0])
     result = eng.run()
     # Pins the exact equity curve + the one round-trip trade (entry next-open after bar0, exit after bar2).

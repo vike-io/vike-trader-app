@@ -1,6 +1,6 @@
 """Warm-up gating: a strategy must not act before bar index reaches ``WARMUP``."""
 
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
@@ -30,7 +30,7 @@ class _BuyEveryBar(Strategy):
 
 def test_warmup_gates_on_bar_before_index():
     strat = _BuyEveryBar()
-    BacktestEngine(_bars(10), strat).run()
+    SingleSymbolEngine(_bars(10), strat).run()
     # on_bar must not fire until i >= WARMUP (5).
     assert min(strat.fired) == 5
     assert strat.fired == [5, 6, 7, 8, 9]
@@ -39,7 +39,7 @@ def test_warmup_gates_on_bar_before_index():
 def test_warmup_no_trade_or_position_before_warmup():
     # Only run up to the warm-up boundary: on_bar never fires, so nothing happens.
     strat = _BuyEveryBar()
-    result = BacktestEngine(_bars(5), strat).run()
+    result = SingleSymbolEngine(_bars(5), strat).run()
     assert strat.fired == []
     assert result.trades == []
     assert strat.position.size == 0.0
@@ -48,7 +48,7 @@ def test_warmup_no_trade_or_position_before_warmup():
 def test_warmup_acts_at_and_after_boundary():
     # buy fires at i=5 (market) -> fills at the open of bar 6.
     strat = _BuyEveryBar()
-    BacktestEngine(_bars(8), strat).run()
+    SingleSymbolEngine(_bars(8), strat).run()
     assert 5 in strat.fired  # acted at the warm-up boundary
     assert strat.position.size > 0  # the fill went through after the boundary
 
@@ -67,5 +67,5 @@ class _DefaultWarmup(Strategy):
 def test_default_warmup_is_zero_unchanged():
     strat = _DefaultWarmup()
     assert Strategy.WARMUP == 0
-    BacktestEngine(_bars(4), strat).run()
+    SingleSymbolEngine(_bars(4), strat).run()
     assert strat.fired == [0, 1, 2, 3]  # fires on every bar, like before

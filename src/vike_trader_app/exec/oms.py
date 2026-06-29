@@ -1,6 +1,6 @@
 """OmsHub — the execution composition root (paper stage).
 
-Owns and wires ONE order->risk->fill->account path: a `BacktestEngine` (orders routed through the
+Owns and wires ONE order->risk->fill->account path: a `SingleSymbolEngine` (orders routed through the
 `OrderRouter` + an optional `RiskGate`), a `SimulatedExecutionClient` (engine fills -> `FillEvent`s on
 the `EventBus`), and an `Account` read-model (folds the `FillEvent` stream into positions + realized
 PnL). At the paper stage it wraps a `PaperTester` (same warm-up / live-bar / result / store semantics),

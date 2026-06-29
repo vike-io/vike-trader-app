@@ -2,7 +2,7 @@
 import concurrent.futures
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.engine import BacktestEngine
+from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.data.catalog import Catalog
 from vike_trader_app.data.parquet_source import append_series
@@ -25,7 +25,7 @@ def test_async_matches_sync_and_clamp_is_call_time(tmp_path):
                 out["fut"] = fut
                 out["sync_at_5"] = self.history("AAA", "1m", 100)
 
-    BacktestEngine(drv, S(), catalog=Catalog(str(tmp_path))).run()
+    SingleSymbolEngine(drv, S(), catalog=Catalog(str(tmp_path))).run()
     assert isinstance(out["fut"], concurrent.futures.Future)
     df = out["fut"].result(timeout=10)
     # async result clamped to now-at-call (bar 5 -> ts<=300000), even though the run advanced to bar 9

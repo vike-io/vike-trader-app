@@ -3,7 +3,7 @@
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
 
 def _bar(ts, o, c):
@@ -30,7 +30,7 @@ def test_portfolio_buy_then_close_fills_at_next_open():
         "AAA": _series([100, 110, 120, 130]),  # opens 100,110,120,130
         "BBB": _series([10, 10, 10, 10]),
     }
-    eng = PortfolioEngine(bars, _BuyAThenClose(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _BuyAThenClose(), cash=10_000.0)
     result = eng.run()
     assert len(result.trades) == 1
     t = result.trades[0]
@@ -43,7 +43,7 @@ def test_portfolio_buy_then_close_fills_at_next_open():
 def test_portfolio_unaligned_series_rejected():
     bars = {"AAA": _series([1, 2, 3]), "BBB": _series([1, 2])}
     with pytest.raises(ValueError):
-        PortfolioEngine(bars, _BuyAThenClose())
+        MultiSymbolEngine(bars, _BuyAThenClose())
 
 
 class _ShortBClose(PortfolioStrategy):
@@ -59,7 +59,7 @@ def test_portfolio_fees_and_short():
         "AAA": _series([100, 100, 100, 100]),
         "BBB": _series([50, 60, 70, 40]),  # opens 50,60,70,40
     }
-    eng = PortfolioEngine(bars, _ShortBClose(), fee_rate=0.001, cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _ShortBClose(), fee_rate=0.001, cash=10_000.0)
     result = eng.run()
     assert len(result.trades) == 1
     t = result.trades[0]
@@ -86,7 +86,7 @@ def test_order_target_percent_allocates_half_equity_each():
         "AAA": _series([100, 100, 100]),
         "BBB": _series([25, 25, 25]),
     }
-    eng = PortfolioEngine(bars, _EqualWeightOnce(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _EqualWeightOnce(), cash=10_000.0)
     result = eng.run()
     # 50% of 10k = 5000 each. AAA: 5000/100 = 50 units; BBB: 5000/25 = 200 units.
     assert eng.position_of("AAA").size == pytest.approx(50.0)
@@ -113,7 +113,7 @@ def test_periodic_equal_weight_rebalance_runs_and_stays_invested():
         "BBB": _series([50, 49, 51, 52, 50, 53]),
         "CCC": _series([10, 11, 10, 12, 11, 13]),
     }
-    eng = PortfolioEngine(bars, _PeriodicEqualWeight(), fee_rate=0.0005, cash=100_000.0)
+    eng = MultiSymbolEngine(bars, _PeriodicEqualWeight(), fee_rate=0.0005, cash=100_000.0)
     result = eng.run()
     # All three carry a positive position by the end (fully invested, long-only weights).
     assert all(eng.position_of(s).size > 0 for s in ("AAA", "BBB", "CCC"))
@@ -133,7 +133,7 @@ class _ScaleOut(PortfolioStrategy):
 
 def test_partial_scale_out_keeps_remainder_and_realizes_part():
     bars = {"AAA": _series([100, 100, 150, 150])}  # buy fills @100, partial sell @150
-    eng = PortfolioEngine(bars, _ScaleOut(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _ScaleOut(), cash=10_000.0)
     result = eng.run()
     # 4 units closed at 150 from cost 100 -> realized pnl = (150-100)*4 = 200
     assert len(result.trades) == 1
@@ -157,7 +157,7 @@ def test_portfolio_trades_are_tagged_with_symbol():
             elif self.index == 2:
                 self.close("A")
 
-    eng = PortfolioEngine({"A": [_b(1, 10.0), _b(2, 11.0), _b(3, 12.0), _b(4, 13.0)]}, Trader(), cash=1000.0)
+    eng = MultiSymbolEngine({"A": [_b(1, 10.0), _b(2, 11.0), _b(3, 12.0), _b(4, 13.0)]}, Trader(), cash=1000.0)
     result = eng.run()
     assert result.trades, "expected a completed round-trip"
     assert all(t.symbol == "A" for t in result.trades)
@@ -169,7 +169,7 @@ def test_portfolio_trades_are_tagged_with_symbol():
 
 def test_portfolio_leverage_caps_account_notional():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
     def _b(ts, px):
         return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
@@ -179,7 +179,7 @@ def test_portfolio_leverage_caps_account_notional():
             if self.index == 0:
                 self.buy("A", 100.0)   # 100*100=10000 notional, but leverage 1 x 1000 equity = max 1000
 
-    eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)]}, OverBuy(), cash=1000.0, leverage=1.0)
+    eng = MultiSymbolEngine({"A": [_b(1, 100.0), _b(2, 100.0)]}, OverBuy(), cash=1000.0, leverage=1.0)
     eng.run()
     # capped to ~10 units (1000 notional at price 100), not 100
     assert eng._sym["A"].pos.size <= 10.0 + 1e-9
@@ -188,7 +188,7 @@ def test_portfolio_leverage_caps_account_notional():
 
 def test_portfolio_liquidation_force_closes_underwater_position():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
     class LongOnce(PortfolioStrategy):
         def on_bar(self, ts, bars):
@@ -199,14 +199,14 @@ def test_portfolio_liquidation_force_closes_underwater_position():
     bars = [Bar(ts=1, open=100, high=100, low=100, close=100, volume=1),
             Bar(ts=2, open=100, high=100, low=100, close=100, volume=1),   # fills @100
             Bar(ts=3, open=60, high=60, low=40, close=50, volume=1)]        # crash: adverse low 40
-    eng = PortfolioEngine({"A": bars}, LongOnce(), cash=200.0, leverage=10.0, maint_margin=0.1)
+    eng = MultiSymbolEngine({"A": bars}, LongOnce(), cash=200.0, leverage=10.0, maint_margin=0.1)
     eng.run()
     assert eng._sym["A"].pos.size == 0.0    # liquidated
 
 
 def test_portfolio_funding_charged_per_symbol():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
     class HoldLong(PortfolioStrategy):
         def on_bar(self, ts, bars):
@@ -216,7 +216,7 @@ def test_portfolio_funding_charged_per_symbol():
     # bar 2 has funding 0.01; holding 1 unit @ close 100 -> longs pay 1*100*0.01 = 1.0
     bars = [Bar(ts=1, open=100, high=100, low=100, close=100, volume=1),
             Bar(ts=2, open=100, high=100, low=100, close=100, volume=1, funding=0.01)]
-    eng = PortfolioEngine({"A": bars}, HoldLong(), cash=1000.0)
+    eng = MultiSymbolEngine({"A": bars}, HoldLong(), cash=1000.0)
     eng.run()
     # cash reduced by the 1.0 funding charge (no fees in this config)
     assert eng.cash < 1000.0 - 100.0   # paid 100 notional for the unit AND ~1.0 funding
@@ -224,7 +224,7 @@ def test_portfolio_funding_charged_per_symbol():
 
 def test_cash_gate_drops_unfundable_lower_weight_open():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
     def _b(ts, px):
         return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
@@ -235,7 +235,7 @@ def test_cash_gate_drops_unfundable_lower_weight_open():
                 self.buy("A", 8.0, weight=10.0)   # high priority: 8*100=800 notional
                 self.buy("B", 8.0, weight=1.0)    # low priority: another 800; only 1000 cash
 
-    eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
+    eng = MultiSymbolEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
                           TwoBuys(), cash=1000.0, cash_gate=True)
     eng.run()
     assert eng._sym["A"].pos.size == 8.0          # higher weight funded
@@ -245,7 +245,7 @@ def test_cash_gate_drops_unfundable_lower_weight_open():
 
 def test_cash_gate_off_by_default_allows_negative_cash():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioEngine, PortfolioStrategy
+    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
 
     def _b(ts, px):
         return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
@@ -256,7 +256,7 @@ def test_cash_gate_off_by_default_allows_negative_cash():
                 self.buy("A", 8.0)
                 self.buy("B", 8.0)
 
-    eng = PortfolioEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
+    eng = MultiSymbolEngine({"A": [_b(1, 100.0), _b(2, 100.0)], "B": [_b(1, 100.0), _b(2, 100.0)]},
                           TwoBuys(), cash=1000.0)   # cash_gate default False
     eng.run()
     assert eng._sym["A"].pos.size == 8.0 and eng._sym["B"].pos.size == 8.0   # both fill, cash goes negative
@@ -285,7 +285,7 @@ def test_max_open_long_blocks_second_long():
         "AAA": _series([100, 100, 100]),
         "BBB": _series([100, 100, 100]),
     }
-    eng = PortfolioEngine(bars, _BothBuy(), cash=100_000.0, max_open_long=1)
+    eng = MultiSymbolEngine(bars, _BothBuy(), cash=100_000.0, max_open_long=1)
     eng.run()
     open_longs = sum(1 for s in ("AAA", "BBB") if eng._sym[s].pos.size > 0)
     assert open_longs == 1
@@ -305,7 +305,7 @@ def test_max_open_short_blocks_second_short():
         "AAA": _series([100, 100, 100]),
         "BBB": _series([100, 100, 100]),
     }
-    eng = PortfolioEngine(bars, _BothSell(), cash=100_000.0, max_open_short=1)
+    eng = MultiSymbolEngine(bars, _BothSell(), cash=100_000.0, max_open_short=1)
     eng.run()
     open_shorts = sum(1 for s in ("AAA", "BBB") if eng._sym[s].pos.size < 0)
     assert open_shorts == 1
@@ -323,7 +323,7 @@ def test_max_open_long_does_not_block_shorts():
         "AAA": _series([100, 100, 100]),
         "BBB": _series([100, 100, 100]),
     }
-    eng = PortfolioEngine(bars, _LongAndShort(), cash=100_000.0, max_open_long=1)
+    eng = MultiSymbolEngine(bars, _LongAndShort(), cash=100_000.0, max_open_long=1)
     eng.run()
     assert eng._sym["AAA"].pos.size > 0  # long opened
     assert eng._sym["BBB"].pos.size < 0  # short also opened (different cap)
@@ -343,7 +343,7 @@ def test_long_short_caps_zero_means_no_limit():
                 for sym in bars:
                     self._engine.submit(sym, +1, 1.0)
 
-    eng = PortfolioEngine(bars, _AllBuy(), cash=100_000.0)  # max_open_long=0 by default
+    eng = MultiSymbolEngine(bars, _AllBuy(), cash=100_000.0)  # max_open_long=0 by default
     eng.run()
     assert all(eng._sym[s].pos.size > 0 for s in ("AAA", "BBB", "CCC"))
 
@@ -361,7 +361,7 @@ def test_equity_ts_has_one_ts_per_equity_point():
         "AAA": _series([100, 110, 120, 130]),
         "BBB": _series([10, 10, 10, 10]),
     }
-    eng = PortfolioEngine(bars, _BuyA(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _BuyA(), cash=10_000.0)
     result = eng.run()
 
     assert result.equity_ts is not None
@@ -386,7 +386,7 @@ def test_per_symbol_curves_length_and_last_value():
         "AAA": _series([100, 110, 120, 130]),
         "BBB": _series([10, 10, 10, 10]),
     }
-    eng = PortfolioEngine(bars, _BuyA(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _BuyA(), cash=10_000.0)
     result = eng.run()
 
     assert result.per_symbol_curves is not None
@@ -435,7 +435,7 @@ def test_mae_mfe_long_trade():
             _ohlc(4,  95,  98,  94,  95),    # bar 4: exit fills @95 open
         ],
     }
-    eng = PortfolioEngine(bars, _LongThenClose(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _LongThenClose(), cash=10_000.0)
     result = eng.run()
     assert len(result.trades) == 1
     t = result.trades[0]
@@ -468,7 +468,7 @@ def test_mae_mfe_short_trade():
             _ohlc(4,  90,  92,  89,  91),    # bar 4: exit fills @90 open
         ],
     }
-    eng = PortfolioEngine(bars, _ShortThenClose(), cash=10_000.0)
+    eng = MultiSymbolEngine(bars, _ShortThenClose(), cash=10_000.0)
     result = eng.run()
     assert len(result.trades) == 1
     t = result.trades[0]
@@ -500,7 +500,7 @@ def test_volume_cap_clamps_fill_and_records_dropped():
             _ohlc(2, 100, 101, 99, 100, volume=100.0),
         ],
     }
-    eng = PortfolioEngine(bars, _BuyFifty(), cash=100_000.0, volume_limit=0.1)
+    eng = MultiSymbolEngine(bars, _BuyFifty(), cash=100_000.0, volume_limit=0.1)
     eng.run()
     # Only 10 units should have filled (10% of volume=100)
     assert eng._sym["S"].pos.size == pytest.approx(10.0)
@@ -520,7 +520,7 @@ def test_volume_cap_none_leaves_fills_uncapped():
             _ohlc(2, 100, 101, 99, 100, volume=100.0),
         ],
     }
-    eng = PortfolioEngine(bars, _BuyFifty(), cash=100_000.0)  # volume_limit=None (default)
+    eng = MultiSymbolEngine(bars, _BuyFifty(), cash=100_000.0)  # volume_limit=None (default)
     eng.run()
     assert eng._sym["S"].pos.size == pytest.approx(50.0)
     assert not any(k == "volume_cap" for _, k, _, _ in eng.dropped)
@@ -538,7 +538,7 @@ def test_leverage_cap_is_account_level_across_symbols():
     """Two same-bar opens on different symbols must TOGETHER respect leverage*equity — the cap used
     to sum only the current symbol's pending, letting the book over-leverage (here 1.6x at 1.0x)."""
     bars = {"A": _series([100.0, 100.0, 100.0]), "B": _series([100.0, 100.0, 100.0])}
-    eng = PortfolioEngine(bars, _OpenTwoSameBar(), cash=10_000.0, leverage=1.0)  # max notional $10k
+    eng = MultiSymbolEngine(bars, _OpenTwoSameBar(), cash=10_000.0, leverage=1.0)  # max notional $10k
     eng.run()
     notional = (abs(eng._sym["A"].pos.size) + abs(eng._sym["B"].pos.size)) * 100.0
     assert notional <= 10_000.0 + 1e-6                       # <= 1.0x (was 16000 = 1.6x)
@@ -553,7 +553,7 @@ def test_single_symbol_leverage_cap_still_clamps():
             if self.index == 0:
                 self.buy("A", 500.0)        # $50k notional, way over the $10k cap
 
-    eng = PortfolioEngine(bars, _OneBig(), cash=10_000.0, leverage=1.0)
+    eng = MultiSymbolEngine(bars, _OneBig(), cash=10_000.0, leverage=1.0)
     eng.run()
     assert abs(eng._sym["A"].pos.size) * 100.0 == pytest.approx(10_000.0)   # clamped to 1.0x
 
@@ -582,7 +582,7 @@ def test_legacy_portfolio_bundle_still_works():
     """A legacy PortfolioStrategy subclass with on_bar(ts, bars) still fires correctly."""
     import warnings
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioStrategy, PortfolioEngine
+    from vike_trader_app.core.portfolio import PortfolioStrategy, MultiSymbolEngine
 
     seen = []
     with warnings.catch_warnings():
@@ -591,5 +591,5 @@ def test_legacy_portfolio_bundle_still_works():
             def on_bar(self, ts, bars): seen.append(set(bars))
 
     bars = {"BTC": [Bar(ts=i, open=1, high=1, low=1, close=1) for i in range(2)]}
-    PortfolioEngine(bars, Old(), fee_rate=0.0, cash=1000).run()
+    MultiSymbolEngine(bars, Old(), fee_rate=0.0, cash=1000).run()
     assert seen and seen[0] == {"BTC"}
