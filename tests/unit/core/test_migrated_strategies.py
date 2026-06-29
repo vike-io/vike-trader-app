@@ -1,12 +1,11 @@
-"""Task 14: verify SmaCross and MLStrategy work correctly.
+"""Task 14: verify SmaCross and MLStrategy work on the unified Strategy API.
 
-SmaCross is run through PortfolioEngine (it's a PortfolioStrategy subclass).
-MLStrategy is run through BacktestEngine (it's a SingleSymbolStrategy, used via ml.walkforward).
+Each class is run through a tiny N=1-symbol PortfolioEngine and must complete
+without error and yield a finite final_equity.
 """
 
 import pytest
 
-from vike_trader_app.core.engine import BacktestEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.portfolio import PortfolioEngine
 from vike_trader_app.ui.dialogs import SmaCross, default_strategy_factory
@@ -93,7 +92,13 @@ class TestMLStrategy:
         strat.feats = [{"f": i} for i in range(n)]
         strat.predict = lambda feats: 1.0 if feats["f"] < 10 else -1.0
 
-        result = BacktestEngine(_series(closes), strat, fee_rate=0.0, cash=50_000.0).run()
+        eng = PortfolioEngine(
+            {"ETH": _series(closes)},
+            strat,
+            fee_rate=0.0,
+            cash=50_000.0,
+        )
+        result = eng.run()
         assert result.final_equity > 0
         assert result.final_equity != float("inf")
 
@@ -105,7 +110,13 @@ class TestMLStrategy:
         strat.feats = [None] * n
         strat.predict = lambda _: 1.0  # would trade if features weren't None
 
-        result = BacktestEngine(_series(closes), strat, fee_rate=0.0, cash=50_000.0).run()
+        eng = PortfolioEngine(
+            {"ETH": _series(closes)},
+            strat,
+            fee_rate=0.0,
+            cash=50_000.0,
+        )
+        result = eng.run()
         assert len(result.trades) == 0
 
     def test_mlstrategy_skips_when_index_beyond_feats(self):
@@ -116,8 +127,14 @@ class TestMLStrategy:
         strat.feats = [{"f": i} for i in range(5)]
         strat.predict = lambda feats: 1.0
 
+        eng = PortfolioEngine(
+            {"ETH": _series(closes)},
+            strat,
+            fee_rate=0.0,
+            cash=50_000.0,
+        )
         # Should not raise even when index > len(feats)
-        result = BacktestEngine(_series(closes), strat, fee_rate=0.0, cash=50_000.0).run()
+        result = eng.run()
         assert result.final_equity > 0
 
     def test_mlstrategy_enters_on_positive_signal(self):
@@ -128,6 +145,12 @@ class TestMLStrategy:
         strat.feats = [{"f": i} for i in range(n)]
         strat.predict = lambda feats: 1.0 if feats["f"] < 10 else -1.0
 
-        result = BacktestEngine(_series(closes), strat, fee_rate=0.0, cash=50_000.0).run()
+        eng = PortfolioEngine(
+            {"ETH": _series(closes)},
+            strat,
+            fee_rate=0.0,
+            cash=50_000.0,
+        )
+        result = eng.run()
         # Should have entered once (and likely exited once)
         assert len(result.trades) >= 1

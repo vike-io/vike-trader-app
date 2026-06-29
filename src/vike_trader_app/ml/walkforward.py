@@ -10,9 +10,11 @@ from dataclasses import dataclass, field
 
 from ..analysis.metrics import sharpe
 from ..analysis.validation import walk_forward_splits
-from ..core.engine import BacktestEngine
+from ..core.portfolio import PortfolioEngine
 from .dataset import make_features, make_labels
 from .strategy import MLStrategy
+
+_WF_SYMBOL = "SYM"  # single-symbol sentinel used by walk_forward_ml
 
 
 @dataclass
@@ -71,7 +73,7 @@ def walk_forward_ml(
         strat = MLStrategy()
         strat.feats = feats[te_s:te_e]
         strat.predict = predict
-        oos = BacktestEngine(bars[te_s:te_e], strat, fee_rate=fee_rate, cash=cash).run()
+        oos = PortfolioEngine({_WF_SYMBOL: bars[te_s:te_e]}, strat, fee_rate=fee_rate, cash=cash).run()
 
         start = equity
         for v in oos.equity_curve:

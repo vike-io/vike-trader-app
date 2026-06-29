@@ -5,10 +5,10 @@ callable ``features -> signal`` is injected (trained elsewhere, e.g. inside a
 walk-forward window). Default policy: go long while the signal is positive, flat otherwise.
 """
 
-from ..core.compat_strategy import SingleSymbolStrategy
+from ..core.strategy import Strategy
 
 
-class MLStrategy(SingleSymbolStrategy):
+class MLStrategy(Strategy):
     """Strategy driven by a model's per-bar prediction.
 
     Set ``feats`` (per-bar feature list, aligned to the run's bars) and ``predict``
@@ -27,7 +27,7 @@ class MLStrategy(SingleSymbolStrategy):
         if features is None:
             return
         signal = self.predict(features)
-        if signal > 0 and self.position.size == 0:
-            self.buy(1.0)
-        elif signal <= 0 and self.position.size > 0:
-            self.close()
+        if signal > 0 and self.position(bar.symbol).size == 0:
+            self.buy(bar.symbol, 1.0)
+        elif signal <= 0 and self.position(bar.symbol).size > 0:
+            self.close(bar.symbol)
