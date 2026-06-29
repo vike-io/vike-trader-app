@@ -2,7 +2,7 @@
 
 from vike_trader_app.core.engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.order_router import OrderRouter
+from vike_trader_app.exec.order_router import OrderRouter
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 from vike_trader_app.core.strategy_engine import StrategyEngine
 from vike_trader_app.exec.risk import RiskGate, RiskLimits
@@ -82,16 +82,17 @@ def test_closes_and_targets_pass_through_even_with_a_gate():
 def test_engine_risk_param_gates_via_router():
     from vike_trader_app.exec.risk import RiskGate, RiskLimits
     strat = _BuyThenClose()
-    # risk= binds the strategy through the router; a tiny notional cap denies the buy
-    eng = SingleSymbolEngine(_bars(), strat, cash=10_000.0,
-                         risk=RiskGate(RiskLimits(max_notional_per_order=10.0)))
+    # wire the router at the exec layer (same effect as the old risk= param)
+    eng = SingleSymbolEngine(_bars(), strat, cash=10_000.0)
+    strat._engine = OrderRouter(eng, RiskGate(RiskLimits(max_notional_per_order=10.0)))
     res = eng.run()
     assert res.trades == [] and eng.position.size == 0.0
 
 
 def test_engine_risk_none_binds_directly_byte_identical():
     base = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
-    same = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001, risk=None).run()
+    # risk=None was the no-op default; without risk= the engine binds directly — same behavior
+    same = SingleSymbolEngine(_bars(), _BuyThenClose(), cash=10_000.0, taker_fee=0.001).run()
     assert same.equity_curve == base.equity_curve
     assert [t.pnl for t in same.trades] == [t.pnl for t in base.trades]
 
@@ -110,8 +111,8 @@ def test_protective_trailing_exit_is_not_strangled_by_the_gate():
 
     bars = [_bar(0, 100, 100), _bar(60_000, 110, 110), _bar(120_000, 120, 120), _bar(180_000, 100, 100)]
     strat = _BuyThenTrail()
-    eng = SingleSymbolEngine(bars, strat, cash=10_000.0,
-                         risk=RiskGate(RiskLimits(max_orders_per_window=1, window_ms=10**12)))
+    eng = SingleSymbolEngine(bars, strat, cash=10_000.0)
+    strat._engine = OrderRouter(eng, RiskGate(RiskLimits(max_orders_per_window=1, window_ms=10**12)))
     res = eng.run()
     assert eng.position.size == 0.0     # FLATTENED — the exit bypassed the rate-limited gate
     assert len(res.trades) == 1

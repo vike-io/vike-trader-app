@@ -49,7 +49,6 @@ class SingleSymbolEngine:
         maint_margin: float = 0.0,
         cashflows=None,
         on_fill=None,
-        risk=None,
         fill_model=None,
         catalog=None,
     ) -> None:
@@ -82,11 +81,7 @@ class SingleSymbolEngine:
         self._peak = cash  # peak equity, for drawdown
         # Multi-timeframe buffer — self.bars is the shared list reference.
         self._buf = BarSeriesBuffer(self.bars, timeframes)
-        if risk is not None:
-            from .order_router import OrderRouter
-            strategy._engine = OrderRouter(self, risk)
-        else:
-            strategy._engine = self
+        strategy._engine = self
 
     # --- order intake (called from the strategy) ---
     def _add_pending(self, order: "Order") -> None:

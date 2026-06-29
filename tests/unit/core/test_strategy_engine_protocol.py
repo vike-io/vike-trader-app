@@ -40,7 +40,7 @@ def test_protocol_names_every_method_both_classes_expose():
 
 
 def test_order_router_satisfies_protocol():
-    from vike_trader_app.core.order_router import OrderRouter
+    from vike_trader_app.exec.order_router import OrderRouter
     eng = SingleSymbolEngine([_bar()], Strategy())
     assert isinstance(OrderRouter(eng), StrategyEngine)
     for name in _METHODS:
