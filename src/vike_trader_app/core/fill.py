@@ -2,7 +2,7 @@
 
 `compute_fill` is pure — it computes the open / add / reduce / close / flip transition (new size, new
 average price, the closed quantity, gross realized PnL, the fee-apportionment `portion`, and the
-flip `leftover`) and returns it as a `FillOutcome`. Callers (`core.engine`, `core.portfolio`,
+flip `leftover`) and returns it as a `FillOutcome`. Callers (`core.single_symbol_engine`, `core.multi_symbol_engine`,
 `exec.accounting`) keep their own cash / fee / trade-record / per-symbol bookkeeping and only delegate
 this shared math, so single-symbol backtest, portfolio backtest, and the live read-model can never
 drift. The Numba `fastsim` kernel keeps its own inline mirror (Numba can't call Python) — parity-locked

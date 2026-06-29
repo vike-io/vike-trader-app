@@ -9,7 +9,7 @@ granular data the engine's behavior is unchanged (coarse path, protective stop c
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
 
 def _bar(ts, o, h, l, c, v=1.0):

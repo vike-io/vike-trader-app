@@ -51,7 +51,7 @@ class SymbolState:
 
 
 @dataclass
-class PortfolioResult:
+class MultiSymbolResult:
     """Outcome of a portfolio backtest run."""
 
     trades: list[Trade]
@@ -615,7 +615,7 @@ class MultiSymbolEngine:
         )
 
     # --- run loop ---
-    def run(self) -> PortfolioResult:
+    def run(self) -> MultiSymbolResult:
         equity_curve: list[float] = []
         equity_ts: list[int] = []
         per_symbol_curve: dict[str, list[float]] = {s: [] for s in self.symbols}
@@ -686,11 +686,11 @@ class MultiSymbolEngine:
             s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
             for s in self.symbols
         }
-        return PortfolioResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts, intrabar_both_hit=self.intrabar_both_hit)
+        return MultiSymbolResult(self.trades, equity_curve, self.equity_now(), per_symbol_pnl=per_symbol, per_symbol_curves=per_symbol_curve, equity_ts=equity_ts, intrabar_both_hit=self.intrabar_both_hit)
 
     # --- tick-mode run loop ---
 
-    def run_ticks(self, ticks_by_symbol: dict) -> PortfolioResult:
+    def run_ticks(self, ticks_by_symbol: dict) -> MultiSymbolResult:
         """Per-tick multi-symbol run: merge tick streams by ts, route each tick to its symbol.
 
         ``ticks_by_symbol`` maps symbol -> list[QuoteTick | TradeTick] where each tick carries
@@ -768,7 +768,7 @@ class MultiSymbolEngine:
             s: self._sym[s].realized + self._sym[s].pos.size * (self._sym[s].price - self._sym[s].pos.avg_price) * self.multiplier
             for s in self.symbols
         }
-        return PortfolioResult(
+        return MultiSymbolResult(
             self.trades, equity_curve, self.equity_now(),
             per_symbol_pnl=per_symbol,
             equity_ts=equity_ts,

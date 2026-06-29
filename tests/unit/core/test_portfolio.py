@@ -3,7 +3,7 @@
 import pytest
 
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
 
 def _bar(ts, o, c):
@@ -169,7 +169,7 @@ def test_portfolio_trades_are_tagged_with_symbol():
 
 def test_portfolio_leverage_caps_account_notional():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+    from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
     def _b(ts, px):
         return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
@@ -188,7 +188,7 @@ def test_portfolio_leverage_caps_account_notional():
 
 def test_portfolio_liquidation_force_closes_underwater_position():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+    from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
     class LongOnce(PortfolioStrategy):
         def on_bar(self, ts, bars):
@@ -206,7 +206,7 @@ def test_portfolio_liquidation_force_closes_underwater_position():
 
 def test_portfolio_funding_charged_per_symbol():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+    from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
     class HoldLong(PortfolioStrategy):
         def on_bar(self, ts, bars):
@@ -224,7 +224,7 @@ def test_portfolio_funding_charged_per_symbol():
 
 def test_cash_gate_drops_unfundable_lower_weight_open():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+    from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
     def _b(ts, px):
         return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
@@ -245,7 +245,7 @@ def test_cash_gate_drops_unfundable_lower_weight_open():
 
 def test_cash_gate_off_by_default_allows_negative_cash():
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+    from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 
     def _b(ts, px):
         return Bar(ts=ts, open=px, high=px, low=px, close=px, volume=1.0)
@@ -571,7 +571,7 @@ def test_portfolio_strategy_is_subclass_of_strategy():
 def test_portfolio_strategy_subclass_warns():
     """Subclassing PortfolioStrategy must emit a DeprecationWarning."""
     import warnings
-    from vike_trader_app.core.portfolio import PortfolioStrategy
+    from vike_trader_app.core.multi_symbol_engine import PortfolioStrategy
 
     with pytest.warns(DeprecationWarning, match="PortfolioStrategy is deprecated"):
         class _NewSub(PortfolioStrategy):
@@ -582,7 +582,7 @@ def test_legacy_portfolio_bundle_still_works():
     """A legacy PortfolioStrategy subclass with on_bar(ts, bars) still fires correctly."""
     import warnings
     from vike_trader_app.core.model import Bar
-    from vike_trader_app.core.portfolio import PortfolioStrategy, MultiSymbolEngine
+    from vike_trader_app.core.multi_symbol_engine import PortfolioStrategy, MultiSymbolEngine
 
     seen = []
     with warnings.catch_warnings():

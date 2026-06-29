@@ -1,7 +1,7 @@
 """Tests for the per-tick engine loop: tick_to_bar + step_tick + run_ticks (Task 3, Slice 2)."""
 from vike_trader_app.core.ticks import QuoteTick, TradeTick
 from vike_trader_app.core.consolidator import tick_to_bar
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.fill_model import TickFillModel
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 

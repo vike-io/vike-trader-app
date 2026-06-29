@@ -1,4 +1,4 @@
-"""PortfolioStrategyTester — optimize / walk-forward a single-symbol Strategy across a DataSet.
+"""MultiSymbolStrategyTester — optimize / walk-forward a single-symbol Strategy across a DataSet.
 
 The single-symbol :class:`StrategyTester` optimizes one symbol's equity curve. This mirrors it
 exactly, but each trial is a *portfolio* backtest: one copy of the strategy per symbol, shared cash,
@@ -14,7 +14,7 @@ from .report import TesterReport
 from .strategy_tester import _CRITERIA, _OptimizeMixin, assemble_walk_forward
 
 
-class PortfolioStrategyTester(_OptimizeMixin):
+class MultiSymbolStrategyTester(_OptimizeMixin):
     """Optimize / walk-forward a single-symbol ``Strategy`` across a DataSet, scored on PORTFOLIO equity."""
 
     def __init__(self, bars_by_symbol: dict, config: TesterConfig | None = None, *,
@@ -78,7 +78,7 @@ class PortfolioStrategyTester(_OptimizeMixin):
             train_slice = self._slice(tr_lo, tr_hi)
             test_slice = self._slice(te_lo, te_hi)
 
-            opt = PortfolioStrategyTester(
+            opt = MultiSymbolStrategyTester(
                 train_slice, self.config, max_open_positions=self.max_open_positions, ranges=self.ranges,
             ).optimize(make, param_grid, criterion=criterion, method=method, seed=seed, n_trials=n_trials,
                        pop_size=pop_size, generations=generations, mutation_rate=mutation_rate, sampler=sampler,

@@ -6,7 +6,7 @@ handlers are no-ops.
 """
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy
-from vike_trader_app.core.portfolio import MultiSymbolEngine
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.order_handle import OrderHandle
 from vike_trader_app.core.schedule import MonthStart

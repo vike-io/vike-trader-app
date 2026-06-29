@@ -10,7 +10,7 @@ import pytest
 
 from vike_trader_app.analysis.strategy_templates import TEMPLATES, StrategyTemplate
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.strategy_loader import load_strategy_from_string
 

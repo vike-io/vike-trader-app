@@ -1,7 +1,7 @@
 """Optional on_fill hook on SingleSymbolEngine — fires per fill; default-off is byte-identical."""
 
 from vike_trader_app.core.broker_sim import fee as _fee
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
 from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 

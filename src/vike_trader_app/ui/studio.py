@@ -2105,7 +2105,7 @@ class StudioTab(QtWidgets.QWidget):
 
         ``name`` (the DataSet) is surfaced in the results toast so the user sees which universe ran.
         When ``bars_by_symbol`` is provided the Studio enters portfolio-optimize mode: subsequent
-        Walk-forward presses will optimize across the whole DataSet via ``PortfolioStrategyTester``
+        Walk-forward presses will optimize across the whole DataSet via ``MultiSymbolStrategyTester``
         instead of the single-symbol path.
         """
         if bars_by_symbol is not None:

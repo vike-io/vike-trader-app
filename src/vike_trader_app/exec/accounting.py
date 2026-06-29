@@ -1,6 +1,6 @@
 """FillEvent-derived account read-model: positions + realized PnL from the fill stream.
 
-A pure, Qt-free subscriber. ``apply_fill`` reproduces ``core.engine.SingleSymbolEngine._apply_fill``'s
+A pure, Qt-free subscriber. ``apply_fill`` reproduces ``core.single_symbol_engine.SingleSymbolEngine._apply_fill``'s
 position branches (open / add-same-direction averaged cost / reduce / close-and-flip) so the realized
 PnL on each closing portion — ``(price - avg_px) * (sign * closing) * multiplier`` — equals the
 engine's ``Trade.pnl`` exactly (GROSS price PnL). The SIGNED ``FillEvent.commission`` (>0 charge /

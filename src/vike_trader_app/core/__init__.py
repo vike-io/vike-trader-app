@@ -2,11 +2,11 @@
 
 Modules:
     model.py           Bar, Position, Trade (domain model)
-    engine.py          SingleSymbolEngine — the bar event loop
-    broker_sim.py      canonical cost model — fills/fees/funding (engine + kernel share it)
-    strategy.py        Strategy base class (the stable API)
-    strategy_loader.py load user Strategy subclasses
-    portfolio.py       multi-symbol / cross-sectional helpers
+    single_symbol_engine.py  SingleSymbolEngine — the bar event loop
+    broker_sim.py            canonical cost model — fills/fees/funding (engine + kernel share it)
+    strategy.py              Strategy base class (the stable API)
+    strategy_loader.py       load user Strategy subclasses
+    multi_symbol_engine.py   multi-symbol / cross-sectional helpers
     timeframe.py       timeframe parsing + resampling to higher TFs
     vectorized.py      fast vectorized backtest path (grid builder / parity oracle)
     fastsim.py         compiled (numba) fast_backtest kernel — parity with engine.py

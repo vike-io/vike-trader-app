@@ -1,6 +1,6 @@
 # tests/unit/core/test_portfolio_dispatch.py
 """TDD: Task 3 — MultiSymbolEngine dispatches via strategy._on_step seam."""
-from vike_trader_app.core.portfolio import PortfolioStrategy, MultiSymbolEngine
+from vike_trader_app.core.multi_symbol_engine import PortfolioStrategy, MultiSymbolEngine
 from vike_trader_app.core.model import Bar
 
 

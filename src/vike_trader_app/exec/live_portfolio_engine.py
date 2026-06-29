@@ -1,6 +1,6 @@
 """LiveEngine — unified symbol-keyed live engine interface (P0 collapse of LiveEngine).
 
-This is the live analogue of ``core.portfolio.MultiSymbolEngine``: a ``PortfolioStrategy``
+This is the live analogue of ``core.multi_symbol_engine.MultiSymbolEngine``: a ``PortfolioStrategy``
 sets ``strategy._engine = LiveEngine(...)`` and calls the EXACT same surface it calls in
 backtest — ``equity_now``, ``position_of``, ``price_of``, ``submit``, ``submit_close``,
 ``symbols``, and ``now``.

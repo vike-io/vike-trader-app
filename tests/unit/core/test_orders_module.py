@@ -108,7 +108,7 @@ def test_order_weight_defaults_zero_and_is_settable():
 
 
 def test_strategy_limit_buy_lands_weight_in_pending():
-    from vike_trader_app.core.engine import SingleSymbolEngine
+    from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
     from vike_trader_app.core.compat_strategy import SingleSymbolStrategy as Strategy
 
     class _Rest(Strategy):

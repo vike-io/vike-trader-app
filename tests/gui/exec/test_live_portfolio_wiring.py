@@ -38,7 +38,7 @@ def app():
 # ---------------------------------------------------------------------------
 
 _TRIVIAL_PORTFOLIO_STRATEGY = """\
-from vike_trader_app.core.portfolio import PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import PortfolioStrategy
 class MyPortStrat(PortfolioStrategy):
     def on_bar(self, ts, bars):
         pass

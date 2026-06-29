@@ -1,9 +1,9 @@
 """StrategyEngine Protocol: SingleSymbolEngine and SymbolEngineShim must expose the same Strategy-facing
 surface, so a single-symbol Strategy runs identically standalone and in a portfolio. Catches drift."""
 
-from vike_trader_app.core.engine import SingleSymbolEngine
+from vike_trader_app.core.single_symbol_engine import SingleSymbolEngine
 from vike_trader_app.core.model import Bar
-from vike_trader_app.core.portfolio import MultiSymbolEngine, PortfolioStrategy
+from vike_trader_app.core.multi_symbol_engine import MultiSymbolEngine, PortfolioStrategy
 from vike_trader_app.core.portfolio_adapter import SymbolEngineShim
 from vike_trader_app.core.strategy import Strategy
 from vike_trader_app.core.strategy_engine import StrategyEngine

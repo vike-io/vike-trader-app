@@ -231,7 +231,7 @@ def query_kb(query: str, k: int = 5, *, kb=None, embedder=None) -> dict:
 # ---------------------------------------------------------------------------
 # Strategy-class tools: the real engine surface (run / optimize / walk-forward
 # / portfolio / scanner). These let an agent (Claude Code / Desktop over MCP)
-# drive the SAME StrategyTester / PortfolioStrategyTester / screener the GUI
+# drive the SAME StrategyTester / MultiSymbolStrategyTester / screener the GUI
 # uses. Inputs/outputs are plain JSON types. Bars load from the local Parquet
 # cache on the calling thread — safe here because the MCP server is a headless,
 # single-threaded process (no Qt event loop).
@@ -506,9 +506,9 @@ def run_portfolio_backtest(strategy_code: str, dataset: str, interval: str | Non
     """
     cls = _strategy_cls(strategy_code)
     ds, iv, bars_by_symbol = _portfolio_bars(dataset, interval, start_ms, end_ms, root)
-    from ..tester.portfolio_tester import PortfolioStrategyTester
+    from ..tester.portfolio_tester import MultiSymbolStrategyTester
 
-    pt = PortfolioStrategyTester(bars_by_symbol, _make_config(config),
+    pt = MultiSymbolStrategyTester(bars_by_symbol, _make_config(config),
                                  max_open_positions=max_open_positions, ranges=ds.ranges or None)
     factory = (lambda: cls.make(**params)) if params else cls
     report = pt.run(factory)
@@ -535,9 +535,9 @@ def run_portfolio_walk_forward(strategy_code: str, dataset: str, interval: str |
     cls = _strategy_cls(strategy_code)
     grid = _grid(cls, param_grid)
     ds, iv, bars_by_symbol = _portfolio_bars(dataset, interval, start_ms, end_ms, root)
-    from ..tester.portfolio_tester import PortfolioStrategyTester
+    from ..tester.portfolio_tester import MultiSymbolStrategyTester
 
-    wf = PortfolioStrategyTester(bars_by_symbol, _make_config(config),
+    wf = MultiSymbolStrategyTester(bars_by_symbol, _make_config(config),
                                  max_open_positions=max_open_positions, ranges=ds.ranges or None).walk_forward(
         cls.make, grid, n_splits=n_splits, criterion=criterion, mode=mode,
         method=method, seed=seed, n_trials=n_trials, sampler=sampler,

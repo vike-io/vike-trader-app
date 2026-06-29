@@ -10,7 +10,7 @@ engine is not touched. Resting orders (limit/stop/trailing) and multi-timeframe 
 import bisect
 
 from .model import Bar
-from .portfolio import MultiSymbolEngine, PortfolioResult, PortfolioStrategy
+from .multi_symbol_engine import MultiSymbolEngine, MultiSymbolResult, PortfolioStrategy
 
 
 def _buyhold_asof(benchmark_bars: list, equity_ts: list, cash: float) -> list:
@@ -242,7 +242,7 @@ class MultiSymbolStrategyRunner:
         self.benchmark_label = benchmark_label
         self._engine = None  # the MultiSymbolEngine built by the most recent run() (probe/diagnostics)
 
-    def run(self) -> PortfolioResult:
+    def run(self) -> MultiSymbolResult:
         aligned = align_bars(self.bars_by_symbol)
         driver = _MultiSymbolDriver(self.strategy_cls, list(aligned), self.max_open_positions)
         active_mask = None
@@ -291,7 +291,7 @@ class MultiSymbolStrategyRunner:
         return result
 
     def report(self):
-        """Run and wrap into a ``TesterReport`` (PortfolioResult is duck-compatible with Result)."""
+        """Run and wrap into a ``TesterReport`` (MultiSymbolResult is duck-compatible with Result)."""
         from ..tester.report import TesterReport
 
         return TesterReport.from_result(self.run(), periods_per_year=self.config.periods_per_year)

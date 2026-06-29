@@ -9,7 +9,7 @@ the strategy used information it could not have had at decision time.
 allowed to see). Honest strategies ignore ``view`` and read only ``on_bar``'s bar.
 """
 
-from ..core.engine import SingleSymbolEngine
+from ..core.single_symbol_engine import SingleSymbolEngine
 
 _ORDER_METHODS = ("buy", "sell", "close", "limit_buy", "limit_sell", "stop_buy", "stop_sell")
 

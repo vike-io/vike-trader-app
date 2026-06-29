@@ -49,7 +49,7 @@ def run_optimize_job(*, strategy_cls, grid, config, wf_kwargs, strategy_source,
     ``walk_forward`` kwargs, including ``criterion`` and ``workers``. The surface sweep reuses those
     same ``workers`` + ``strategy_source`` so it runs on the worker pool; a surface failure is
     swallowed so it never sinks the walk-forward result. Pass ``portfolio_bars`` (a {sym: bars} map)
-    to optimize a DataSet via ``PortfolioStrategyTester``; otherwise pass single-symbol ``bars``.
+    to optimize a DataSet via ``MultiSymbolStrategyTester``; otherwise pass single-symbol ``bars``.
     """
     from vike_trader_app.tester import StrategyTester
 
@@ -58,8 +58,8 @@ def run_optimize_job(*, strategy_cls, grid, config, wf_kwargs, strategy_source,
     workers = wf_kwargs.get("workers", 0)
     is_portfolio = portfolio_bars is not None
     if is_portfolio:
-        from vike_trader_app.tester.portfolio_tester import PortfolioStrategyTester
-        tester = PortfolioStrategyTester(portfolio_bars, config, ranges=portfolio_ranges)
+        from vike_trader_app.tester.portfolio_tester import MultiSymbolStrategyTester
+        tester = MultiSymbolStrategyTester(portfolio_bars, config, ranges=portfolio_ranges)
         chart_bars: list = []   # portfolio runs have no single per-bar price chart
     else:
         tester = StrategyTester(strategy_cls(), bars, config)

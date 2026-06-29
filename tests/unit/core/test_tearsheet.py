@@ -1,7 +1,7 @@
 """HTML tearsheet tests."""
 
 from vike_trader_app.analysis.tearsheet import write_tearsheet_html
-from vike_trader_app.core.engine import Result
+from vike_trader_app.core.single_symbol_engine import Result
 from vike_trader_app.core.model import Trade
 
 
